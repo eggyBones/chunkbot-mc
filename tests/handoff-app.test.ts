@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { parseConfig } from '../src/config/load.ts';
+import { parseChatLine, parseTerminalLine } from '../src/commands/parse.ts';
 import { sequentialIds } from '../src/contracts/index.ts';
 import { ChunkbotApp } from '../src/app/app.ts';
 import { offlinePlayerUuid } from '../src/game/identity.ts';
@@ -89,6 +90,23 @@ describe('smooth handoff through the application', () => {
     await h.app.handleTerminalLine('status');
     assert.ok(h.lines.some((l) => /\[status\] paused: stop latch set from chat/.test(l)));
     assert.ok(h.lines.some((l) => /handoff totals: preparations 1 \(handed off 0, discarded 1; discarded planner turns 1\/40/.test(l)));
+    await h.app.shutdown('operator_quit');
+  });
+
+  it('resume is a bare command that clears the stop latch; longer text stays an instruction', async () => {
+    assert.deepEqual(parseChatLine('!chunkbot resume', '!chunkbot'), { kind: 'resume' });
+    assert.deepEqual(parseTerminalLine('Resume.', '!chunkbot'), { kind: 'resume' });
+    assert.deepEqual(parseChatLine('!chunkbot resume mining the tunnel', '!chunkbot'), { kind: 'goal', instruction: 'resume mining the tunnel', via: 'implicit' });
+    const h = await readyApp();
+    h.game.chat({ kind: 'player', text: '!chunkbot resume', ...OWNER });
+    await until(() => h.game.replies.includes('Not paused; nothing to resume.'));
+    h.game.chat({ kind: 'player', text: '!chunkbot stop', ...OWNER });
+    await until(() => h.app.engine.status().latch.paused);
+    assert.equal(h.app.engine.autonomyAllowed(), false);
+    h.game.chat({ kind: 'player', text: '!chunkbot resume', ...OWNER });
+    await until(() => h.game.replies.some((r) => r.startsWith('Resumed: the stop latch is cleared')));
+    assert.equal(h.app.engine.autonomyAllowed(), true);
+    assert.equal(h.planner.count, 0, 'resume starts nothing and replays nothing');
     await h.app.shutdown('operator_quit');
   });
 

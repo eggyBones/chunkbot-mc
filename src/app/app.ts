@@ -42,7 +42,8 @@ export const TERMINAL_HELP = [
   'Terminal uses the same language as `!chunkbot` chat, without the prefix:',
   '  <any instruction>        new goal (replaces the current one)',
   '  goal <instruction>       explicit goal alias (use for text starting with a reserved word)',
-  '  stop                     stop the current goal, or cancel joining',
+  '  stop                     stop the current goal and any pending instruction (or cancel joining); sets the pause latch',
+  '  resume                   clear the pause latch (bare word; nothing is replayed)',
   '  status                   connection/goal/adapter status (no inference)',
   '  answer [qN] <reply>      reply to the pending clarification question',
   'Operator commands: /reconnect  /quit  /help',
@@ -319,6 +320,15 @@ export class ChunkbotApp implements CommandTarget {
       this.deps.out(`[chunkbot] ${text}`);
       if (origin.surface === 'chat') this.deps.game.replyToOwner(text);
     }
+  }
+
+  resume(origin: IntakeOrigin): void {
+    const { wasPaused } = this.engine.resume(origin.surface);
+    const text = wasPaused
+      ? 'Resumed: the stop latch is cleared. Nothing earlier is replayed; send an instruction to start work.'
+      : 'Not paused; nothing to resume.';
+    this.deps.out(`[chunkbot] ${text}`);
+    if (origin.surface === 'chat') this.deps.game.replyToOwner(text);
   }
 
   status(origin: IntakeOrigin): void {

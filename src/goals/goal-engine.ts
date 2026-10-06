@@ -606,8 +606,11 @@ export class GoalEngine {
       settled: Promise.withResolvers(),
       timeline: { receivedAtMs, acknowledgedAtMs: now },
     };
-    // Owner preparation takes priority over a speculative lookahead turn.
-    if (this.slot.preemptLookahead('owner instruction preparation takes priority')) this.deps.store.record({ type: 'lookahead_preempted', intentId: pending.intentId });
+    // Owner preparation takes priority over a speculative lookahead turn, whether
+    // it is running (the slot holder) or still waiting for the slot.
+    const hadLookahead = Boolean(active?.lookahead);
+    if (active?.lookahead) this.dropLookahead(active, 'owner instruction preparation takes priority');
+    if (this.slot.preemptLookahead('owner instruction preparation takes priority') || hadLookahead) this.deps.store.record({ type: 'lookahead_preempted', intentId: pending.intentId });
     pending.deadline = setTimeout(() => this.discardPending(pending, 'limit_exhausted', `preparation deadline of ${Math.round(this.deps.limits.goalDeadlineMs / 1000)}s reached`), this.deps.limits.goalDeadlineMs);
     pending.deadline.unref?.();
     this.pending = pending;
