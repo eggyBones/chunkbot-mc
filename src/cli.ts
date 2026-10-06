@@ -249,7 +249,8 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
       const lines = [`network: ${codecSummary(game.codecHealth())} (version support: ${supportLevel(config.minecraft.version) ?? 'unsupported'})`];
       if (codex) {
         const t = codex.totals;
-        lines.push(`planner usage this run: ${t.turns} turn(s) (${t.completedTurns} completed, ${t.failedTurns} failed), input ${t.inputTokens} (cached ${t.cachedInputTokens}), output ${t.outputTokens}, reasoning ${t.reasoningOutputTokens} tokens (subscription usage; no API charges)`);
+        const cov = (known: number) => (known === t.completedTurns ? '' : ` [reported for ${known}/${t.completedTurns} completed turns]`);
+        lines.push(`planner usage this run: ${t.turns} turn(s) (${t.completedTurns} completed, ${t.failedTurns} failed), input ${t.inputTokens}${cov(t.usageKnownTurns)} (cached ${t.cachedInputTokens}${cov(t.cachedInputKnownTurns)}), output ${t.outputTokens}, reasoning ${t.reasoningOutputTokens}${cov(t.reasoningKnownTurns)} tokens (observed subscription usage; no API charges)`);
       }
       return lines;
     },

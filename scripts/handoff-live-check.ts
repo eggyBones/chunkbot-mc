@@ -115,8 +115,28 @@ function assert(cond: unknown, message: string): asserts cond {
 const dist = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.hypot(a.x - b.x, a.z - b.z);
 const tOf = (e: Json) => Date.parse(String(e.t));
 
+/** Connection loss is recorded (with its reason) and the CLI rejoins before the next scenario. */
+const connectionLosses: Array<{ atMs: number; scenario: string; line: string }> = [];
+let connectionCursor = 0;
+async function ensureConnected(): Promise<void> {
+  if (!chunkbot) return;
+  const lines = chunkbot.lines.slice(connectionCursor);
+  connectionCursor = chunkbot.lines.length;
+  const lost = lines.filter((l) => /\[chunkbot\] connection ended \(/.test(l.text));
+  for (const l of lost) connectionLosses.push({ atMs: l.atMs, scenario: currentScenario, line: l.text });
+  const lastEnd = chunkbot.lines.map((l) => l.text).findLastIndex((t) => /\[chunkbot\] connection ended \(/.test(t));
+  const lastReady = chunkbot.lines.map((l) => l.text).findLastIndex((t) => /\[chunkbot\] ready: version=/.test(t));
+  if (lastEnd > lastReady) {
+    const from = chunkbot.length;
+    chunkbot.send('/reconnect');
+    await chunkbot.waitSince(new RegExp(`\\[chunkbot\\] ready: version=${FIXTURE_VERSION_RE}`), from, 40_000);
+    connectionCursor = chunkbot.lines.length;
+  }
+}
+
 async function check(id: string, title: string, fn: (ev: string[], trials: Json[]) => Promise<void>): Promise<void> {
   if (only && !only.has(id)) return;
+  await ensureConnected();
   currentScenario = id;
   const evidence: string[] = [];
   const trials: Json[] = [];
@@ -128,6 +148,8 @@ async function check(id: string, title: string, fn: (ev: string[], trials: Json[
     process.stdout.write(`PASS ${id} (${Math.round((Date.now() - started) / 1000)}s)\n`);
   } catch (error) {
     evidence.push(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+    const lost = chunkbot?.lines.filter((l) => l.atMs >= started && /\[chunkbot\] connection ended \(/.test(l.text)) ?? [];
+    if (lost.length) evidence.push(`connection lost during the scenario: ${lost.map((l) => l.text).join(' | ')} (check the fixture server log for a foreign login under the same name)`);
     results.push({ id, title, pass: false, evidence, trials });
     process.stdout.write(`FAIL ${id} ${title}\n  ${evidence.at(-1)?.slice(0, 800)}\n`);
   }
@@ -362,6 +384,7 @@ async function main(): Promise<void> {
 
   turnsFor([]);
   chunkbot = await startChunkbot('run-handoff', smoothConfig, env);
+  connectionCursor = 0;
   let owner: Bot | undefined;
   try {
     await check('L0', 'built CLI with the planner fault fixture and loopback Jev is ready; owner joins; scene reset', async (ev) => {
@@ -569,6 +592,7 @@ async function main(): Promise<void> {
   for (const [label, configPath] of [['lookahead', smoothConfig], ['no-lookahead', noLookaheadConfig]] as const) {
     if (only && !only.has('L7')) break;
     chunkbot = await startChunkbot(`run-handoff-${label}`, configPath, env);
+    connectionCursor = 0;
     try {
       await check('L7', `H7 (${label}): two finite windows; measured gap between windows`, async (ev, trials) => {
         owner ??= await fixtureBot('FixtureOwner');
@@ -613,6 +637,7 @@ async function main(): Promise<void> {
     windowGaps: gaps,
     setupCommands: setupLog,
     scriptedOwnerActions: interventions,
+    connectionLosses,
     faultHangChildFile: existsSync(join(faultDir, 'fault-codex-hang-child.json')) ? JSON.parse(readFileSync(join(faultDir, 'fault-codex-hang-child.json'), 'utf8')) : null,
   };
   writeFileSync(join(outDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);

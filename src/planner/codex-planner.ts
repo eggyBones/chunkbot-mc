@@ -41,6 +41,11 @@ export interface CodexPlannerOptions {
   table?: ProcessTable;
 }
 
+/**
+ * Observed planner usage this run. Token totals sum only KNOWN counts; the
+ * coverage counters say how many completed turns reported each value, so an
+ * absent count is never presented as 0 tokens (MB-UI-001-C1).
+ */
 export interface PlannerUsageTotals {
   turns: number;
   completedTurns: number;
@@ -49,6 +54,26 @@ export interface PlannerUsageTotals {
   cachedInputTokens: number;
   outputTokens: number;
   reasoningOutputTokens: number;
+  /** Completed turns whose core input/output usage was reported. */
+  usageKnownTurns: number;
+  cachedInputKnownTurns: number;
+  reasoningKnownTurns: number;
+}
+
+/** Adds one turn's usage to the observed totals (known values only). */
+export function addTurnUsage(totals: PlannerUsageTotals, u: TurnUsage | null): void {
+  if (!u) return;
+  totals.usageKnownTurns += 1;
+  totals.inputTokens += u.inputTokens;
+  totals.outputTokens += u.outputTokens;
+  if (u.cachedInputTokens !== null) {
+    totals.cachedInputTokens += u.cachedInputTokens;
+    totals.cachedInputKnownTurns += 1;
+  }
+  if (u.reasoningOutputTokens !== null) {
+    totals.reasoningOutputTokens += u.reasoningOutputTokens;
+    totals.reasoningKnownTurns += 1;
+  }
 }
 
 const digest = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 12);
@@ -61,7 +86,7 @@ export class CodexPlanner implements PlannerPort {
   private instructionsPath: string | undefined;
   private readonly schemaPaths = new Map<string, { path: string; digest: string }>();
   private inFlight = 0;
-  readonly totals: PlannerUsageTotals = { turns: 0, completedTurns: 0, failedTurns: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 };
+  readonly totals: PlannerUsageTotals = { turns: 0, completedTurns: 0, failedTurns: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, usageKnownTurns: 0, cachedInputKnownTurns: 0, reasoningKnownTurns: 0 };
 
   constructor(options: CodexPlannerOptions) {
     this.options = options;
@@ -231,11 +256,7 @@ export class CodexPlanner implements PlannerPort {
   }
 
   private addUsage(u: TurnUsage | null): void {
-    if (!u) return;
-    this.totals.inputTokens += u.inputTokens;
-    this.totals.cachedInputTokens += u.cachedInputTokens;
-    this.totals.outputTokens += u.outputTokens;
-    this.totals.reasoningOutputTokens += u.reasoningOutputTokens;
+    addTurnUsage(this.totals, u);
   }
 
   /** Static description for status/doctor (no inference). */

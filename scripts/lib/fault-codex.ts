@@ -14,7 +14,8 @@ import { chmodSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export type FaultTurn =
-  | { kind: 'proposal'; proposal: unknown; delayMs?: number }
+  /** `usage`: override the turn.completed usage object (null omits it) for usage-parsing tests. */
+  | { kind: 'proposal'; proposal: unknown; delayMs?: number; usage?: Record<string, unknown> | null }
   | { kind: 'quota' }
   | { kind: 'auth' }
   | { kind: 'reroute'; proposal: unknown }
@@ -66,7 +67,7 @@ process.stdin.on('end', () => {
   out({ type: 'thread.started', thread_id: 'fault-fixture-thread-' + n });
   out({ type: 'turn.started' });
   const usage = { input_tokens: Math.round(input.length / 4), cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 50, reasoning_output_tokens: 0 };
-  const final = (p) => { out({ type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: JSON.stringify(p) } }); out({ type: 'turn.completed', usage }); };
+  const final = (p) => { out({ type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: JSON.stringify(p) } }); const u = 'usage' in turn ? turn.usage : usage; out(u === null ? { type: 'turn.completed' } : { type: 'turn.completed', usage: u }); };
   switch (turn.kind) {
     case 'proposal':
       setTimeout(() => { final(turn.proposal); process.exit(0); }, turn.delayMs || 50);
