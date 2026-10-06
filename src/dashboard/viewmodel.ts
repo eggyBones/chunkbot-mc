@@ -322,7 +322,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
   const satK = v?.saturation;
   const xpK = v?.xp;
   const xp = xpK?.known
-    ? { level: String(xpK.value.level), progress: xpK.value.progress, text: `${Math.floor(xpK.value.progress * 100)}% to level ${xpK.value.level + 1} · ${formatInt(xpK.value.totalPoints)} total points`, title: provTitle(xpK) }
+    ? { level: String(xpK.value.level), progress: xpK.value.progress, text: `${Math.floor(xpK.value.progress * 100)}% to level ${xpK.value.level + 1}`, title: `${provTitle(xpK)} · server total-experience field ${formatInt(xpK.value.totalPoints)} (not updated by /xp set)` }
     : { level: '?', progress: null, text: 'XP unknown', title: xpK ? provTitle(xpK) : 'no reading' };
 
   const inv = world?.inventory;

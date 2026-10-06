@@ -253,6 +253,21 @@ async function main(): Promise<number> {
       check('G1-readonly-truth', 'health, hunger, XP and slot inventory equal the server entity data (no world changes)', Boolean(agree), [`server Health=${h} foodLevel=${f} XpLevel=${l} XpP=${xpp}`, `server inventory ${JSON.stringify(want)}`, `dashboard vitals ${JSON.stringify(status()?.vitals)}`.slice(0, 600), `dashboard inventory ${JSON.stringify(status() ? slotsOf(status()!) : [])}`]);
       await noActions();
     } else {
+    // ---- hunger (a real food change) and a regeneration-free health baseline: natural regeneration
+    // heals ~0.8 HP every 0.5 s at full food, so damage is applied only after food is below 18.
+    await rcon(`effect give ${BOT} minecraft:hunger 10 255 true`);
+    let foodNow = await serverNumber('foodLevel');
+    for (let i = 0; i < 40 && (foodNow === undefined || foodNow >= 17); i += 1) {
+      await sleep(150);
+      foodNow = await serverNumber('foodLevel');
+    }
+    await rcon(`effect clear ${BOT} minecraft:hunger`);
+    await sleep(300);
+    const tFood = Date.now();
+    const food = await serverNumber('foodLevel');
+    const fd = await published((s) => s.vitals.food.known && s.vitals.food.value === food);
+    check('D2-food', 'hunger change matches the server', Boolean(fd && food !== undefined && food < 20), [`server foodLevel=${food} (after a Hunger effect)`, `dashboard ${JSON.stringify(status()?.vitals.food)} ${fd ? fd.at - tFood : 'timeout'} ms after the truth read`]);
+
     // ---- health
     let t0 = Date.now();
     await rcon(`damage ${BOT} 3 minecraft:generic`);
@@ -283,10 +298,6 @@ async function main(): Promise<number> {
     const xp = await published((s) => s.vitals.xp.known && s.vitals.xp.value.level === lvl && prog !== undefined && Math.abs(s.vitals.xp.value.progress - prog) < 0.01);
     check('D2-xp', 'XP level and progress match the server', Boolean(xp && xp.at - tXp <= LATENCY_BOUND_MS + 400), [`server XpLevel=${lvl} XpP=${prog}`, `dashboard ${JSON.stringify(status()?.vitals.xp)} ${xp ? xp.at - tXp : 'timeout'} ms after the last command (includes two truth reads)`]);
 
-    // ---- food
-    const food = await serverNumber('foodLevel');
-    const fd = await published((s) => s.vitals.food.known && s.vitals.food.value === food);
-    check('D2-food', 'hunger matches the server', Boolean(fd), [`server foodLevel=${food}`, `dashboard ${JSON.stringify(status()?.vitals.food)}`]);
 
     // ---- inventory incl. armor/off hand
     t0 = Date.now();
