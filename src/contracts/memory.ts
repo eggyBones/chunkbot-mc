@@ -131,9 +131,50 @@ export type MemoryFactStatus = (typeof MEMORY_FACT_STATUSES)[number];
 export const MemoryFactIdSchema = z.string().regex(/^mf-[a-z0-9]{4,24}$/);
 export type MemoryFactId = z.infer<typeof MemoryFactIdSchema>;
 
-/** Request-bound executable memory reference (`mref-12`). Never stored. */
-export const MemoryRefIdSchema = z.string().regex(/^mref-[0-9]{1,6}$/);
+/**
+ * Request-bound EXECUTABLE memory reference, issued only to an ADMITTED goal
+ * (`mref-<run nonce><counter>`, base36). Never stored, never reused within a
+ * process, and unique across restarts by a per-run nonce.
+ */
+export const MemoryRefIdSchema = z.string().regex(/^mref-[a-z0-9]{6,24}$/);
 export type MemoryRefId = z.infer<typeof MemoryRefIdSchema>;
+
+/**
+ * NON-executable reference shown to a preparation subject (`mprep-...`). It
+ * names a fact for a draft plan only; after the real admission the writer must
+ * re-ground it with `regroundPrepared` to a fresh `mref-` of the SAME
+ * still-active fact, or the reference fails closed.
+ */
+export const PreparedMemoryRefIdSchema = z.string().regex(/^mprep-[a-z0-9]{6,24}$/);
+export type PreparedMemoryRefId = z.infer<typeof PreparedMemoryRefIdSchema>;
+
+/** Either reference token as it may appear in a selector (execution accepts only `mref-`). */
+export const MemoryRefTokenSchema = z.union([MemoryRefIdSchema, PreparedMemoryRefIdSchema]);
+
+/**
+ * Structural mirror of MB-FLOW-002 `PlanningSubject` (src/contracts/handoff.ts)
+ * so memory compiles before that contract is transferred; a PlanningSubject is
+ * assignable to it. A preparation owns no goal, epoch, lease or baseline and
+ * never receives executable refs.
+ */
+export type MemorySubject =
+  | { kind: 'goal'; goalId: string; goalEpoch: number }
+  | { kind: 'preparation'; intentId: string; generation: number; connectionEpoch: number; activeGoalId: string | null };
+
+/**
+ * Mandatory ownership fence for resolving an executable ref. Every resolver
+ * path (candidate generation, execution, predicate evaluation) must pass the
+ * owning goal epoch and the CURRENT connection/dimension. `goalId` is required
+ * where the caller knows it (execution, predicates); `null` only in candidate
+ * generation, where the snapshot's goal epoch (monotonic, unique per run)
+ * identifies the goal.
+ */
+export interface MemoryRefFence {
+  goalEpoch: number;
+  goalId: string | null;
+  connectionEpoch: number;
+  dimension: string;
+}
 
 const shortText = (max: number) => z.string().max(max);
 const atMs = z.number().int().nonnegative();
@@ -364,8 +405,10 @@ export type MemoryTrust = 'trusted' | 'untrusted';
 
 /** One retrieved fact as the planner sees it (bounded, fresh refs only). */
 export interface MemoryViewFact {
-  /** Executable reference for THIS request (only for trusted, located facts in the current dimension). */
+  /** Executable reference for THIS request (admitted goal subject only; trusted, located, current dimension). */
   ref?: MemoryRefId;
+  /** Non-executable reference for a preparation subject (re-grounded at admission). */
+  prepRef?: PreparedMemoryRefId;
   /** Durable fact id: usable only to name a fact for forgetting/correction, never as a target. */
   id: MemoryFactId;
   category: MemoryCategory;
@@ -381,7 +424,7 @@ export interface MemoryViewFact {
   note?: string;
   /** Historical container contents (NOT present stock; inspect before relying on them). */
   container?: { contents: Record<string, number>; observedAgeS: number; historical: true };
-  project?: { state: ProjectPayload['state']; confirmedChanges: number; recent: Array<{ ref?: MemoryRefId; at: { x: number; y: number; z: number }; to: string }>; unknownEffects: number };
+  project?: { state: ProjectPayload['state']; confirmedChanges: number; recent: Array<{ ref?: MemoryRefId; prepRef?: PreparedMemoryRefId; at: { x: number; y: number; z: number }; to: string }>; unknownEffects: number };
   death?: { ageS: number; accuracy: DeathPayload['accuracy']; recovery: DeathPayload['recovery']['status']; missing: Array<{ key: string; count: number }>; inventorySource: string; inventoryAgeAtDeathS?: number; relatedTo?: MemoryFactId };
   milestone?: { summary: string };
 }
@@ -407,7 +450,7 @@ export interface MemoryView {
  * fact is active; it is remembered (historical) evidence, never current
  * visibility, presence, ownership or contents.
  */
-export const MemoryRefSelectorSchema = z.object({ kind: z.literal('memory_ref'), refId: MemoryRefIdSchema }).strict();
+export const MemoryRefSelectorSchema = z.object({ kind: z.literal('memory_ref'), refId: MemoryRefTokenSchema }).strict();
 export type MemoryRefSelector = z.infer<typeof MemoryRefSelectorSchema>;
 
 /**
@@ -441,24 +484,46 @@ export interface ResolvedMemoryRef {
 
 // ---------------------------------------------------------------- ports (installed by the designated writer)
 
-/** Goal-engine seam: one bounded view with fresh refs per planner request. */
-export interface MemoryPlannerPort {
-  view(request: {
-    goalId: string;
-    goalEpoch: number;
-    requestId: string;
-    instruction: string;
-    /** Owner answers to clarification questions (owner words). */
-    answers?: readonly string[];
-    observation: { dimension: string; self: { at: { x: number; y: number; z: number } }; connectionEpoch: number } | null;
-  }): MemoryView;
-  /** Goal ended (any terminal state): its refs become unresolvable. Confirmed memory persists. */
-  releaseGoal(goalId: string): void;
+/** One planner request's memory view input (goal or preparation subject). */
+export interface MemoryViewRequest {
+  subject: MemorySubject;
+  requestId: string;
+  instruction: string;
+  /** Owner answers to clarification questions (owner words). */
+  answers?: readonly string[];
+  observation: { dimension: string; self: { at: { x: number; y: number; z: number } }; connectionEpoch: number } | null;
 }
 
-/** Selector/predicate seam: resolve a request-bound ref against the CURRENT connection and dimension. */
+/**
+ * Planner seam. A goal subject receives fresh executable `mref-` refs; a
+ * preparation subject receives the same bounded facts with non-executable
+ * `mprep-` refs only (read-only: memory records nothing for a preparation).
+ */
+export interface MemoryPlannerPort {
+  view(request: MemoryViewRequest): MemoryView;
+  /** Executable refs shown to this admitted goal epoch (proposal reference validation). */
+  shownRefs(goal: { goalId: string; goalEpoch: number }): ReadonlySet<string>;
+  /** Prepared refs shown to this preparation generation (draft reference validation). */
+  shownPreparedRefs(prep: { intentId: string; generation: number }): ReadonlySet<string>;
+  /**
+   * After the REAL admission: re-grounds a prepared ref to a fresh executable
+   * ref of the SAME fact, only if the preparation generation matches, the
+   * connection and dimension are unchanged, and the fact is still active at the
+   * same location in this scope. Otherwise fails closed (never a substitute).
+   */
+  regroundPrepared(
+    prepRefId: string,
+    admission: { intentId: string; generation: number; goalId: string; goalEpoch: number; requestId: string; connectionEpoch: number; dimension: string },
+  ): { refId: MemoryRefId; factId: MemoryFactId } | { error: string; detail: string };
+  /** Goal ended (any terminal state): its refs become unresolvable. Confirmed memory persists. */
+  releaseGoal(goalId: string): void;
+  /** Preparation discarded, superseded or admitted: its prepared refs become void. */
+  releasePreparation(intentId: string): void;
+}
+
+/** Selector/predicate seam: resolve an issued ref under the mandatory ownership fence. */
 export interface MemoryRefResolver {
-  resolveRef(refId: string, current: { connectionEpoch: number; dimension: string }): ResolvedMemoryRef | { error: string; detail: string };
+  resolveRef(refId: string, fence: MemoryRefFence): ResolvedMemoryRef | { error: string; detail: string };
 }
 
 /** Code evaluation of `memory_state` (same shape as PredicateEvaluation; the kind is added by the writer). */

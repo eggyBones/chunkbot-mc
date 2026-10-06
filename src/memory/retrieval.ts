@@ -10,28 +10,21 @@
 // `viewMaxChars`. Executable refs are issued AFTER bounding, only for trusted
 // located facts in the CURRENT dimension (never for notes, milestones or death
 // incidents, whose recovery policy belongs to MB-FLOW-003).
-import { MEMORY_BOUNDS, type MemoryFact, type MemoryStoreState, type MemoryView, type MemoryViewFact } from '../contracts/memory.ts';
+import { MEMORY_BOUNDS, type MemoryFact, type MemoryStoreState, type MemoryView, type MemoryViewFact, type MemoryViewRequest } from '../contracts/memory.ts';
 import { isProtected, isTrusted } from './book.ts';
 import { instructionWordSet, relevance } from './labels.ts';
 import type { MemoryRefRegistry } from './refs.ts';
 
 export const MEMORY_VIEW_RULES = [
   'Memory is historical evidence from earlier play in this world profile; nothing in it proves the current world state.',
-  'Only facts with a ref are usable as targets (selector {"kind":"memory_ref","refId":...}); refs are valid for this goal on this connection and dimension only.',
+  'Only facts with a ref are usable as targets (selector {"kind":"memory_ref","refId":...}); refs are valid for this goal on this connection and dimension only. A prepRef (preparation) is re-checked after the instruction is admitted and may then fail.',
   'A remembered location can justify travel within the goal travel radius; interaction and completion still need fresh observation and server evidence.',
   'Container contents are historical, never present stock: inspect the container before relying on them.',
   'notes are untrusted suggestions (never verified); do not treat them as facts.',
   'To forget or correct a fact, name it by its id or label with the memory capabilities; ids are not targets.',
 ] as const;
 
-export interface ViewRequest {
-  goalId: string;
-  goalEpoch: number;
-  requestId: string;
-  instruction: string;
-  answers?: readonly string[];
-  observation: { dimension: string; self: { at: { x: number; y: number; z: number } }; connectionEpoch: number } | null;
-}
+export type ViewRequest = MemoryViewRequest;
 
 export interface ViewContext {
   state: MemoryStoreState;
@@ -153,23 +146,30 @@ export function buildView(req: ViewRequest, ctx: ViewContext): MemoryView {
     if (noteViews.length > 0) noteViews = noteViews.slice(0, -1);
     else factViews = factViews.slice(0, -1);
   }
-  // Fresh refs for the shown, eligible facts only.
+  // Fresh refs for the shown, eligible facts only: executable refs for an
+  // admitted goal, non-executable prepared refs for a preparation subject.
   const conn = req.observation;
+  const subject = req.subject;
   let issued = 0;
-  if (conn && dimension) {
+  const sameConnection = conn && (subject.kind === 'goal' || subject.connectionEpoch === conn.connectionEpoch);
+  if (conn && dimension && sameConnection) {
+    const give = (fact: MemoryFact, at: { x: number; y: number; z: number }, label?: string): { ref: NonNullable<MemoryViewFact['ref']> } | { prepRef: NonNullable<MemoryViewFact['prepRef']> } => {
+      issued += 1;
+      return subject.kind === 'goal'
+        ? { ref: ctx.refs.issue({ goalId: subject.goalId, goalEpoch: subject.goalEpoch, requestId: req.requestId, connectionEpoch: conn.connectionEpoch, dimension }, fact, at, label) }
+        : { prepRef: ctx.refs.issuePrepared({ intentId: subject.intentId, generation: subject.generation, requestId: req.requestId, connectionEpoch: conn.connectionEpoch, dimension }, fact, at, label) };
+    };
     for (const x of factViews) {
       if (!refEligible(x.fact, dimension) || issued >= MEMORY_BOUNDS.refsPerRequest) continue;
       const loc = x.fact.location as NonNullable<MemoryFact['location']>;
-      x.view.ref = ctx.refs.issue({ goalId: req.goalId, goalEpoch: req.goalEpoch, requestId: req.requestId, connectionEpoch: conn.connectionEpoch, dimension }, x.fact, loc.at);
-      issued += 1;
+      Object.assign(x.view, give(x.fact, loc.at));
       if (x.fact.project && x.view.project) {
         const recent = x.fact.project.checkpoints.slice(-4);
         x.view.project.recent = recent.map((c) => ({
           at: c.at,
           to: c.to,
-          ...(issued < MEMORY_BOUNDS.refsPerRequest ? { ref: ctx.refs.issue({ goalId: req.goalId, goalEpoch: req.goalEpoch, requestId: req.requestId, connectionEpoch: conn.connectionEpoch, dimension }, x.fact, c.at, `${x.fact.label}: ${c.to} at ${c.at.x},${c.at.y},${c.at.z}`) } : {}),
+          ...(issued < MEMORY_BOUNDS.refsPerRequest ? give(x.fact, c.at, `${x.fact.label}: ${c.to} at ${c.at.x},${c.at.y},${c.at.z}`) : {}),
         }));
-        issued += recent.length;
       }
     }
   }

@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import type { Clock, EvidenceEvent, GameLifecycleEvent, ObservationSnapshot, SkillOutcome } from '../contracts/index.ts';
 import {
   MEMORY_BOUNDS,
+  MemoryFactSchema,
   scopeKey,
   type MemoryCategory,
   type MemoryConfig,
@@ -29,13 +30,17 @@ import {
   type MemoryStatePredicate,
   type MemoryStatus,
   type MemoryStoreState,
+  type MemoryRefFence,
+  type MemoryRefId,
+  type MemoryFactId,
   type MemoryView,
+  type MemoryViewRequest,
   type ResolvedMemoryRef,
 } from '../contracts/memory.ts';
 import { MemoryBook, isTrusted, type WriteResult } from './book.ts';
 import { labelKey, ownerGrounding } from './labels.ts';
 import { MemoryRefRegistry } from './refs.ts';
-import { buildView, type ViewRequest } from './retrieval.ts';
+import { buildView } from './retrieval.ts';
 import { MemoryFileStore, scopeDirectory, type MemoryFileStoreOptions, type MemoryLoad } from './store.ts';
 import type { DeathContext, MemoryWorld } from './world.ts';
 
@@ -44,6 +49,15 @@ const CONTAINER = /^minecraft:(chest|trapped_chest|barrel|hopper|dropper|dispens
 /** Resource sightings worth remembering (coordinator assumption): ores, logs/stems, ancient debris. */
 const RESOURCE = /^minecraft:([a-z_]+_ore|ancient_debris|[a-z_]+_log|[a-z_]+_stem)$/;
 const HAZARD = /^minecraft:(lava)$/;
+
+/** Only well-formed code identifiers are kept in durable evidence (a malformed one is dropped, never stored). */
+function evidenceIds(ids: { capability?: string | undefined; actionId?: string | undefined; goalId?: string | undefined }): Pick<MemoryEvidence, 'capability' | 'actionId' | 'goalId'> {
+  return {
+    ...(ids.capability && /^[a-z][a-z0-9_]{1,63}$/.test(ids.capability) ? { capability: ids.capability } : {}),
+    ...(ids.actionId && /^act-[a-z0-9]{4,32}$/.test(ids.actionId) ? { actionId: ids.actionId } : {}),
+    ...(ids.goalId && /^goal-[a-z0-9]{4,32}$/.test(ids.goalId) ? { goalId: ids.goalId } : {}),
+  };
+}
 
 const bare = (key: string) => key.replace(/^minecraft:/, '').replace(/_/g, ' ');
 const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
@@ -73,7 +87,7 @@ interface GoalMemoryContext {
 }
 
 export type MemoryWriteOutcome =
-  | { ok: true; fact: MemoryFact; change: WriteResult['change']; trusted: boolean; storeRevision: number; affected: string[]; detail: string }
+  | { ok: true; fact: MemoryFact; change: WriteResult['change']; trusted: boolean; storeRevision: number; affected: string[]; detail: string; /** A requested trusted designation was stored only as an unverified note. */ downgraded?: boolean }
   | { ok: false; reason: string; detail: string };
 
 export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, MemoryPredicatePort {
@@ -278,7 +292,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
   async updateDeathRecovery(factId: string, update: { regained?: Array<{ key: string; count: number }>; status?: 'abandoned'; detail?: string }, evidence: { detail: string; actionId?: string; capability?: string }): Promise<MemoryWriteOutcome> {
     if (!this.writable || !this.book) return { ok: false, reason: 'memory_not_writable', detail: this.status().detail };
     const now = this.options.clock.now();
-    const fact = this.book.updateDeathRecovery(factId, update, { kind: 'skill_outcome', atMs: now, detail: clip(evidence.detail, 200), ...(evidence.actionId ? { actionId: evidence.actionId } : {}), ...(evidence.capability ? { capability: evidence.capability } : {}) }, now);
+    const fact = this.book.updateDeathRecovery(factId, update, { kind: 'skill_outcome', atMs: now, detail: clip(evidence.detail, 200), ...evidenceIds({ actionId: evidence.actionId, capability: evidence.capability }) }, now);
     if (!fact) return { ok: false, reason: 'unknown_death_incident', detail: `${factId} is not a death incident in this scope` };
     return this.persistOutcome(fact, 'updated', [], 'death recovery updated');
   }
@@ -291,13 +305,22 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     while (this.goals.size > 8) this.goals.delete(this.goals.keys().next().value as string);
   }
 
-  view(request: ViewRequest): MemoryView {
+  /**
+   * One bounded view per planner request. A goal subject gets fresh
+   * executable refs; a preparation subject gets the same bounded facts with
+   * NON-executable prepared refs and records nothing (a preparation owns no
+   * goal, lease or baseline; memory never invents an admitted goal for it).
+   */
+  view(request: MemoryViewRequest): MemoryView {
     this.ensureScope();
-    const known = this.goals.get(request.goalId);
-    if (!known || known.epoch !== request.goalEpoch) this.beginGoal({ goalId: request.goalId, epoch: request.goalEpoch, instruction: request.instruction });
-    const g = this.goals.get(request.goalId) as GoalMemoryContext;
-    g.answers = [...(request.answers ?? [])].slice(-8).map((a) => a.slice(0, 1_000));
-    if (this.readable && request.observation) this.ingestObservation();
+    const subject = request.subject;
+    if (subject.kind === 'goal') {
+      const known = this.goals.get(subject.goalId);
+      if (!known || known.epoch !== subject.goalEpoch) this.beginGoal({ goalId: subject.goalId, epoch: subject.goalEpoch, instruction: request.instruction });
+      const g = this.goals.get(subject.goalId) as GoalMemoryContext;
+      g.answers = [...(request.answers ?? [])].slice(-8).map((a) => a.slice(0, 1_000));
+      if (this.readable && request.observation) this.ingestObservation();
+    }
     const nowMs = this.options.clock.now();
     const view = buildView(request, {
       state: this.state,
@@ -309,17 +332,50 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
       staleAfterMs: this.options.config?.staleAfterMs ?? 24 * 3_600_000,
       refs: this.refs,
     });
-    this.options.record?.({ type: 'memory_view', goalId: request.goalId, requestId: request.requestId, state: view.status.state, facts: view.facts.length, notes: view.notes.length, refs: view.facts.filter((f) => f.ref).length, omitted: view.omitted.count });
+    this.options.record?.({
+      type: 'memory_view',
+      subject: subject.kind,
+      subjectId: subject.kind === 'goal' ? subject.goalId : subject.intentId,
+      requestId: request.requestId,
+      state: view.status.state,
+      facts: view.facts.length,
+      notes: view.notes.length,
+      refs: view.facts.filter((f) => f.ref).length,
+      preparedRefs: view.facts.filter((f) => f.prepRef).length,
+      omitted: view.omitted.count,
+    });
     return view;
   }
 
-  /** Refs currently shown to a goal (for proposal reference validation). */
-  shownRefs(goalId: string): Set<string> {
-    return this.refs.shownFor(goalId);
+  /** Executable refs currently shown to an admitted goal epoch (proposal reference validation). */
+  shownRefs(goal: { goalId: string; goalEpoch: number }): Set<string> {
+    return this.refs.shownFor(goal);
+  }
+
+  /** Prepared refs shown to a preparation generation (draft reference validation). */
+  shownPreparedRefs(prep: { intentId: string; generation: number }): Set<string> {
+    return this.refs.shownPrepared(prep);
+  }
+
+  /** After the REAL admission: prepared ref -> fresh executable ref of the SAME active fact, or a closed failure. */
+  regroundPrepared(
+    prepRefId: string,
+    admission: { intentId: string; generation: number; goalId: string; goalEpoch: number; requestId: string; connectionEpoch: number; dimension: string },
+  ): { refId: MemoryRefId; factId: MemoryFactId } | { error: string; detail: string } {
+    this.ensureScope();
+    if (!this.readable || !this.book) return { error: 'memory_unavailable', detail: `memory is not usable: ${this.status().detail}` };
+    const book = this.book;
+    const r = this.refs.reground(prepRefId, admission, (id) => book.get(id));
+    this.options.record?.({ type: 'memory_ref_regrounded', prepRefId, goalId: admission.goalId, ok: !('error' in r), ...('error' in r ? { error: r.error } : { refId: r.refId, factId: r.factId }) });
+    return r;
   }
 
   releaseGoal(goalId: string): void {
     this.refs.releaseGoal(goalId);
+  }
+
+  releasePreparation(intentId: string): void {
+    this.refs.releasePreparation(intentId);
   }
 
   /**
@@ -333,7 +389,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     this.goals.delete(end.goalId);
     if (!this.writable || !this.book) return;
     const now = this.options.clock.now();
-    const ev: MemoryEvidence = { kind: 'goal_outcome', atMs: now, goalId: end.goalId as MemoryEvidence['goalId'] & string, detail: clip(`${end.reason}: ${end.detail}`, 200) };
+    const ev: MemoryEvidence = { kind: 'goal_outcome', atMs: now, ...evidenceIds({ goalId: end.goalId }), detail: clip(`${end.reason}: ${end.detail}`, 200) };
     if (end.reason === 'outcome_verified' && end.kind !== 'operator_task_diagnostic') {
       const label = clip(g?.instruction ?? end.interpretation ?? 'verified goal', 80);
       this.book.addMilestone({ label, summary: clip(`${end.interpretation ? `${end.interpretation} — ` : ''}${end.detail}`, 1_000), evidence: { ...ev, ...(g ? { ownerText: clip(g.instruction, 200) } : {}) }, nowMs: now, goalId: end.goalId });
@@ -409,7 +465,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     const capability = outcome.capability ?? 'unknown';
     const ev = this.world.actionEvidence(outcome.actionId);
     const before = this.book.version;
-    const base: Omit<MemoryEvidence, 'detail'> = { kind: 'skill_outcome', atMs: now, capability, actionId: outcome.actionId, ...(outcome.goalId ? { goalId: outcome.goalId } : {}) };
+    const base: Omit<MemoryEvidence, 'detail'> = { kind: 'skill_outcome', atMs: now, ...evidenceIds({ capability, actionId: outcome.actionId, goalId: outcome.goalId }) };
     const goal = outcome.goalId ? this.goals.get(outcome.goalId) : undefined;
     for (const c of ev.blockChanges) {
       const at = { x: c.x, y: c.y, z: c.z };
@@ -477,11 +533,12 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     const texts = this.ownerTexts(input.goalId);
     if (!texts) return { ok: false, reason: 'owner_text_unavailable', detail: 'the owner instruction of this goal is not known to memory; nothing was written' };
     const now = this.options.clock.now();
-    const ids = { ...(input.goalId ? { goalId: input.goalId } : {}), ...(input.actionId ? { actionId: input.actionId } : {}) };
+    const ids = evidenceIds({ goalId: input.goalId, actionId: input.actionId });
     const grounding = ownerGrounding(input.label, texts);
     if (!grounding) {
       const r = this.book.note({ label: input.label, text: clip(`unverified ${input.category} "${input.label}" at ${fmt(input.location.at)} in ${input.location.dimension} (${input.basis}); the owner's words do not contain this label${input.note ? `; ${input.note}` : ''}`, 200), evidence: { kind: 'planner_note', atMs: now, detail: clip(`planner-proposed ${input.category} label not found in owner text; ${input.basis}`, 200), ...ids }, nowMs: now, ...(input.goalId ? { goalId: input.goalId } : {}) });
-      return this.persistOutcome(r.fact, r.change, [], `stored as an UNVERIFIED note: the owner's words do not contain "${clip(input.label, 40)}"`);
+      const out = await this.persistOutcome(r.fact, r.change, [], `stored as an UNVERIFIED note: the owner's words do not contain "${clip(input.label, 40)}"`);
+      return out.ok ? { ...out, downgraded: true } : out;
     }
     const r = this.book.designate({
       category: input.category,
@@ -501,7 +558,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     this.ensureScope();
     if (!this.writable || !this.book) return { ok: false, reason: 'memory_not_writable', detail: `memory cannot be written: ${this.status().detail}` };
     const now = this.options.clock.now();
-    const r = this.book.note({ label: input.label, text: input.text, evidence: { kind: 'planner_note', atMs: now, detail: clip(`unverified note: ${input.text}`, 200), ...(input.goalId ? { goalId: input.goalId } : {}), ...(input.actionId ? { actionId: input.actionId } : {}) }, nowMs: now, ...(input.goalId ? { goalId: input.goalId } : {}) });
+    const r = this.book.note({ label: input.label, text: input.text, evidence: { kind: 'planner_note', atMs: now, detail: clip(`unverified note: ${input.text}`, 200), ...evidenceIds({ goalId: input.goalId, actionId: input.actionId }) }, nowMs: now, ...(input.goalId ? { goalId: input.goalId } : {}) });
     return this.persistOutcome(r.fact, r.change, [], 'unverified note');
   }
 
@@ -520,7 +577,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     const grounded = targets.filter((f) => ownerGrounding(f.label, texts));
     if (grounded.length === 0) return { ok: false, reason: 'not_owner_grounded', detail: `the owner's words do not name "${clip(targets[0]?.label ?? '', 40)}"; ask the owner which memory to forget` };
     const now = this.options.clock.now();
-    for (const f of grounded) this.book.forget(f, { kind: 'owner_instruction', atMs: now, detail: 'owner asked to forget this', ownerText: clip(texts[0] ?? '', 200), confirmation: 'local_memory', ...(input.goalId ? { goalId: input.goalId } : {}), ...(input.actionId ? { actionId: input.actionId } : {}) }, now);
+    for (const f of grounded) this.book.forget(f, { kind: 'owner_instruction', atMs: now, detail: 'owner asked to forget this', ownerText: clip(texts[0] ?? '', 200), confirmation: 'local_memory', ...evidenceIds({ goalId: input.goalId, actionId: input.actionId }) }, now);
     const out = await this.persistOutcome(grounded[0] as MemoryFact, 'updated', grounded.map((f) => f.id), `forgot ${grounded.map((f) => `${f.id} (${f.label})`).join(', ')}`);
     return { ...out, forgotten: grounded.map((f) => f.id) };
   }
@@ -533,11 +590,12 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
 
   // ------------------------------------------------------------ refs / predicates
 
-  resolveRef(refId: string, current: { connectionEpoch: number; dimension: string }): ResolvedMemoryRef | { error: string; detail: string } {
+  /** Resolves an executable ref under the mandatory ownership fence (goal epoch [+ id], connection, dimension). */
+  resolveRef(refId: string, fence: MemoryRefFence): ResolvedMemoryRef | { error: string; detail: string } {
     this.ensureScope();
     if (!this.readable || !this.book) return { error: 'memory_unavailable', detail: `memory is not usable: ${this.status().detail}` };
     const book = this.book;
-    return this.refs.resolve(refId, current, (id) => book.get(id));
+    return this.refs.resolve(refId, fence, (id) => book.get(id));
   }
 
   evaluateMemoryState(p: MemoryStatePredicate, boundAtMs: number): MemoryStateEvaluation {
@@ -578,6 +636,14 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
       const store = this.store as MemoryFileStore;
       if (book.version === this.persistedVersion) return store.revision;
       book.enforceBounds();
+      // A fact that fails the durable schema is quarantined (dropped with evidence), never allowed to block every later write.
+      for (const f of book.facts()) {
+        const check = MemoryFactSchema.safeParse(f);
+        if (!check.success) {
+          book.remove(f.id);
+          this.options.record?.({ type: 'memory_fact_rejected', factId: f.id, category: f.category, issue: clip(check.error.issues[0]?.message ?? 'invalid', 200) });
+        }
+      }
       let body = book.body();
       while (JSON.stringify(body).length > MEMORY_BOUNDS.maxStoreBytes * 0.95) {
         const victim = book.evictionCandidate();

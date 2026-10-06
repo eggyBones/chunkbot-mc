@@ -17,7 +17,7 @@
 // revision, never a server packet. Completion uses the code-evaluated
 // `memory_state` predicate (or near_target with a memory_ref for travel).
 import { z } from 'zod';
-import { OWNER_DESIGNATION_CATEGORIES, MemoryFactIdSchema, type MemoryLocation } from '../contracts/memory.ts';
+import { OWNER_DESIGNATION_CATEGORIES, MemoryFactIdSchema, MemoryRefIdSchema, type MemoryLocation } from '../contracts/memory.ts';
 import type { JsonValue } from '../contracts/index.ts';
 import { matchesOwnerCoordinate, parseOwnerCoordinates } from '../goals/owner-coordinates.ts';
 import type { MemoryService, MemoryWriteOutcome } from '../memory/service.ts';
@@ -43,7 +43,7 @@ function memoryResult(r: MemoryWriteOutcome, what: string): SkillResult {
   const evidence: Record<string, JsonValue> = {
     memory: json({ confirmation: 'local_memory_store', factId: r.fact.id, label: r.fact.label, category: r.fact.category, source: r.fact.source, trust: r.trusted ? 'trusted' : 'untrusted', change: r.change, storeRevision: r.storeRevision, affected: r.affected }),
   };
-  if (!r.trusted && r.fact.category !== 'note') {
+  if (r.downgraded) {
     return { status: 'partial', reason: 'not_owner_grounded', effect: `${what}: ${r.detail} (memory store revision ${r.storeRevision}; local memory write, not a world effect)`, confirmation: 'none', evidence };
   }
   return { status: 'succeeded', effect: `${what}: ${r.detail} (durable memory store revision ${r.storeRevision}; local memory write, not a world effect)`, confirmation: 'none', evidence };
@@ -248,7 +248,7 @@ export function noteMemory(memory: MemoryService): SkillDefinition<{ label: stri
 const BLOCKISH = /^minecraft:(?!air$)[a-z0-9_]+$/;
 
 export function goToMemory(memory: MemoryService): SkillDefinition<{ ref: string; within: number }> {
-  const params = z.object({ ref: z.string().regex(/^mref-[0-9]{1,6}$/), within: z.number().min(1).max(32).default(3) }).strict();
+  const params = z.object({ ref: MemoryRefIdSchema, within: z.number().min(1).max(32).default(3) }).strict();
   const def: SkillDefinition<z.infer<typeof params>> = {
     descriptor: {
       id: 'go_to_memory',
@@ -272,7 +272,7 @@ export function goToMemory(memory: MemoryService): SkillDefinition<{ ref: string
       const drafts: CandidateDraft[] = [];
       const unavailable: Unavailable[] = [];
       for (const ref of refs.slice(0, 6)) {
-        const r = memory.resolveRef(ref, { connectionEpoch: ctx.snapshot.connectionEpoch, dimension: ctx.snapshot.dimension });
+        const r = memory.resolveRef(ref, { goalEpoch: ctx.snapshot.goalEpoch, goalId: null, connectionEpoch: ctx.snapshot.connectionEpoch, dimension: ctx.snapshot.dimension });
         if ('error' in r) {
           unavailable.push({ reason: r.error, detail: r.detail.slice(0, 200) });
           continue;
@@ -292,7 +292,8 @@ export function goToMemory(memory: MemoryService): SkillDefinition<{ ref: string
     },
     async execute(ctx, p) {
       const bot = ctx.session.bot;
-      const r = memory.resolveRef(p.ref, { connectionEpoch: ctx.session.connectionEpoch, dimension: String(bot.game.dimension) });
+      if (ctx.owner.kind !== 'goal') return precondition('memory_ref_not_owned', 'memory refs belong to an admitted goal; diagnostics cannot use them');
+      const r = memory.resolveRef(p.ref, { goalEpoch: ctx.owner.goalEpoch, goalId: ctx.owner.goalId || null, connectionEpoch: ctx.session.connectionEpoch, dimension: String(bot.game.dimension) });
       if ('error' in r) return precondition(r.error, r.detail);
       if (!ctx.services.perception.withinTravel(r.at)) return precondition('outside_travel_bounds', `remembered ${r.label} is outside the travel radius (${ctx.services.limits.travelRadius})`);
       const bounds = ctx.services.perception.travelBounds?.();
