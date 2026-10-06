@@ -119,6 +119,15 @@ describe('dashboard usage: Jev session rollups from the real adapter', () => {
     assert.equal(j.remainingNanoUsd, j.capNanoUsd - j.confirmedNanoUsd - j.retainedNanoUsd);
     // The dashboard matches the authoritative ledger.
     assert.ok(Math.abs(j.remainingNanoUsd - usdToNano(h.spend.remainingUsd())) <= 2);
+    // The dated aggregate carries the same split.
+    const hist = readHistory(h.runtime.paths.history);
+    assert.ok(hist.ok);
+    const day = hist.history.days['2026-10-06']!.jev;
+    assert.deepEqual(
+      [day.attempts, day.validatedResponses, day.chargedFailures, day.retainedAttempts, day.releasedAttempts, day.inputTokens, day.tokensUnknownAttempts, day.retainedNanoUsd],
+      [7, 2, 1, 3, 1, 520, 4, 3 * MAX_NANO],
+    );
+    assert.equal(day.confirmedNanoUsd, j.confirmedNanoUsd);
   });
 
   it('shows an in-flight reservation as pending, separate from confirmed', async () => {

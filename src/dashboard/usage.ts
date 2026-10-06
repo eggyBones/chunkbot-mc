@@ -105,8 +105,8 @@ export class UsageAccumulator {
   private jevIn = 0;
   private jevOut = 0;
   private plannerUsageKnown = 0;
-  /** Validated responses not yet matched against reconciled ledger growth. */
-  private validatedSinceSync = 0;
+  /** Charged failures already applied to the dated aggregates (this process). */
+  private chargedApplied = 0;
   private plannerEv = { turns: 0, completed: 0, failed: 0, input: 0, cached: 0, output: 0, reasoning: 0, usageUnknown: 0 };
   private lastChange = 0;
 
@@ -138,7 +138,6 @@ export class UsageAccumulator {
         const id = e.success ? `jres:${e.data.requestId}:${e.data.attempt}` : '';
         if (!e.success || !this.once(id)) return;
         this.jevValidated += 1;
-        this.validatedSinceSync += 1;
         this.jevIn += e.data.usage.inputTokens;
         this.jevOut += e.data.usage.outputTokens;
         this.lastChange = now;
@@ -222,11 +221,18 @@ export class UsageAccumulator {
       retainedAttempts: next.retained - c.retained,
       releasedAttempts: next.released - c.released,
     };
-    if (Object.values(d).every((v) => v === 0)) return;
     // Reconciled without a validated response = charged with a trusted cost but an unusable answer.
-    // Token counts for those and for retained (ambiguous) attempts are unknown.
-    const chargedFailures = Math.max(0, d.reconciled - this.validatedSinceSync);
-    this.validatedSinceSync = Math.max(0, this.validatedSinceSync - d.reconciled);
+    // Counted only when no reservation is outstanding: the adapter records a validated response
+    // synchronously after reconciling, so R and V are consistent at every quiescent point.
+    let chargedFailures = 0;
+    if (spend.outstandingUsd === 0 && spend.attempts === spend.reconciled + spend.retained + spend.released) {
+      const chargedNow = Math.max(0, spend.reconciled - this.jevValidated);
+      if (chargedNow > this.chargedApplied) {
+        chargedFailures = chargedNow - this.chargedApplied;
+        this.chargedApplied = chargedNow;
+      }
+    }
+    if (chargedFailures === 0 && Object.values(d).every((v) => v === 0)) return;
     sink.setCursor(next);
     sink.jev(
       {
@@ -236,6 +242,7 @@ export class UsageAccumulator {
         retainedAttempts: d.retainedAttempts,
         releasedAttempts: d.releasedAttempts,
         chargedFailures,
+        // Token counts are unknown for charged failures and for retained (ambiguous) attempts.
         tokensUnknownAttempts: chargedFailures + d.retainedAttempts,
       },
       this.o.now(),
