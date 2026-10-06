@@ -72,6 +72,23 @@ The Memory panel no longer uses the generic two-column `kv` grid, where a long n
 
 The data, hooks and metadata semantics are unchanged. The page is layout-only (`page.ts`), and its geometry still needs the root's T3 retest at 1280/1366/1920/390.
 
+## Harness correction MB-UI-001-C8 (D2-health on Peaceful)
+
+**Root finding:** on both Peaceful fixtures, D2-health failed (12/13). After a 3 HP generic damage, a value of 17 or lower was never sampled within 2 s, and the server and dashboard both read 20 about 4 s later.
+
+**Analysis (source, not new fixture evidence):**
+- The publisher writes only the latest server health packet once per 500 ms tick (`evidence.latest('health')`).
+- On Peaceful, vanilla heals 1 HP every 20 ticks, plus saturation healing every 10 ticks at full food. A 3 HP drop can be partly healed before the next tick.
+- The old assertion also required a value ≤ 17 and a viewer pattern `1[0-7](.d)?`, which rejects a legitimate "17.8 / 20".
+- Which value was published in the failing runs is not proven; the corrected harness records it.
+
+**Correction** (in `scripts/dashboard-live-check.ts` only; no application changes):
+- **Baseline:** the server Health is read and matched by the dashboard file. The harness waits (bounded) for at least 15 HP.
+- **Damage:** `min(10, floor(baseline) - 5)` HP, never lethal. That is 10 HP from 20, which regeneration cannot undo within 1 s.
+- **Server truth:** the server's Health is read immediately after the command.
+- **Pass condition:** a real lower-than-baseline sample appears in BOTH the status file and the SSE stream within 1000 ms of the command, and the first lower file value is within 2 HP (one Peaceful regen step plus one saturation step) of the server's post-damage value. A dashboard that never changes fails.
+- **Recorded evidence:** the baseline, the command reply, the server value and its timing, every distinct file sample (with the packet observation time), the SSE frames, and an informational later server reading.
+
 ## Viewer behavior
 
 - **Liveness states:** no session, live, disconnected, stale (heartbeat missed while the process exists), crashed (process gone without a clean stop), stopped, and error (malformed file; the last valid update is kept).
