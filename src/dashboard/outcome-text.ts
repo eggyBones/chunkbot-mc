@@ -4,6 +4,8 @@
 // known intents. The goal record carries `"<kind>: <predicate JSON>"`
 // (bounded; it may be truncated). Anything that does not parse/validate is NOT
 // guessed at: the summary is null and only the technical text is offered.
+// Memory predicates are local memory-store conditions, never world claims;
+// memory references are remembered places, never current presence.
 import { OutcomePredicateSchema, type OutcomePredicate } from '../contracts/predicate.ts';
 import type { TargetSelector } from '../contracts/selector.ts';
 
@@ -38,6 +40,9 @@ export function describeTarget(t: TargetSelector): string {
       return 'you';
     case 'prior_result':
       return 'something it made earlier';
+    case 'memory_ref':
+      // A request-bound reference to a remembered fact: historical, not current presence; no label is guessed.
+      return 'a place from its saved memory';
   }
 }
 
@@ -63,6 +68,13 @@ export function describePredicate(p: OutcomePredicate): string {
       return `takes ${qty(p.atLeast, p.output)} out of a furnace`;
     case 'entity_outcome':
       return p.outcome === 'observed_defeated' ? `sees ${describeTarget(p.target)} defeated` : `sees ${describeTarget(p.target)} present`;
+    case 'memory_state': {
+      // Confirmed by the local memory store, not by the world or the server.
+      const label = `“${p.label}”`;
+      if (p.expect === 'recorded') return `has saved ${label} in its memory as a confirmed fact`;
+      if (p.expect === 'noted') return `has saved ${label} in its memory as an unverified note`;
+      return `no longer has an active memory of ${label}`;
+    }
     case 'all':
       return join(p.of, 'and');
     case 'any':

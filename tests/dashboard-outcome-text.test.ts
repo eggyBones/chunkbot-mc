@@ -34,6 +34,17 @@ describe('goal outcome summary', () => {
     assert.match(describeOutcome(fin({ predicate: 'not', of: { predicate: 'near_target', target: { kind: 'owner' }, within: 5 } })).summary!, /no longer meets this: is within 5 blocks of you/);
   });
 
+  it('memory conditions read as local memory facts and memory refs as remembered places', () => {
+    assert.equal(describeOutcome(fin({ predicate: 'memory_state', label: 'home', expect: 'recorded' })).summary, 'Done when the bot has saved “home” in its memory as a confirmed fact.');
+    assert.equal(describeOutcome(fin({ predicate: 'memory_state', label: 'iron vein', expect: 'noted' })).summary, 'Done when the bot has saved “iron vein” in its memory as an unverified note.');
+    assert.equal(describeOutcome(fin({ predicate: 'memory_state', label: 'old base', expect: 'forgotten' })).summary, 'Done when the bot no longer has an active memory of “old base”.');
+    const near = describeOutcome(fin({ predicate: 'near_target', target: { kind: 'memory_ref', refId: 'mref-abc123' }, within: 4 })).summary!;
+    assert.equal(near, 'Done when the bot is within 4 blocks of a place from its saved memory.');
+    assert.doesNotMatch(near, /mref-|abc123|present/, 'no ref token or presence claim is shown');
+    const both = describeOutcome(fin({ predicate: 'all', of: [{ predicate: 'visited_location', target: { kind: 'memory_ref', refId: 'mref-abc123' }, within: 2 }, { predicate: 'memory_state', label: 'home', expect: 'recorded' }] })).summary;
+    assert.equal(both, 'Done when the bot has been within 2 blocks of a place from its saved memory and has saved “home” in its memory as a confirmed fact.');
+  });
+
   it('never invents a summary for truncated or foreign text', () => {
     const truncated = fin({ predicate: 'all', of: [{ predicate: 'crafting_result', output: 'minecraft:furnace', atLeast: 1 }] }).slice(0, 40) + '…';
     assert.deepEqual(describeOutcome(truncated), { summary: null, technical: truncated });
