@@ -248,7 +248,7 @@ export interface ViewModel {
   readiness: Array<{ name: string; ready: boolean; detail: string }>;
   usage: { jevSplit: Row[]; jev: Row[]; planner: Row[]; note: string; historical: boolean };
   history: { coverage: string; timeZone: string; days: Array<Record<string, string>>; gaps: string[]; available: boolean };
-  remote: { openRouterKey: Row[]; openRouterStatus: string; wallet: string; codex: { status: string; detail: string; windows: Array<{ bucket: string; remaining: string; used: number; resets: string; duration: string }> } };
+  remote: { cadence: string; openRouterKey: Row[]; openRouterStatus: string; wallet: string; codex: { status: string; detail: string; windows: Array<{ bucket: string; remaining: string; used: number; resets: string; duration: string }> } };
   memory: { installed: boolean; text: string; items: Row[] };
 }
 
@@ -296,6 +296,8 @@ export interface ViewInputs {
   history: { ok: true; history: UsageHistory } | { ok: false; detail: string } | undefined;
   remote: RemoteMetadata;
   timeZone: string;
+  /** Actual per-source read cadence (from the configured sources). */
+  cadence?: string;
 }
 
 export function buildViewModel(inp: ViewInputs): ViewModel {
@@ -322,7 +324,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
   const satK = v?.saturation;
   const xpK = v?.xp;
   const xp = xpK?.known
-    ? { level: String(xpK.value.level), progress: xpK.value.progress, text: `${Math.floor(xpK.value.progress * 100)}% to level ${xpK.value.level + 1} · ${formatInt(xpK.value.totalPoints)} total points`, title: provTitle(xpK) }
+    ? { level: String(xpK.value.level), progress: xpK.value.progress, text: `${Math.floor(xpK.value.progress * 100)}% to level ${xpK.value.level + 1}`, title: `${provTitle(xpK)} · server total-experience field ${formatInt(xpK.value.totalPoints)} (not updated by /xp set)` }
     : { level: '?', progress: null, text: 'XP unknown', title: xpK ? provTitle(xpK) : 'no reading' };
 
   const inv = world?.inventory;
@@ -423,6 +425,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
     st === 'fresh' ? `current · checked ${checked ? new Date(checked).toISOString().slice(11, 19) : '?'} UTC` : st === 'stale' ? `STALE — last success over 5 min ago (${detail})` : st === 'pending' ? 'checking…' : st === 'not_configured' ? `not configured — ${detail}` : `unavailable — ${detail}`;
   const q = r.codexQuota;
   const remote: ViewModel['remote'] = {
+    cadence: inp.cadence ?? 'per source, shared by all tabs',
     openRouterKey: keyRows,
     openRouterStatus: `${statusText(r.openRouterKey.status, r.openRouterKey.checkedAtMs, r.openRouterKey.detail)} · includes every tool using this key`,
     wallet: `OpenRouter wallet balance unavailable — ${r.openRouterWallet.detail}`,

@@ -15,6 +15,7 @@
 //
 //   node scripts/dashboard-live-check.ts [--fixture 26.2] [--read-only]
 //   --read-only: join as DashProbe and compare against `data get` only (no RCON writes).
+//   --hunger-trial: also run the authorized temporary-difficulty food-change trial (restored in finally).
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { join } from 'node:path';
@@ -32,12 +33,28 @@ const PINS = fixturePins(fixtureProfileFromArgv(process.argv));
 const SUFFIX = PINS.profile === DEFAULT_FIXTURE_PROFILE ? '' : `-${PINS.profile}`;
 const fx = fixturePaths(PROJECT_ROOT, PINS);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${SUFFIX}-dashboard${process.argv.includes('--read-only') ? '-readonly' : ''}`);
+const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${SUFFIX}-dashboard${process.argv.includes('--read-only') ? '-readonly' : process.argv.includes('--hunger-trial') ? '-hunger' : ''}`);
 const dataDir = join(outDir, 'data');
 mkdirSync(dataDir, { recursive: true });
 const BOT = 'DashProbe';
 /** `--read-only`: no RCON writes at all (only `data get`); no damage/give/kill/kick/attribute/xp changes. */
 const READ_ONLY = process.argv.includes('--read-only');
+/**
+ * `--hunger-trial` (coordinator-authorized, this fixture only): briefly switch the fixture difficulty from its
+ * recorded original (peaceful) to normal so food can actually change, then restore the exact original in a
+ * finally path and verify it over RCON. Skipped (reported) when any other player is online.
+ */
+const HUNGER_TRIAL = process.argv.includes('--hunger-trial') && !READ_ONLY;
+let difficultyToRestore: string | undefined;
+async function restoreDifficulty(): Promise<string> {
+  if (!difficultyToRestore) return 'not changed';
+  const want = difficultyToRestore;
+  await rcon(`difficulty ${want}`);
+  const now = await rcon('difficulty');
+  const ok = new RegExp(`\\b${want}\\b`, 'i').test(now);
+  if (ok) difficultyToRestore = undefined;
+  return `${ok ? 'restored' : 'NOT RESTORED'}: ${now}`;
+}
 const LATENCY_BOUND_MS = 1_000;
 
 interface Result {
@@ -253,16 +270,65 @@ async function main(): Promise<number> {
       check('G1-readonly-truth', 'health, hunger, XP and slot inventory equal the server entity data (no world changes)', Boolean(agree), [`server Health=${h} foodLevel=${f} XpLevel=${l} XpP=${xpp}`, `server inventory ${JSON.stringify(want)}`, `dashboard vitals ${JSON.stringify(status()?.vitals)}`.slice(0, 600), `dashboard inventory ${JSON.stringify(status() ? slotsOf(status()!) : [])}`]);
       await noActions();
     } else {
-    // ---- health
+    // ---- hunger: the fixture runs difficulty=peaceful (food cannot change there and is not reconfigured
+    // by this harness), so this is a static equality check with the server's foodLevel.
+    const food = await serverNumber('foodLevel');
+    const fd = await published((s) => s.vitals.food.known && s.vitals.food.value === food);
+    check('D2-food', 'hunger equals the server foodLevel (static: peaceful fixture)', Boolean(fd), [`server foodLevel=${food}`, `dashboard ${JSON.stringify(status()?.vitals.food)}`]);
+
+    if (HUNGER_TRIAL) {
+      const before = await rcon('difficulty');
+      const original = /difficulty is (\w+)/i.exec(before)?.[1]?.toLowerCase();
+      const online = await rcon('list');
+      const names = (online.split(':')[1] ?? '').split(',').map((n) => n.trim()).filter(Boolean);
+      const others = names.filter((n) => n !== BOT);
+      if (!original) {
+        check('D2-food-change', 'food change reaches the dashboard (temporary normal difficulty)', false, [`could not read the original difficulty: ${before}`]);
+      } else if (others.length > 0) {
+        check('D2-food-change', 'food change reaches the dashboard (temporary normal difficulty)', false, [`skipped: other players online (${others.length}); difficulty not changed`]);
+      } else {
+        const evidence: string[] = [`original difficulty: ${before}`, `players online: ${names.join(', ') || 'none'}`];
+        const tChange = Date.now();
+        try {
+          difficultyToRestore = original;
+          await rcon('difficulty normal');
+          await rcon(`effect give ${BOT} minecraft:hunger 10 99 true`);
+          let f = await serverNumber('foodLevel');
+          while ((f === undefined || f >= 18) && Date.now() - tChange < 8_000) {
+            await sleep(100);
+            f = await serverNumber('foodLevel');
+          }
+          await rcon(`effect clear ${BOT} minecraft:hunger`);
+          evidence.push(`server foodLevel reached ${f} ${Date.now() - tChange} ms after the change began`);
+          await sleep(200);
+          const tTruth = Date.now();
+          const truthFood = await serverNumber('foodLevel');
+          const seen = await published((s) => s.vitals.food.known && s.vitals.food.value === truthFood, 2_000);
+          const view = await viewed(tabB, tChange, (vm) => truthFood !== undefined && String(vm.world.food.text).startsWith(`${truthFood} /`), 2_000);
+          evidence.push(`server foodLevel=${truthFood}; dashboard ${JSON.stringify(status()?.vitals.food)} ${seen ? seen.at - tTruth : 'timeout'} ms after the truth read; viewer frame ${view === undefined ? 'timeout' : 'seen'}`);
+          const changed = truthFood !== undefined && truthFood < 20;
+          check('D2-food-change', 'a real food change (below 20) reaches the file and screen and equals the server', Boolean(changed && seen && seen.at - tTruth <= LATENCY_BOUND_MS && view !== undefined), evidence);
+        } finally {
+          const r = await restoreDifficulty();
+          evidence.push(`difficulty ${r} ${Date.now() - tChange} ms after it was changed`);
+          check('D2-difficulty-restored', 'fixture difficulty restored to its exact original and verified over RCON', r.startsWith('restored'), [r]);
+        }
+      }
+    }
+
+    // ---- health: peaceful regenerates 1 HP per second, so the dashboard must show the damage within
+    // 1 s and stay within one regeneration step of the server's value read at the same moment.
     let t0 = Date.now();
     await rcon(`damage ${BOT} 3 minecraft:generic`);
-    const truthHealth = await serverNumber('Health');
-    const hp = await published((s) => s.vitals.health.known && truthHealth !== undefined && Math.abs(s.vitals.health.value - truthHealth) < 0.01);
-    const hpView = await viewed(tabA, t0, (vm) => truthHealth !== undefined && String(vm.world.health.text).startsWith(String(Number.isInteger(truthHealth) ? truthHealth : truthHealth.toFixed(1))));
+    const hp = await published((s) => s.vitals.health.known && s.vitals.health.value <= 17.01, 2_000);
+    const hpView = await viewed(tabA, t0, (vm) => /^1[0-7](\.\d)? \//.test(String(vm.world.health.text)), 2_000);
     const hpMs = hp ? hp.at - t0 : undefined;
-    check('D2-health', `health matches the server within ${LATENCY_BOUND_MS} ms of the command (file and screen; includes the RCON round trip)`, Boolean(hpMs !== undefined && hpMs <= LATENCY_BOUND_MS && hpView !== undefined && hpView <= LATENCY_BOUND_MS), [
-      `server Health=${truthHealth}`,
-      `published ${hpMs ?? 'timeout'} ms after the command; viewer frame ${hpView ?? 'timeout'} ms after the command`,
+    const truthHealth = await serverNumber('Health');
+    const dashNow = status()?.vitals.health;
+    const within = truthHealth !== undefined && dashNow?.known ? Math.abs(dashNow.value - truthHealth) : undefined;
+    check('D2-health', `damage reaches the file and screen within ${LATENCY_BOUND_MS} ms of the command; value within one regen step of the server`, Boolean(hpMs !== undefined && hpMs <= LATENCY_BOUND_MS && hpView !== undefined && hpView <= LATENCY_BOUND_MS && within !== undefined && within <= 1.01), [
+      `published ${hp ? `${hp.s.vitals.health.known ? hp.s.vitals.health.value : '?'} ` : ''}${hpMs ?? 'timeout'} ms after the command; viewer frame ${hpView ?? 'timeout'} ms after the command (includes the RCON round trip)`,
+      `then server Health=${truthHealth}, dashboard ${dashNow?.known ? dashNow.value : 'unknown'} (|diff| ${within})`,
     ]);
 
     // ---- max health via attribute
@@ -283,10 +349,6 @@ async function main(): Promise<number> {
     const xp = await published((s) => s.vitals.xp.known && s.vitals.xp.value.level === lvl && prog !== undefined && Math.abs(s.vitals.xp.value.progress - prog) < 0.01);
     check('D2-xp', 'XP level and progress match the server', Boolean(xp && xp.at - tXp <= LATENCY_BOUND_MS + 400), [`server XpLevel=${lvl} XpP=${prog}`, `dashboard ${JSON.stringify(status()?.vitals.xp)} ${xp ? xp.at - tXp : 'timeout'} ms after the last command (includes two truth reads)`]);
 
-    // ---- food
-    const food = await serverNumber('foodLevel');
-    const fd = await published((s) => s.vitals.food.known && s.vitals.food.value === food);
-    check('D2-food', 'hunger matches the server', Boolean(fd), [`server foodLevel=${food}`, `dashboard ${JSON.stringify(status()?.vitals.food)}`]);
 
     // ---- inventory incl. armor/off hand
     t0 = Date.now();
@@ -339,6 +401,14 @@ async function main(): Promise<number> {
   } catch (error) {
     check('harness', 'harness completed', false, [error instanceof Error ? error.message : String(error)]);
   } finally {
+    if (difficultyToRestore) {
+      try {
+        const r = await restoreDifficulty();
+        check('D2-difficulty-restored', 'fixture difficulty restored (outer finally)', r.startsWith('restored'), [r]);
+      } catch (error) {
+        check('D2-difficulty-restored', 'fixture difficulty restored (outer finally)', false, [error instanceof Error ? error.message : String(error)]);
+      }
+    }
     tabA.close();
     tabB.close();
     try {
@@ -356,7 +426,7 @@ async function main(): Promise<number> {
     await viewer.close();
   }
   const pass = results.every((r) => r.pass);
-  const report = { kind: 'dashboard-live-check', mode: READ_ONLY ? 'read-only' : 'mutating', fixture: PINS.profile, server: `${PINS.host}:${PINS.port}`, at: new Date().toISOString(), pass, results, setupCommands: setupLog };
+  const report = { kind: 'dashboard-live-check', mode: READ_ONLY ? 'read-only' : HUNGER_TRIAL ? 'mutating+hunger-trial' : 'mutating', fixture: PINS.profile, server: `${PINS.host}:${PINS.port}`, at: new Date().toISOString(), pass, results, setupCommands: setupLog };
   writeFileSync(join(outDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(
     join(outDir, 'report.md'),
