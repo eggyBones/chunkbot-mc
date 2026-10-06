@@ -409,7 +409,9 @@ async function main(): Promise<void> {
       const samples = await ownerWalksAndSample([[SCENE.start.x + 6, SCENE.start.z + 2], [SCENE.start.x + 8, SCENE.start.z + 5], [SCENE.start.x + 9, SCENE.start.z + 8]], 800);
       const accepted = await goalAccepted(s.from, 20_000);
       const prepEvents = runEvents().filter((e) => tOf(e) >= t0 && tOf(e) <= accepted.atMs);
-      const continued = prepEvents.filter((e) => (e.type === 'task_local_continuation' || e.type === 'task_action') && e.goalId === follow.goalId);
+      // A follow action runs up to its window (~30 s), so "continued" means the old task was still
+      // running (no task_terminal) until admission, plus server-confirmed movement below.
+      const continued = prepEvents.filter((e) => (e.type === 'task_local_continuation' || e.type === 'task_action' || e.type === 'task_choice' || e.type === 'task_holding') && e.goalId === follow.goalId);
       const timeline = await waitEvent((e) => e.type === 'handoff_timeline' && e.goalId === accepted.goalId, 30_000);
       const startedDuringPrep = runEvents().filter((e) => e.type === 'task_admitted' && e.goalId !== follow.goalId && tOf(e) >= t0 && tOf(e) < Number(timeline.admittedAtMs));
       const moved = Math.max(...samples.map((x) => dist(before, x.bot)));
@@ -423,7 +425,10 @@ async function main(): Promise<void> {
       trials.push({ sendAtMs: s.at, receiptAtMs: receipt?.atMs ?? null, ackAtMs: ack.atMs, acceptedAtMs: accepted.atMs, timeline, samples, movedBlocks: moved, oldTaskEventsDuringPrep: continued.length, oldGoal: old, plannerOverlap: overlap });
       assert(ack.atMs - s.at < 1_500, 'acknowledged promptly');
       assert(Number(timeline.receiptToDraftMs) >= PREP_DELAY_MS - 200, 'preparation took the scripted planner delay');
-      assert(moved >= 1.5 && continued.length > 0, 'server-confirmed movement continued during preparation');
+      const oldEndedBeforeAdmission = runEvents().some((e) => e.type === 'task_terminal' && e.goalId === follow.goalId && tOf(e) < Number(timeline.admittedAtMs) - 1);
+      ev.push(`old follow task ended before admission: ${oldEndedBeforeAdmission}`);
+      assert(moved >= 1.5, 'server-confirmed movement continued during preparation');
+      assert(!oldEndedBeforeAdmission, 'the admitted follow task kept running until the switch');
       assert(startedDuringPrep.length === 0, 'no task ran under pending ownership');
       assert(old.reason === 'replaced', 'old goal replaced at the switch');
       assert(overlap.overlaps === 0, 'one planner process at a time');
