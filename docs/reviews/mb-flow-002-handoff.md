@@ -1,6 +1,6 @@
 # MB-FLOW-002 smooth directive handoff: worker evidence
 
-**Status: implemented; verified offline, and on the 26.1.2 fixture with the scripted fault planner and loopback Jev under the coordinator's lease (all harness scenarios L0–L7 passed across bounded reruns; see below). Real-planner/Jev acceptance and combined integrated live checks are pending (coordinator).** Worker: native Claude Code (Opus 5.5). Branch `chunkbot/mb-flow-002`, base `d5eb2fa`. Date: 2026-10-06 UTC.
+**Status: implemented; verified offline, and on the 26.1.2 fixture with the scripted fault planner and loopback Jev under the coordinator's lease (final run on frozen revised source `2276a45`: 9/9 scenarios, exit 0; see below). Real-planner/Jev acceptance and combined integrated live checks are pending (coordinator).** Worker: native Claude Code (Opus 5.5). Branch `chunkbot/mb-flow-002`, base `d5eb2fa`. Date: 2026-10-06 UTC.
 
 This is worker evidence. It does not change the roadmap, plan status or acceptance records; the coordinator owns those.
 
@@ -81,6 +81,14 @@ The fixture probe (follow plus an inventory-changing gathering task) is scenario
 - A skipped or timed-out ticket never releases later work past a still-running turn.
 - Regression tests use a non-cooperative planner (it ignores abort): rapid replacements keep `maxInFlight` 1, and stop stays under 250 ms (`tests/handoff-slot.test.ts`).
 - The shared `ScriptedPlanner` fake now honors abort, as `PlannerPort` requires.
+
+**C2 (outcome references).** A prepared draft's OUTCOME references are re-grounded with its tasks against the fresh admission snapshot BEFORE the initial binding: both snapshot handles and prepared memory refs. A disappeared target is a counted repair, with nothing bound or run. A lookahead never rewrites the accepted, bound outcome; it must repeat it exactly, and only its new tasks are re-grounded. Covered in `tests/handoff-corrections.test.ts` (`9686b69`).
+
+**C3 (owned preparation process).** Discarding a preparation aborts its planner process synchronously. Its owned process cleanup is then awaited within `cleanupTimeoutMs` and recorded as `preparation_cleanup` settled/timeout.
+- `stop`, `endOwnership` and `shutdown` await it together with the active goal's revocation; control invalidation stays synchronous.
+- The intent settles, letting a parked old goal resume, only after that cleanup.
+- Supersession acknowledgement stays prompt, and the next turn is serialized behind the real cleanup.
+- Tested with abort-honoring (120 ms) and non-cooperative processes: bounded at 150 ms.
 
 **Switch order.**
 1. Revoke the old goal: `replaced`. The epoch is invalidated, the task is aborted and cleanup is awaited.
@@ -166,10 +174,19 @@ Reports are under `var/live-check/<stamp>-handoff/report.json`; logs are under `
 
 | Run | Scenarios | Result |
 | --- | --- | --- |
-| `08-03-23` (`live-run-1-interrupted`) | L0–L7 | **Invalid run.** Chunkbot was disconnected at 01:03:32 local by **"You logged in from another location"**: a foreign `Chunkbot` login from 127.0.0.1:60266 that lasted about 2 s. It was not from my processes or tests, which all use fakes. The harness was later terminated by SIGTERM (not from me) during L7. Reported to Codex. |
+| `08-03-23` (`live-run-1-interrupted`) | L0–L7 | **INVALID, not evidence** (coordinator MB-BATCH001-I1). At 08:03:29Z the memory worker accidentally imported its executable live check without a lease: it reset this scene and joined as `Chunkbot`, which disconnected my bot ("logged in from another location"). It detected this and stopped at 08:03:34Z. The coordinator then stopped the remaining harness process at 08:06:15Z. |
 | `08-07-33` (`live-run-2`) | L0–L7 | 8/9 passed. L1 failed only on an evidence assertion (a follow action emits no `task_action` inside its 30 s window). |
 | `08-09-38` | L0, L1 | L1 failed on a revised assertion (revocation-at-switch counted as "ended before admission"). |
 | `08-10-38` (`live-run-4-L1`) | L0, L1 | **2/2 passed.** |
+| **`08-24-47` (`live-run-5-revised`)** | L0–L7 | **9/9 passed, exit 0.** Frozen revised source `2276a45` (C1+C2+C3, UI `235a727`, memory `bc785f3`, dashboard/memory wiring), with `dist/` built by `npm run check` (exit 0, 457/457) on the identical tree. The fixture was idle with 0 online before the start, no connection losses, and no leftover processes afterwards. |
+
+Revised run (`08-24-47`) highlights:
+- **L1.** Acknowledged 5 ms after send; switch at 3.95 s; the bot moved 4.31 blocks (RCON) during preparation; the old task ended by revocation 308 ms after handoff start; the late old result was discarded; 0 planner overlap.
+- **L2.** This time no log was gained during preparation: 1 at send, admission baseline 1, bound to 1, completed with 3. The pre-admission-gain case was shown in run `08-07-33` (1 → baseline 2 → completed 3).
+- **L3.** Only D admitted; 3 supersessions; killed process groups cleaned; `preparation_cleanup` was recorded `settled` for the real killed fault-planner processes (C3).
+- **L4.** The stop landed while a follow action held the lease. The lease was revoked **3 ms** after the stop with `clearMs=0` (target 250 ms). The goal-cancelled line came at 348 ms, which now includes the bounded wait for the real preparation process cleanup (C3). 0.00 blocks of drift. "Automatic work paused" status, then `resume`.
+- **L5–L6.** As before: death cleared both contexts; quota was honest and the follow kept moving 3.19 blocks; clarification made 0 planner execs while waiting and then handed off.
+- **L7.** Gap **79 ms** (lookahead; revalidation 19 ms; the lookahead turn was ready after 2.64 s) vs **2690 ms** (replan).
 
 Evidence highlights:
 - **L1 (H1/H2).** The owner's chat was received and acknowledged within 1 ms of send. The switch (goal accepted) came 3.95 s after send, with a 3.5 s scripted planner delay. During preparation the bot moved 4.95 blocks (RCON server positions sampled while the owner walked). The old follow task ended only by revocation, 307 ms after handoff start (`cancelled (ownership_revoked)`). The late old result was discarded. One planner turn, no overlap.
@@ -179,7 +196,7 @@ Evidence highlights:
   - Killed planner process groups were fully cleaned (`remaining: []`, SIGTERM).
   - tellraw/say spoofs were rejected (`system_message`, `profileless_message`).
   - 3 planner turns, 0 overlaps. The follow was still running when D arrived.
-- **L4 (H5).** Stop led to goal cancelled in 20 ms. The pending instruction was discarded. 0.00 blocks of drift while the owner walked away. "Automatic work paused" status, then chat `resume`. **Gap:** at the stop moment the follow was holding (no lease held), so the 250 ms clear target was not exercised with a held lease. The harness was tightened in `8ab6fcc` to stop during a lease-holding follow action and assert the revoke; that needs a rerun under the next lease.
+- **L4 (H5).** Stop led to goal cancelled in 20 ms. The pending instruction was discarded. 0.00 blocks of drift while the owner walked away. "Automatic work paused" status, then chat `resume`. In this pre-correction run the follow was holding at the stop, so no lease was held. The harness was tightened in `8ab6fcc`, and the revised run exercised a held lease (revoked 3 ms after the stop).
 - **L5.** `kill Chunkbot` during preparation: goal ended `death`, the pending instruction was discarded (`lifecycle`), and nothing was admitted afterwards.
 - **L6 (H6).** Quota produced *"Your new instruction was not started (planner_not_ready): quota … no paid or alternative planner … Continuing goal …"*, and the follow moved 2.98 blocks afterwards. A pending clarification (`q1`) made 0 planner execs in 5 s, and status showed `awaiting_owner` separately. The answer handed off, and the old goal was `replaced`.
 - **L7 (H7).** The same two-window oak-log goal (both completed `outcome_verified`) had a window gap of **84 ms** with lookahead (source `lookahead`, revalidation 32 ms; the lookahead turn was ready after 2.64 s while window 1 ran), against **2712 ms** without (source `replan`).
@@ -212,8 +229,8 @@ npm run handoff-live-check -- --fixture 26.2        # with the 26.2 fixture leas
   - the real `planner-live-check`.
 - **H7's "real Codex/Jev trial completes both milestones with zero assistance"** is a coordinator real-provider run. There is no autonomous progression scheduler (MB-FLOW-001 is unassigned). Lookahead applies only within an owner goal's windows.
 - **Prompt v2 wording** for `preparing`/`lookahead` needs real-planner acceptance.
-- **Dashboard and memory integration** is done locally (`2c8ed06`, merging the reviewed `df775d0`, which includes `e218b15`, and `16684a5`). Combined live checks have not been run. Open requests to Codex:
-  - The dashboard contract has no latch/handoff/window-gap fields, so the viewer cannot yet show "Automatic work paused". That is a dashboard-owned change.
+- **Dashboard and memory integration** is done locally (`2c8ed06`, merging the reviewed `df775d0`, which includes `e218b15`, and `16684a5`). Later merges: UI `235a727` (`73ac777`) and memory `bc785f3` (`823fec9`). The closures (pause with `manualGoalsAllowed: true`, memory scope and remembered home, planner getter) are in `2276a45`. Combined live checks have not been run. Open requests to Codex:
+  - The pause latch is now published through the UI's `pause` DTO (`235a727`). Handoff totals and window gaps are still not part of the dashboard contract.
   - `renderMemoryView` omits `prepRef`. `prompt.ts` adds it for preparation subjects; the memory worker may want to own that.
   - The `EngineStatus` flow fields are optional in the type so the dashboard's existing fixtures compile.
 - **Inherited:** the real Jev J1 240 s timeout (MB-NAME-001-C1) is unchanged and not addressed here.
