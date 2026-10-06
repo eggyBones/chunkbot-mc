@@ -32,8 +32,8 @@ export interface DashboardRuntimeDeps {
   decisionReadiness?: () => Readiness;
   /** The run's single SpendLedger. */
   spend?: { snapshot(): SpendSnapshotLike };
-  /** The CodexPlanner (its `totals`), when composed. */
-  planner?: { readonly totals: PlannerTotalsLike };
+  /** The CodexPlanner (its `totals`), or a getter for it (it is composed after the store tee). Undefined result: not installed. */
+  planner?: { readonly totals: PlannerTotalsLike } | (() => { readonly totals: PlannerTotalsLike } | undefined);
   /** Optional companion seams; leave undefined until the feature is installed. */
   pending?: () => DashboardPendingDirective | undefined;
   memory?: () => DashboardMemorySummary | undefined;
@@ -82,7 +82,14 @@ export function createDashboardRuntime(deps: DashboardRuntimeDeps): DashboardRun
     ...(deps.engine ? { engine: deps.engine } : {}),
     ...(deps.decisionReadiness ? { decisionReadiness: deps.decisionReadiness } : {}),
     ...(spend ? { spend: () => spend.snapshot() } : {}),
-    ...(planner ? { planner: () => ({ turns: planner.totals.turns, completedTurns: planner.totals.completedTurns, failedTurns: planner.totals.failedTurns }) } : {}),
+    ...(planner
+      ? {
+          planner: () => {
+            const p = typeof planner === 'function' ? planner() : planner;
+            return p ? { turns: p.totals.turns, completedTurns: p.totals.completedTurns, failedTurns: p.totals.failedTurns } : undefined;
+          },
+        }
+      : {}),
     ...(deps.pending ? { pending: deps.pending } : {}),
     ...(deps.memory ? { memory: deps.memory } : {}),
     ...(deps.survival ? { survival: deps.survival } : {}),

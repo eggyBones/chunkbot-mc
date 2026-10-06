@@ -17,6 +17,7 @@ type Assignable<T, U extends T> = U;
 export type GameFits = Assignable<DashboardRuntimeDeps['game'], MineflayerConnection>;
 export type SpendFits = Assignable<NonNullable<DashboardRuntimeDeps['spend']>, SpendLedger>;
 export type PlannerFits = Assignable<NonNullable<DashboardRuntimeDeps['planner']>, CodexPlanner>;
+export type PlannerGetterFits = Assignable<NonNullable<DashboardRuntimeDeps['planner']>, () => CodexPlanner | undefined>;
 
 describe('dashboard runtime facade', () => {
   it('tapStore forwards every event unchanged to the real store', () => {

@@ -94,7 +94,7 @@ export interface UsageSink {
 
 export interface UsageAccumulatorOptions {
   spend?: () => SpendSnapshotLike;
-  planner?: () => PlannerTotalsLike;
+  planner?: () => PlannerTotalsLike | undefined;
   sink?: UsageSink;
   now: () => number;
 }

@@ -55,7 +55,7 @@ export interface DashboardPublisherOptions {
   engine?: () => EngineStatus | undefined;
   decisionReadiness?: () => Readiness;
   spend?: () => SpendSnapshotLike;
-  planner?: () => PlannerTotalsLike;
+  planner?: () => PlannerTotalsLike | undefined;
   /** MB-FLOW-002 seam. Undefined: not installed. */
   pending?: () => DashboardPendingDirective | undefined;
   /** MB-MEM-001 seam. Undefined: not installed. */
