@@ -99,6 +99,7 @@ export class FakeWorld implements ObservationPort {
   readonly taken: Array<{ id: string; goalEpoch: number }> = [];
   /** Whether a block seen earlier is still produced as the SAME target in a later snapshot. */
   persist = true;
+  dimension = 'overworld';
   private n = 0;
   readiness(): Readiness {
     return { ready: true, detail: 'fake world' };
@@ -112,7 +113,7 @@ export class FakeWorld implements ObservationPort {
       connectionEpoch: 1,
       goalEpoch,
       takenAtMs: Date.now(),
-      dimension: 'overworld',
+      dimension: this.dimension,
       self: { at: { x: 0, y: 64, z: 0 }, health: 20, food: 20 },
       inventory: [],
       inventorySource: 'client_model',

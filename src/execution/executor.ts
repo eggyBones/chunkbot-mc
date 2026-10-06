@@ -78,6 +78,12 @@ export interface ExecutorDeps {
   store: RunStore;
   /** Quiet period after a revocation for passive (packet-only) partial-effect evidence. */
   settleMs?: number;
+  /**
+   * Observer for every finished outcome (e.g. MB-MEM-001 memory recording of
+   * server-confirmed effects). Called after the outcome is recorded; failures are
+   * contained and recorded, never changing the outcome.
+   */
+  onOutcome?: (outcome: SkillOutcome) => void;
 }
 
 export class SkillExecutorImpl implements SkillExecutor {
@@ -123,6 +129,13 @@ export class SkillExecutorImpl implements SkillExecutor {
         evidence: boundJson(o.evidence ?? {}) as Record<string, JsonValue>,
       });
       this.deps.store.record({ type: 'skill_outcome', ...outcome });
+      if (this.deps.onOutcome) {
+        try {
+          this.deps.onOutcome(outcome);
+        } catch (error) {
+          this.deps.store.record({ type: 'outcome_observer_error', actionId: outcome.actionId, message: error instanceof Error ? error.message.slice(0, 300) : String(error) });
+        }
+      }
       return outcome;
     };
 

@@ -8,6 +8,7 @@ export * from './goal.ts';
 export * from './handoff.ts';
 export * from './ids.ts';
 export * from './knowledge.ts';
+export * from './memory.ts';
 export * from './observation.ts';
 export * from './planner.ts';
 export * from './ports.ts';

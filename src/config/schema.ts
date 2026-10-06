@@ -3,6 +3,7 @@
 // caches live in ignored local storage.
 import { isIP } from 'node:net';
 import { z } from 'zod';
+import { MemoryConfigSchema } from '../contracts/memory.ts';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
@@ -203,6 +204,12 @@ export const ConfigSchema = z
      * planner turns spent on preparations that are discarded (superseded/stopped/failed).
      */
     flow: FlowSchema.default(DEFAULT_FLOW),
+    /**
+     * MB-MEM-001 persistent gameplay memory. Absent (the default) or
+     * `enabled: false`: memory is off, no memory capability is registered and no
+     * view is built. Requires an operator-named worldProfile/worldRevision/botProfile.
+     */
+    memory: MemoryConfigSchema.optional(),
   })
   .strict()
   .superRefine((cfg, ctx) => {

@@ -127,3 +127,43 @@ describe('smooth handoff through the application', () => {
     assert.throws(() => parseConfig({ ...base, flow: { unknownKnob: true } }));
   });
 });
+
+describe('dashboard integration seams (MB-UI-001 <- MB-FLOW-002)', () => {
+  it('the run-store tee forwards each event once, unchanged, then lets the (late-installed) observer see it; observer failures never affect evidence', async () => {
+    const { teeRunStore } = await import('../src/telemetry/run-store.ts');
+    const target = new MemoryRunStore();
+    let observer: ((e: { type: string }) => void) | undefined;
+    const seen: string[] = [];
+    const tee = teeRunStore(target, () => observer);
+    tee.record({ type: 'before_dashboard', n: 1 });
+    observer = (e) => seen.push(e.type);
+    tee.record({ type: 'after_dashboard', n: 2 });
+    observer = () => {
+      throw new Error('observer broke');
+    };
+    tee.record({ type: 'observer_failure', n: 3 });
+    assert.deepEqual(target.events, [{ type: 'before_dashboard', n: 1 }, { type: 'after_dashboard', n: 2 }, { type: 'observer_failure', n: 3 }]);
+    assert.deepEqual(seen, ['after_dashboard']);
+  });
+
+  it('the dashboard projection keeps the active goal visible and shows the pending instruction separately (never as started)', async () => {
+    const { projectDirective } = await import('../src/dashboard/directive.ts');
+    const { pendingDirectiveFrom } = await import('../src/app/status.ts');
+    const h = await readyApp();
+    await h.app.handleTerminalLine('follow me');
+    await until(() => h.tasks.runs.length === 1);
+    await h.app.handleTerminalLine('get two cobblestone');
+    await until(() => h.planner.count === 2);
+    const status = h.app.engine.status();
+    const pending = pendingDirectiveFrom(status);
+    assert.equal(pending?.state, 'preparing');
+    assert.equal(pending?.instruction, 'get two cobblestone');
+    const section = projectDirective(status, pending, undefined);
+    assert.equal(section.mode, 'owner_directive');
+    assert.equal(section.task.current?.objective, 'stay near the owner', 'the old task is still the active one');
+    assert.equal(section.pending?.state, 'preparing');
+    assert.equal(pendingDirectiveFrom(h.app.engine.status())?.instruction, 'get two cobblestone');
+    await h.app.shutdown('operator_quit');
+    assert.equal(pendingDirectiveFrom(h.app.engine.status()), undefined, 'shutdown discards the pending instruction');
+  });
+});

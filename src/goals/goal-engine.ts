@@ -80,6 +80,8 @@ import {
   type IntakeOrigin,
   type KnowledgePort,
   type KnowledgeResult,
+  type MemoryPlannerPort,
+  type MemoryView,
   type ObservationPort,
   type PlannerPort,
   type Readiness,
@@ -157,7 +159,11 @@ export interface GoalEngineDeps {
    * Execution adapters capture admission-bound state here (e.g. the goal's
    * travel anchor). Must not throw; failures are recorded, not fatal.
    */
-  onGoalAdmitted?: (admission: { goalId: string; epoch: number; admittedAtMs: number }) => void;
+  onGoalAdmitted?: (admission: { goalId: string; epoch: number; admittedAtMs: number; instruction: string; kind: GoalKind }) => void;
+  /** Called once when a goal reaches a terminal state (after cleanup). Must not throw; failures are recorded. */
+  onGoalTerminal?: (end: { goalId: string; epoch: number; kind: GoalKind; state: TerminalGoalState; reason: TerminalReasonCode; detail: string; interpretation?: string }) => void;
+  /** MB-MEM-001 planner seam (bounded view per request, shown refs, prepared-ref re-grounding). */
+  memory?: MemoryPlannerPort;
   /**
    * Generic task runtime (MB-V1-03). When installed, accepted plan windows and
    * operator task diagnostics execute through it; otherwise plans end
@@ -207,13 +213,20 @@ export interface EngineStatus {
   lastTask?: { taskId: string; status: string; reason: string; detail: string; decisions: number; actions: number; localContinuations: number };
   /** MB-FLOW-002: the single pending (not admitted) instruction, if any. */
   pending?: PendingInstructionStatus;
+  /*
+   * MB-FLOW-002 fields: always populated by GoalEngine.status(); optional in the
+   * type so status consumers built before them (and their fixtures) stay valid.
+   */
   /** The active goal finished its admitted task and waits for the pending handoff (no new work starts). */
-  parked: boolean;
-  handoff: HandoffTotals;
-  latch: ControlLatch;
+  parked?: boolean;
+  handoff?: HandoffTotals;
+  latch?: ControlLatch;
   /** Latest measured gaps between windows (bounded). */
-  windowGaps: WindowGap[];
+  windowGaps?: WindowGap[];
 }
+
+/** What GoalEngine.status() actually returns: the MB-FLOW-002 fields are always present. */
+export type FullEngineStatus = EngineStatus & Required<Pick<EngineStatus, 'parked' | 'handoff' | 'latch' | 'windowGaps'>>;
 
 /** Interface for a cleanup step registered by work owned by the active goal. */
 export type Cleanup = () => void | Promise<void>;
@@ -274,7 +287,7 @@ interface ActiveGoal {
   /** Parked: finished its admitted work while a replacement instruction is pending. */
   parked: boolean;
   /** Set when this goal was admitted through a prepared handoff. */
-  handoff?: { intentId: string; timeline: HandoffTimeline; recorded: boolean };
+  handoff?: { intentId: string; generation: number; timeline: HandoffTimeline; recorded: boolean };
   lookahead?: LookaheadState | undefined;
   /** End of the previous window (for measured window gaps). */
   windowEnd?: { atMs: number; afterWindow: number } | undefined;
@@ -654,6 +667,7 @@ export class GoalEngine {
     this.pending = undefined;
     if (p.deadline) clearTimeout(p.deadline);
     p.abort.abort(new Error(reason));
+    this.releasePreparation(p.intentId);
     this.totals.discarded += 1;
     this.totals.discardedTurns += p.counters.plannerTurns;
     this.deps.store.record({ type: 'preparation_discarded', intentId: p.intentId, generation: p.generation, reason, detail: truncate(detail, BOUNDS.text), plannerTurns: p.counters.plannerTurns, discardedTurns: this.totals.discardedTurns, allowance: this.totals.discardedTurnAllowance, activeGoalId: this.active?.record.id ?? null });
@@ -699,7 +713,13 @@ export class GoalEngine {
       ...(p.rejection ? { rejection: { problems: p.rejection } } : {}),
       ...(this.deps.mechanicsVersion ? { mechanicsVersion: this.deps.mechanicsVersion } : {}),
       limits: { travelRadius: limits.travelRadius ?? 128, observationRadius: limits.observationRadius ?? 32, planWindowSteps: limits.planWindowSteps },
+      ...this.memoryField({ kind: 'preparation', intentId: p.intentId, generation: p.generation, connectionEpoch: p.connectionEpoch, activeGoalId: this.active?.record.id ?? null }, requestId, p.instruction, p.clarifications, snapshot),
     };
+  }
+
+  private memoryField(subject: PlannerRequest['subject'], requestId: string, instruction: string, clarifications: readonly ClarificationExchange[], snapshot: ObservationSnapshot | null): { memory?: MemoryView } {
+    const view = this.memoryView(subject, requestId, instruction, clarifications, snapshot);
+    return view ? { memory: view } : {};
   }
 
   /** Bounded preparation turns for a pending instruction: read-only context, no action. */
@@ -772,6 +792,7 @@ export class GoalEngine {
             ...(p.dimension ? { dimension: p.dimension } : {}),
             ownerCoordinates: request.ownerCoordinates ?? [],
             priorResults: new Set(),
+            ...(this.deps.memory ? { memory: { refs: this.deps.memory.shownPreparedRefs({ intentId: p.intentId, generation: p.generation }), kind: 'prepared' as const } } : {}),
           },
         );
         if (!check.ok) {
@@ -869,6 +890,75 @@ export class GoalEngine {
     this.track(this.plan(active, { proposal: draft.proposal, requestId: draft.requestId, turnKind: draft.turnKind, source: 'preparation' }));
   }
 
+  /** Bounded memory view for one planner request (MB-MEM-001); undefined when memory is not installed. */
+  private memoryView(subject: PlannerRequest['subject'], requestId: string, instruction: string, clarifications: readonly ClarificationExchange[], snapshot: ObservationSnapshot | null): MemoryView | undefined {
+    const memory = this.deps.memory;
+    if (!memory) return undefined;
+    try {
+      return memory.view({
+        subject,
+        requestId,
+        instruction,
+        answers: clarifications.map((c) => c.answer),
+        observation: snapshot ? { dimension: snapshot.dimension, self: { at: snapshot.self.at }, connectionEpoch: snapshot.connectionEpoch } : null,
+      });
+    } catch (error) {
+      this.deps.store.record({ type: 'memory_view_error', requestId, message: error instanceof Error ? error.message : String(error) });
+      return undefined;
+    }
+  }
+
+  private releasePreparation(intentId: string): void {
+    try {
+      this.deps.memory?.releasePreparation(intentId);
+    } catch (error) {
+      this.deps.store.record({ type: 'memory_release_error', intentId, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /**
+   * After the REAL admission: every prepared memory ref (mprep-) in a draft is
+   * re-grounded to a fresh executable ref of the SAME fact, or the draft is
+   * stale (fail closed). The preparation's refs are released only afterwards.
+   */
+  private regroundMemoryRefs(active: ActiveGoal, proposal: unknown, requestId: string, snapshot: ObservationSnapshot | null): { proposal: unknown; problems: string[]; regrounded: number } {
+    const memory = this.deps.memory;
+    const h = active.handoff;
+    const problems: string[] = [];
+    let regrounded = 0;
+    // One fresh executable ref per prepared ref (the same fact may be named by selectors, completion and outcome).
+    const done = new Map<string, string | null>();
+    const walk = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(walk);
+      if (!v || typeof v !== 'object') return v;
+      const o = v as Record<string, unknown>;
+      if (o['kind'] === 'memory_ref' && typeof o['refId'] === 'string' && o['refId'].startsWith('mprep-')) {
+        const refId = o['refId'];
+        const known = done.get(refId);
+        if (known !== undefined) return known === null ? { ...o } : { ...o, refId: known };
+        if (!memory || !h || !snapshot) {
+          done.set(refId, null);
+          problems.push(`${refId}: a prepared memory reference cannot be re-grounded (${!memory ? 'memory not installed' : !snapshot ? 'no current observation' : 'not a prepared handoff'})`);
+          return { ...o };
+        }
+        const r = memory.regroundPrepared(refId, { intentId: h.intentId, generation: h.generation, goalId: active.record.id, goalEpoch: active.epoch, requestId, connectionEpoch: snapshot.connectionEpoch, dimension: snapshot.dimension });
+        if ('error' in r) {
+          done.set(refId, null);
+          if (problems.length < 12) problems.push(`${refId} no longer names the same remembered fact (${r.error}): ${truncate(r.detail, 160)}; re-plan from the current memory view`);
+          return { ...o };
+        }
+        done.set(refId, r.refId);
+        regrounded += 1;
+        return { ...o, refId: r.refId };
+      }
+      return Object.fromEntries(Object.entries(o).map(([k, x]) => [k, walk(x)]));
+    };
+    if (!proposal || typeof proposal !== 'object' || !Array.isArray((proposal as Record<string, unknown>)['tasks'])) return { proposal, problems, regrounded };
+    const r = proposal as Record<string, unknown>;
+    const out = { ...r, tasks: (r['tasks'] as unknown[]).map(walk), ...(r['outcome'] ? { outcome: walk(r['outcome']) } : {}) };
+    return { proposal: out, problems, regrounded };
+  }
+
   private rememberShown(target: { shown: Map<string, ShownSnapshot>; anchors: Set<string>; dimension?: string }, snapshot: ObservationSnapshot | null): void {
     if (!snapshot) return;
     const handles = new Set<string>([...snapshot.blocks, ...snapshot.entities, ...snapshot.drops].map((t) => t.handle));
@@ -936,7 +1026,7 @@ export class GoalEngine {
       record.plannerTurns = pc.plannerTurns;
       active.clarifications = [...prepared.clarifications];
       active.knowledge = [...prepared.knowledge];
-      active.handoff = { intentId: prepared.intentId, timeline: { ...prepared.timeline, admittedAtMs: now }, recorded: false };
+      active.handoff = { intentId: prepared.intentId, generation: prepared.generation, timeline: { ...prepared.timeline, admittedAtMs: now }, recorded: false };
       this.totals.handedOff += 1;
       this.totals.transferredTurns += pc.plannerTurns;
       prepared.settled.resolve('handed_off');
@@ -952,7 +1042,7 @@ export class GoalEngine {
     this.currentTask = undefined;
     this.lastTask = undefined;
     try {
-      this.deps.onGoalAdmitted?.({ goalId: record.id, epoch: record.epoch, admittedAtMs: now });
+      this.deps.onGoalAdmitted?.({ goalId: record.id, epoch: record.epoch, admittedAtMs: now, instruction: text, kind });
     } catch (error) {
       this.deps.store.record({ type: 'goal_admission_hook_error', goalId: record.id, message: error instanceof Error ? error.message : String(error) });
     }
@@ -1117,7 +1207,7 @@ export class GoalEngine {
     return { status: 'accepted', goalId: active.record.id, ref: pending.ref };
   }
 
-  status(): EngineStatus {
+  status(): FullEngineStatus {
     const catalog = this.deps.capabilities.catalog();
     const p = this.pending;
     return {
@@ -1261,6 +1351,13 @@ export class GoalEngine {
     this.deps.store.record({ type: 'goal_terminal', goalId: active.record.id, epoch: active.epoch, state, reason, detail: active.record.terminal.detail, ...(active.record.kind === undefined ? { counters: { ...active.counters } } : {}) });
     if (active.record.kind === undefined) this.deps.journal?.record({ type: 'goal_terminal', goalId: active.record.id, state, reason, detail: active.record.terminal.detail, counters: { ...active.counters }, outcomeStatus: active.outcomeStatus ?? null });
     this.deps.notify({ goalId: active.record.id, ...(active.record.kind === 'operator_task_diagnostic' ? { audience: 'operator' as const } : {}), text: `Goal ${active.record.id} ${state} (${reason}): ${truncate(detail, 160)}` });
+    // A handed-off goal that ended before its draft was revalidated still releases the preparation's refs.
+    if (active.handoff) this.releasePreparation(active.handoff.intentId);
+    try {
+      this.deps.onGoalTerminal?.({ goalId: active.record.id, epoch: active.epoch, kind: active.record.kind ?? 'owner_goal', state, reason, detail: active.record.terminal.detail, ...(active.record.interpretation ? { interpretation: active.record.interpretation } : {}) });
+    } catch (error) {
+      this.deps.store.record({ type: 'goal_terminal_hook_error', goalId: active.record.id, message: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   /** Verified prior results (placed workstations etc.) of this goal, from the evidence ledger. */
@@ -1351,6 +1448,7 @@ export class GoalEngine {
       ...(active.rejection ? { rejection: { problems: active.rejection } } : {}),
       ...(this.deps.mechanicsVersion ? { mechanicsVersion: this.deps.mechanicsVersion } : {}),
       limits: { travelRadius: limits.travelRadius ?? 128, observationRadius: limits.observationRadius ?? 32, planWindowSteps: limits.planWindowSteps },
+      ...this.memoryField({ kind: 'goal', goalId: active.record.id, goalEpoch: active.epoch }, requestId, active.record.instruction, active.clarifications, snapshot),
       ...extra,
     };
   }
@@ -1526,13 +1624,17 @@ export class GoalEngine {
           const snapshot = await observation.snapshot(active.epoch).catch(() => null);
           this.assertCurrent(active);
           this.remember(active, snapshot);
-          const rg = regroundProposal(draft.proposal, snapshot, observation.translateHandle?.bind(observation));
+          const handles = regroundProposal(draft.proposal, snapshot, observation.translateHandle?.bind(observation));
           requestId = draft.requestId;
           turnKind = draft.turnKind;
+          // Prepared memory refs (mprep-) -> fresh executable refs of the SAME facts, then release the preparation's refs.
+          const mem = draft.source === 'preparation' ? this.regroundMemoryRefs(active, handles.proposal, requestId, snapshot) : { proposal: handles.proposal, problems: [] as string[], regrounded: 0 };
+          if (draft.source === 'preparation' && active.handoff) this.releasePreparation(active.handoff.intentId);
+          const rg = { proposal: mem.proposal, problems: [...handles.problems, ...mem.problems], regrounded: handles.regrounded + mem.regrounded };
           ownerCoordinateList = this.ownerCoords(active);
           active.revalidationMs = this.deps.clock.now() - t0;
           active.nextWindowSource = draft.source === 'lookahead' ? 'lookahead' : 'replan';
-          this.deps.store.record({ type: 'draft_revalidated', goalId: active.record.id, source: draft.source, requestId, snapshotId: snapshot?.id ?? null, regrounded: rg.regrounded, problems: rg.problems, elapsedMs: active.revalidationMs });
+          this.deps.store.record({ type: 'draft_revalidated', goalId: active.record.id, source: draft.source, requestId, snapshotId: snapshot?.id ?? null, regrounded: rg.regrounded, memoryRefsRegrounded: mem.regrounded, problems: rg.problems, elapsedMs: active.revalidationMs });
           if (rg.problems.length > 0) {
             if (await this.rejectAndMaybeRepair(active, requestId, 'stale_draft', rg.problems, maxRepairs)) continue;
             return;
@@ -1600,6 +1702,7 @@ export class GoalEngine {
             ...(active.dimension ? { dimension: active.dimension } : {}),
             ownerCoordinates: ownerCoordinateList,
             priorResults: new Set(active.priorResults.keys()),
+            ...(this.deps.memory ? { memory: { refs: this.deps.memory.shownRefs({ goalId: active.record.id, goalEpoch: active.epoch }), kind: 'executable' as const } } : {}),
           },
         );
         if (!check.ok) {
@@ -1674,7 +1777,7 @@ export class GoalEngine {
             // from the ADMISSION baseline (original counts), immutable afterwards.
             const outcomeRoot = proposal.outcome.kind === 'finite' ? proposal.outcome.outcome : proposal.outcome.maintain;
             if (!active.outcome) {
-              const bound = await raceAbort(this.deps.outcomes.bind(outcomeRoot, active.abort.signal, active.baseline), active.abort.signal);
+              const bound = await raceAbort(this.deps.outcomes.bind(outcomeRoot, active.abort.signal, active.baseline, { goalId: active.record.id, goalEpoch: active.epoch }), active.abort.signal);
               this.assertCurrent(active);
               active.outcome = { contract: proposal.outcome, canonical: canonicalJson(proposal.outcome), bound, interpretation: proposal.interpretation };
               active.record.outcome = truncate(`${proposal.outcome.kind}: ${JSON.stringify(outcomeRoot)}`, BOUNDS.text);

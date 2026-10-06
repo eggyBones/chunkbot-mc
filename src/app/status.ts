@@ -1,6 +1,8 @@
 // Status rendering. Status never performs inference or game actions.
 import type { ConnectionState, GoalRecord, ReadyInfo } from '../contracts/index.ts';
 import type { EngineStatus } from '../goals/goal-engine.ts';
+import { DASHBOARD_BOUNDS, type DashboardMemorySummary, type DashboardPendingDirective } from '../contracts/dashboard.ts';
+import type { MemoryFact } from '../contracts/memory.ts';
 
 export interface StatusInput {
   connection: ConnectionState;
@@ -53,12 +55,12 @@ export function renderStatusLines(input: StatusInput): string[] {
   }
   if (e.parked) lines.push('handoff: the current goal finished its admitted step and starts no new work until the pending instruction is ready');
   const h = e.handoff;
-  if (h.preparations > 0 || h.lookaheadTurns > 0) {
+  if (h && (h.preparations > 0 || h.lookaheadTurns > 0)) {
     lines.push(`handoff totals: preparations ${h.preparations} (handed off ${h.handedOff}, discarded ${h.discarded}; discarded planner turns ${h.discardedTurns}/${h.discardedTurnAllowance}, transferred ${h.transferredTurns}), lookahead turns ${h.lookaheadTurns} (used ${h.lookaheadsUsed}, discarded ${h.lookaheadsDiscarded})`);
   }
-  const gap = e.windowGaps.at(-1);
+  const gap = e.windowGaps?.at(-1);
   if (gap) lines.push(`last window gap: ${gap.gapMs} ms after window ${gap.afterWindow} of ${gap.goalId} (${gap.source}${gap.revalidationMs !== undefined ? `, revalidation ${gap.revalidationMs} ms` : ''})`);
-  if (e.latch.paused) lines.push(`Automatic work paused (stop${e.latch.source ? ` from ${e.latch.source}` : ''}); automatic follow-on work stays off until \`resume\`${e.goal && !e.goal.terminal ? '; the current goal is owner-commanded and runs normally' : ''}`);
+  if (e.latch?.paused) lines.push(`Automatic work paused (stop${e.latch.source ? ` from ${e.latch.source}` : ''}); automatic follow-on work stays off until \`resume\`${e.goal && !e.goal.terminal ? '; the current goal is owner-commanded and runs normally' : ''}`);
   if (input.engine.lastTask) {
     const t = input.engine.lastTask;
     lines.push(`last task: ${t.taskId} ${t.status} (${t.reason}) decisions=${t.decisions} actions=${t.actions} localContinuations=${t.localContinuations} — ${t.detail}`);
@@ -76,6 +78,38 @@ export function renderStatusChat(input: StatusInput): string {
   const planner = input.engine.readiness.planner.ready ? 'planner ready' : 'planner not ready';
   const p = input.engine.pending;
   const pendingPart = p ? `, new instruction ${p.state === 'awaiting_owner' && p.pendingClarification ? `awaiting ${p.pendingClarification.ref}` : p.state}` : '';
-  const paused = input.engine.latch.paused ? ', automatic work paused' : '';
+  const paused = input.engine.latch?.paused ? ', automatic work paused' : '';
   return `Status: ${input.connection}, goal ${goalPart}${pendingPart}${paused}, ${planner}, ${input.engine.readiness.capabilityCount} capabilities`;
+}
+
+/**
+ * Dashboard seam (MB-UI-001 <- MB-FLOW-002): the pending (not admitted)
+ * instruction, if any. "Pending" never means started; the active goal stays
+ * visible separately in the directive section.
+ */
+export function pendingDirectiveFrom(engine: EngineStatus | undefined): DashboardPendingDirective | undefined {
+  const p = engine?.pending;
+  if (!p) return undefined;
+  const state = p.state === 'handing_off' ? 'ready_to_switch' : p.state;
+  const detail = p.pendingClarification
+    ? `question ${p.pendingClarification.ref}: ${p.pendingClarification.question}`
+    : p.state === 'handing_off'
+      ? 'plan ready; switching after the current work is released'
+      : `${p.plannerTurns} planner turn(s) so far; ${p.activeGoalId ? `${p.activeGoalId} keeps control until handoff` : 'nothing else is running'}`;
+  return { instruction: p.instruction.slice(0, 1_000), state, sinceMs: p.receivedAtMs, detail: detail.slice(0, 1_000) };
+}
+
+/** Dashboard seam (MB-UI-001 <- MB-MEM-001): the most recently confirmed active facts (historical, bounded). */
+export function memorySummaryFrom(facts: readonly MemoryFact[]): DashboardMemorySummary {
+  const active = facts.filter((f) => f.status === 'active').sort((a, b) => b.lastConfirmedMs - a.lastConfirmedMs);
+  return {
+    totalItems: active.length,
+    items: active.slice(0, DASHBOARD_BOUNDS.memoryItems).map((f) => ({
+      label: f.label.slice(0, 200),
+      kind: f.category,
+      ...(f.location ? { dimension: f.location.dimension } : {}),
+      source: f.source,
+      observedAtMs: f.lastConfirmedMs,
+    })),
+  };
 }

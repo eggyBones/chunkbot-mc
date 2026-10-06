@@ -9,6 +9,8 @@
 //   chunkbot knowledge     '<query json>' [--config <file>]    version knowledge query (offline, read-only)
 //   chunkbot jev-check     [--config <file>] [--json]          ONE live Jev provider request (reads the key env var; spends ~USD 0.00002)
 //   chunkbot planner-check [--config <file>] [--json] [--probe] ONE isolated Codex subscription planner turn (+ optional isolation/cancel probes)
+//   chunkbot dashboard     [--config <file>] [--port <n>]      local read-only status viewer (never joins Minecraft or calls a model)
+//   chunkbot memory        [--config <file>]                   read-only inspection of the configured memory scope
 import { createInterface } from 'node:readline';
 import { ConfigError, configPathFrom, loadConfigFile, type LoadedConfig } from './config/load.ts';
 import { LOCAL_COMPAT_PROFILE, PINNED_PACKAGES, installedPackageVersion, resolveVersionProfile, supportLevel } from './config/versions.ts';
@@ -24,7 +26,7 @@ import { doctorExitCode, runDoctor } from './app/doctor.ts';
 import { IdentityConflictError, interactiveBotLogin } from './game/auth.ts';
 import { MineflayerConnection } from './game/connection.ts';
 import { codecSummary } from './game/codec-audit.ts';
-import { FileRunStore } from './telemetry/run-store.ts';
+import { FileRunStore, teeRunStore } from './telemetry/run-store.ts';
 import { redact } from './telemetry/redact.ts';
 import { JevDecisionAdapter } from './decision/jev-adapter.ts';
 import { SpendLedger } from './decision/spend.ts';
@@ -33,7 +35,12 @@ import { CodexPlanner } from './planner/codex-planner.ts';
 import { runPlannerCheck } from './planner/planner-check.ts';
 import { NotReadyPlanner } from './goals/not-ready.ts';
 import { PlannerJournal } from './telemetry/planner-journal.ts';
-import type { PlannerPort } from './contracts/index.ts';
+import type { PlannerPort, RunStore } from './contracts/index.ts';
+import { createDashboardRuntime, type DashboardRuntime } from './dashboard/runtime.ts';
+import { VIEWER_USAGE, parseViewerArgs, runDashboardViewer } from './dashboard/viewer-command.ts';
+import { memorySummaryFrom, pendingDirectiveFrom } from './app/status.ts';
+import { inspectMemory, renderMemoryReport } from './memory/report.ts';
+import { memoryRoot } from './memory/service.ts';
 
 export const EXIT = {
   ok: 0,
@@ -61,6 +68,8 @@ Commands:
   jev-check      Send ONE minimal live Jev decision through the real adapter (needs the configured key env var)
   planner-check  Verify the Codex planner isolation gate and run ONE small isolated subscription turn
                  (--probe adds a tool-exposure self-report turn and an in-flight cancellation probe)
+  dashboard      Local read-only status viewer for a second monitor (loopback only; see chunkbot dashboard --help)
+  memory         Read-only inspection of the configured memory scope (state, revision, recent facts)
 
 Options:
   --config <file>   Configuration file (default: $CHUNKBOT_CONFIG or ./chunkbot.config.json)
@@ -146,9 +155,9 @@ function runFacts(loaded: LoadedConfig): Record<string, unknown> {
   };
 }
 
-function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: ChunkbotApp; store: FileRunStore; game: MineflayerConnection } {
+function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: ChunkbotApp; store: RunStore; game: MineflayerConnection } {
   const { config } = loaded;
-  const store = new FileRunStore({
+  const fileStore = new FileRunStore({
     runsDir: loaded.runsDir,
     runId: randomIds.next('run'),
     clock: systemClock,
@@ -156,6 +165,15 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
     maxEventChars: config.storage.maxEventChars,
     keepRuns: config.storage.keepRuns,
   });
+  // MB-UI-001: ONE tee for every runtime store user (app, skills, tasks, Jev, planner, diagnostics):
+  // each event is forwarded once, unchanged, to the run store, then observed by the dashboard
+  // publisher (installed below, after the planner exists; events before that are run-store only).
+  let dashboard: DashboardRuntime | undefined;
+  const store: RunStore & { readonly dir: string; readonly eventsPath: string } = {
+    ...teeRunStore(fileStore, () => dashboard?.observe),
+    dir: fileStore.dir,
+    eventsPath: fileStore.eventsPath,
+  };
   const game = new MineflayerConnection({
     host: config.minecraft.host,
     port: config.minecraft.port,
@@ -201,7 +219,11 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
     decision,
     spendRemainingUsd: () => Math.round(spend.remainingUsd() * 1e6) / 1e6,
     emitTask: (kind, data) => out(`[task-json] ${JSON.stringify(redact({ kind, ...data }, { maxStringChars: 600, maxArrayItems: 32, maxDepth: 6 }))}`),
+    dataDir: loaded.dataDir,
   });
+  const memory = runtime.memory;
+  if (memory) for (const line of memory.statusLines()) out(`[chunkbot] ${line}`);
+  else out(`[chunkbot] memory: ${config.memory ? 'disabled by configuration (memory.enabled = false)' : 'not configured (no memory section); no memory capability is registered'}`);
   diagnostics = new DiagnosticConsole({
     runtime: () => runtime,
     out,
@@ -235,6 +257,21 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
     planner = new NotReadyPlanner('Codex subscription planner disabled by configuration (models.planner.mode = "disabled": inference-free test profile); goals end planner_not_ready');
     out('[chunkbot] planner: disabled by configuration (inference-free profile)');
   }
+  // MB-UI-001 local dashboard publisher (read-only; no inference, actuator or network).
+  dashboard = createDashboardRuntime({
+    dataDir: loaded.dataDir,
+    runId: store.runId,
+    now: () => systemClock.now(),
+    game,
+    profile: { version: config.minecraft.version, supportLevel: supportLevel(config.minecraft.version) ?? 'unsupported' },
+    engine: () => appRef?.engine.status(),
+    decisionReadiness: () => decision.readiness(),
+    spend,
+    ...(codex ? { planner: codex } : {}),
+    pending: () => pendingDirectiveFrom(appRef?.engine.status()),
+    ...(memory ? { memory: () => memorySummaryFrom(memory.facts()) } : {}),
+    log: (line) => out(line),
+  });
   const app = new ChunkbotApp({
     config,
     game,
@@ -247,6 +284,8 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
     journal,
     statusExtras: () => {
       const lines = [`network: ${codecSummary(game.codecHealth())} (version support: ${supportLevel(config.minecraft.version) ?? 'unsupported'})`];
+      if (dashboard) lines.push(dashboard.statusLine());
+      if (memory) lines.push(...memory.statusLines());
       if (codex) {
         const t = codex.totals;
         const cov = (known: number) => (known === t.completedTurns ? '' : ` [reported for ${known}/${t.completedTurns} completed turns]`);
@@ -262,10 +301,19 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
       },
       cancelControl: (reason) => diagnostics?.cancel(reason) ?? false,
       onGoalAdmitted: (admission) => runtime.onGoalAdmitted(admission),
+      onGoalTerminal: (end) => runtime.onGoalTerminal(end),
       diagnostic: (args) => diagnostics!.handle(args),
     },
   });
   appRef = app;
+  const publisher = dashboard;
+  publisher.start();
+  // Final snapshot (marked stopped) only after the app's full teardown.
+  void app.closed.then(async (code) => {
+    // Durable memory is flushed and its writer lock released after the final teardown.
+    if (memory) await memory.close().catch((error: unknown) => out(`[chunkbot] memory close failed: ${error instanceof Error ? error.message : String(error)}`));
+    publisher.stop(`shutdown (exit ${code})`);
+  });
   out(`[chunkbot] decision: ${decision.readiness().detail}`);
   out(`[chunkbot] run ${store.runId}; evidence: ${store.eventsPath}`);
   out(`[chunkbot] skills: ${runtime.registry.catalog().capabilities.length} capabilities (${runtime.registry.catalog().catalogVersion}); natural-language goals use the ${config.models.planner.mode === 'codex' ? 'Codex subscription planner' : 'DISABLED planner profile'}; operator mechanic diagnostics: /diag; task controller diagnostic (real Jev): /task`);
@@ -424,8 +472,46 @@ function commandKnowledge(configPath: string, queryText: string | undefined): vo
   process.exitCode = EXIT.ok;
 }
 
+/** `chunkbot memory`: read-only inspection of the configured memory scope (MB-MEM-001; no write, no lock, no world access). */
+function commandMemory(loaded: LoadedConfig): void {
+  const cfg = loaded.config.memory;
+  const report = inspectMemory(memoryRoot(loaded.dataDir, cfg?.enabled ? cfg : undefined), cfg?.enabled ? cfg : undefined, systemClock, { limit: 40 });
+  for (const line of renderMemoryReport(report)) out(line);
+  process.exitCode = EXIT.ok;
+}
+
+/** `chunkbot dashboard`: the separately launched local read-only viewer (MB-UI-001). */
+async function commandDashboard(argv: string[]): Promise<number> {
+  const parsed = parseViewerArgs(argv);
+  if (typeof parsed === 'string') {
+    err(parsed);
+    err(VIEWER_USAGE);
+    return EXIT.usage;
+  }
+  if (parsed.help) {
+    out(VIEWER_USAGE);
+    return EXIT.ok;
+  }
+  let loaded: LoadedConfig;
+  try {
+    loaded = loadConfigFile(configPathFrom(parsed.config, process.env));
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      err(error.message);
+      return EXIT.failure;
+    }
+    throw error;
+  }
+  return runDashboardViewer(loaded, parsed.options, { out, err, env: process.env });
+}
+
 async function main(): Promise<void> {
-  const parsed = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv[0] === 'dashboard') {
+    process.exitCode = await commandDashboard(argv.slice(1));
+    return;
+  }
+  const parsed = parseArgs(argv);
   if (typeof parsed === 'string') {
     err(parsed);
     err(USAGE);
@@ -458,6 +544,9 @@ async function main(): Promise<void> {
       return;
     case 'planner-check':
       process.exitCode = await runPlannerCheck(loadOrExit(configPath), { json: parsed.json, probe: parsed.probe, out, err, exit: EXIT });
+      return;
+    case 'memory':
+      commandMemory(loadOrExit(configPath));
       return;
     case 'auth':
       if (parsed.sub !== 'login') {

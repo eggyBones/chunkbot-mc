@@ -20,6 +20,9 @@ import { PerceptionService } from '../perception/perception.ts';
 import type { SkillServices } from '../skills/definition.ts';
 import { allSkills } from '../skills/index.ts';
 import type { AppAdapters } from './app.ts';
+import { MemoryService, memoryRoot } from '../memory/service.ts';
+import { installedMemoryWorld } from '../memory/world.ts';
+import { memorySkills } from '../skills/memory.ts';
 
 export interface SkillRuntimeOptions {
   config: ChunkbotConfig;
@@ -40,6 +43,8 @@ export interface SkillRuntimeOptions {
   spendRemainingUsd?: () => number | null;
   /** Operator-visible task controller events. */
   emitTask?: (kind: string, data: Record<string, unknown>) => void;
+  /** Ignored runtime storage root (LoadedConfig.dataDir); required for MB-MEM-001 memory (absent: memory off). */
+  dataDir?: string;
 }
 
 export class SkillRuntime {
@@ -54,12 +59,18 @@ export class SkillRuntime {
   readonly services: SkillServices;
   readonly tasks: TaskRuntime;
   readonly decision: DecisionPort;
+  /** MB-MEM-001 memory; undefined when not configured (or disabled): no memory capability, view or hook. */
+  readonly memory: MemoryService | undefined;
   private readonly options: SkillRuntimeOptions;
 
   constructor(options: SkillRuntimeOptions) {
     this.options = options;
     const { config, clock, ids, store } = options;
-    this.registry = new SkillRegistry(allSkills());
+    const memoryConfig = config.memory?.enabled ? config.memory : undefined;
+    this.memory = memoryConfig && options.dataDir
+      ? new MemoryService({ config: memoryConfig, rootDir: memoryRoot(options.dataDir, memoryConfig), endpoint: `${config.minecraft.host}:${config.minecraft.port}`, clock, record: (event) => store.record(event) })
+      : undefined;
+    this.registry = new SkillRegistry([...allSkills(), ...memorySkills(this.memory)]);
     this.knowledge = new VersionKnowledge({
       version: config.minecraft.version,
       catalog: () => this.registry.catalog(),
@@ -96,9 +107,14 @@ export class SkillRuntime {
       services: this.services,
       goalEpoch: options.goalEpoch,
       store,
+      ...(this.memory ? { onOutcome: (outcome) => this.memory?.recordOutcome(outcome) } : {}),
     });
     this.candidates = new TaskCandidateGenerator({ registry: this.registry, services: this.services, session: options.session, ids });
-    this.predicates = new PredicateEngine({ services: this.services, session: options.session, leases: this.leases });
+    this.predicates = new PredicateEngine({ services: this.services, session: options.session, leases: this.leases, ...(this.memory ? { memory: this.memory } : {}) });
+    if (this.memory) {
+      this.memory.attachWorld(installedMemoryWorld({ session: options.session, perception: this.perception, ledger: this.ledger, clock }));
+      this.memory.open();
+    }
     const decision = options.decision ?? new NotReadyDecision();
     this.decision = decision;
     const limits = config.limits;
@@ -135,6 +151,7 @@ export class SkillRuntime {
       decision: this.decision,
       registry: this.knowledge,
       priorResults: (ids) => this.priorResults(ids),
+      ...(this.memory ? { memory: this.memory } : {}),
     };
   }
 
@@ -153,14 +170,41 @@ export class SkillRuntime {
    * goal's travel anchor is captured at the bot's position NOW and owned by the
    * goal epoch. Execution never re-anchors; only the next admission replaces it.
    */
-  onGoalAdmitted(admission: { goalId: string; epoch: number; admittedAtMs: number }): void {
+  onGoalAdmitted(admission: { goalId: string; epoch: number; admittedAtMs: number; instruction?: string }): void {
+    // MB-MEM-001: keep the owner's words for grounding designations (synchronous, no I/O).
+    if (this.memory && admission.instruction !== undefined) {
+      try {
+        this.memory.beginGoal({ goalId: admission.goalId, epoch: admission.epoch, instruction: admission.instruction });
+      } catch (error) {
+        this.options.store.record({ type: 'memory_hook_error', hook: 'beginGoal', message: error instanceof Error ? error.message : String(error) });
+      }
+    }
     const ok = this.perception.admitTravelAnchor(admission.epoch);
     const bounds = this.perception.travelBounds();
     this.options.store.record({ type: 'goal_travel_anchor', goalId: admission.goalId, epoch: admission.epoch, admitted: ok, anchor: bounds ? { x: Math.round(bounds.anchor.x * 10) / 10, y: Math.round(bounds.anchor.y * 10) / 10, z: Math.round(bounds.anchor.z * 10) / 10 } : null, radius: bounds?.radius ?? null });
   }
 
+  /** Goal terminal (MB-MEM-001): verified outcomes become milestones; refs are released. Never throws. */
+  onGoalTerminal(end: { goalId: string; kind: string; reason: string; detail: string; interpretation?: string }): void {
+    if (!this.memory) return;
+    try {
+      this.memory.onGoalTerminal({ goalId: end.goalId, reason: end.reason, detail: end.detail, kind: end.kind, ...(end.interpretation ? { interpretation: end.interpretation } : {}) });
+    } catch (error) {
+      this.options.store.record({ type: 'memory_hook_error', hook: 'onGoalTerminal', message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   /** Lifecycle interruptions revoke actuation immediately (handles become stale by epoch). */
   onLifecycle(event: GameLifecycleEvent): void {
+    // MB-MEM-001 FIRST (after the engine's synchronous revocation prefix): a death
+    // snapshot reads the last-alive ledger/perception evidence before they are invalidated.
+    if (this.memory) {
+      try {
+        this.memory.onLifecycle(event);
+      } catch (error) {
+        this.options.store.record({ type: 'memory_hook_error', hook: 'onLifecycle', message: error instanceof Error ? error.message : String(error) });
+      }
+    }
     if (event.type === 'death' || event.type === 'dimension_change' || event.type === 'ended') {
       this.leases.revokeCurrent(`lifecycle_${event.type}`);
       this.ledger.invalidate(`lifecycle_${event.type}`);
