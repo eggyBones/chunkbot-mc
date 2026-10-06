@@ -24,6 +24,7 @@
     "extract-version-data": "node scripts/extract-version-data.ts",
     "jev-live-check": "node scripts/jev-live-check.ts",
     "planner-live-check": "node scripts/planner-live-check.ts",
+    "handoff-live-check": "node scripts/handoff-live-check.ts",
     "vendor-compat": "node scripts/vendor-compat.ts",
     "compat-live-check": "node scripts/compat-live-check.ts",
     "verify-version-data": "node scripts/verify-version-data.ts"

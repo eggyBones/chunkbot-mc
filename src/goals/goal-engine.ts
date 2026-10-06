@@ -660,7 +660,7 @@ export class GoalEngine {
           ? 'Stopped: the pending new instruction was discarded.'
           : reason === 'lifecycle'
             ? `The pending new instruction was discarded: ${truncate(detail, 160)}.`
-            : `Your new instruction was not started (${reason}): ${truncate(detail, 220)}.${continuing}`;
+            : `Your new instruction was not started (${reason}): ${truncate(detail, 320)}.${continuing}`;
       this.deps.notify({ intentId: p.intentId, text });
     }
     p.settled.resolve('discarded');
