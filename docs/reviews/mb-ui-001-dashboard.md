@@ -11,7 +11,7 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
 | Usage history | `src/dashboard/history.ts` | Writes `<dataDir>/dashboard/usage-history.json`: dated aggregates, per-run cursors and coverage gaps. |
 | Integration facade | `src/dashboard/runtime.ts` | `createDashboardRuntime(deps)` with `tapStore`, `start`, `stop` and `statusLine`. Not wired into `cli.ts` yet (that is a designated-writer task). |
 | Viewer service | `src/dashboard/{server,viewmodel,remote,codex-quota,viewer-command,main}.ts`, `assets/page.ts` | Node `http` plus SSE, with no new dependency. Run standalone with `node dist/dashboard/main.js --config <file> [--port n]`. |
-| Live check | `scripts/dashboard-live-check.ts` | D-G1/D2/D4/D5 against a leased loopback fixture; `--read-only` mode uses `data get` only. Not yet run. |
+| Live check | `scripts/dashboard-live-check.ts` | D-G1/D2/D4/D5 against a leased loopback fixture; `--read-only` mode uses `data get` only. Run on 26.2; see below. |
 | Tests | `tests/dashboard-*.test.ts`, `tests/dashboard-fakes.ts` | 68 behavior tests. |
 
 ## Data sources (typed only)
@@ -80,6 +80,34 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
 ## Checks run by the worker
 
 `npm run typecheck`, `npm run build` and `npm test` all exit 0, with 365 tests: the 297 baseline plus 68 dashboard tests. Logs are in the ignored `var/batch001/`. No shared files, npm scripts, CLI, config or planner/decision files were edited.
+
+## Live evidence (26.2 fixture, exclusive lease, commit `3333ecd`)
+
+Reports are under the ignored `var/live-check/`.
+
+| Run | Exit | Result |
+| --- | --- | --- |
+| `--fixture 26.2 --read-only` (`2026-10-06T08-06-48-359Z…-readonly`, `…08-09-29-186Z…-readonly`) | 0, 0 | 6/6. RCON: 7 `data get` only |
+| `--fixture 26.2` full (`2026-10-06T08-09-16-809Z-26.2-dashboard`) | 0 | 13/13. 30 RCON commands recorded |
+
+- **Latency (from the command, including the RCON round trip):**
+  - damage: file 45 ms, screen 76 ms;
+  - max health 24: file 467 ms, screen 496 ms;
+  - inventory: last change published 488 ms after its command;
+  - XP: 472 ms.
+- **Match:** values equal the server's entity data (Health, foodLevel, XpLevel/XpP, Inventory NBT plus equipment, Pos within 0.6 blocks).
+- **D5:** with 5 tabs and 10 refreshes, the only client packets were `chunk_batch_received` ×14, `flying` ×2 and `position` ×3. There were no interaction packets.
+- **D4:**
+  - after death the inventory became unknown, then the empty restated inventory appeared after respawn;
+  - a kick showed disconnected with historical readings;
+  - the rejoin was epoch 1 → 2, with live readings only after the new epoch reported;
+  - a graceful stop showed as stopped.
+- **D-G1 findings:**
+  - A fresh 26.2 player gets no `max_health` attribute at join, so the dashboard shows "max unknown". Once the server has synced the attribute (any change), it is known. It is never guessed.
+  - `/xp set` does not update the server's total-experience field, so the viewer shows only level and progress.
+  - The fixture runs `difficulty=peaceful`, so food cannot change there. The food check is static equality, and health regenerates 1 HP/s, so the health check allows one regeneration step. The harness never reconfigures the server.
+- **Harness corrections during the lease:** two runs failed because of fixture behavior, not dashboard defects (`2026-10-06T08-07-08…`: health raced regeneration; `…08-08-19…`: Hunger has no effect on peaceful).
+- **Not run:** 26.1.2, which is owned by the handoff worker.
 
 ## Integration still needed (designated writer, via Codex)
 
