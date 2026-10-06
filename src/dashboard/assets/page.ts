@@ -84,6 +84,10 @@ html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.
 .kv dt { color: var(--muted); font-size: 12.5px; }
 .kv dd { margin: 0; text-align: right; font-family: var(--mono); font-size: 12.5px; word-break: break-word; }
 .kv.wide dd { text-align: left; font-family: inherit; }
+.memlist { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.memrow { border-top: 1px solid #202427; padding-top: 6px; min-width: 0; }
+.memlabel { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.memmeta { color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: break-word; word-break: normal; }
 .money { font-size: 22px; font-weight: 700; font-family: var(--mono); }
 .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: 8px; margin-bottom: 10px; }
 .split > div { min-width: 0; background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; }
@@ -182,6 +186,20 @@ export const APP_JS = String.raw`
     return dl;
   }
 
+  // Memory rows: the (possibly long, natural-language) label on its own line and its
+  // metadata (place, coordinates, source, time, stale) underneath at full width.
+  function memList(rows) {
+    var ul = el('ul', { cls: 'memlist' });
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      ul.appendChild(el('li', { cls: 'memrow', title: r.title || null }, [
+        el('div', { cls: 'memlabel', text: r.label }),
+        el('div', { cls: 'memmeta' + (r.tone ? ' t-' + r.tone : ''), text: r.value })
+      ]));
+    }
+    return ul;
+  }
+
   function slot(s, selected, caption) {
     if (!s.key) return el('div', { cls: 'slot empty' + (selected ? ' sel' : ''), title: (caption ? caption + ': ' : '') + 'empty' }, [caption ? el('span', { cls: 'k', text: caption }) : null]);
     var d = el('div', { cls: 'slot' + (selected ? ' sel' : ''), title: (caption ? caption + ': ' : '') + s.name + ' x' + s.count, css: { '--hue': String(s.hue) } }, [
@@ -269,7 +287,7 @@ export const APP_JS = String.raw`
     }
     var mem = vm.memory;
     var memKids = [el('div', { cls: 'note', text: mem.text })];
-    if (mem.items.length) memKids.push(kv(mem.items, true));
+    if (mem.items.length) memKids.push(memList(mem.items));
     return el('div', { cls: 'col dir' }, [p, panel('Adapters', '', [ready]), panel('Memory', mem.installed ? '' : 'not installed', memKids)]);
   }
 
