@@ -17,6 +17,8 @@ This document is worker evidence. It does not change the roadmap, plans, status 
 | `bc785f3` | This evidence draft and the M6 proposal |
 | `60b630d` | MB-BATCH001-I1 prevention: import-safe entry guard, stricter lease id, `tests/memory-harness-guard.test.ts` |
 | `951975f` | Harness ends unverified steps without `outcome_verified` (no fake milestones); truthful status after writes/close |
+| `e3d41a1` | Leased 26.2 live evidence recorded |
+| (C3) | MB-MEM-001-C3: complete serialized view ≤ 8,000 chars with worst-case ref sizing; refs only for retained facts; whitelisted `memory_view` event |
 
 Base: `d5eb2fa`. Owned paths only: `src/contracts/memory.ts`, `src/memory/**`, `src/skills/memory.ts`, `tests/memory-*.ts`, `scripts/memory-live-check.ts`, this file. No shared path was edited.
 
@@ -28,10 +30,10 @@ Node `/opt/homebrew/Cellar/node@24/24.21.0/bin`, from the worktree root:
 | --- | --- | --- |
 | `npm run typecheck` | 0 | |
 | `npm run build` | 0 | |
-| `npm test` | 0 | 344/344 on `951975f` (297 inherited baseline + 47 memory tests) |
+| `npm test` | 0 | 348/348 on the C3 commit (297 inherited baseline + 51 memory tests); 344/344 on `951975f` |
 | `tests/memory-harness-guard.test.ts` (in `npm test`) | 0 | harness import-safe; refuses without a valid lease (no fixture contact) |
 
-Logs: `var/batch001/live2-{typecheck,build,test}.log` (344/344 on `951975f`), earlier `c5-*` (ignored, worktree-owned). No doctor run: no config/diagnostic file changed. No model or provider call by the worker. Live runs only under lease `batch001-mem-26-2-0815` (below); the earlier unleased contact is MB-BATCH001-I1.
+Logs: `var/batch001/c3fix-{typecheck,build,test}.log` (348/348), `live2-*` (344/344 on `951975f`), earlier `c5-*` (ignored, worktree-owned). No doctor run: no config/diagnostic file changed. No model or provider call by the worker. Live runs only under lease `batch001-mem-26-2-0815` (below); the earlier unleased contact is MB-BATCH001-I1.
 
 ## Design decisions
 
@@ -68,6 +70,10 @@ Sources: `observation` (line-of-sight perception only), `verified_skill` (server
 
 `recorded` / `noted` are satisfied only by an owner/skill write made after the binding's captured write-sequence baseline (`memoryBaseline()`, not a timestamp) and only once durable. `forgotten` is satisfied only when the label is absent in memory and in the last complete durable revision; a pending or failed write is `unknown`. A failed write is rolled back in memory. Disabled, conflicted, read-only or unreadable memory is always `unknown`.
 
+### View bound (MB-MEM-001-C3)
+
+`buildView` sizes the COMPLETE view — facts, notes, every fact and project-checkpoint ref, rules and the final omission metadata — with each ref slot filled by a worst-case id (the schema maximum, longer than any generated id), drops entries until `JSON.stringify(view).length <= viewMaxChars` (8,000), and only then issues real refs for the retained facts (identical slot allocation). Drop order: untrusted notes, then unprotected facts from the lowest rank, then other protected facts; the designated home is never dropped. A post-issue guard revokes refs of anything it would still drop, so refs exist only for shown facts. `facts + notes <= 20`. `MemoryService.view` records a whitelisted `memory_view` event: subject kind/id, request id, fact/note counts, serialized characters, historical-container count and shown-ref count only (no facts, owner words or request text). Regression `tests/memory-view-bound.test.ts` (project-heavy executable and preparation views, smaller caps, exact bound; fails on `e3d41a1`'s retrieval with 8,418 / 8,538 / 4,019 > cap).
+
 ### Recording rules
 
 - Observation: visible workstations/containers, ore/log/stem sightings aggregated per 16-block cell, visible lava as hazard. Hidden blocks are never recorded (real perception test).
@@ -93,6 +99,7 @@ Ref/subject tests: cross-owner, expired request window, released goal, lifecycle
 ## Corrections and incidents
 
 - **MB-MEM-001-C1** (coordinator, against `521cf10`): resolution did not verify owner/epoch/request; a moved fact could yield stale coordinates; the counter wrapped. Fixed in `c56e3d4` / `16684a5` with tests.
+- **MB-MEM-001-C3** (coordinator, against `e3d41a1`): the size estimate used a short placeholder ref, excluded checkpoint refs and the final omission reason, and a test allowed +2,000 characters; a project-heavy view serialized to 8,087 > 8,000. Fixed in the C3 commit with an exact-bound regression.
 - **MB-MEM-001-C2** (coordinator, against `16684a5`): `forgotten` was satisfied from mutable memory while the write was pending and after it failed. Fixed in `7962081`: durable-absence check, rollback of failed writes, tests for pending, failed rename, restart and already-absent labels.
 - **MB-BATCH001-I1 fixture incident (worker, recorded by the coordinator).** Exact command, run from the worktree while compile-checking the then-uncommitted harness:
   `npx tsc -p tsconfig.json --noEmit 2>&1 | head; node -e "import('./scripts/memory-live-check.ts').catch(e=>{console.log('import err',e.message)})" --input-type=module 2>&1 | head -3 &`
