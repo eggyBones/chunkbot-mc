@@ -479,7 +479,7 @@ describe('memory: corruption status and bounded retrieval (M4)', () => {
     for (let i = 0; i < 10; i += 1) await h.memory.note({ goalId: 'goal-0001', label: `idea ${i}`, text: `maybe build a tower ${i}` });
     const v = viewFor(h, goal('goal-0002', 2), 'collect coal', 'req-0001');
     assert.ok(v.facts.length + v.notes.length <= MEMORY_BOUNDS.retrieveFacts);
-    assert.ok(JSON.stringify(v).length <= MEMORY_BOUNDS.viewMaxChars + 2_000, 'rules + bounded facts');
+    assert.ok(JSON.stringify(v).length <= MEMORY_BOUNDS.viewMaxChars, 'the COMPLETE serialized view is within the exact bound');
     assert.ok(v.facts.some((f) => f.category === 'home'));
     assert.ok(v.facts.filter((f) => f.key === 'minecraft:coal_ore').length > 0);
     assert.equal(v.notes.length, 0, 'notes unrelated to the instruction are not retrieved');

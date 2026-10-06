@@ -138,45 +138,108 @@ export function buildView(req: ViewRequest, ctx: ViewContext): MemoryView {
     perCat.set(r.f.category, n + 1);
     trusted.push(r);
   }
-  let factViews = trusted.map((r) => ({ fact: r.f, view: toViewFact(r.f, ctx, dimension, at) }));
-  let noteViews = notes.map((r) => ({ fact: r.f, view: toViewFact(r.f, ctx, dimension, at) }));
-  // Byte bound (refs counted at their maximum length before they are issued).
-  const size = () => JSON.stringify({ ...base, facts: factViews.map((x) => ({ ...x.view, ref: 'mref-000000' })), notes: noteViews.map((x) => x.view) }).length;
-  while (size() > maxChars && (factViews.length > 0 || noteViews.length > 0)) {
-    if (noteViews.length > 0) noteViews = noteViews.slice(0, -1);
-    else factViews = factViews.slice(0, -1);
-  }
-  // Fresh refs for the shown, eligible facts only: executable refs for an
-  // admitted goal, non-executable prepared refs for a preparation subject.
   const conn = req.observation;
   const subject = req.subject;
-  let issued = 0;
-  const sameConnection = conn && (subject.kind === 'goal' || subject.connectionEpoch === conn.connectionEpoch);
-  if (conn && dimension && sameConnection) {
-    const give = (fact: MemoryFact, at: { x: number; y: number; z: number }, label?: string): { ref: NonNullable<MemoryViewFact['ref']> } | { prepRef: NonNullable<MemoryViewFact['prepRef']> } => {
+  const refsAllowed = Boolean(conn && dimension && (subject.kind === 'goal' || subject.connectionEpoch === conn.connectionEpoch));
+  type Shown = { fact: MemoryFact; protect: 0 | 1 | 2 };
+  // 2: designated home (never dropped); 1: other protected facts (dropped last); 0: everything else.
+  let factList: Shown[] = trusted.map((r) => ({ fact: r.f, protect: r.f.category === 'home' ? 2 : isProtected(r.f) ? 1 : 0 }));
+  let noteList: MemoryFact[] = notes.map((r) => r.f);
+  const totalActive = active.length;
+  const eligible = trusted.length + notes.length;
+
+  /**
+   * Assembles the COMPLETE view (facts, notes, every fact and checkpoint ref,
+   * rules, omission metadata) with `token` supplying each ref. Ref slots are
+   * allocated identically for the size estimate and the real issuance.
+   */
+  const assemble = (facts: Shown[], noteFacts: MemoryFact[], token: (fact: MemoryFact, at: { x: number; y: number; z: number }, label?: string) => { ref: string } | { prepRef: string }): MemoryView => {
+    let issued = 0;
+    const give = (fact: MemoryFact, p: { x: number; y: number; z: number }, label?: string) => {
       issued += 1;
-      return subject.kind === 'goal'
-        ? { ref: ctx.refs.issue({ goalId: subject.goalId, goalEpoch: subject.goalEpoch, requestId: req.requestId, connectionEpoch: conn.connectionEpoch, dimension }, fact, at, label) }
-        : { prepRef: ctx.refs.issuePrepared({ intentId: subject.intentId, generation: subject.generation, requestId: req.requestId, connectionEpoch: conn.connectionEpoch, dimension }, fact, at, label) };
+      return token(fact, p, label);
     };
-    for (const x of factViews) {
-      if (!refEligible(x.fact, dimension) || issued >= MEMORY_BOUNDS.refsPerRequest) continue;
-      const loc = x.fact.location as NonNullable<MemoryFact['location']>;
-      Object.assign(x.view, give(x.fact, loc.at));
-      if (x.fact.project && x.view.project) {
-        const recent = x.fact.project.checkpoints.slice(-4);
-        x.view.project.recent = recent.map((c) => ({
-          at: c.at,
-          to: c.to,
-          ...(issued < MEMORY_BOUNDS.refsPerRequest ? give(x.fact, c.at, `${x.fact.label}: ${c.to} at ${c.at.x},${c.at.y},${c.at.z}`) : {}),
-        }));
+    const factViews = facts.map(({ fact }) => {
+      const view = toViewFact(fact, ctx, dimension, at);
+      if (refsAllowed && refEligible(fact, dimension) && issued < MEMORY_BOUNDS.refsPerRequest) {
+        Object.assign(view, give(fact, (fact.location as NonNullable<MemoryFact['location']>).at));
+        if (fact.project && view.project) {
+          view.project.recent = fact.project.checkpoints.slice(-4).map((c) => ({
+            at: c.at,
+            to: c.to,
+            ...(issued < MEMORY_BOUNDS.refsPerRequest ? give(fact, c.at, `${fact.label}: ${c.to} at ${c.at.x},${c.at.y},${c.at.z}`) : {}),
+          }));
+        }
+      }
+      return view;
+    });
+    const shown = facts.length + noteFacts.length;
+    const omittedCount = Math.max(0, totalActive - shown);
+    const reason = omittedCount <= 0 ? 'none' : shown < eligible ? `bounded to ${maxChars} characters and ${maxFacts} facts` : `less relevant to this instruction/location or untrusted (cap ${maxFacts})`;
+    return { ...base, facts: factViews, notes: noteFacts.map((f) => toViewFact(f, ctx, dimension, at)), omitted: { count: omittedCount, reason } };
+  };
+  // Upper bound for every ref id the registry can issue (schema maximum), so the estimate never undercounts.
+  const worst = (): { ref: string } | { prepRef: string } => (subject.kind === 'goal' ? { ref: `mref-${'z'.repeat(24)}` } : { prepRef: `mprep-${'z'.repeat(24)}` });
+  const length = (v: MemoryView) => JSON.stringify(v).length;
+  const dropOne = (): boolean => {
+    if (noteList.length > 0) {
+      noteList = noteList.slice(0, -1);
+      return true;
+    }
+    for (const level of [0, 1] as const) {
+      for (let i = factList.length - 1; i >= 0; i -= 1) {
+        if (factList[i]?.protect === level) {
+          factList = factList.filter((_, j) => j !== i);
+          return true;
+        }
       }
     }
+    return false; // only the designated home remains
+  };
+  while (length(assemble(factList, noteList, worst)) > maxChars && dropOne());
+
+  // Real refs only for the retained facts. The worst-case estimate makes a
+  // second pass unnecessary; it stays as a guard (revoking any refs it drops).
+  let view: MemoryView = base;
+  for (let attempt = 0; attempt < MEMORY_BOUNDS.retrieveFacts + 2; attempt += 1) {
+    const issuedIds: string[] = [];
+    view = assemble(factList, noteList, (fact, p, label) => {
+      if (subject.kind === 'goal') {
+        const ref = ctx.refs.issue({ goalId: subject.goalId, goalEpoch: subject.goalEpoch, requestId: req.requestId, connectionEpoch: (conn as NonNullable<typeof conn>).connectionEpoch, dimension: dimension as string }, fact, p, label);
+        issuedIds.push(ref);
+        return { ref };
+      }
+      const prepRef = ctx.refs.issuePrepared({ intentId: subject.intentId, generation: subject.generation, requestId: req.requestId, connectionEpoch: (conn as NonNullable<typeof conn>).connectionEpoch, dimension: dimension as string }, fact, p, label);
+      issuedIds.push(prepRef);
+      return { prepRef };
+    });
+    if (length(view) <= maxChars) break;
+    ctx.refs.revoke(issuedIds);
+    if (!dropOne()) {
+      view = compactLastResort(assemble(factList, [], worst), maxChars);
+      break;
+    }
   }
-  const eligible = trusted.length + notes.length;
-  const shown = factViews.length + noteViews.length;
-  const totalRelevant = active.length;
-  const omittedCount = totalRelevant - shown;
-  const reason = omittedCount <= 0 ? 'none' : shown < eligible ? `bounded to ${maxChars} characters and ${maxFacts} facts` : `less relevant to this instruction/location or untrusted (cap ${maxFacts})`;
-  return { ...base, facts: factViews.map((x) => x.view), notes: noteViews.map((x) => x.view), omitted: { count: Math.max(0, omittedCount), reason } };
+  return view;
+}
+
+/**
+ * Only the designated home remains and the view still exceeds the bound
+ * (practically unreachable): keep the home without refs and with minimal
+ * evidence text, never a truncated JSON document.
+ */
+function compactLastResort(v: MemoryView, maxChars: number): MemoryView {
+  const facts = v.facts.map((f) => {
+    const { ref: _r, prepRef: _p, note: _n, container: _c, project: _pr, death: _d, milestone: _m, ...rest } = f;
+    void _r;
+    void _p;
+    void _n;
+    void _c;
+    void _pr;
+    void _d;
+    void _m;
+    return { ...rest, evidence: rest.evidence.slice(0, 60) };
+  });
+  const out: MemoryView = { ...v, facts, notes: [], omitted: { count: v.omitted.count, reason: `bounded to ${maxChars} characters` } };
+  return JSON.stringify(out).length <= maxChars ? out : { ...out, facts: [], rules: out.rules.slice(0, 2) };
 }

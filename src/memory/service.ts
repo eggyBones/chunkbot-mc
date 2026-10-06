@@ -342,17 +342,17 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
       staleAfterMs: this.options.config?.staleAfterMs ?? 24 * 3_600_000,
       refs: this.refs,
     });
+    // Whitelisted, bounded runtime evidence: counts and sizes only (no facts, owner words or request text).
     this.options.record?.({
       type: 'memory_view',
-      subject: subject.kind,
+      subjectKind: subject.kind,
       subjectId: subject.kind === 'goal' ? subject.goalId : subject.intentId,
       requestId: request.requestId,
-      state: view.status.state,
       facts: view.facts.length,
       notes: view.notes.length,
-      refs: view.facts.filter((f) => f.ref).length,
-      preparedRefs: view.facts.filter((f) => f.prepRef).length,
-      omitted: view.omitted.count,
+      serializedChars: JSON.stringify(view).length,
+      historicalContainers: view.facts.filter((f) => f.container?.historical).length,
+      shownRefs: view.facts.reduce((n, f) => n + (f.ref || f.prepRef ? 1 : 0) + (f.project?.recent.filter((c) => c.ref || c.prepRef).length ?? 0), 0),
     });
     return view;
   }

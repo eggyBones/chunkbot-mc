@@ -157,6 +157,14 @@ export class MemoryRefRegistry {
     return { refId, factId: f.id as MemoryFactId };
   }
 
+  /** Withdraws refs that were issued but not shown (bound guard). */
+  revoke(refIds: readonly string[]): void {
+    for (const id of refIds) {
+      this.goalRefs.delete(id);
+      this.prepRefs.delete(id);
+    }
+  }
+
   releaseGoal(goalId: string): void {
     for (const [id, e] of this.goalRefs) if (e.goalId === goalId) this.goalRefs.delete(id);
     for (const key of [...this.goalRequests.keys()]) if (key.startsWith(`${goalId}#`)) this.goalRequests.delete(key);
