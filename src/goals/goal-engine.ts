@@ -472,6 +472,8 @@ export class GoalEngine {
   private readonly flow: FlowOptions;
   private readonly totals: HandoffTotals;
   private latch: ControlLatch = { paused: false };
+  /** Every outstanding (bounded) owned-process cleanup of discarded preparations, superseded ones included (C3a). */
+  private readonly preparationCleanups = new Set<Promise<void>>();
   private readonly windowGaps: WindowGap[] = [];
 
   constructor(deps: GoalEngineDeps) {
@@ -655,6 +657,11 @@ export class GoalEngine {
     return { status: 'preparing', intentId: pending.intentId, activeGoalId: pending.activeGoalId, ...(superseded ? { supersededIntentId: superseded.intentId } : {}) };
   }
 
+  /** All outstanding discarded-preparation cleanups (each already bounded by cleanupTimeoutMs). */
+  private preparationCleanupsDone(): Promise<void> {
+    return Promise.all([...this.preparationCleanups]).then(() => undefined);
+  }
+
   private pendingCurrent(p: PendingIntent): boolean {
     return this.pending === p && !p.abort.signal.aborted && p.generation === this.intakeGeneration && !this.closed;
   }
@@ -682,7 +689,10 @@ export class GoalEngine {
           () => this.deps.store.record({ type: 'preparation_cleanup', intentId: p.intentId, cleanups: cleanups.length, outcome: 'settled' }),
           () => this.deps.store.record({ type: 'preparation_cleanup', intentId: p.intentId, cleanups: cleanups.length, outcome: 'timeout', boundMs: this.deps.limits.cleanupTimeoutMs }),
         );
-    this.track(p.cleanupDone);
+    const done = p.cleanupDone;
+    this.preparationCleanups.add(done);
+    void done.finally(() => this.preparationCleanups.delete(done));
+    this.track(done);
     this.releasePreparation(p.intentId);
     this.totals.discarded += 1;
     this.totals.discardedTurns += p.counters.plannerTurns;
@@ -1162,12 +1172,12 @@ export class GoalEngine {
     const goalId = this.active?.record.id;
     if (!this.active) {
       this.deps.store.record({ type: 'stop_requested', surface, hadActiveGoal: false, hadPendingInstruction: Boolean(pending) });
-      await Promise.all([this.cleanupBarrier, pending?.cleanupDone]);
+      await Promise.all([this.cleanupBarrier, this.preparationCleanupsDone()]);
       return pending ? { stopped: true, intentId: pending.intentId } : { stopped: false };
     }
     this.deps.store.record({ type: 'stop_requested', surface, hadActiveGoal: true, goalId, hadPendingInstruction: Boolean(pending) });
     // revokeActive runs its synchronous revocation prefix before the first await; both cleanups are awaited (bounded).
-    await Promise.all([this.revokeActive(reason, reason === 'owner_stop' ? 'stopped by owner' : 'Chunkbot is shutting down'), pending?.cleanupDone]);
+    await Promise.all([this.revokeActive(reason, reason === 'owner_stop' ? 'stopped by owner' : 'Chunkbot is shutting down'), this.preparationCleanupsDone()]);
     return { stopped: true, ...(goalId ? { goalId } : {}), ...(pending ? { intentId: pending.intentId } : {}) };
   }
 
@@ -1176,7 +1186,7 @@ export class GoalEngine {
     ++this.intakeGeneration;
     const pending = this.pending;
     if (pending) this.discardPending(pending, 'lifecycle', `${reason}: ${detail}`);
-    await Promise.all([this.active ? this.revokeActive(reason, detail) : undefined, pending?.cleanupDone]);
+    await Promise.all([this.active ? this.revokeActive(reason, detail) : undefined, this.preparationCleanupsDone()]);
   }
 
   /** Correlated clarification answer. Never revives a cancelled or terminal goal. */
@@ -1277,7 +1287,8 @@ export class GoalEngine {
    */
   async shutdown(): Promise<void> {
     if (this.closed) {
-      await this.cleanupBarrier;
+      // A repeated shutdown waits for the same outstanding (bounded) cleanups; it never reports done early.
+      await Promise.all([this.cleanupBarrier, this.preparationCleanupsDone()]);
       return;
     }
     this.closed = true;

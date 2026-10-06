@@ -199,3 +199,39 @@ describe('C3: owned preparation process cleanup is awaited (bounded)', () => {
     await h.engine.stop('owner_stop');
   });
 });
+
+describe('C3a: superseded preparations are cleaned up before stop/lifecycle/shutdown return', () => {
+  const superseded = async () => {
+    const h = await following((r) => (r.instruction === 'A' ? { kind: 'hang', cleanupMs: 150 } : { kind: 'hang', cleanupMs: 10 }));
+    await h.engine.submit('A', OWNER);
+    await until(() => h.planner.count === 2);
+    const b = await h.engine.submit('B', OWNER); // supersedes A: A's process is still cleaning up (150 ms)
+    assert.equal(b.status, 'preparing');
+    return h;
+  };
+
+  for (const via of ['stop', 'lifecycle'] as const) {
+    it(`supersession then an immediate ${via}: returns only after the superseded A's process (and B) ended`, async () => {
+      const h = await superseded();
+      const t = Date.now();
+      if (via === 'stop') await h.engine.stop('owner_stop');
+      else await h.engine.endOwnership('disconnected', 'test disconnect');
+      const ms = Date.now() - t;
+      assert.equal(h.planner.inFlight, 0, `no planner process left (${JSON.stringify(h.planner.events)})`);
+      assert.ok(ms >= 120, `${via} awaited the superseded cleanup (${ms} ms)`);
+      assert.ok(ms < 600, `bounded (${ms} ms)`);
+      assert.equal(h.tasks.runs[0]!.task.signal.aborted, true, 'actuation invalidated');
+      assert.equal(h.engine.status().pending, undefined);
+    });
+  }
+
+  it('a repeated shutdown does not report completion before the outstanding cleanups', async () => {
+    const h = await superseded();
+    const first = h.engine.shutdown();
+    const t = Date.now();
+    await h.engine.shutdown();
+    assert.ok(Date.now() - t >= 120, 'the second shutdown waited too');
+    assert.equal(h.planner.inFlight, 0);
+    await first;
+  });
+});
