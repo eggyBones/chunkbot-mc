@@ -60,12 +60,17 @@ export class InventoryTracker {
   attach(evidence: EvidenceSource): void {
     this.detach();
     const seed = evidence.latest('window_items', (e) => e.windowId === 0);
-    if (seed) {
-      this.apply(seed);
-      const later: JournalEntry[] = [...evidence.since(seed.seq, 'set_slot'), ...evidence.since(seed.seq, 'player_slot'), ...evidence.since(seed.seq, 'open_window'), ...evidence.since(seed.seq, 'close_window')];
-      later.sort((a, b) => a.seq - b.seq);
-      for (const e of later) this.apply(e);
-    }
+    const after = seed?.seq ?? 0;
+    if (seed) this.apply(seed);
+    const later: JournalEntry[] = [
+      ...evidence.since(after, 'window_items', (e) => e.windowId !== 0),
+      ...evidence.since(after, 'set_slot'),
+      ...evidence.since(after, 'player_slot'),
+      ...evidence.since(after, 'open_window'),
+      ...evidence.since(after, 'close_window'),
+    ];
+    later.sort((a, b) => a.seq - b.seq);
+    for (const e of later) this.apply(e);
     this.off = evidence.onRecord((e) => this.apply(e));
   }
 

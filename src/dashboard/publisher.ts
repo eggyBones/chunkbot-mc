@@ -174,8 +174,10 @@ export class DashboardStatusPublisher {
     const v = readVitals(bot, s.evidence, now, this.changes);
     const epoch = s.connectionEpoch;
     const anyNew = v.health.known || v.xp.known || this.tracker!.contents().known;
+    const prev = this.sections;
+    const prevHasData = prev.vitals.health.known || prev.vitals.xp.known || prev.inventory.contents.known;
     // Keep the previous epoch's readings (historical) until this epoch reports something of its own.
-    if (this.sections.vitals.epoch !== epoch && !anyNew) return;
+    if (prev.vitals.epoch !== epoch && !anyNew && prevHasData) return;
     this.sections = {
       vitals: { epoch, health: v.health, maxHealth: v.maxHealth, food: v.food, saturation: v.saturation, xp: v.xp },
       inventory: {
