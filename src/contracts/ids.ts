@@ -12,10 +12,12 @@ export const ID_KINDS = [
   'req',
   'act',
   'clar',
+  /** A pending owner instruction being prepared before admission (MB-FLOW-002). Never a goal id. */
+  'intent',
 ] as const;
 export type IdKind = (typeof ID_KINDS)[number];
 
-const ID_PATTERN = /^(run|conn|goal|task|snap|req|act|clar)-[a-z0-9]{4,32}$/;
+const ID_PATTERN = /^(run|conn|goal|task|snap|req|act|clar|intent)-[a-z0-9]{4,32}$/;
 
 export const IdSchema = z.string().regex(ID_PATTERN, 'must be a code-generated identifier');
 export const RunIdSchema = z.string().regex(/^run-[a-z0-9]{4,32}$/);
@@ -26,6 +28,7 @@ export const SnapshotIdSchema = z.string().regex(/^snap-[a-z0-9]{4,32}$/);
 export const RequestIdSchema = z.string().regex(/^req-[a-z0-9]{4,32}$/);
 export const ActionIdSchema = z.string().regex(/^act-[a-z0-9]{4,32}$/);
 export const ClarificationIdSchema = z.string().regex(/^clar-[a-z0-9]{4,32}$/);
+export const IntentIdSchema = z.string().regex(/^intent-[a-z0-9]{4,32}$/);
 
 export type RunId = z.infer<typeof RunIdSchema>;
 export type ConnectionId = z.infer<typeof ConnectionIdSchema>;
@@ -35,6 +38,7 @@ export type SnapshotId = z.infer<typeof SnapshotIdSchema>;
 export type RequestId = z.infer<typeof RequestIdSchema>;
 export type ActionId = z.infer<typeof ActionIdSchema>;
 export type ClarificationId = z.infer<typeof ClarificationIdSchema>;
+export type IntentId = z.infer<typeof IntentIdSchema>;
 
 /** Monotonic counters that invalidate stale async work after an ownership change. */
 export const EpochSchema = z.number().int().nonnegative();

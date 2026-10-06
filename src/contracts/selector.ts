@@ -4,6 +4,7 @@
 import { z } from 'zod';
 import { BOUNDS, DimensionSchema, RegistryKeySchema, Vec3Schema, textSchema } from './common.ts';
 import { ActionIdSchema, SnapshotIdSchema } from './ids.ts';
+import { MemoryRefSelectorSchema } from './memory.ts';
 
 export const TargetSelectorSchema = z.discriminatedUnion('kind', [
   /** Items or blocks by version-registry key or tag (e.g. `#minecraft:logs`). */
@@ -31,5 +32,11 @@ export const TargetSelectorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('owner') }).strict(),
   /** The verified result of a prior skill action (e.g. a placed workstation). */
   z.object({ kind: z.literal('prior_result'), actionId: ActionIdSchema }).strict(),
+  /**
+   * MB-MEM-001: a request-bound memory reference (`mref-` for an admitted goal;
+   * `mprep-` only inside a preparation draft, re-grounded at admission). Remembered
+   * (historical) evidence, never current visibility, presence or contents.
+   */
+  MemoryRefSelectorSchema,
 ]);
 export type TargetSelector = z.infer<typeof TargetSelectorSchema>;

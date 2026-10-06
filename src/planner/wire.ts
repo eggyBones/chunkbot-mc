@@ -43,13 +43,15 @@ export const PREDICATE_FIELDS = {
   crafting_result: ['output', 'atLeast'],
   smelting_result: ['output', 'atLeast'],
   entity_outcome: ['target', 'outcome'],
+  /** MB-MEM-001 (offered only when memory capabilities are installed). */
+  memory_state: ['label', 'expect'],
   all: ['of'],
   any: ['of'],
   not: ['of'],
 } as const satisfies Record<string, readonly string[]>;
 type PredicateKindWire = keyof typeof PREDICATE_FIELDS;
 const PREDICATE_KINDS = Object.keys(PREDICATE_FIELDS) as PredicateKindWire[];
-const ALL_PREDICATE_FIELDS = ['selector', 'atLeast', 'mode', 'mayBeConsumedLater', 'slot', 'target', 'within', 'expect', 'output', 'outcome', 'of'] as const;
+const ALL_PREDICATE_FIELDS = ['selector', 'atLeast', 'mode', 'mayBeConsumedLater', 'slot', 'target', 'within', 'expect', 'output', 'outcome', 'of', 'label'] as const;
 
 /** Wire fields each selector kind uses (mirrors the contract's TargetSelectorSchema). */
 export const SELECTOR_FIELDS = {
@@ -59,10 +61,18 @@ export const SELECTOR_FIELDS = {
   owner_destination: ['dimension', 'at', 'ownerText'],
   owner: [],
   prior_result: ['actionId'],
+  /** MB-MEM-001 (offered only when memory capabilities are installed). */
+  memory_ref: ['refId'],
 } as const satisfies Record<string, readonly string[]>;
 type SelectorKindWire = keyof typeof SELECTOR_FIELDS;
 const SELECTOR_KINDS = Object.keys(SELECTOR_FIELDS) as SelectorKindWire[];
-const ALL_SELECTOR_FIELDS = ['key', 'snapshotId', 'handle', 'anchorId', 'dimension', 'at', 'ownerText', 'actionId'] as const;
+const ALL_SELECTOR_FIELDS = ['key', 'snapshotId', 'handle', 'anchorId', 'dimension', 'at', 'ownerText', 'actionId', 'refId'] as const;
+
+/** Memory vocabulary is offered to the planner only when memory capabilities are registered. */
+export const MEMORY_CAPABILITIES = ['remember_location', 'forget_memory', 'note_memory', 'go_to_memory'] as const;
+export function catalogHasMemory(catalog: CapabilityCatalog): boolean {
+  return catalog.capabilities.some((c) => (MEMORY_CAPABILITIES as readonly string[]).includes(c.id));
+}
 
 /** Knowledge query kinds and the contract field the wire `key` maps to. */
 export const QUERY_KEY_FIELD: Record<KnowledgeQuery['kind'], string | null> = {
@@ -91,6 +101,7 @@ const obj = (properties: Record<string, unknown>) => ({ type: 'object', addition
  */
 export function plannerOutputSchema(catalog: CapabilityCatalog): Record<string, unknown> {
   const capabilityIds = catalog.capabilities.map((c) => c.id);
+  const memory = catalogHasMemory(catalog);
   const one = (v: string) => ({ type: 'string', enum: [v] });
   const vec = obj({ x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } });
   const key = { type: 'string', description: 'namespaced registry key such as minecraft:oak_log or tag such as #minecraft:logs' };
@@ -103,6 +114,7 @@ export function plannerOutputSchema(catalog: CapabilityCatalog): Record<string, 
       obj({ kind: one('owner_destination'), dimension: str, at: { $ref: '#/$defs/vec' }, ownerText: str }),
       obj({ kind: one('owner') }),
       obj({ kind: one('prior_result'), actionId: str }),
+      ...(memory ? [obj({ kind: one('memory_ref'), refId: { type: 'string', description: 'a memory ref (mref-... or, while preparing, mprep-...) shown in this request' } })] : []),
     ],
   };
   const count = { type: 'integer' };
@@ -116,6 +128,7 @@ export function plannerOutputSchema(catalog: CapabilityCatalog): Record<string, 
       obj({ predicate: one('container_state'), target: targetRef, selector: key, atLeast: count }),
       obj({ predicate: { type: 'string', enum: ['crafting_result', 'smelting_result'] }, output: key, atLeast: count }),
       obj({ predicate: one('entity_outcome'), target: targetRef, outcome: { type: 'string', enum: ['observed_defeated', 'observed_present'] } }),
+      ...(memory ? [obj({ predicate: one('memory_state'), label: str, expect: { type: 'string', enum: ['recorded', 'noted', 'forgotten'] } })] : []),
       obj({ predicate: { type: 'string', enum: ['all', 'any', 'not'] }, of: { type: 'array', items: { $ref: '#/$defs/predicate' } } }),
     ],
   };
@@ -239,7 +252,7 @@ function predicateFromWire(raw: unknown, where: string, problems: string[], dept
       const sel = selectorFromWire(raw[f], `${where}.target`, problems);
       if (!sel) return undefined;
       out[f] = sel;
-    } else out[f] = KEY_FIELDS.has(f) ? normalizeKey(raw[f]) : raw[f];
+    } else out[f] = KEY_FIELDS.has(f) && kind !== 'memory_state' ? normalizeKey(raw[f]) : raw[f];
   }
   return out as unknown as OutcomePredicate;
 }

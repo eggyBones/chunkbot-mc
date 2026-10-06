@@ -4,10 +4,14 @@
 //
 // Reserved first words: `stop`, `status`, `answer`, and the explicit `goal`
 // alias. Use `goal <text>` to send an instruction that starts with a reserved word.
+// `resume` is reserved only as the WHOLE command (MB-FLOW-002 pause latch):
+// "resume" clears the stop latch; "resume mining the tunnel" stays an instruction.
 
 export type ParsedCommand =
   | { kind: 'goal'; instruction: string; via: 'implicit' | 'goal_alias' }
   | { kind: 'stop' }
+  /** Clears the explicit pause latch set by `stop` (bare word only). */
+  | { kind: 'resume' }
   | { kind: 'status' }
   | { kind: 'answer'; ref?: string; reply: string }
   | { kind: 'operator'; verb: OperatorVerb }
@@ -36,6 +40,9 @@ export function parseCommandBody(body: string): ParsedCommand {
       return { kind: 'stop' };
     case 'status':
       return { kind: 'status' };
+    case 'resume':
+      if (rest.length === 0) return { kind: 'resume' };
+      return { kind: 'goal', instruction: text, via: 'implicit' };
     case 'goal':
       return { kind: 'goal', instruction: rest, via: 'goal_alias' };
     case 'answer': {

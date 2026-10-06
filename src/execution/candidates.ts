@@ -79,11 +79,14 @@ function addSelector(s: TaskSpec['targetSelectors'][number], hints: TaskHints): 
     case 'prior_result':
       hints.priorResults.push(s.actionId);
       return;
+    case 'memory_ref':
+      hints.memoryRefs.push(s.refId);
+      return;
   }
 }
 
 export function taskHints(task: TaskSpec): TaskHints {
-  const hints: TaskHints = { keys: [], handles: [], wantsOwner: false, anchors: [], destinations: [], priorResults: [], outputs: [], parameters: task.parameters ?? {} };
+  const hints: TaskHints = { keys: [], handles: [], wantsOwner: false, anchors: [], destinations: [], priorResults: [], outputs: [], parameters: task.parameters ?? {}, memoryRefs: [] };
   for (const s of task.targetSelectors ?? []) addSelector(s, hints);
   walkPredicate(task.completion, hints);
   hints.keys = [...new Set(hints.keys)];

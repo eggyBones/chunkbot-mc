@@ -4,6 +4,7 @@
 import { z } from 'zod';
 import { BOUNDS, RegistryKeySchema } from './common.ts';
 import { TargetSelectorSchema } from './selector.ts';
+import { MemoryStatePredicateSchema } from './memory.ts';
 
 const count = z.number().int().min(1).max(10_000);
 const distance = z.number().positive().max(1_024);
@@ -65,6 +66,8 @@ export const AtomicPredicateSchema = z.discriminatedUnion('predicate', [
       outcome: z.enum(['observed_defeated', 'observed_present']),
     })
     .strict(),
+  /** MB-MEM-001: a durable LOCAL memory write (not a world effect), evaluated by the memory store. */
+  MemoryStatePredicateSchema,
 ]);
 export type AtomicPredicate = z.infer<typeof AtomicPredicateSchema>;
 export type PredicateKind = AtomicPredicate['predicate'];

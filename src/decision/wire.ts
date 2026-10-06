@@ -67,7 +67,13 @@ export interface ValidatedDecision {
   omittedOptions: number;
 }
 
-export type ValidationResult = { ok: true; value: ValidatedDecision } | { ok: false; kind: DecisionFailureKind; detail: string; usageTrusted?: { costUsd: number } };
+/** Usage of a response whose envelope, model, provider and price checks passed (trusted even when the answer is unusable). */
+export interface TrustedUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+export type ValidationResult = { ok: true; value: ValidatedDecision } | { ok: false; kind: DecisionFailureKind; detail: string; usageTrusted?: TrustedUsage };
 
 /** A dated snapshot of the requested model (`typesafe/jev-1.13-20260917`) or the exact requested id. */
 export function modelMatches(requested: string, actual: string): boolean {
@@ -113,7 +119,7 @@ export function validateResponse(raw: unknown, ctx: ValidationContext): Validati
   const answer = r.answers[QUESTION_KEY];
   const admitted = new Set(ctx.criteriaKeys);
   // From here usage is trustworthy even if the answer is unusable.
-  const trusted = { costUsd: usage.costUsd };
+  const trusted: TrustedUsage = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costUsd: usage.costUsd };
   if (!admitted.has(answer.choice)) return { ok: false, kind: 'invalid_response', detail: `choice ${answer.choice.slice(0, 40)} is not an offered option`, usageTrusted: trusted };
   const keys = Object.keys(answer.probabilities);
   const foreign = keys.filter((k) => !admitted.has(k));

@@ -23,6 +23,7 @@ import {
   StaticCapabilityRegistry,
 } from '../src/goals/not-ready.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
+import { PlannerError } from '../src/planner/errors.ts';
 
 export const tick = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -60,8 +61,16 @@ export class ScriptedPlanner implements PlannerPort {
     this.requests.push(request);
     this.signals.push(signal);
     this.log.push(`planner:request:${request.instruction}`);
-    signal.addEventListener('abort', () => this.log.push(`planner:aborted:${request.instruction}`), { once: true });
-    return new Promise((resolve, reject) => this.pending.push({ resolve, reject }));
+    // Like a real adapter (PlannerPort: "must honor the abort signal"), an aborted
+    // turn's process ends: the promise rejects `aborted`. Non-cooperative planners
+    // are covered separately (tests/handoff-slot.test.ts).
+    return new Promise((resolve, reject) => {
+      this.pending.push({ resolve, reject });
+      signal.addEventListener('abort', () => {
+        this.log.push(`planner:aborted:${request.instruction}`);
+        reject(new PlannerError('aborted', 'turn aborted'));
+      }, { once: true });
+    });
   }
   respond(proposal: unknown): void {
     const next = this.pending.shift();

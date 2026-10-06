@@ -11,9 +11,10 @@
 // The per-turn input is rendered from contract data only (filtered snapshot,
 // catalog descriptors, knowledge results, verified feedback, counters,
 // limits). Raw loaded-world data never reaches this path.
-import type { CapabilityCatalog, ObservationSnapshot, PlannerRequest, TaskFeedback } from '../contracts/index.ts';
+import type { CapabilityCatalog, MemoryView, ObservationSnapshot, PlannerRequest, TaskFeedback } from '../contracts/index.ts';
+import { MEMORY_PLANNER_INSTRUCTIONS, renderMemoryView } from '../memory/render.ts';
 
-export const PLANNER_INSTRUCTIONS_VERSION = 'gameplay-planner-v1';
+export const PLANNER_INSTRUCTIONS_VERSION = 'gameplay-planner-v3';
 
 export const PLANNER_INSTRUCTIONS = `You are the gameplay planner for "Chunkbot", a companion player in Minecraft Java Edition. You turn the owner's open-ended instruction into a verifiable outcome and a short window of executable steps. You do not play directly.
 
@@ -51,7 +52,12 @@ Evidence and revisions
 - feedback lists earlier tasks with code-verified status, structured unavailability reasons (e.g. missing_ingredients, workstation_required, harvest_tool_missing, no_visible_target, no_safe_path, outside_travel_bounds) and recent action results. Use them to choose recovery steps. Do not repeat a step that just failed for the same reason without changing something.
 - outcomeStatus is the latest code evaluation of the accepted outcome. admission.counts is the server-confirmed inventory when the goal was admitted.
 - rejection lists problems with your previous reply; fix them exactly.
-- Keep interpretation short (one or two sentences) and state assumptions the owner should know (quantity, which item, possession versus new acquisition).`;
+- goal.status "preparing": the owner sent a NEW instruction while Chunkbot is still doing earlier work (preparation.continuingTask). It is not admitted yet. Plan it exactly like a first turn; code revalidates your plan when the new instruction takes over (fresh observation, server-confirmed admission inventory, re-grounded handles) and asks you again if it went stale. The inventory you see is provisional (it may change before the switch); state quantities relative to the admission inventory as usual.
+- turnKind "lookahead": the current window's last task (lookahead.runningTask) is still running. Plan the NEXT window assuming that task succeeds; code discards your plan if it fails or the outcome is already met, and revalidates it against fresh state before use. Repeat acceptedOutcome exactly.
+- Keep interpretation short (one or two sentences) and state assumptions the owner should know (quantity, which item, possession versus new acquisition).
+
+${MEMORY_PLANNER_INSTRUCTIONS}
+- While preparing (goal.status "preparing"), memory facts carry prepRef (mprep-...) instead of ref; use {"kind":"memory_ref","refId":"mprep-N"} in that draft. Code re-grounds it to the same remembered fact when the instruction takes over, or asks you again.`;
 
 const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 const r1 = (n: number) => Math.round(n * 10) / 10;
@@ -111,6 +117,22 @@ function renderFeedback(f: TaskFeedback): unknown {
   };
 }
 
+/**
+ * The bounded memory view (MB-MEM-001). The memory module renders the facts;
+ * for a preparation subject the non-executable prepRef (mprep-) is added, since
+ * that is the only reference a draft may use.
+ */
+function renderMemory(view: MemoryView): unknown {
+  const doc = renderMemoryView(view) as { facts?: Array<Record<string, unknown>> } | null;
+  if (!doc || !Array.isArray(doc.facts)) return doc;
+  const byId = new Map(view.facts.map((f) => [f.id, f]));
+  doc.facts = doc.facts.map((f) => {
+    const src = byId.get(String(f['id']));
+    return src?.prepRef && !src.ref ? { ...f, prepRef: src.prepRef } : f;
+  });
+  return doc;
+}
+
 const MAX_PROMPT_CHARS = 120_000;
 
 /** The bounded JSON document for one planner turn. */
@@ -122,7 +144,9 @@ export function renderRequest(request: PlannerRequest, windowSteps: number): str
     const doc = {
       kind: 'chunkbot-planner-turn',
       goal: {
-        goalId: request.goalId,
+        ...(request.subject.kind === 'goal'
+          ? { goalId: request.subject.goalId, status: 'admitted' }
+          : { intentId: request.subject.intentId, status: 'preparing', activeGoalId: request.subject.activeGoalId }),
         ownerInstruction: clip(request.instruction, 2_000),
         clarifications: request.clarifications.map((c) => ({ ref: c.ref, question: clip(c.question, 500), ownerAnswer: clip(c.answer, 1_000) })),
         ownerCoordinates: request.ownerCoordinates ?? [],
@@ -130,6 +154,8 @@ export function renderRequest(request: PlannerRequest, windowSteps: number): str
         maxTurns: request.maxTurns,
         turnKind: request.turnKind ?? 'initial',
       },
+      ...(request.preparation ? { preparation: { continuingTask: request.preparation.continuingTask ? clip(request.preparation.continuingTask, 300) : null, inventory: request.preparation.inventory, note: clip(request.preparation.note, 400) } } : {}),
+      ...(request.lookahead ? { lookahead: { runningTask: clip(request.lookahead.runningTask, 300), note: clip(request.lookahead.note, 400) } } : {}),
       ...(request.rejection ? { rejection: { problems: request.rejection.problems.slice(0, 12).map((p) => clip(p, 300)) } } : {}),
       accepted: request.acceptedOutcome ? { outcome: request.acceptedOutcome, interpretation: request.acceptedInterpretation ?? null, outcomeStatus: request.outcomeStatus ?? null } : null,
       admission: request.admission ?? null,
@@ -140,6 +166,7 @@ export function renderRequest(request: PlannerRequest, windowSteps: number): str
       feedback: feedback.map(renderFeedback),
       knowledge,
       observation: renderObservation(request.observation, maxBlocks),
+      ...(request.memory ? { memory: renderMemory(request.memory) } : {}),
       mechanicsVersion: request.mechanicsVersion ?? null,
       catalog: renderCatalog(request.catalog),
     };

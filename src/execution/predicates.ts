@@ -15,7 +15,10 @@ import { createRequire } from 'node:module';
 import type {
   BoundPredicate,
   InventoryBaseline,
+  MemoryPredicatePort,
+  MemoryRefResolver,
   OutcomePredicate,
+  PredicateOwner,
   PredicateEvaluation,
   PredicateEvaluator,
   TargetSelector,
@@ -47,7 +50,12 @@ export interface PredicateDeps {
   services: SkillServices;
   session: () => GameSession | undefined;
   leases: ActuatorLeases;
+  /** MB-MEM-001 (optional): memory_ref targets and memory_state evaluation; absent => unknown. */
+  memory?: MemoryRefResolver & MemoryPredicatePort;
 }
+
+/** Baseline key of the memory write sequence captured when a memory_state predicate is bound. */
+export const MEMORY_SEQ_BASELINE = 'memory:seq';
 
 export class PredicateEngine implements PredicateEvaluator {
   private readonly deps: PredicateDeps;
@@ -121,7 +129,7 @@ export class PredicateEngine implements PredicateEvaluator {
     return { ...base, counts, detail: `server-synced player inventory at admission (${Object.keys(counts).length} item types)` };
   }
 
-  async bind(predicate: OutcomePredicate, signal: AbortSignal, admission?: InventoryBaseline): Promise<BoundPredicate> {
+  async bind(predicate: OutcomePredicate, signal: AbortSignal, admission?: InventoryBaseline, owner?: PredicateOwner): Promise<BoundPredicate> {
     const baselines: Record<string, number> = {};
     // A goal outcome bound later measures acquisition from the ADMISSION counts.
     const inv = admission ? undefined : await this.inventory(signal);
@@ -132,6 +140,9 @@ export class PredicateEngine implements PredicateEvaluator {
       else if (p.predicate === 'inventory_delta' || (p.predicate === 'inventory_amount' && p.mode === 'collect_additional')) {
         const counts = admission ? fromAdmission : inv?.counts;
         baselines[`inv:${p.selector}`] = counts ? countMatching(counts, p.selector, this.deps.services) : Number.NaN;
+      } else if (p.predicate === 'memory_state' && this.deps.memory && !(MEMORY_SEQ_BASELINE in baselines)) {
+        // Monotonic write sequence (never a timestamp): older or same-millisecond writes cannot satisfy it.
+        baselines[MEMORY_SEQ_BASELINE] = this.deps.memory.memoryBaseline();
       }
     };
     visit(predicate);
@@ -143,6 +154,7 @@ export class PredicateEngine implements PredicateEvaluator {
       latched: new Set(),
       lifecycleMark: admission?.lifecycleMark ?? this.deps.services.ledger.invalidations.length,
       ...(admission ? (admission.connectionEpoch !== undefined ? { connectionEpoch: admission.connectionEpoch } : {}) : s ? { connectionEpoch: s.connectionEpoch } : {}),
+      ...(owner ? { owner: { goalId: owner.goalId, goalEpoch: owner.goalEpoch } } : {}),
     };
     return bound;
   }
@@ -221,7 +233,7 @@ export class PredicateEngine implements PredicateEvaluator {
       case 'near_target':
       case 'visited_location': {
         if (!s) return result('unknown', 'not connected');
-        const target = this.position(p.target, s);
+        const target = this.position(p.target, s, bound);
         if ('unknown' in target) return result('unknown', target.unknown);
         if (p.predicate === 'near_target') {
           const e = s.bot.entity.position;
@@ -234,7 +246,7 @@ export class PredicateEngine implements PredicateEvaluator {
       }
       case 'block_state': {
         if (!s) return result('unknown', 'not connected');
-        const target = this.position(p.target, s);
+        const target = this.position(p.target, s, bound);
         if ('unknown' in target) return result('unknown', target.unknown);
         const x = Math.floor(target.at.x);
         const y = Math.floor(target.at.y);
@@ -265,7 +277,7 @@ export class PredicateEngine implements PredicateEvaluator {
       }
       case 'container_state': {
         if (!s) return result('unknown', 'not connected');
-        const target = this.position(p.target, s);
+        const target = this.position(p.target, s, bound);
         if ('unknown' in target) return result('unknown', target.unknown);
         const rec = services.ledger.latestContainer(String(s.bot.game.dimension), Math.floor(target.at.x), Math.floor(target.at.y), Math.floor(target.at.z));
         if (!rec) return result('unknown', `contents of ${target.label} have not been observed on this connection since the last lifecycle interruption; inspect it first`);
@@ -315,12 +327,29 @@ export class PredicateEngine implements PredicateEvaluator {
         const gone = !s.bot.entities[id];
         return result(gone ? 'unknown' : 'unsatisfied', gone ? 'entity is gone but no death status was observed; not counted as defeated' : 'entity still present', { entityId: id, gone });
       }
+      case 'memory_state': {
+        const memory = this.deps.memory;
+        if (!memory) return result('unknown', 'memory is not installed in this run');
+        if (!bound.owner) return result('unknown', 'memory_state needs an owning goal; operator diagnostics do not evaluate it');
+        const baseline = bound.baselines[MEMORY_SEQ_BASELINE];
+        if (baseline === undefined || !Number.isFinite(baseline)) return result('unknown', 'no memory write-sequence baseline was bound');
+        const m = memory.evaluateMemoryState(p, { memoryBaseline: baseline });
+        return { status: m.status, predicate: 'memory_state', detail: m.detail, evidence: { ...m.evidence, memoryBaseline: baseline, confirmation: 'local_memory_store' } };
+      }
     }
   }
 
-  private position(sel: TargetSelector, s: GameSession): { at: { x: number; y: number; z: number }; label: string; remembered?: boolean } | { unknown: string } {
+  private position(sel: TargetSelector, s: GameSession, bound?: Bound): { at: { x: number; y: number; z: number }; label: string; remembered?: boolean } | { unknown: string } {
     const { services } = this.deps;
     switch (sel.kind) {
+      case 'memory_ref': {
+        const memory = this.deps.memory;
+        if (!memory) return { unknown: 'memory is not installed in this run' };
+        if (!bound?.owner) return { unknown: 'memory refs resolve only for their owning goal; this predicate has no goal owner' };
+        const r = memory.resolveRef(sel.refId, { goalEpoch: bound.owner.goalEpoch, goalId: bound.owner.goalId, connectionEpoch: s.connectionEpoch, dimension: String(s.bot.game.dimension) });
+        if ('error' in r) return { unknown: `memory ref ${sel.refId} does not resolve (${r.error}): ${r.detail}` };
+        return { at: r.at, label: `remembered ${r.category} "${r.label}"`, remembered: true };
+      }
       case 'owner': {
         const owner = Object.values(s.bot.entities).find((e) => e && services.perception.isOwnerEntity(s.bot, e));
         if (!owner || !services.perception.entityVisibleNow(owner.id)) return { unknown: 'owner not currently visible; a remembered position does not prove presence' };

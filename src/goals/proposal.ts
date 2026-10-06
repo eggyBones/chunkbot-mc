@@ -63,6 +63,12 @@ export interface ProposalContext {
   ownerCoordinates?: readonly OwnerCoordinate[];
   /** Action ids of verified prior results of this goal. */
   priorResults?: ReadonlySet<string>;
+  /**
+   * MB-MEM-001: memory refs shown to THIS subject. `executable` (mref-) for an
+   * admitted goal; `prepared` (mprep-) for a preparation draft (re-grounded at
+   * admission). Absent: memory is not installed (memory selectors/predicates rejected).
+   */
+  memory?: { refs: ReadonlySet<string>; kind: 'executable' | 'prepared' };
 }
 
 const MAX_PROBLEMS = 12;
@@ -140,7 +146,18 @@ class Checker {
         return;
       case 'prior_result':
         return this.prior(s.actionId, where);
+      case 'memory_ref':
+        return this.memoryRef(s.refId, where);
     }
+  }
+
+  memoryRef(refId: string, where: string): void {
+    const m = this.ctx.memory;
+    if (!m) return this.add(`${where}: memory is not installed in this run; memory_ref targets are unavailable`);
+    const prepared = refId.startsWith('mprep-');
+    if (m.kind === 'executable' && prepared) return this.add(`${where}: ${refId} is a preparation reference; use the mref- refs shown in this request`);
+    if (m.kind === 'prepared' && !prepared) return this.add(`${where}: ${refId} is not a reference shown while preparing (use the mprep- refs shown in this request)`);
+    if (!m.refs.has(refId)) this.add(`${where}: memory ref ${refId} was not shown to the planner for this ${m.kind === 'executable' ? 'goal' : 'preparation'} (invented or expired reference)`);
   }
 
   predicate(p: OutcomePredicate, where: string): void {
@@ -182,6 +199,9 @@ class Checker {
         if (p.target.kind !== 'observed' && p.target.kind !== 'owner') this.add(`${where}.target: entity outcomes are evaluated only for an observed entity handle or the owner`);
         else if (p.target.kind === 'owner' && p.outcome === 'observed_defeated') this.add(`${where}: owner defeat is not an evaluated outcome`);
         return this.selector(p.target, `${where}.target`);
+      case 'memory_state':
+        if (!this.ctx.memory) this.add(`${where}: memory is not installed in this run; memory_state cannot be evaluated`);
+        return;
     }
   }
 

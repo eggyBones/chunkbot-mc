@@ -7,7 +7,9 @@ import { GoalOutcomeContractSchema, type GoalOutcomeContract } from './predicate
 import { TaskSpecSchema } from './task.ts';
 import type { CapabilityCatalog } from './capability.ts';
 import type { ClarificationExchange } from './clarification.ts';
-import type { GoalId, RequestId } from './ids.ts';
+import type { RequestId } from './ids.ts';
+import type { LookaheadContext, PlanningSubject, PreparationContext } from './handoff.ts';
+import type { MemoryView } from './memory.ts';
 import type { ObservationSnapshot } from './observation.ts';
 import type { TaskFeedback } from './task.ts';
 
@@ -69,6 +71,10 @@ export interface GoalCounters {
   replans: number;
   windows: number;
   tasksAdmitted: number;
+  /** Turns spent while this instruction was prepared before admission (MB-FLOW-002; included in plannerTurns). */
+  preparationTurns: number;
+  /** Speculative next-window turns started while a window's last task ran (included in plannerTurns). */
+  lookaheads: number;
 }
 
 /** Coordinates the OWNER typed (parsed by code from the instruction or a correlated answer); the only admissible owner_destination values. */
@@ -89,6 +95,14 @@ export interface PriorResultRef {
   dimension: string;
 }
 
+export const PLANNER_TURN_KINDS = ['initial', 'knowledge', 'repair', 'retry', 'clarification', 'replan', 'lookahead'] as const;
+export type PlannerTurnKind = (typeof PLANNER_TURN_KINDS)[number];
+
+/** Correlation id of a request's subject for evidence (goal id or intent id). */
+export function subjectRef(subject: PlanningSubject): string {
+  return subject.kind === 'goal' ? subject.goalId : subject.intentId;
+}
+
 /** Server-confirmed inventory captured at goal ADMISSION (before the first planner turn). */
 export interface AdmissionInventory {
   capturedAtMs: number;
@@ -100,7 +114,8 @@ export interface AdmissionInventory {
 /** Everything a planner turn receives. Contains no Minecraft library objects. */
 export interface PlannerRequest {
   requestId: RequestId;
-  goalId: GoalId;
+  /** What this turn plans for: an admitted goal, or a non-admitted pending instruction (H-G1). */
+  subject: PlanningSubject;
   /** The owner's instruction verbatim (bounded). Open-ended natural language. */
   instruction: string;
   turn: number;
@@ -112,7 +127,16 @@ export interface PlannerRequest {
   /** Verified results and structured recovery evidence from earlier task windows of this goal (bounded). */
   feedback?: readonly TaskFeedback[];
   /** Why this turn happens (first turn, knowledge continuation, repair, retry, clarification answer, replan). */
-  turnKind?: 'initial' | 'knowledge' | 'repair' | 'retry' | 'clarification' | 'replan';
+  turnKind?: PlannerTurnKind;
+  /** Preparation subject only: the old task continues; the draft is revalidated at admission. */
+  preparation?: PreparationContext;
+  /** `lookahead` turns only: the current window's last task is still running. */
+  lookahead?: LookaheadContext;
+  /**
+   * MB-MEM-001: bounded memory view for THIS subject (goal: executable mref-
+   * refs; preparation: non-executable mprep- refs). Absent when memory is not installed.
+   */
+  memory?: MemoryView;
   /** Admission-bound inventory baseline (all items), kept for the goal's lifetime. */
   admission?: AdmissionInventory;
   /** The accepted, immutable goal outcome once a first plan was admitted. */

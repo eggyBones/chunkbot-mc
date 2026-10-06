@@ -87,7 +87,14 @@ export interface GamePort {
 
 export interface ObservationPort {
   readiness(): Readiness;
+  /** A bounded, filtered snapshot. Read-only towards the game (no packets, actuator, interface or resync). */
   snapshot(goalEpoch: Epoch): Promise<ObservationSnapshot | null>;
+  /**
+   * Re-grounds a handle from an earlier snapshot to the SAME target in a newer
+   * snapshot of the same connection/dimension; undefined when it is no longer
+   * produced. Never a fallback to another target (MB-FLOW-002 draft revalidation).
+   */
+  translateHandle?(fromSnapshotId: string, handle: string, toSnapshotId: string): string | undefined;
 }
 
 export interface KnowledgePort {
@@ -120,11 +127,23 @@ export interface CandidateGenerator {
   generate(task: TaskSpec, snapshot: ObservationSnapshot): CandidateSet;
 }
 
+/**
+ * The goal (and epoch) that owns a bound predicate. Ownership-fenced evidence
+ * (MB-MEM-001 memory refs) resolves only for this owner; without an owner such
+ * predicates evaluate `unknown`.
+ */
+export interface PredicateOwner {
+  goalId: string;
+  goalEpoch: Epoch;
+}
+
 /** A predicate with its admission-bound baselines (opaque to callers). */
 export interface BoundPredicate {
   readonly predicate: OutcomePredicate;
   readonly boundAtMs: number;
   readonly baselines: Readonly<Record<string, number>>;
+  /** Owning goal/epoch when bound for goal work (absent for operator diagnostics). */
+  readonly owner?: PredicateOwner;
 }
 
 /**
@@ -149,7 +168,7 @@ export interface PredicateEvaluator {
    * `baseline`, acquisition baselines come from that admission-time inventory
    * (and the binding time is the baseline's capture time).
    */
-  bind(predicate: OutcomePredicate, signal: AbortSignal, baseline?: InventoryBaseline): Promise<BoundPredicate>;
+  bind(predicate: OutcomePredicate, signal: AbortSignal, baseline?: InventoryBaseline, owner?: PredicateOwner): Promise<BoundPredicate>;
   evaluate(bound: BoundPredicate, signal: AbortSignal): Promise<PredicateEvaluation>;
   /** Captures the full server-confirmed inventory for a goal admission baseline. */
   captureBaseline?(signal: AbortSignal): Promise<InventoryBaseline>;

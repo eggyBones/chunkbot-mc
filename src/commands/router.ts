@@ -7,6 +7,8 @@ import type { ParsedCommand } from './parse.ts';
 export interface CommandTarget {
   submitGoal(instruction: string, origin: IntakeOrigin): Promise<void>;
   stop(origin: IntakeOrigin): Promise<void>;
+  /** Clears the explicit pause latch (MB-FLOW-002). */
+  resume?(origin: IntakeOrigin): void;
   status(origin: IntakeOrigin): void;
   answer(reply: string, ref: string | undefined, origin: IntakeOrigin): void;
   invalid(detail: string, origin: IntakeOrigin): void;
@@ -23,6 +25,9 @@ export async function routeCommand(command: ParsedCommand, origin: IntakeOrigin,
       return target.submitGoal(command.instruction, origin);
     case 'stop':
       return target.stop(origin);
+    case 'resume':
+      if (!target.resume) return target.invalid('resume is not available', origin);
+      return target.resume(origin);
     case 'status':
       return target.status(origin);
     case 'answer':

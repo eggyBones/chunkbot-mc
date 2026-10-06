@@ -52,7 +52,7 @@ export async function runPlannerCheck(loaded: LoadedConfig, io: PlannerCheckIo):
   // 1. one real planning turn (no game connected)
   const request: PlannerRequest = {
     requestId: randomIds.next('req'),
-    goalId: 'goal-plannercheck',
+    subject: { kind: 'goal', goalId: 'goal-plannercheck', goalEpoch: 0 },
     instruction: 'craft a wooden pickaxe',
     turn: 1,
     maxTurns: config.limits.plannerTurnsPerGoal,
