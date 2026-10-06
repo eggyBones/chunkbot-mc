@@ -325,8 +325,8 @@ export class ChunkbotApp implements CommandTarget {
   resume(origin: IntakeOrigin): void {
     const { wasPaused } = this.engine.resume(origin.surface);
     const text = wasPaused
-      ? 'Resumed: the stop latch is cleared. Nothing earlier is replayed; send an instruction to start work.'
-      : 'Not paused; nothing to resume.';
+      ? 'Resumed: automatic work is allowed again. Nothing earlier is replayed and nothing new was started.'
+      : 'Automatic work is not paused; nothing to resume.';
     this.deps.out(`[chunkbot] ${text}`);
     if (origin.surface === 'chat') this.deps.game.replyToOwner(text);
   }

@@ -1,11 +1,14 @@
 // The single owned planner PROCESS (MB-FLOW-002). Goal turns, owner-instruction
 // preparation and goal-owned window lookahead all start their planner turn
-// through this slot: a turn starts only after the previous turn's process has
-// settled (bounded wait), so there is never more than one planner process.
-// Owner preparation takes priority over speculative lookahead: it aborts a
-// lookahead turn in flight and then waits (bounded) for that process cleanup.
-// If a previous process does not settle in time the next turn still starts and
-// the adapter refuses it honestly (one turn in flight); nothing is bypassed.
+// through this slot.
+//
+// Serialization is strict (MB-FLOW-002-C1): the slot's tail is chained so that
+// every ticket's successor waits for the ACTUAL settlement of every earlier
+// turn. A caller whose wait exceeds the bound (or whose owner is revoked while
+// waiting) gets a bounded FAILURE and starts nothing; its skipped ticket never
+// releases later work past a still-running earlier turn. Owner preparation
+// takes priority over speculative lookahead: it aborts a lookahead turn in
+// flight, then waits (bounded) for that process to settle.
 
 export type PlannerSlotKind = 'goal' | 'preparation' | 'lookahead';
 
@@ -17,24 +20,46 @@ interface Holder {
 export interface SlotTicket {
   /** Bind the started turn: the slot is held until it settles (process cleanup done). */
   started(turn: Promise<unknown>): void;
-  /** The owner did not start a turn after all (revoked while waiting). */
+  /** No turn will be started (owner revoked after acquisition): releases this ticket only. */
   skip(): void;
 }
 
-async function bounded(work: Promise<unknown>, ms: number): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([work.then(() => true, () => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), ms)))]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+export type SlotAcquisition =
+  | { ok: true; ticket: SlotTicket }
+  /** Nothing was started. `timeout`: an earlier planner process is still running after the bound. */
+  | { ok: false; reason: 'timeout' | 'aborted' };
+
+/** Resolves 'settled' when `work` settles, 'timeout' after `ms`, 'aborted' when any signal aborts. */
+function waitBounded(work: Promise<unknown>, ms: number, signals: readonly AbortSignal[]): Promise<'settled' | 'timeout' | 'aborted'> {
+  if (signals.some((s) => s.aborted)) return Promise.resolve('aborted');
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (r: 'settled' | 'timeout' | 'aborted') => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      for (const s of signals) s.removeEventListener('abort', onAbort);
+      resolve(r);
+    };
+    const onAbort = () => finish('aborted');
+    const timer = setTimeout(() => finish('timeout'), ms);
+    for (const s of signals) s.addEventListener('abort', onAbort, { once: true });
+    void work.then(
+      () => finish('settled'),
+      () => finish('settled'),
+    );
+  });
 }
 
 export class PlannerSlot {
+  /** Settles only after every turn handed out so far has settled (or was never started). */
   private tail: Promise<void> = Promise.resolve();
   private holder: Holder | undefined;
   private readonly waitMs: number;
   private readonly onWaitTimeout: ((kind: PlannerSlotKind) => void) | undefined;
+  /** Turns currently running (started and not settled); never above 1. */
+  running = 0;
+  maxRunning = 0;
 
   constructor(waitMs: number, onWaitTimeout?: (kind: PlannerSlotKind) => void) {
     this.waitMs = waitMs;
@@ -53,33 +78,51 @@ export class PlannerSlot {
     return true;
   }
 
-  /** Waits until the previous turn's process settled (bounded), then hands out a ticket. */
-  async acquire(kind: PlannerSlotKind, abort: AbortController): Promise<SlotTicket> {
+  /**
+   * Waits until every earlier turn's process settled (bounded by `waitMs`, or
+   * until `abort`/`owner` aborts). Only then may the caller start its turn.
+   */
+  async acquire(kind: PlannerSlotKind, abort: AbortController, owner?: AbortSignal): Promise<SlotAcquisition> {
     const previous = this.tail;
     const mine = Promise.withResolvers<void>();
-    this.tail = mine.promise;
+    // The successor waits for the earlier turns AND this one: skipping this
+    // ticket can never release later work past a still-running earlier turn.
+    this.tail = previous.then(() => mine.promise);
     if (kind === 'preparation') this.preemptLookahead('owner instruction preparation takes priority');
-    const settled = await bounded(previous, this.waitMs);
-    if (!settled) this.onWaitTimeout?.(kind);
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
+    const waited = await waitBounded(previous, this.waitMs, owner ? [abort.signal, owner] : [abort.signal]);
+    if (waited !== 'settled') {
       mine.resolve();
-    };
+      if (waited === 'timeout') this.onWaitTimeout?.(kind);
+      return { ok: false, reason: waited };
+    }
+    let started = false;
     return {
-      started: (turn) => {
-        const holder: Holder = { kind, abort };
-        this.holder = holder;
-        void turn.then(
-          () => undefined,
-          () => undefined,
-        ).finally(() => {
-          if (this.holder === holder) this.holder = undefined;
-          finish();
-        });
+      ok: true,
+      ticket: {
+        started: (turn) => {
+          if (started) return;
+          started = true;
+          const holder: Holder = { kind, abort };
+          this.holder = holder;
+          this.running += 1;
+          this.maxRunning = Math.max(this.maxRunning, this.running);
+          void turn
+            .then(
+              () => undefined,
+              () => undefined,
+            )
+            .finally(() => {
+              this.running -= 1;
+              if (this.holder === holder) this.holder = undefined;
+              mine.resolve();
+            });
+        },
+        skip: () => {
+          if (started) return;
+          started = true;
+          mine.resolve();
+        },
       },
-      skip: finish,
     };
   }
 }

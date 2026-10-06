@@ -58,7 +58,7 @@ export function renderStatusLines(input: StatusInput): string[] {
   }
   const gap = e.windowGaps.at(-1);
   if (gap) lines.push(`last window gap: ${gap.gapMs} ms after window ${gap.afterWindow} of ${gap.goalId} (${gap.source}${gap.revalidationMs !== undefined ? `, revalidation ${gap.revalidationMs} ms` : ''})`);
-  if (e.latch.paused) lines.push(`paused: stop latch set${e.latch.source ? ` from ${e.latch.source}` : ''}; autonomous follow-up work stays off until resumed (owner instructions are still accepted)`);
+  if (e.latch.paused) lines.push(`Automatic work paused (stop${e.latch.source ? ` from ${e.latch.source}` : ''}); automatic follow-on work stays off until \`resume\`${e.goal && !e.goal.terminal ? '; the current goal is owner-commanded and runs normally' : ''}`);
   if (input.engine.lastTask) {
     const t = input.engine.lastTask;
     lines.push(`last task: ${t.taskId} ${t.status} (${t.reason}) decisions=${t.decisions} actions=${t.actions} localContinuations=${t.localContinuations} — ${t.detail}`);
@@ -76,6 +76,6 @@ export function renderStatusChat(input: StatusInput): string {
   const planner = input.engine.readiness.planner.ready ? 'planner ready' : 'planner not ready';
   const p = input.engine.pending;
   const pendingPart = p ? `, new instruction ${p.state === 'awaiting_owner' && p.pendingClarification ? `awaiting ${p.pendingClarification.ref}` : p.state}` : '';
-  const paused = input.engine.latch.paused ? ', paused' : '';
+  const paused = input.engine.latch.paused ? ', automatic work paused' : '';
   return `Status: ${input.connection}, goal ${goalPart}${pendingPart}${paused}, ${planner}, ${input.engine.readiness.capabilityCount} capabilities`;
 }

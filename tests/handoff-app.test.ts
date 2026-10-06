@@ -88,8 +88,17 @@ describe('smooth handoff through the application', () => {
     assert.equal(h.app.engine.status().pending, undefined);
     assert.equal(h.planner.signals[1]?.aborted, true);
     await h.app.handleTerminalLine('status');
-    assert.ok(h.lines.some((l) => /\[status\] paused: stop latch set from chat/.test(l)));
+    assert.ok(h.lines.some((l) => /\[status\] Automatic work paused \(stop from chat\); automatic follow-on work stays off until `resume`/.test(l)));
     assert.ok(h.lines.some((l) => /handoff totals: preparations 1 \(handed off 0, discarded 1; discarded planner turns 1\/40/.test(l)));
+    // An explicit owner goal still runs while automatic work stays paused; it is never labeled paused.
+    await h.app.handleTerminalLine('follow me');
+    await until(() => h.tasks.runs.length === 2 && h.app.engine.status().goal?.state === 'executing');
+    const from = h.lines.length;
+    await h.app.handleTerminalLine('status');
+    const statusLines = h.lines.slice(from);
+    assert.ok(statusLines.some((l) => /\[status\] goal: goal-0002 executing "follow me"/.test(l)));
+    assert.ok(statusLines.some((l) => /Automatic work paused .*the current goal is owner-commanded and runs normally/.test(l)));
+    assert.ok(!statusLines.some((l) => /goal: .*(stopped|paused)/i.test(l)));
     await h.app.shutdown('operator_quit');
   });
 
@@ -99,12 +108,12 @@ describe('smooth handoff through the application', () => {
     assert.deepEqual(parseChatLine('!chunkbot resume mining the tunnel', '!chunkbot'), { kind: 'goal', instruction: 'resume mining the tunnel', via: 'implicit' });
     const h = await readyApp();
     h.game.chat({ kind: 'player', text: '!chunkbot resume', ...OWNER });
-    await until(() => h.game.replies.includes('Not paused; nothing to resume.'));
+    await until(() => h.game.replies.includes('Automatic work is not paused; nothing to resume.'));
     h.game.chat({ kind: 'player', text: '!chunkbot stop', ...OWNER });
     await until(() => h.app.engine.status().latch.paused);
     assert.equal(h.app.engine.autonomyAllowed(), false);
     h.game.chat({ kind: 'player', text: '!chunkbot resume', ...OWNER });
-    await until(() => h.game.replies.some((r) => r.startsWith('Resumed: the stop latch is cleared')));
+    await until(() => h.game.replies.some((r) => r.startsWith('Resumed: automatic work is allowed again')));
     assert.equal(h.app.engine.autonomyAllowed(), true);
     assert.equal(h.planner.count, 0, 'resume starts nothing and replays nothing');
     await h.app.shutdown('operator_quit');

@@ -463,7 +463,7 @@ export class GoalEngine {
     this.deps = deps;
     this.flow = { ...DEFAULT_FLOW, ...deps.flow };
     this.totals = { preparations: 0, handedOff: 0, discarded: 0, discardedTurns: 0, discardedTurnAllowance: this.flow.preparationTurnsPerRun, transferredTurns: 0, lookaheadTurns: 0, lookaheadsUsed: 0, lookaheadsDiscarded: 0 };
-    this.slot = new PlannerSlot(deps.limits.cleanupTimeoutMs, (kind) => deps.store.record({ type: 'planner_slot_wait_timeout', kind, detail: 'the previous planner process did not settle within the cleanup bound; the adapter refuses a second turn in flight' }));
+    this.slot = new PlannerSlot(deps.limits.cleanupTimeoutMs, (kind) => deps.store.record({ type: 'planner_slot_wait_timeout', kind, detail: 'an earlier planner process did not settle within the cleanup bound; this turn was not started (bounded failure)' }));
   }
 
   get currentEpoch(): number {
@@ -473,6 +473,11 @@ export class GoalEngine {
   /** True while a goal owns control (planning, awaiting the owner, executing, stopping). */
   get hasActiveGoal(): boolean {
     return this.active !== undefined;
+  }
+
+  /** Planner processes running now / at most so far (single-process invariant evidence). */
+  get plannerProcesses(): { running: number; maxRunning: number } {
+    return { running: this.slot.running, maxRunning: this.slot.maxRunning };
   }
 
   /** True while a new owner instruction is being prepared (not admitted). */
@@ -1361,13 +1366,18 @@ export class GoalEngine {
     const turnAbort = new AbortController();
     const onOwnerAbort = () => turnAbort.abort(new Error('owner revoked'));
     owner.signal.addEventListener('abort', onOwnerAbort, { once: true });
-    const ticket = await this.slot.acquire(owner.kind, turnAbort);
-    if (owner.signal.aborted || turnAbort.signal.aborted) {
-      ticket.skip();
+    const acquired = await this.slot.acquire(owner.kind, turnAbort, owner.signal);
+    if (!acquired.ok || owner.signal.aborted || turnAbort.signal.aborted) {
+      if (acquired.ok) acquired.ticket.skip();
       owner.signal.removeEventListener('abort', onOwnerAbort);
       if (owner.signal.aborted) throw new StaleWorkError();
+      if (!acquired.ok && acquired.reason === 'timeout') {
+        // MB-FLOW-002-C1: an earlier planner process is still running; never start a second one.
+        return { failure: { kind: 'process_error', detail: `an earlier planner process did not finish within ${limits.cleanupTimeoutMs}ms; no second planner process was started` } };
+      }
       return { failure: { kind: 'aborted', detail: 'planner turn preempted before it started' } };
     }
+    const ticket = acquired.ticket;
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;

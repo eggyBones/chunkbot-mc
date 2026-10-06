@@ -499,9 +499,9 @@ async function main(): Promise<void> {
       await sleep(2_000);
       const p2 = await serverPos();
       chunkbot.send('status');
-      const paused = await chunkbot.waitFor(/\[status\] paused: stop latch set/, 5_000);
+      const paused = await chunkbot.waitFor(/\[status\] Automatic work paused/, 5_000);
       const r = say(o, 'resume');
-      const resumed = await lineSince(/\[chunkbot\] Resumed: the stop latch is cleared/, r.from, 5_000);
+      const resumed = await lineSince(/\[chunkbot\] Resumed: automatic work is allowed again/, r.from, 5_000);
       const lease = revoked[0];
       const cancelMs = cancelled.atMs - sentAt;
       ev.push(`stop -> goal cancelled line ${cancelMs} ms; lease revoke ${lease ? `${tOf(lease) - sentAt} ms after stop, clearMs=${lease.clearMs}` : 'none (no action held the lease at the stop)'}; pending discarded: ${Boolean(discarded)}`);
