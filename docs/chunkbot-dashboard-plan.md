@@ -1,6 +1,6 @@
 # MB-UI-001 — Local Chunkbot dashboard for a second monitor
 
-Reported: 2026-10-06. Status: **Authorized in [batch001](feature-batch-001-plan.md); waiting for the initial public rebrand push; unassigned.**
+Reported: 2026-10-06. Status: **Assigned in [batch001](feature-batch-001-plan.md); native Opus5.5 implementation in progress in an isolated worktree.**
 Parent: [companion upgrades](companion-upgrades-plan.md).
 
 ## Outcome and happy path
@@ -100,6 +100,12 @@ Gate D-G4: does the pinned Codex CLI support the documented read-only quota prot
 | D11 | Coordinator proves the supported Codex quota read under the pinned profile, or records its concrete unavailability and verifies the fallback. Core local token/OpenRouter-spend display is delivered either way, without exposing credentials or broadening gameplay tools. |
 
 Run typecheck/build/test and doctor when app/CLI/config is touched. Run connection/lifecycle checks for publishing integration; skill checks if inventory/evidence paths change. Browser validation uses T3's collaborative preview when implementation is assigned. Add focused state-projection, stream/lifecycle and meaningful browser checks; a new test command must be implemented/documented before being required.
+
+## Coordinator gate D-G4 — 2026-10-06
+
+The installed CLI0.160.0 generated the documented account/rateLimits/read schema. A bounded coordinator probe under the same proven managed ChatGPT/file credential store sent only initialize, initialized, account/read with refreshToken:false, and account/rateLimits/read with reset-credit details excluded and reserve fallback disabled. It returned a codex primary quota window; no secondary window was fabricated. No thread, inference turn, login/logout or reset-credit consumption occurred. Raw account/auth envelopes were discarded; normalized source/scope/window/time evidence is under ignored var/batch001/codex-quota-proof.json. [Official protocol](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
+
+The optional observer may use this supported route with bounded/coalesced polling and strict normalization; runtime auth/version/transport failures still display unavailable. Account-wide remaining percentage is observational and cannot authorize spending, model fallback or resumption. The feature worker receives the decision; adapter/browser acceptance remains pending.
 
 ## Remaining delivery
 

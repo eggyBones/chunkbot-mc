@@ -1,6 +1,6 @@
 # MB-NAME-001 Chunkbot rebrand review
 
-Status: branding independently verified with the existing J1 fixture limitation documented; publication pending. Reported 2026-10-05 America/Phoenix.
+Status: complete; branding and public initial push independently verified, with the existing J1 fixture limitation documented. Reported 2026-10-05 America/Phoenix.
 
 Jake chose Chunkbot and authorized a public repository at `eggyBones/chunkbot-mc`. Native Claude Opus 5.5 performed the main implementation through the verified local DSH subscription route; Codex reviewed the complete diff and owns acceptance and publication.
 
@@ -46,4 +46,4 @@ Evidence: `var/rebrand/coordinator-checks.json`, `coordinator-remaining.json`, f
 
 Private configs, Microsoft caches, runtime data, node_modules, dist, `.env*`, `.codex/` and `.claude/` are ignored and excluded from the explicit staged paths. All 218 staged blobs and 1,514 regular files inside the 4 vendor archives passed branding and credential-pattern checks. The same bytes were compared in memory against 20 actual credential values from Microsoft, OpenRouter, Codex and GitHub:0 matches, with no values or matching lines written to evidence. Bot-account sign-in email and private profile screenshot references were removed from publishable historical prose.
 
-Repository-local commit identity uses eggyBones's GitHub noreply address. The first commit will contain only the reviewed files, with no earlier private runtime history. Public owner, visibility and remote commit verification remain pending.
+Repository-local commit identity uses eggyBones's GitHub noreply address. The initial commit contains only the reviewed files, with no earlier private runtime history. [https://github.com/eggyBones/chunkbot-mc](https://github.com/eggyBones/chunkbot-mc) is public, owned by eggyBones, with default main. Local and remote SHA `d5eb2fa7826f783354c3a65081cbff151267eb50` match; push verified at2026-10-06T07:19:47.950245Z. Evidence: ignored `var/rebrand/publication.json`.

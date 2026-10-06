@@ -1,6 +1,6 @@
 # MB-MEM-001 — Persistent gameplay memory
 
-Reported: 2026-10-06. Status: **Authorized in [batch001](feature-batch-001-plan.md); waiting for the initial public rebrand push; unassigned.**
+Reported: 2026-10-06. Status: **Assigned in [batch001](feature-batch-001-plan.md); native Opus5.5 implementation in progress in an isolated worktree.**
 Parent: [companion upgrades](companion-upgrades-plan.md). Consumer: [default progression](autonomous-progression-plan.md).
 Related consumer: [MB-FLOW-003 survival routines/death recovery](survival-routines-plan.md).
 

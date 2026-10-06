@@ -1,10 +1,10 @@
 # Chunkbot rebrand and public repository
 
-ID: MB-NAME-001. Reported: 2026-10-05 America/Phoenix. Owner: Codex. Status: branding accepted with the inherited J1 fixture limitation documented; publication pending.
+ID: MB-NAME-001. Reported: 2026-10-05 America/Phoenix. Owner: Codex. Status: complete; public initial push verified, with the inherited J1 fixture limitation documented.
 
 ## Outcome and Jake's decisions
 
-Jake chose **Chunkbot** as the project name and authorized renaming the codebase, including every occurrence of the old project name, and creating a new **public** GitHub repository at `eggyBones/chunkbot-mc`. GitHub CLI is already authenticated as eggyBones; the destination repository does not exist. This checkout has no Git history yet.
+Jake chose **Chunkbot** as the project name and authorized renaming the codebase, including every occurrence of the old project name, and creating a new **public** GitHub repository at `eggyBones/chunkbot-mc`. At intake, GitHub CLI was authenticated as eggyBones, the destination did not exist, and this checkout had no Git history. The reviewed initial commit is now published.
 
 ## Scope and coordinator assumptions
 
@@ -29,7 +29,7 @@ Jake chose **Chunkbot** as the project name and authorized renaming the codebase
 - DSH is running locally at 127.0.0.1:3080. Existing project workers are idle. Both loopback fixtures are running; the live application is stopped.
 - Integration-loaded SDK0.3.280 freshly resolves `opus[1m]` to `claude-opus-5-5[1m]` on the local Claude Team subscription. Worker `session-cb088f14-b97d-4fe4-a578-5aca4d18d5ee` performs the main implementation; one cleanup continuation is queued.
 - Private default configuration migration is complete and preserves the real Microsoft identity, server and token cache. Candidate source and every regular entry in the four vendor archives passed credential-pattern scans. Jake reiterated the explicit exclusion of Minecraft, OpenRouter and Codex credentials; exact staged contents will be compared with actual credentials in memory before pushing.
-- Final source and isolated clean-install checks pass 297/297. Both doctors, vendor byte-rebuild, official data and connection/skills/fault-controller/compatibility checks pass. The initial 26.2 skills setup failure passed one bounded rerun. Independent real subscription isolation/cancel probes, both fault-Jev planner suites 19/19 and both real-Jev planner suites 19/19 pass. Both real Jev diagnostics pass; each full real controller suite is 11/12 due to the inherited J1 finding below. Source and built bytes stayed frozen. [Independent review](reviews/mb-name-001-chunkbot.md). Publication remains pending.
+- Final source and isolated clean-install checks pass 297/297. Both doctors, vendor byte-rebuild, official data and connection/skills/fault-controller/compatibility checks pass. The initial 26.2 skills setup failure passed one bounded rerun. Independent real subscription isolation/cancel probes, both fault-Jev planner suites 19/19 and both real-Jev planner suites 19/19 pass. Both real Jev diagnostics pass; each full real controller suite is 11/12 due to the inherited J1 finding below. Source and built bytes stayed frozen. [Independent review](reviews/mb-name-001-chunkbot.md). Publication is verified: [https://github.com/eggyBones/chunkbot-mc](https://github.com/eggyBones/chunkbot-mc), public owner eggyBones/default main, initial local/remote commit `d5eb2fa7826f783354c3a65081cbff151267eb50`. No credentials or private runtime files were included.
 
 ## Validation finding MB-NAME-001-C1
 

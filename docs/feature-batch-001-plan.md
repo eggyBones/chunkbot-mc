@@ -1,6 +1,6 @@
 # Feature batch001 — Dashboard, handoff and gameplay memory
 
-Reported:2026-10-06 UTC. Status: authorized; implementation starts after MB-NAME-001 is finished and its initial public push is verified.
+Reported:2026-10-06 UTC. Status: native implementation in progress; MB-NAME-001 initial public push verified at commit `d5eb2fa7826f783354c3a65081cbff151267eb50`.
 
 Jake explicitly requested three features in parallel through the standing agent workflow, using native Claude Opus5.5 with full DSH permissions. One must be the dashboard. Codex selects smooth directive handoff and persistent gameplay memory as the two companion foundations.
 
@@ -27,13 +27,13 @@ The public repository must remain free of Minecraft, OpenRouter and Codex creden
 
 The live bot remains logged out under Jake's latest instruction. These features use loopback worlds and a local read-only viewer; no live reconnect or private server modifications are authorized. Existing acceptance failures unrelated to branding are preserved and scoped independently.
 
-Before launch, Codex still needs to finish the rebrand boundary, assign exact paths/contracts/worktrees/sessions, and record the concurrency and runtime leases in supervision. After launch, each feature needs implementation, independent child-plan acceptance, integrated source/build evidence and updated operator instructions. This document records authorization; it is not a launch receipt.
+All three native workers are executing from separate worktrees at the common published base. Exact paths, sessions, ownership and fixture restrictions are recorded in [supervision](agent-supervision.md); complete private briefs/receipts are under ignored var/batch001. Each feature still needs implementation, independent child-plan acceptance, integrated source/build evidence and operator instructions. No feature acceptance or live launch is claimed.
 
-## Working ownership proposal (verify against the published base before launch)
+## Assigned ownership
 
 - Handoff worker: goal/preparation scheduling and planner behavior; designated implementer for existing shared contracts, planner request/wire, CLI/config/manifests and app composition. Codex makes the shared design decisions and relays integration requests; this writer does not coordinate the other workers.
 - Memory worker: new memory contract/module, durable store/recorder/retrieval, memory skill/candidate/predicate adapters and focused tests. Propose required changes to existing planner/contracts/core composition through Codex rather than editing the designated writer's files.
 - Dashboard worker: new dashboard contract/module, typed status/usage projection, persistence/history, local server/static viewer, meaningful tests and feature documentation. Propose app/CLI/config hooks through Codex. Core viewer integration must be completed by the designated writer before acceptance.
-- Codex: shared-interface specification, cross-worker communication, branch/worktree registration, integration, all roadmap/supervision documents and provider/browser acceptance. Exact test-path ownership and shared extensions will be fixed in complete worker briefs, then recorded with actual sessions and commits.
+- Codex: shared-interface specification, cross-worker communication, branch/worktree registration, integration, all roadmap/supervision documents and provider/browser acceptance. Exact owned paths/test prefixes and shared extensions are fixed in the complete briefs; actual registered sessions/worktrees are recorded in supervision.
 
 Contract delivery is an initial dependency milestone, not the end of any assignment. New companion contract files can be developed independently; existing central exports/request/ports are single-writer paths. Codex can integrate a compiled contract milestone locally and rebase dependent worktrees before all three complete their real entry points. No worker may advertise an uninstalled capability or invent placeholder success to satisfy a consumer.
