@@ -1,0 +1,65 @@
+{
+  "$comment": "INFERENCE-FREE PROFILE of the trusted LOCAL 26.2 TEST FIXTURE (MB-SERVER-001; same as fixture-26.2.json with models.planner.mode = \"disabled\"): mechanic and controller checks use it so they never call the Codex planner; admitted natural-language goals end planner_not_ready. Loopback 127.0.0.1:25567 only. Contains no secrets. Not for Jake's real world.",
+  "minecraft": {
+    "host": "127.0.0.1",
+    "port": 25567,
+    "version": "26.2",
+    "joinTimeoutMs": 30000
+  },
+  "bot": {
+    "auth": "offline",
+    "username": "Chunkbot",
+    "trustedOfflineFixture": true
+  },
+  "owner": {
+    "name": "FixtureOwner"
+  },
+  "chat": {
+    "prefix": "!chunkbot",
+    "maxInstructionChars": 500,
+    "replyMode": "whisper",
+    "requireSignedChat": false
+  },
+  "storage": {
+    "dataDir": "var",
+    "keepRuns": 20,
+    "maxEventsPerRun": 5000,
+    "maxEventChars": 2000
+  },
+  "models": {
+    "planner": {
+      "provider": "codex-subscription",
+      "command": "codex",
+      "mode": "disabled",
+      "model": "gpt-6.1-sol",
+      "reasoningEffort": "low"
+    },
+    "decision": {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13",
+      "apiKeyEnv": "OPENROUTER_API_KEY"
+    }
+  },
+  "limits": {
+    "observationRadius": 32,
+    "travelRadius": 128,
+    "nearOwnerDistance": 3,
+    "planWindowSteps": 8,
+    "totalTaskCeiling": 64,
+    "decisionMaxOptions": 8,
+    "decisionConcurrentRequests": 1,
+    "decisionMinIntervalMs": 1000,
+    "decisionTimeoutMs": 5000,
+    "plannerTimeoutMs": 45000,
+    "plannerTurnsPerGoal": 20,
+    "goalDeadlineMs": 1200000,
+    "decisionRequestsPerGoal": 1200,
+    "noProgressMs": 30000,
+    "ownerLossMs": 10000,
+    "perTargetRetries": 2,
+    "replans": 8,
+    "lowHealth": 8,
+    "openRouterSpendCapUsd": 1,
+    "cleanupTimeoutMs": 2000
+  }
+}

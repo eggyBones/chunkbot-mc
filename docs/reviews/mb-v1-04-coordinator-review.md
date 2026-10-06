@@ -1,0 +1,37 @@
+# MB-V1-04 independent coordinator acceptance
+
+Accepted by Codex: 2026-10-06 UTC. Development: native Claude subscription worker `session-5cc2f441-1967-43ee-adf0-efb89a014e6c`, verified Opus5.5/high/full through local DSH. All PLAN-1 through PLAN-5 are verified locally against the separate vanilla26.1.2 fixture. Final V1 delivery remains MB-V1-05.
+
+## Evidence and check status
+
+Aggregate: `var/coordinator-review/2026-10-06T01-51-49Z-planner-window-final/report.json`,36 direct command results, all exit0, unchanged final source digest `c02bd5b1369f3cdee963f0c4b39bf19033f72c44e4db65551a1ade76d801bb99`. This includes27 independent probes, fresh check286 tests/typecheck/build, doctor, foundation16/16, corrected skills33/33, controller fault12/12, real subscription planner-check and the corrected real P0/P4 trial. Passing earlier checks remain valid: a per-file manifest proves the only subsequent source edits were the two specified live-check harnesses. Application source/config/tests/manifests are unchanged.
+
+The initial full real-provider suite `var/live-check/2026-10-06T01-34-50-901Z-planner-jev-real/report.json` finished18/19, harness exit1, with the sole failure an assertion that ignored later-window exploration (MB-PLAN-005). Its actual P4 goal completed correctly. The original report is retained as recorded. Fresh corrected real P0/P4 `var/live-check/2026-10-06T01-51-53-503Z-planner-jev-real/report.json` passed2/2, harness/CLI exit0, with zero in-trial interventions. Together they verify all19 distinct planner acceptance cases; this is not a claim that the original full command exited0.
+
+The built application is the same throughout: src sha-list `d164ea2074735aca63454fefc2a21e92b4e44f07325b293053c441b6602b6a24`; dist JS sha-list `c7a76aae3d6f26f66415f970767f9d3a5af19283f3f8d24f90c83be579362e7e`. Source/build correspondence and full worker handoffs were read. No Chunkbot/harness is retained. No Git initialization, commit, push or shared-server deployment occurred.
+
+## Verified behavior
+
+- Real normal owner-chat/terminal intake uses the isolated Codex subscription planner and the same generic task runtime/catalog. No goal/task intent enum or handlers for acceptance phrases were found. The20-capability catalog remains `skills-20-16f587b80d7a`.
+- Empty inventory: planner queries mechanics, chooses wood/planks/sticks/table/pickaxe prerequisites, then mines two NEW cobblestone and returns near the owner. Eight tasks, two planner turns,17 Jev choices, code/RCON verified.
+- Already-owned pickaxe: same resource goal becomes one mining task, omitting crafting/workstation prerequisites. RCON confirms two NEW cobblestone.
+- Clarification remains stationary8s with0 Jev calls. Correlated q1 continues the same goal. The corrected fresh trial searches through six windows/seven counted turns, uses a labeled remembered-owner waypoint to return to the original search area, sees the bread, executes server-confirmed pickup and returns1.53 blocks from the currently observed owner. Code/RCON verify bread1. No hidden position shortcut or intervention. The first exploratory windows never claimed goal completion.
+- Craft/store composition: planner queries recipes, gathers one log, crafts four new planks and stores exactly four in the chest; fresh server container evidence verifies the outcome.
+- Persistent follow stays active locally for32s, with one planner turn/one Jev decision. Eight owner-motion interventions are labeled. Control release occurred1ms after stop, clearMs0; terminal cancellation acknowledgement308ms is a separate measurement.
+- Removed-tool recovery is an INTERVENED trial: planner verifies the missing tool, rebuilds prerequisites, rejects/repairs one invalid proposal, and acquires two new cobblestone. Four plans/seven total turns/four windows keep one immutable accepted outcome.
+- Exact stone: recipe/fuel/smelting knowledge, furnace crafting/placement, input/fuel, local processing wait and output collection yield two `minecraft:stone`, not cobblestone or smooth stone. Two windows/four turns; code and RCON verify.
+- Unsupported enchantment gives exact missing interface/verification capabilities, stationary with0 Jev calls. Stop/replacement/death during real planning discard late work, retain admission anchors correctly and clean owned processes. Fault cases reject generated code/invented handles/owner coordinates, refuse auth/quota/API login, enforce counted turn/timeouts and reject reroutes/tools without billing fallback.
+
+Full suite setup:372 pretrial commands and11 labeled in-trial interventions (8 follow motion, tool removal, anchor correction, death). Autonomous resource/craft trials have0 interventions. Main real run97 validated Jev responses, all `typesafe/jev-1.13-20260917`/TypeSafe,125–3456ms, reconciledUSD0.00576597, retained/outstanding0 under cap1. Corrected trial36 validated responses, reconciledUSD0.002336922, retained/outstanding0.
+
+## Findings verified
+
+MB-PLAN-001: retain proven pid+start ownership across reparenting; real detached-child probe/regressions pass and unrelated processes survive. MB-PLAN-002: startup and every turn refuse API/absent/other/unrecognized login modes, pin status/exec to the same file store; independent fake-API probe, real positive gate and mode-change fault pass. MB-PLAN-003: actual same-target frontier re-grounding across snapshots, with invalid/lifecycle/blocked targets refused; independent probe and real exploration pass. MB-PLAN-004: independent visible chest preconditions in X4/I1, original cancellation assertions preserved; root33/33. MB-PLAN-005: evaluate goal-correlated exploration across all windows and preserve verified acquisition ordering; retained trace replay and fresh real P4 pass. The last two corrections changed harnesses only.
+
+## Subscription isolation and limits
+
+Independent `planner-check --probe --json` exit0: CLI0.160.0, managed ChatGPT file-store login, selected `gpt-6.1-sol`/low, restricted bundled catalog,40 pinned feature states (one documented inert unified-exec exception), neutral app-owned directory outside development markers, no tools/agents/MCP/skills/project docs and a secret-free environment allowlist. Tool self-report[] corroborates supported configuration; it is not the sole isolation proof. A real turn completed7212ms; in-flight cancellation cleaned four attributable PIDs in68ms with remaining[]. The CLI does not echo server-resolved model identity, so selection plus absence of reroute is the observable bound.
+
+Admission anchor is synchronous and the ALL-item inventory baseline is server-resynced before planning. First accepted outcome binds once and stays immutable; all turn kinds count and cumulative counters do not reset. Task/window completion alone never completes a goal. Source review confirms bounded repairs/retry, knowledge/replan windows, ledger-backed prior results/owner-typed coordinates, sticky prohibited-event rejection and post-await ownership fencing.
+
+Limitations are explicit in [worker evidence](mb-v1-04-planner.md): pinned CLI controls, file-store-only auth readiness, a milliseconds status/exec auth race,250ms descendant sampling and second-resolution process identity, model judgment/inefficiency, conservative vanilla interfaces and perception, exact26.1.2 mechanics. No online Microsoft-account/shared-server trial occurred. MB-V1-05 must add remaining delivery trials and operator reconciliation.

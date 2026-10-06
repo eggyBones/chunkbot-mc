@@ -1,0 +1,56 @@
+{
+  "name": "chunkbot-mc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI companion that joins Minecraft Java Edition as its own player and accepts open-ended natural-language goals from its owner.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "bin": {
+    "chunkbot": "dist/cli.js"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node scripts/clean-dist.ts && tsc -p tsconfig.build.json",
+    "test": "node --test --test-reporter=spec \"tests/**/*.test.ts\"",
+    "check": "npm run typecheck && npm run build && npm test",
+    "doctor": "node dist/cli.js doctor",
+    "chunkbot": "node dist/cli.js",
+    "fixture": "node scripts/fixture.ts",
+    "live-check": "node scripts/live-check.ts",
+    "skills-live-check": "node scripts/skills-live-check.ts",
+    "extract-version-data": "node scripts/extract-version-data.ts",
+    "jev-live-check": "node scripts/jev-live-check.ts",
+    "planner-live-check": "node scripts/planner-live-check.ts",
+    "vendor-compat": "node scripts/vendor-compat.ts",
+    "compat-live-check": "node scripts/compat-live-check.ts",
+    "verify-version-data": "node scripts/verify-version-data.ts"
+  },
+  "dependencies": {
+    "minecraft-data": "file:vendor/minecraft-data-3.117.0+chunkbot.26.2.1.tgz",
+    "minecraft-protocol": "1.68.0",
+    "mineflayer": "file:vendor/mineflayer-4.39.0+chunkbot.26.2.1.tgz",
+    "mineflayer-pathfinder": "2.4.5",
+    "prismarine-auth": "3.1.1",
+    "prismarine-block": "1.23.0",
+    "prismarine-chunk": "file:vendor/prismarine-chunk-1.41.0+chunkbot.26.2.1.tgz",
+    "prismarine-item": "1.18.0",
+    "prismarine-physics": "file:vendor/prismarine-physics-1.11.1+chunkbot.26.2.1.tgz",
+    "vec3": "0.1.10",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "7.0.2"
+  },
+  "overrides": {
+    "minecraft-data": "$minecraft-data",
+    "minecraft-protocol": "$minecraft-protocol",
+    "mineflayer": "$mineflayer",
+    "prismarine-auth": "$prismarine-auth",
+    "prismarine-chunk": "$prismarine-chunk",
+    "prismarine-physics": "$prismarine-physics"
+  }
+}

@@ -1,0 +1,300 @@
+{
+  "$comment": "MB-SERVER-001: pinned INPUTS of the vendored Minecraft Java 26.2 compatibility stack. scripts/vendor-compat.ts rebuilds every vendor/*.tgz from exactly these inputs (registry tarballs verified by sha512, upstream files verified by git blob SHA-1, recorded patches (upstream hunks, plus the MB-SERVER-002 26.2 attribute-id correction derived from the official 26.2 registry), each checked against before/after git blob SHA-1s) and checks the outputs recorded in vendor/compat-lock.json. Nothing here is upstream-released or upstream-tested as a set; see docs/reviews/mb-server-001-compatibility.md.",
+  "id": "MB-SERVER-001",
+  "profile": "26.2",
+  "buildSuffix": "chunkbot.26.2.1",
+  "packages": [
+    {
+      "name": "minecraft-data",
+      "baseVersion": "3.117.0",
+      "baseTarball": "https://registry.npmjs.org/minecraft-data/-/minecraft-data-3.117.0.tgz",
+      "baseIntegrity": "sha512-glKv0EEmVwKvJwdNAKAal2P7gi/nijU9rEMp8gJmqYYRVswS6hA0q9566lcGHH07Ocmpqw5bMRbARC25pR13gA==",
+      "upstream": {
+        "repository": "https://github.com/PrismarineJS/minecraft-data",
+        "branch": "pc_26_2",
+        "commit": "68ea7b59e7aa318be86cf265be45ee1b79572528",
+        "pullRequest": "https://github.com/PrismarineJS/minecraft-data/pull/1298",
+        "status": "merged 2026-09-19 into the first-party pc_26_2 branch (not master, not in any minecraft-data / node-minecraft-data release as of 2026-10-06)"
+      },
+      "overlay": [
+        {
+          "from": "data/pc/26.2/attributes.json",
+          "to": "minecraft-data/data/pc/26.2/attributes.json",
+          "blob": "2b89d11f5a1dbcdb223c0e5a8668dbac89c8e702"
+        },
+        {
+          "from": "data/pc/26.2/biomes.json",
+          "to": "minecraft-data/data/pc/26.2/biomes.json",
+          "blob": "c8e5b532c1026a924d94e73b0c67f90b88e7340c"
+        },
+        {
+          "from": "data/pc/26.2/blockCollisionShapes.json",
+          "to": "minecraft-data/data/pc/26.2/blockCollisionShapes.json",
+          "blob": "f7e54bd2fac8b95ddf16f54297d9a7a8e8cec62c"
+        },
+        {
+          "from": "data/pc/26.2/blockLoot.json",
+          "to": "minecraft-data/data/pc/26.2/blockLoot.json",
+          "blob": "718ff85c0b9c7f66ad7a265a1d0316eb17dc06c2"
+        },
+        {
+          "from": "data/pc/26.2/blocks.json",
+          "to": "minecraft-data/data/pc/26.2/blocks.json",
+          "blob": "3abc7d7360553d3b113d28daaf4e89bf4b43c698"
+        },
+        {
+          "from": "data/pc/26.2/commands.json",
+          "to": "minecraft-data/data/pc/26.2/commands.json",
+          "blob": "41f9f29dc773adf5ed6a6ddf0c76b03b9d45f087"
+        },
+        {
+          "from": "data/pc/26.2/entities.json",
+          "to": "minecraft-data/data/pc/26.2/entities.json",
+          "blob": "84d13f2e1774fb370ecef2c1938520d0cfd4deae"
+        },
+        {
+          "from": "data/pc/26.2/entityLoot.json",
+          "to": "minecraft-data/data/pc/26.2/entityLoot.json",
+          "blob": "c34da8d3b1ca42ae34ee007522c7d7aa6a5d317a"
+        },
+        {
+          "from": "data/pc/26.2/foods.json",
+          "to": "minecraft-data/data/pc/26.2/foods.json",
+          "blob": "d16978e1b775a89b49d0811bb57fe0e8491494cd"
+        },
+        {
+          "from": "data/pc/26.2/items.json",
+          "to": "minecraft-data/data/pc/26.2/items.json",
+          "blob": "b79e6b5d79e74bf4589f48d55bb6cf4fc3215be6"
+        },
+        {
+          "from": "data/pc/26.2/language.json",
+          "to": "minecraft-data/data/pc/26.2/language.json",
+          "blob": "63ff8cc02372c393be01d0b7786f2e859388c877"
+        },
+        {
+          "from": "data/pc/26.2/loginPacket.json",
+          "to": "minecraft-data/data/pc/26.2/loginPacket.json",
+          "blob": "930fddaec09a1ece20540e4474eb19221be4d10f"
+        },
+        {
+          "from": "data/pc/26.2/materials.json",
+          "to": "minecraft-data/data/pc/26.2/materials.json",
+          "blob": "4ffb625046eddf2206d75ccd8a8ab6054c06844c"
+        },
+        {
+          "from": "data/pc/26.2/particles.json",
+          "to": "minecraft-data/data/pc/26.2/particles.json",
+          "blob": "17abc18d01fe75c5fd6b553dc9dcdbd8cb4f3d9c"
+        },
+        {
+          "from": "data/pc/26.2/protocol.json",
+          "to": "minecraft-data/data/pc/26.2/protocol.json",
+          "blob": "d669defc1c79686d1aecd4144074428bea804f0d"
+        },
+        {
+          "from": "data/pc/26.2/recipes.json",
+          "to": "minecraft-data/data/pc/26.2/recipes.json",
+          "blob": "a155518381e62ec5029e76b1feeee8867487f1a6"
+        },
+        {
+          "from": "data/pc/26.2/sounds.json",
+          "to": "minecraft-data/data/pc/26.2/sounds.json",
+          "blob": "1d816092b01ec13cb1073236f493d9b4e2d5f542"
+        },
+        {
+          "from": "data/pc/26.2/tints.json",
+          "to": "minecraft-data/data/pc/26.2/tints.json",
+          "blob": "a8102d71e91c1e73c3fa1af12969921fc0fa7506"
+        },
+        {
+          "from": "data/pc/26.2/version.json",
+          "to": "minecraft-data/data/pc/26.2/version.json",
+          "blob": "bc26863fc1c352a124251fb727c9fd0f149677a5"
+        },
+        {
+          "from": "data/pc/1.20.3/windows.json",
+          "to": "minecraft-data/data/pc/1.20.3/windows.json",
+          "blob": "251774081468cb702211d84dc0809ecc122416dd"
+        },
+        {
+          "from": "data/pc/latest/proto.yml",
+          "to": "minecraft-data/data/pc/26.2/proto.yml",
+          "blob": "f763d53510b10bd039ad49378fed70913badad3c",
+          "note": "Upstream keeps the 26.2 source protocol at pc/latest. It is installed at pc/26.2 instead so the released 3.117.0 pc/latest/proto.yml (26.1's source) stays byte-identical."
+        }
+      ],
+      "edits": [
+        {
+          "file": "minecraft-data/data/dataPaths.json",
+          "description": "Insert pc[\"26.2\"] after pc[\"26.1\"], copied from upstream data/dataPaths.json (blob dcc8677ea5997d49f8d6375aa3e364e46027abc1) with proto pointing to pc/26.2 (see the proto.yml note). Every other entry is unchanged.",
+          "upstreamBlob": "dcc8677ea5997d49f8d6375aa3e364e46027abc1"
+        },
+        {
+          "file": "minecraft-data/data/pc/common/versions.json",
+          "description": "Append \"26.2\" after \"26.1\", as upstream data/pc/common/versions.json (blob c3528a56ceec206e827df379d027500976a9ea99) does.",
+          "upstreamBlob": "c3528a56ceec206e827df379d027500976a9ea99"
+        },
+        {
+          "file": "data.js",
+          "description": "Regenerated by the package's own bin/generate_data.js from the edited dataPaths.json."
+        }
+      ],
+      "notIncluded": "Upstream pc_26_2 also edits README.md, pc/common/features.json (re-adds entityActionUsesStringMapper, which the 3.117.0 release removed) and moves 26.1's proto source to pc/26.1/proto.yml. None of these are applied. Apart from the MB-SERVER-002 attribute key mapper (exact upstream #1254 hunks), 26.1 data, features and sources stay exactly as released in 3.117.0.",
+      "patches": [
+        {
+          "file": "vendor/patches/minecraft-data-pr1254-26.1-attribute-ids.patch",
+          "issue": "MB-SERVER-002",
+          "scope": "26.1 ClientboundUpdateAttributes key mapper only (data/pc/26.1/protocol.json and its source data/pc/latest/proto.yml). The exact upstream hunks for these two files, with paths prefixed minecraft-data/; the commit's other files (older versions) are not applied.",
+          "upstream": {
+            "repository": "https://github.com/PrismarineJS/minecraft-data",
+            "pullRequest": "https://github.com/PrismarineJS/minecraft-data/pull/1254",
+            "commit": "23303d2350177f2084f94cd38e5d7c8e54dfc8d3",
+            "status": "merged to master 2026-10-03; not in any release as of 2026-10-06"
+          },
+          "fileBlobs": {
+            "minecraft-data/data/pc/26.1/protocol.json": {
+              "before": "40ec5c782112a94fa451dbb55cfe94b5c4967b6e",
+              "after": "88005197a823570b6a17e571c06f5dd94e6f49cd"
+            },
+            "minecraft-data/data/pc/latest/proto.yml": {
+              "before": "fa11b541906814fd05cc32d83e09700b2c5f6dbe",
+              "after": "2838030901a120d652c19b82f236f47fcccb9791"
+            }
+          },
+          "note": "The 'after' blobs equal upstream's post-commit blobs (index lines of the upstream diff), i.e. these two files become byte-identical to upstream at 23303d23."
+        },
+        {
+          "file": "vendor/patches/minecraft-data-26.2-attribute-ids.patch",
+          "issue": "MB-SERVER-002",
+          "scope": "26.2 ClientboundUpdateAttributes key mapper only (data/pc/26.2/protocol.json and data/pc/26.2/proto.yml).",
+          "upstream": {
+            "status": "LOCAL correction; no upstream 26.2 fix exists as of 2026-10-06"
+          },
+          "derivation": "Entry i is the attribute with protocol_id i in the OFFICIAL 26.2 data-generator report registries.json minecraft:attribute (server jar sha1 823e2250d24b3ddac457a60c92a6a941943fcd6a; 40 entries). Labels follow the upstream #1254 convention: the existing library-facing labels (generic.*/player.*/zombie.* such as generic.armor and generic.movement_speed) are kept verbatim; attributes without a legacy label use the bare registry name (the five new 26.2 attributes included). Checked by scripts/verify-version-data.ts and tests/version-compat.test.ts against the official digest.",
+          "fileBlobs": {
+            "minecraft-data/data/pc/26.2/protocol.json": {
+              "before": "d669defc1c79686d1aecd4144074428bea804f0d",
+              "after": "b6c2ec86b8a10ee4f65c83e0c723c3fe44108bb2"
+            },
+            "minecraft-data/data/pc/26.2/proto.yml": {
+              "before": "f763d53510b10bd039ad49378fed70913badad3c",
+              "after": "d6a5a8df93dab1fecfe393490f69d07aaed1e0e5"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "prismarine-chunk",
+      "baseVersion": "1.41.0",
+      "baseTarball": "https://registry.npmjs.org/prismarine-chunk/-/prismarine-chunk-1.41.0.tgz",
+      "baseIntegrity": "sha512-KldSl3pDzPU7jcttxSYWNJ40rJMdiUxYvTpqXzqiQ3lIdNL1HAuJHPdscHcqlKJRB9Hw/cbFcROR1h5ncavY+Q==",
+      "upstream": {
+        "repository": "https://github.com/PrismarineJS/prismarine-chunk",
+        "pullRequest": "https://github.com/PrismarineJS/prismarine-chunk/pull/333",
+        "headCommit": "e3424f6308677fb3910d6b846394ec7055159445",
+        "headRepository": "DallasCarraher/prismarine-chunk",
+        "status": "open (unmerged) as of 2026-10-06"
+      },
+      "patches": [
+        {
+          "file": "vendor/patches/prismarine-chunk-pr333.patch",
+          "scope": "src/index.js only (maps pc 26.2 to the existing pc/1.18 chunk implementation, as for 26.1); the PR has no other file.",
+          "upstream": {
+            "pullRequest": "https://github.com/PrismarineJS/prismarine-chunk/pull/333",
+            "headCommit": "e3424f6308677fb3910d6b846394ec7055159445"
+          },
+          "fileBlobs": {
+            "src/index.js": {
+              "before": "b4a2abe473808307d513c25b1ed59c842879ba91",
+              "after": "ca4181cef1f6a838b2878e086a5ca2b5bbac5bf3"
+            }
+          },
+          "note": "'after' equals the blob of this file at the pull request head commit (byte-identical to the PR head)."
+        }
+      ]
+    },
+    {
+      "name": "prismarine-physics",
+      "baseVersion": "1.11.1",
+      "baseTarball": "https://registry.npmjs.org/prismarine-physics/-/prismarine-physics-1.11.1.tgz",
+      "baseIntegrity": "sha512-GO9Pqqg5Khs0YxvPqRXYi3Ep3/OoxnL3RtfMknrgddY0ogpT91bTna6HDTQXVeBinfCB3WU9vXaFoTND/3xqyA==",
+      "upstream": {
+        "repository": "https://github.com/PrismarineJS/prismarine-physics",
+        "pullRequest": "https://github.com/PrismarineJS/prismarine-physics/pull/143",
+        "headCommit": "7d697da70bffb3a24732f65a201bd5cb1f2a3c2b",
+        "headRepository": "DallasCarraher/prismarine-physics",
+        "status": "open (unmerged) as of 2026-10-06"
+      },
+      "patches": [
+        {
+          "file": "vendor/patches/prismarine-physics-pr143.patch",
+          "scope": "lib/features.json only (26.2 joins proportionalLiquidGravity). The PR's new test file is not part of the published package and is not vendored.",
+          "upstream": {
+            "pullRequest": "https://github.com/PrismarineJS/prismarine-physics/pull/143",
+            "headCommit": "7d697da70bffb3a24732f65a201bd5cb1f2a3c2b"
+          },
+          "fileBlobs": {
+            "lib/features.json": {
+              "before": "647ea481d2521ef1f4b19c18a1e9af4857272a5a",
+              "after": "d55e4406c43805d6355b03f4a5c6f36df8a92856"
+            }
+          },
+          "note": "'after' equals the blob of this file at the pull request head commit (byte-identical to the PR head)."
+        }
+      ]
+    },
+    {
+      "name": "mineflayer",
+      "baseVersion": "4.39.0",
+      "baseTarball": "https://registry.npmjs.org/mineflayer/-/mineflayer-4.39.0.tgz",
+      "baseIntegrity": "sha512-HptE++dIG55aRmT7GIj3QComS6MhEXstE3RJSuYMFhLtobsQhJJsqWmY9ObfiLp84MrS6Q4Em+wUH0rVQMXLJw==",
+      "upstream": {
+        "repository": "https://github.com/PrismarineJS/mineflayer",
+        "pullRequest": "https://github.com/PrismarineJS/mineflayer/pull/4121",
+        "headCommit": "206986b4c10da0212e3d7301c21a82ea5c7c127d",
+        "headRepository": "DallasCarraher/mineflayer",
+        "status": "open (unmerged) as of 2026-10-06"
+      },
+      "patches": [
+        {
+          "file": "vendor/patches/mineflayer-pr4121.patch",
+          "scope": "lib/version.js only. Mineflayer's loader refuses any server newer than the last testedVersions entry; this entry is a LOCAL compatibility admission, not upstream testing. The application reports 26.2 as locally verified (MB-SERVER-001), never as Mineflayer-tested.",
+          "upstream": {
+            "pullRequest": "https://github.com/PrismarineJS/mineflayer/pull/4121",
+            "headCommit": "206986b4c10da0212e3d7301c21a82ea5c7c127d"
+          },
+          "fileBlobs": {
+            "lib/version.js": {
+              "before": "7cfaa698f8a54284fea833dec5f8c7e5df6ae9c6",
+              "after": "921e3478f149ebb2f466b2e03a140cff9a0bbbcc"
+            }
+          },
+          "note": "'after' equals the blob of this file at the pull request head commit (byte-identical to the PR head)."
+        },
+        {
+          "file": "vendor/patches/mineflayer-mb-server-002-attribute-resource-keys.patch",
+          "issue": "MB-SERVER-002",
+          "scope": "lib/plugins/entities.js updateAttributes only. Each decoded attribute is ALSO stored under its exact registry resource (bot.registry.attributesArray[].resource, e.g. minecraft:movement_speed) when that resource exists for the connected version and differs from the decoded label; the same object is shared, and the legacy decoded label (generic.movement_speed, generic.armor, ...) stays for other consumers such as explosion.js.",
+          "upstream": {
+            "status": "LOCAL correction; upstream mineflayer master and prismarine-physics master still store only the decoded label while physics reads the resource (checked 2026-10-06)"
+          },
+          "reason": "prismarine-physics reads entity.attributes[registry.attributesByName.movementSpeed.resource] = 'minecraft:movement_speed'; without this alias every server movement-speed value/modifier is ignored and physics falls back to its 0.1 default.",
+          "fileBlobs": {
+            "lib/plugins/entities.js": {
+              "before": "9fcb6f9ce28fdc2387d023bbff1cf5a19bbd6748",
+              "after": "16da2eb0ea2597eaa59c8a5883568530383de8fb"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "notVendored": [
+    {
+      "name": "minecraft-protocol",
+      "reason": "Client-only use. PrismarineJS/node-minecraft-protocol#1529 (merged 2026-10-03, unreleased) only changes the nmp SERVER's login success packet; Chunkbot never runs an nmp server. The client takes 26.2 directly from minecraft-data and has no version allowlist."
+    }
+  ]
+}

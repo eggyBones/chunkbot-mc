@@ -1,0 +1,21 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Runtime storage: run evidence, Microsoft auth caches, the local fixture
+# server/world/JRE, and any operator configuration copied from examples.
+var/
+chunkbot.config.json
+*.local.json
+
+# Secrets must come from the environment, never from files in this repository.
+.env
+.env.*
+
+# Local agent and credential storage (Codex, Claude Code): never published.
+.codex/
+.claude/
+
+# OS/editor noise
+.DS_Store
+*.log

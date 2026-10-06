@@ -1,0 +1,34 @@
+{
+  "successfulTurn": {
+    "gate": "G-03",
+    "route": "codex exec (managed subscription)",
+    "requestedModel": "gpt-6.1-sol",
+    "effort": "low",
+    "exitCode": 0,
+    "elapsedMs": 4503,
+    "stdout": "{\"type\":\"thread.started\",\"thread_id\":\"01a1094e-4946-7e11-baec-b1cb34243c6e\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"error\",\"message\":\"Under-development features enabled: skip_host_skill_discovery. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /Users/jakewilcox/.codex/config.toml.\"}}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_1\",\"type\":\"agent_message\",\"text\":\"{\\\"decision\\\":\\\"wait\\\",\\\"reason\\\":\\\"No active goal.\\\"}\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1674,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":22,\"reasoning_output_tokens\":0}}\n",
+    "stderr": ""
+  },
+  "inFlightCancellation": {
+    "gate": "G-03-cancellation",
+    "turnStarted": true,
+    "ownedPid": 27241,
+    "ownedProcessIds": [
+      27241
+    ],
+    "remainingOwnedPids": [],
+    "cancelElapsedMs": 3,
+    "exitCode": -15,
+    "events": "{\"type\":\"thread.started\",\"thread_id\":\"01a10950-c4f7-7df1-bf1d-6ec1c8088fcc\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"error\",\"message\":\"Under-development features enabled: skip_host_skill_discovery. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /Users/jakewilcox/.codex/config.toml.\"}}\n{\"type\":\"turn.started\"}\n",
+    "stderr": ""
+  },
+  "promptInspection": {
+    "exitCode": 0,
+    "messageCount": 2,
+    "repositoryInstructions": false,
+    "skillsInstructions": false,
+    "appsInstructions": false
+  },
+  "selectedModel": "gpt-6.1-sol",
+  "modelIdentityEvidence": "Explicit CLI model selection, matching scoped catalog, successful subscription turn. CLI JSON stream does not echo server-resolved model."
+}

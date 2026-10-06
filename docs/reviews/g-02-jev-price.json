@@ -1,0 +1,89 @@
+{
+  "checkedAt": "2026-10-05T01:09:30Z",
+  "checks": [
+    {
+      "name": "reject_zero_price",
+      "request": {
+        "model": "typesafe/jev-1.13",
+        "provider": {
+          "allow_fallbacks": false,
+          "max_price": {
+            "prompt": 0,
+            "completion": 0,
+            "request": 0
+          }
+        },
+        "state": {
+          "status": "idle",
+          "valid_actions": [
+            "wait"
+          ]
+        },
+        "questions": {
+          "next_action": {
+            "type": "choice",
+            "instructions": "Select the only valid action, wait.",
+            "criteria": {
+              "wait": "Remain idle; no game action."
+            }
+          }
+        }
+      },
+      "httpStatus": 404,
+      "latencyMs": 395,
+      "error": {
+        "message": "No endpoints found that satisfy the max price for this request",
+        "code": "404"
+      }
+    },
+    {
+      "name": "admit_verified_price",
+      "request": {
+        "model": "typesafe/jev-1.13",
+        "provider": {
+          "allow_fallbacks": false,
+          "max_price": {
+            "prompt": 0.042,
+            "completion": 0,
+            "request": 0
+          }
+        },
+        "state": {
+          "status": "idle",
+          "valid_actions": [
+            "wait"
+          ]
+        },
+        "questions": {
+          "next_action": {
+            "type": "choice",
+            "instructions": "Select the only valid action, wait.",
+            "criteria": {
+              "wait": "Remain idle; no game action."
+            }
+          }
+        }
+      },
+      "httpStatus": 200,
+      "latencyMs": 337,
+      "model": "typesafe/jev-1.13-20260917",
+      "provider": "TypeSafe",
+      "answers": {
+        "next_action": {
+          "type": "choice",
+          "choice": "wait",
+          "probabilities": {
+            "wait": 1
+          },
+          "confidence": 1
+        }
+      },
+      "usage": {
+        "input_tokens": 321,
+        "output_tokens": 25,
+        "cost": 1.3482e-05
+      }
+    }
+  ],
+  "priceFilterVerified": true
+}

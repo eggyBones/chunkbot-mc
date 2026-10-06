@@ -1,0 +1,34 @@
+diff --git a/lib/plugins/entities.js b/lib/plugins/entities.js
+index 9fcb6f9..16da2eb 100644
+--- a/lib/plugins/entities.js
++++ b/lib/plugins/entities.js
+@@ -577,14 +577,28 @@ function inject (bot) {
+     bot.emit('entityEffectEnd', entity, effect)
+   })
+ 
++  // MB-SERVER-002 (local, Chunkbot): the codec decodes attribute keys to legacy labels such as
++  // "generic.movement_speed", while prismarine-physics looks attributes up by the registry resource
++  // ("minecraft:movement_speed"). Index each decoded attribute under BOTH names (same object), so
++  // server movement-speed values reach physics and legacy-label consumers keep working.
++  let attributeResources
++  const attributeResource = (key) => {
++    if (typeof key !== 'string') return undefined
++    if (!attributeResources) attributeResources = new Set((bot.registry.attributesArray ?? []).map((a) => a.resource))
++    const resource = 'minecraft:' + key.replace(/^minecraft:/, '').replace(/^(generic|player|zombie)\./, '')
++    return resource !== key && attributeResources.has(resource) ? resource : undefined
++  }
+   const updateAttributes = (packet) => {
+     const entity = fetchEntity(packet.entityId)
+     if (!entity.attributes) entity.attributes = {}
+     for (const prop of packet.properties) {
+-      entity.attributes[prop.key] = {
++      const attribute = {
+         value: prop.value,
+         modifiers: prop.modifiers
+       }
++      entity.attributes[prop.key] = attribute
++      const resource = attributeResource(prop.key)
++      if (resource) entity.attributes[resource] = attribute
+     }
+     bot.emit('entityAttributes', entity)
+   }

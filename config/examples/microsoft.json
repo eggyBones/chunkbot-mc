@@ -1,0 +1,29 @@
+{
+  "$comment": "Online play template. Copy to chunkbot.config.json (git-ignored) and fill in host/version/owner UUID. The bot needs its OWN Microsoft account that owns Java Edition; sign it in with `npm run chunkbot -- auth login`. Never put tokens or API keys here: model keys are read from the environment variable named by apiKeyEnv.",
+  "minecraft": {
+    "host": "mc.example.net",
+    "port": 25565,
+    "version": "26.1.2",
+    "joinTimeoutMs": 30000
+  },
+  "bot": {
+    "auth": "microsoft",
+    "username": "chunkbot"
+  },
+  "owner": {
+    "uuid": "00000000-0000-0000-0000-000000000000"
+  },
+  "chat": {
+    "prefix": "!chunkbot",
+    "maxInstructionChars": 500,
+    "replyMode": "whisper",
+    "requireSignedChat": false
+  },
+  "storage": {
+    "dataDir": "var"
+  },
+  "models": {
+    "planner": { "provider": "codex-subscription", "command": "codex" },
+    "decision": { "provider": "openrouter", "model": "typesafe/jev-1.13", "apiKeyEnv": "OPENROUTER_API_KEY" }
+  }
+}

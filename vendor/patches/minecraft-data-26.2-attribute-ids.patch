@@ -1,0 +1,125 @@
+diff --git a/minecraft-data/data/pc/26.2/proto.yml b/minecraft-data/data/pc/26.2/proto.yml
+index f763d53..d6a5a8d 100644
+--- a/minecraft-data/data/pc/26.2/proto.yml
++++ b/minecraft-data/data/pc/26.2/proto.yml
+@@ -3034,13 +3034,16 @@
+       entityId: varint
+       properties: []varint
+          key: varint =>
++            - air_drag_modifier
+             - generic.armor
+             - generic.armor_toughness
+             - generic.attack_damage
+             - generic.attack_knockback
+             - generic.attack_speed
++            - below_name_distance
+             - player.block_break_speed
+             - player.block_interaction_range
++            - bounciness
+             - burning_time
+             - camera_distance
+             - explosion_knockback_resistance
+@@ -3048,15 +3051,21 @@
+             - generic.fall_damage_multiplier
+             - generic.flying_speed
+             - generic.follow_range
++            - friction_modifier
+             - generic.gravity
+             - generic.jump_strength
+             - generic.knockback_resistance
+             - generic.luck
+             - generic.max_absorption
+             - generic.max_health
++            - mining_efficiency
++            - movement_efficiency
+             - generic.movement_speed
++            - name_tag_distance
++            - oxygen_bonus
+             - generic.safe_fall_distance
+             - generic.scale
++            - sneaking_speed
+             - zombie.spawn_reinforcements
+             - generic.step_height
+             - submerged_mining_speed
+diff --git a/minecraft-data/data/pc/26.2/protocol.json b/minecraft-data/data/pc/26.2/protocol.json
+index d669def..b6c2ec8 100644
+--- a/minecraft-data/data/pc/26.2/protocol.json
++++ b/minecraft-data/data/pc/26.2/protocol.json
+@@ -9878,37 +9878,46 @@
+                           {
+                             "type": "varint",
+                             "mappings": {
+-                              "0": "generic.armor",
+-                              "1": "generic.armor_toughness",
+-                              "2": "generic.attack_damage",
+-                              "3": "generic.attack_knockback",
+-                              "4": "generic.attack_speed",
+-                              "5": "player.block_break_speed",
+-                              "6": "player.block_interaction_range",
+-                              "7": "burning_time",
+-                              "8": "camera_distance",
+-                              "9": "explosion_knockback_resistance",
+-                              "10": "player.entity_interaction_range",
+-                              "11": "generic.fall_damage_multiplier",
+-                              "12": "generic.flying_speed",
+-                              "13": "generic.follow_range",
+-                              "14": "generic.gravity",
+-                              "15": "generic.jump_strength",
+-                              "16": "generic.knockback_resistance",
+-                              "17": "generic.luck",
+-                              "18": "generic.max_absorption",
+-                              "19": "generic.max_health",
+-                              "20": "generic.movement_speed",
+-                              "21": "generic.safe_fall_distance",
+-                              "22": "generic.scale",
+-                              "23": "zombie.spawn_reinforcements",
+-                              "24": "generic.step_height",
+-                              "25": "submerged_mining_speed",
+-                              "26": "sweeping_damage_ratio",
+-                              "27": "tempt_range",
+-                              "28": "water_movement_efficiency",
+-                              "29": "waypoint_transmit_range",
+-                              "30": "waypoint_receive_range"
++                              "0": "air_drag_modifier",
++                              "1": "generic.armor",
++                              "2": "generic.armor_toughness",
++                              "3": "generic.attack_damage",
++                              "4": "generic.attack_knockback",
++                              "5": "generic.attack_speed",
++                              "6": "below_name_distance",
++                              "7": "player.block_break_speed",
++                              "8": "player.block_interaction_range",
++                              "9": "bounciness",
++                              "10": "burning_time",
++                              "11": "camera_distance",
++                              "12": "explosion_knockback_resistance",
++                              "13": "player.entity_interaction_range",
++                              "14": "generic.fall_damage_multiplier",
++                              "15": "generic.flying_speed",
++                              "16": "generic.follow_range",
++                              "17": "friction_modifier",
++                              "18": "generic.gravity",
++                              "19": "generic.jump_strength",
++                              "20": "generic.knockback_resistance",
++                              "21": "generic.luck",
++                              "22": "generic.max_absorption",
++                              "23": "generic.max_health",
++                              "24": "mining_efficiency",
++                              "25": "movement_efficiency",
++                              "26": "generic.movement_speed",
++                              "27": "name_tag_distance",
++                              "28": "oxygen_bonus",
++                              "29": "generic.safe_fall_distance",
++                              "30": "generic.scale",
++                              "31": "sneaking_speed",
++                              "32": "zombie.spawn_reinforcements",
++                              "33": "generic.step_height",
++                              "34": "submerged_mining_speed",
++                              "35": "sweeping_damage_ratio",
++                              "36": "tempt_range",
++                              "37": "water_movement_efficiency",
++                              "38": "waypoint_transmit_range",
++                              "39": "waypoint_receive_range"
+                             }
+                           }
+                         ]
