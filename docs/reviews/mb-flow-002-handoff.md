@@ -32,7 +32,7 @@ type PlanningSubject =
 
 A preparation has an `intent-…` id and no goal id. It owns no epoch, travel anchor, admission baseline, lease or interface. Every turn goes through one port and the engine's `PlannerSlot`: goal turns, preparation turns and window lookahead. That is how the single-planner-process invariant holds structurally. A second port would have let the preparation path bypass the adapter's one-turn-in-flight guard.
 
-Preparation requests also carry `preparation: { continuingTask, inventory: 'provisional_client_model', note }`. Lookahead requests carry `lookahead: { runningTask, note }` with `turnKind: 'lookahead'`. The prompt version is `gameplay-planner-v2`, with two added instruction lines. **This needs the coordinator's real-planner acceptance.**
+Preparation requests also carry `preparation: { continuingTask, inventory: 'provisional_client_model', note }`. Lookahead requests carry `lookahead: { runningTask, note }` with `turnKind: 'lookahead'`. The prompt version is now `gameplay-planner-v3`: two handoff lines (`preparing`, `lookahead`), plus the memory paragraph and the prepared-ref rule. **This needs the coordinator's real-planner acceptance.**
 
 ## Gate H-G2: what continues during preparation (offline answer, live probe pending)
 
@@ -59,7 +59,7 @@ The fixture probe (follow plus an inventory-changing gathering task) is scenario
 | `src/goals/goal-engine.ts` | pending lifecycle (`startPreparation`, `prepare`, `handoff`, `discardPending`), parking, admission transfer, draft revalidation, lookahead, latch, status |
 | `src/goals/planner-slot.ts` (new) | single planner process: each turn starts after the previous process settled (bounded wait); owner preparation preempts lookahead |
 | `src/goals/reground.ts` (new) | pure draft re-grounding into a fresh snapshot |
-| `src/planner/prompt.ts`, `codex-planner.ts`, `planner-check.ts` | subject rendering and evidence (`goalId` or `intentId`); instructions v2 |
+| `src/planner/prompt.ts`, `codex-planner.ts`, `planner-check.ts` | subject rendering and evidence (`goalId` or `intentId`); memory view rendering; instructions v3 |
 | `src/config/schema.ts` | optional `flow: { handoff: 'smooth' \| 'immediate', lookahead: boolean, preparationTurnsPerRun }` (defaults `smooth`, `true`, `40`) |
 | `src/app/app.ts`, `status.ts`, `doctor.ts` | flow and connection-epoch wiring; status lines for pending instruction, parking, totals, window gap and latch; `resume`; doctor `flow` line |
 | `src/commands/parse.ts`, `router.ts` | bare `resume` command (any longer text stays an instruction) |
