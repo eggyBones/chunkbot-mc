@@ -214,6 +214,8 @@ export function runDoctor(configPath: string, env: NodeJS.ProcessEnv = process.e
     add('info', 'perceive', `line-of-sight perception, radius ${config.limits.observationRadius}, travel radius ${config.limits.travelRadius}; no hidden ores, no global player positions`);
     add('info', 'navigate', `pathfinder policy: ${Object.entries(NAVIGATION_POLICY).map(([k, v]) => `${k}=${Array.isArray(v) ? (v.length ? `[${v.length} items]` : "[]") : String(v)}`).join(' ')}`);
     add('info', 'goals', `open-ended goal intake with the ${pl.mode === 'codex' ? 'Codex subscription planner' : 'planner DISABLED'}, rolling task windows (<= ${config.limits.planWindowSteps} steps, <= ${config.limits.totalTaskCeiling} tasks, <= ${config.limits.plannerTurnsPerGoal} planner turns incl. knowledge/repairs/retries/clarifications/replans, deadline ${Math.round(config.limits.goalDeadlineMs / 60_000)} min), the generic Jev task controller and code-verified outcomes; /diag runs operator mechanic diagnostics; /task runs operator task-controller diagnostics`);
+    const fl = config.flow;
+    add('info', 'flow', `directive handoff ${fl.handoff === 'smooth' ? 'SMOOTH: a new owner instruction is prepared while the current task continues and switches after fresh revalidation' : 'IMMEDIATE: a new owner instruction replaces the current goal at once'}; window lookahead ${fl.lookahead ? 'on (counted planner turns, revalidated before use)' : 'off'}; discarded-preparation allowance ${fl.preparationTurnsPerRun} planner turns per run; one planner process at a time`);
 
     // Local fixture
     if (config.bot.auth === 'offline') {

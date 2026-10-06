@@ -62,6 +62,16 @@ export const DEFAULT_LIMITS = {
 
 const posInt = (max: number) => z.number().int().positive().max(max);
 
+export const DEFAULT_FLOW = { handoff: 'smooth', lookahead: true, preparationTurnsPerRun: 40 } as const;
+
+const FlowSchema = z
+  .object({
+    handoff: z.enum(['smooth', 'immediate']).default(DEFAULT_FLOW.handoff),
+    lookahead: z.boolean().default(DEFAULT_FLOW.lookahead),
+    preparationTurnsPerRun: z.number().int().min(0).max(1_000).default(DEFAULT_FLOW.preparationTurnsPerRun),
+  })
+  .strict();
+
 const LimitsSchema = z
   .object({
     observationRadius: posInt(256).default(DEFAULT_LIMITS.observationRadius),
@@ -185,6 +195,14 @@ export const ConfigSchema = z
         decision: { provider: 'openrouter', model: 'typesafe/jev-1.13', apiKeyEnv: 'OPENROUTER_API_KEY', endpoint: DEFAULT_DECISION_ENDPOINT, expectedProvider: 'TypeSafe' },
       }),
     limits: LimitsSchema.default(DEFAULT_LIMITS),
+    /**
+     * MB-FLOW-002 directive flow. `handoff: smooth` keeps the current task running while a
+     * new owner instruction is prepared (switching after a validated plan); `immediate`
+     * replaces at once. `lookahead` plans the next window while a window's last task runs
+     * (counted planner turns, revalidated before use). `preparationTurnsPerRun` bounds the
+     * planner turns spent on preparations that are discarded (superseded/stopped/failed).
+     */
+    flow: FlowSchema.default(DEFAULT_FLOW),
   })
   .strict()
   .superRefine((cfg, ctx) => {

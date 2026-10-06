@@ -172,6 +172,8 @@ export class ChunkbotApp implements CommandTarget {
         travelRadius: limits.travelRadius,
         observationRadius: limits.observationRadius,
       },
+      flow: deps.config.flow,
+      connectionEpoch: () => this.deps.game.connectionEpoch,
       notify: (notice) => {
         this.deps.out(`[chunkbot] ${notice.text}`);
         // Terminal-only operator diagnostics are not whispered in game (no chat spam).
