@@ -19,6 +19,7 @@ import {
 } from '../contracts/dashboard.ts';
 import { readBounded } from './files.ts';
 import { dayKey } from './history.ts';
+import { describeOutcome } from './outcome-text.ts';
 
 export const VIEW_MODEL_VERSION = 1;
 
@@ -242,6 +243,8 @@ export interface ViewModel {
     pending: { instruction: string; state: string; detail: string } | null;
     pendingInstalled: boolean;
     pause: { text: string; tone: 'warn' | 'muted' } | null;
+    /** Raw bounded outcome contract, for an optional technical disclosure. */
+    outcomeTechnical: string | null;
     survival: string | null;
     historical: boolean;
   };
@@ -344,7 +347,8 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
   const phase = goal?.phase ?? 'idle';
   const details: Row[] = [];
   if (goal?.interpretation) details.push({ label: 'Interpreted as', value: goal.interpretation });
-  if (goal?.outcome) details.push({ label: 'Done when', value: goal.outcome, title: 'Code verifies this outcome; a finished task is not goal completion' });
+  const outcome = goal?.outcome ? describeOutcome(goal.outcome) : undefined;
+  if (outcome) details.push({ label: 'Goal outcome', value: outcome.summary ?? 'Outcome contract recorded (no readable summary; see technical details)', ...(outcome.summary ? {} : { tone: 'muted' as const }), title: 'Code verifies this outcome; a finished task is not goal completion' });
   if (goal?.progress) details.push({ label: 'Progress', value: goal.progress });
   if (goal?.terminal) details.push({ label: 'Ended', value: `${goal.terminal.reason.replace(/_/g, ' ')} — ${goal.terminal.detail}`, tone: goal.phase === 'completed' ? 'ok' : goal.phase === 'cancelled' ? 'muted' : 'bad' });
   if (goal?.counters) details.push({ label: 'Planner', value: `${goal.counters.plannerTurns} turns · ${goal.counters.windows} windows · ${goal.counters.tasksAdmitted} tasks · ${goal.counters.replans} replans`, tone: 'muted' });
@@ -492,6 +496,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
       clarification: goal?.clarification ? `${goal.clarification.ref}: ${goal.clarification.question} — reply with "answer ${goal.clarification.ref} …"` : null,
       pending: dir?.pending ? { instruction: dir.pending.instruction, state: dir.pending.state.replace(/_/g, ' '), detail: dir.pending.detail ?? 'Not started — the current directive continues until the switch.' } : null,
       pendingInstalled: Boolean(s?.integrations.handoff),
+      outcomeTechnical: outcome?.technical ?? null,
       pause: !s
         ? null
         : !s.integrations.pause || !dir?.pause
