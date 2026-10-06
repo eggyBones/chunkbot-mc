@@ -1,6 +1,6 @@
 # MB-FLOW-002 smooth directive handoff: worker evidence
 
-**Status: implemented and verified offline by the worker (unit and behavior tests with fake/delayed providers). The fixture live harness is written but NOT run. Real-planner and fixture acceptance are pending under a coordinator lease.** Worker: native Claude Code (Opus 5.5). Branch `chunkbot/mb-flow-002`, base `d5eb2fa`. Date: 2026-10-06 UTC.
+**Status: implemented; verified offline, and on the 26.1.2 fixture with the scripted fault planner and loopback Jev under the coordinator's lease (all harness scenarios L0–L7 passed across bounded reruns; see below). Real-planner/Jev acceptance and combined integrated live checks are pending (coordinator).** Worker: native Claude Code (Opus 5.5). Branch `chunkbot/mb-flow-002`, base `d5eb2fa`. Date: 2026-10-06 UTC.
 
 This is worker evidence. It does not change the roadmap, plan status or acceptance records; the coordinator owns those.
 
@@ -76,7 +76,11 @@ The fixture probe (follow plus an inventory-changing gathering task) is scenario
 - late replies are fenced by generation and pending identity;
 - the active task is never stopped by supersession.
 
-**One planner process.** `PlannerSlot` chains turns and hands out tickets. If a previous process does not settle within `cleanupTimeoutMs`, `planner_slot_wait_timeout` is recorded and the adapter's own one-turn-in-flight guard refuses the next turn honestly. Nothing is bypassed.
+**One planner process (MB-FLOW-002-C1 fixed in `2a6aaae`).** `PlannerSlot` chains its tail on the ACTUAL settlement of every earlier turn.
+- A waiter that exceeds `cleanupTimeoutMs`, or whose owner is revoked while waiting, gets a bounded failure and starts nothing. The engine maps the timeout to `process_error` ("no second planner process was started"), recorded as `planner_slot_wait_timeout`.
+- A skipped or timed-out ticket never releases later work past a still-running turn.
+- Regression tests use a non-cooperative planner (it ignores abort): rapid replacements keep `maxInFlight` 1, and stop stays under 250 ms (`tests/handoff-slot.test.ts`).
+- The shared `ScriptedPlanner` fake now honors abort, as `PlannerPort` requires.
 
 **Switch order.**
 1. Revoke the old goal: `replaced`. The epoch is invalidated, the task is aborted and cleanup is awaited.
@@ -99,6 +103,8 @@ Pre-admission gains are therefore part of the baseline, so they are never counte
 - A prohibited event or reroute disables the planner for the run (unchanged adapter behavior).
 
 **Pending clarification.** The question is stored on the pending instruction, not on the active goal. Status shows both. Waiting makes no planner calls. `answer qN` is routed to the pending instruction first, and stale refs are rejected.
+
+**Wording (coordinator decision).** Status and chat say **"Automatic work paused"** while the latch is set, and add "the current goal is owner-commanded and runs normally" when an owner goal is active. An executing manual goal is never labeled stopped or paused. Bare `resume` (case-insensitive; no arguments) answers "Resumed: automatic work is allowed again. Nothing earlier is replayed and nothing new was started."
 
 **Stop.** The synchronous prefix discards the pending instruction (its process is aborted) and revokes the active goal (the lease is revoked through the abort chain) before anything is awaited. `stop` sets the pause latch.
 - `autonomyAllowed()` is false until a bare `resume`. This is the seam for the unassigned MB-FLOW-001 scheduler.
@@ -123,6 +129,8 @@ Commands were run from the worktree with the Node 24 path. Logs are under `var/b
 | --- | --- |
 | `npm run check` before changes (baseline) | exit 0, 297/297 |
 | `npm run check` at `b5dd7a7` | exit 0, 321/321 |
+| `npm run check` at `2c8ed06` (with the integrated dashboard and memory) | exit 0, 430/430 |
+| doctor on `fixture.json`, `fixture-26.2.json` and `fixture-memory.json` at `2c8ed06` | exit 0 each |
 | `node dist/cli.js doctor --config config/examples/fixture.json` | exit 0 (`flow` line shown) |
 | `node dist/cli.js doctor --config config/examples/fixture-26.2.json` | exit 0 |
 
@@ -152,7 +160,31 @@ New behavior tests (fake ports; no inference):
   - `resume` parsing (bare word only) with no replay;
   - `flow` config defaults and strictness.
 
-## Live harness (requires the coordinator's lease; not run by the worker)
+## Live fixture evidence (26.1.2, coordinator lease, fault planner + loopback Jev only)
+
+Reports are under `var/live-check/<stamp>-handoff/report.json`; logs are under `var/batch001/live-run-*.log`. Build `dist/` was from source `4877443` (C1 fix plus usage fixes). Only harness assertions changed between reruns.
+
+| Run | Scenarios | Result |
+| --- | --- | --- |
+| `08-03-23` (`live-run-1-interrupted`) | L0–L7 | **Invalid run.** Chunkbot was disconnected at 01:03:32 local by **"You logged in from another location"**: a foreign `Chunkbot` login from 127.0.0.1:60266 that lasted about 2 s. It was not from my processes or tests, which all use fakes. The harness was later terminated by SIGTERM (not from me) during L7. Reported to Codex. |
+| `08-07-33` (`live-run-2`) | L0–L7 | 8/9 passed. L1 failed only on an evidence assertion (a follow action emits no `task_action` inside its 30 s window). |
+| `08-09-38` | L0, L1 | L1 failed on a revised assertion (revocation-at-switch counted as "ended before admission"). |
+| `08-10-38` (`live-run-4-L1`) | L0, L1 | **2/2 passed.** |
+
+Evidence highlights:
+- **L1 (H1/H2).** The owner's chat was received and acknowledged within 1 ms of send. The switch (goal accepted) came 3.95 s after send, with a 3.5 s scripted planner delay. During preparation the bot moved 4.95 blocks (RCON server positions sampled while the owner walked). The old follow task ended only by revocation, 307 ms after handoff start (`cancelled (ownership_revoked)`). The late old result was discarded. One planner turn, no overlap.
+- **L2 (H3).** The old goal had 1 oak log at send. The admission baseline of the new goal was **2** (a log gained during preparation). The outcome was bound to 2, and the new goal completed with **3**. No baseline or server resync happened before admission.
+- **L3 (H4).** A and B were killed mid-turn, then C and D were sent back-to-back.
+  - Only "instruction D" was admitted. 3 supersessions.
+  - Killed planner process groups were fully cleaned (`remaining: []`, SIGTERM).
+  - tellraw/say spoofs were rejected (`system_message`, `profileless_message`).
+  - 3 planner turns, 0 overlaps. The follow was still running when D arrived.
+- **L4 (H5).** Stop led to goal cancelled in 20 ms. The pending instruction was discarded. 0.00 blocks of drift while the owner walked away. "Automatic work paused" status, then chat `resume`. **Gap:** at the stop moment the follow was holding (no lease held), so the 250 ms clear target was not exercised with a held lease. The harness was tightened in `8ab6fcc` to stop during a lease-holding follow action and assert the revoke; that needs a rerun under the next lease.
+- **L5.** `kill Chunkbot` during preparation: goal ended `death`, the pending instruction was discarded (`lifecycle`), and nothing was admitted afterwards.
+- **L6 (H6).** Quota produced *"Your new instruction was not started (planner_not_ready): quota … no paid or alternative planner … Continuing goal …"*, and the follow moved 2.98 blocks afterwards. A pending clarification (`q1`) made 0 planner execs in 5 s, and status showed `awaiting_owner` separately. The answer handed off, and the old goal was `replaced`.
+- **L7 (H7).** The same two-window oak-log goal (both completed `outcome_verified`) had a window gap of **84 ms** with lookahead (source `lookahead`, revalidation 32 ms; the lookahead turn was ready after 2.64 s while window 1 ran), against **2712 ms** without (source `replan`).
+
+## Live harness
 
 `scripts/handoff-live-check.ts` drives the built CLI through owner chat against the fixture. It uses the **planner fault fixture** with scripted delays (the installed codex CLI answers only the read-only isolation-gate commands; `login status` is scripted as ChatGPT mode) and the **loopback Jev fault provider**. World truth comes from RCON positions and inventory, plus run evidence. Scenarios:
 
@@ -180,5 +212,8 @@ npm run handoff-live-check -- --fixture 26.2        # with the 26.2 fixture leas
   - the real `planner-live-check`.
 - **H7's "real Codex/Jev trial completes both milestones with zero assistance"** is a coordinator real-provider run. There is no autonomous progression scheduler (MB-FLOW-001 is unassigned). Lookahead applies only within an owner goal's windows.
 - **Prompt v2 wording** for `preparing`/`lookahead` needs real-planner acceptance.
-- **Dashboard (MB-UI-001) and memory (MB-MEM-001) integration** waits for the coordinator to transfer the approved contract commits and facade signatures. The plain-data `EngineStatus` fields (`pending`, `parked`, `handoff`, `latch`, `windowGaps`) are ready for the dashboard projection.
+- **Dashboard and memory integration** is done locally (`2c8ed06`, merging the reviewed `df775d0`, which includes `e218b15`, and `16684a5`). Combined live checks have not been run. Open requests to Codex:
+  - The dashboard contract has no latch/handoff/window-gap fields, so the viewer cannot yet show "Automatic work paused". That is a dashboard-owned change.
+  - `renderMemoryView` omits `prepRef`. `prompt.ts` adds it for preparation subjects; the memory worker may want to own that.
+  - The `EngineStatus` flow fields are optional in the type so the dashboard's existing fixtures compile.
 - **Inherited:** the real Jev J1 240 s timeout (MB-NAME-001-C1) is unchanged and not addressed here.
