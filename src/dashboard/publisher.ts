@@ -16,13 +16,14 @@ import {
   known,
   unknown,
   type DashboardMemorySummary,
+  type DashboardPause,
   type DashboardPendingDirective,
   type DashboardStatus,
   type Known,
 } from '../contracts/dashboard.ts';
 import type { EvidenceEvent, GameLifecycleEvent, Readiness, Unsubscribe } from '../contracts/index.ts';
 import type { EngineStatus } from '../goals/goal-engine.ts';
-import { clipText, projectDirective, projectReadiness, type SurvivalSummary } from './directive.ts';
+import { clipText, projectDirective, projectMemory, projectReadiness, type SurvivalSummary } from './directive.ts';
 import { writeAtomic } from './files.ts';
 import { InventoryTracker, type EvidenceSource } from './inventory.ts';
 import { ChangeClock, readVitals, type BotView, type VitalsEvidence } from './vitals.ts';
@@ -54,13 +55,15 @@ export interface DashboardPublisherOptions {
   engine?: () => EngineStatus | undefined;
   decisionReadiness?: () => Readiness;
   spend?: () => SpendSnapshotLike;
-  planner?: () => PlannerTotalsLike;
+  planner?: () => PlannerTotalsLike | undefined;
   /** MB-FLOW-002 seam. Undefined: not installed. */
   pending?: () => DashboardPendingDirective | undefined;
   /** MB-MEM-001 seam. Undefined: not installed. */
   memory?: () => DashboardMemorySummary | undefined;
   /** MB-FLOW-003 seam. Undefined: not installed. */
   survival?: () => SurvivalSummary | undefined;
+  /** Pause latch seam (automatic work paused; manual goals may still run). Undefined: not reported. */
+  pause?: () => DashboardPause | undefined;
   usageSink?: UsageSink;
   intervalMs?: number;
   log?: (line: string) => void;
@@ -69,6 +72,8 @@ export interface DashboardPublisherOptions {
 type Sections = { vitals: DashboardStatus['vitals']; inventory: DashboardStatus['inventory'] };
 
 const NOT_CONNECTED = 'not connected';
+type Vec = { x: number; y: number; z: number };
+const round = (p: Vec): Vec => ({ x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, z: Math.round(p.z * 10) / 10 });
 
 function emptySections(epoch: number, reason: string): Sections {
   return {
@@ -94,6 +99,9 @@ export class DashboardStatusPublisher {
   /** Last published world sections (may belong to an older epoch = historical). */
   private sections: Sections;
   private names = { botName: unknown(NOT_CONNECTED) as Known<string>, dimension: unknown(NOT_CONNECTED) as Known<string>, gameMode: unknown(NOT_CONNECTED) as Known<string>, alive: unknown(NOT_CONNECTED) as Known<boolean> };
+  private position: Known<Vec> = unknown(NOT_CONNECTED);
+  private serverPosition: Known<Vec> = unknown(NOT_CONNECTED);
+  private moveTap: { bot: BotView; listener: () => void } | undefined;
   private writeProblem: string | undefined;
 
   constructor(options: DashboardPublisherOptions) {
@@ -155,6 +163,9 @@ export class DashboardStatusPublisher {
     this.tracker?.detach();
     this.tracker = undefined;
     this.trackerEpoch = -1;
+    if (this.moveTap) this.moveTap.bot.removeListener?.('forcedMove', this.moveTap.listener);
+    this.moveTap = undefined;
+    this.serverPosition = unknown('no server position packet on this connection yet');
   }
 
   private readWorld(now: number): void {
@@ -170,7 +181,16 @@ export class DashboardStatusPublisher {
       tracker.attach(s.evidence);
       this.tracker = tracker;
       this.trackerEpoch = s.connectionEpoch;
+      // Mineflayer emits forcedMove right after applying a SERVER position packet (relative teleports resolved).
+      const listener = () => {
+        const p = bot.entity?.position;
+        if (p && Number.isFinite(p.x + p.y + p.z)) this.serverPosition = known(round(p), 'server_packet', this.o.now());
+      };
+      bot.on?.('forcedMove', listener);
+      this.moveTap = { bot, listener };
     }
+    const pos = bot.entity?.position;
+    this.position = pos && Number.isFinite(pos.x + pos.y + pos.z) ? known(round(pos), 'client_model', now) : unknown('position not known yet');
     const v = readVitals(bot, s.evidence, now, this.changes);
     const epoch = s.connectionEpoch;
     const anyNew = v.health.known || v.xp.known || this.tracker!.contents().known;
@@ -243,14 +263,16 @@ export class DashboardStatusPublisher {
         changedAtMs: this.connectionChangedAtMs,
         ...(this.lastEnd ? { lastEnd: this.lastEnd } : {}),
         alive: ready ? this.names.alive : unknown(NOT_CONNECTED),
+        position: ready ? this.position : unknown(NOT_CONNECTED),
+        serverPosition: ready ? this.serverPosition : unknown(NOT_CONNECTED),
       },
       vitals: this.sections.vitals,
       inventory: this.sections.inventory,
-      directive: projectDirective(engine, safe(this.o.pending), safe(this.o.survival)),
+      directive: projectDirective(engine, safe(this.o.pending), safe(this.o.survival), safe(this.o.pause)),
       readiness: projectReadiness(engine, decision),
-      usage: { jev: this.usage.jev(), planner: this.usage.planner() },
-      memory: !this.o.memory ? unknown('memory feature not installed') : memory ? known(memory, 'app_state', now) : unknown('memory summary unavailable'),
-      integrations: { handoff: Boolean(this.o.pending), memory: Boolean(this.o.memory), survival: Boolean(this.o.survival) },
+      usage: { jev: this.usage.jevUsage(), planner: this.usage.plannerUsage() },
+      memory: !this.o.memory ? unknown('memory feature not installed') : memory ? known(projectMemory(memory), 'app_state', now) : unknown('memory summary unavailable'),
+      integrations: { handoff: Boolean(this.o.pending), memory: Boolean(this.o.memory), survival: Boolean(this.o.survival), pause: Boolean(this.o.pause) },
     };
     return status;
   }

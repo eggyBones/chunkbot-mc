@@ -17,7 +17,11 @@ export interface FakeBot {
   quickBarSlot?: number;
   experience: { level: number | null; points: number | null; progress: number | null };
   game: { dimension?: string; gameMode?: string };
-  entity: { attributes?: Record<string, { value: number; modifiers: Array<{ amount: number; operation: number }> }> };
+  entity: { attributes?: Record<string, { value: number; modifiers: Array<{ amount: number; operation: number }> }>; position?: { x: number; y: number; z: number } };
+  listeners?: Map<string, Set<() => void>>;
+  on?(event: string, fn: () => void): void;
+  removeListener?(event: string, fn: () => void): void;
+  emit?(event: string): void;
   currentWindow: { id: number; inventoryStart: number } | null;
 }
 
@@ -37,7 +41,23 @@ export class FakeConnection implements DashboardGame {
   }
 
   static newBot(): FakeBot {
-    return { experience: { level: null, points: null, progress: null }, game: {}, entity: {}, currentWindow: null };
+    const listeners = new Map<string, Set<() => void>>();
+    return {
+      experience: { level: null, points: null, progress: null },
+      game: {},
+      entity: {},
+      currentWindow: null,
+      listeners,
+      on: (e, fn) => void (listeners.get(e) ?? listeners.set(e, new Set()).get(e)!).add(fn),
+      removeListener: (e, fn) => void listeners.get(e)?.delete(fn),
+      emit: (e) => listeners.get(e)?.forEach((fn) => fn()),
+    };
+  }
+
+  /** The server set the position (Mineflayer applies the packet, then emits forcedMove). */
+  serverTeleport(x: number, y: number, z: number): void {
+    this.bot.entity.position = { x, y, z };
+    this.bot.emit?.('forcedMove');
   }
 
   onLifecycle(listener: (event: GameLifecycleEvent) => void): Unsubscribe {

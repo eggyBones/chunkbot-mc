@@ -11,8 +11,8 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
 | Usage history | `src/dashboard/history.ts` | Writes `<dataDir>/dashboard/usage-history.json`: dated aggregates, per-run cursors and coverage gaps. |
 | Integration facade | `src/dashboard/runtime.ts` | `createDashboardRuntime(deps)` with `tapStore`, `start`, `stop` and `statusLine`. Not wired into `cli.ts` yet (that is a designated-writer task). |
 | Viewer service | `src/dashboard/{server,viewmodel,remote,codex-quota,viewer-command,main}.ts`, `assets/page.ts` | Node `http` plus SSE, with no new dependency. Run standalone with `node dist/dashboard/main.js --config <file> [--port n]`. |
-| Live check | `scripts/dashboard-live-check.ts` | D-G1/D2/D4/D5 against a leased loopback fixture. Not yet run. |
-| Tests | `tests/dashboard-*.test.ts`, `tests/dashboard-fakes.ts` | 56 behavior tests. |
+| Live check | `scripts/dashboard-live-check.ts` | D-G1/D2/D4/D5 against a leased loopback fixture; `--read-only` mode uses `data get` only. Not yet run. |
+| Tests | `tests/dashboard-*.test.ts`, `tests/dashboard-fakes.ts` | 68 behavior tests. |
 
 ## Data sources (typed only)
 
@@ -31,6 +31,21 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
   - Retained (ambiguous) attempts keep the full reservation and have unknown tokens.
   - Pending is the outstanding reservation. Remaining is the local cap, not the wallet.
 - **Planner usage:** `CodexPlanner.totals` plus `planner_turn_*` events. Failed or cancelled turns, and turns that reported no usage, count as unknown. Cached and reasoning tokens are breakdowns, never added to the totals.
+
+- **Own position:** the client physics model (labeled client) plus the last server-set position, captured on Mineflayer's `forcedMove` after a server position packet, which resolves relative teleports. No other entity positions.
+- **Pause latch, memory world profile/home:** typed seams (`pause`, `memory`). The viewer says "pause state not reported" when the running build does not provide a pause latch.
+
+## Corrections MB-UI-001-C1/C2/C3
+
+- **C1 (history size):**
+  - Event identities are no longer persisted; they are kept in memory per run.
+  - The writer keeps the file under 512 KiB, inside the viewer's 1 MiB bound. It compacts closed run cursors first, then folds the oldest days into a `rollup` that keeps every sum, then drops the oldest gap notes (counted).
+  - A valid version-1 or oversized file of our own (up to 8 MiB) is migrated and compacted, never reset.
+- **C2 (cursor/charge atomicity):** `commitLedger(cursor, delta)` changes both in memory before one atomic write. A test asserts that in every written file the dated charges equal the cursor.
+- **C3 (nullable usage):**
+  - Planner turns with `usage: null` count as unknown. A `null` cached or reasoning breakdown is tracked per turn (`cachedKnownTurns`, `reasoningKnownTurns`) and shown as "unknown" or "≥ N (reported for k of m turns)", never 0. Breakdowns are never added to the totals.
+  - Trusted usage on `jev_failure` (`usageTrusted` or `usage`) is counted as separate charged-failure tokens. Cost always comes from the ledger once.
+- **History format** is now version 2 (rollup, gapsOmitted, new day fields; no `seen`).
 
 ## Viewer behavior
 
@@ -64,7 +79,7 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
 
 ## Checks run by the worker
 
-`npm run typecheck`, `npm run build` and `npm test` all exit 0, with 353 tests: the 297 baseline plus 56 dashboard tests. Logs are in the ignored `var/batch001/`. No shared files, npm scripts, CLI, config or planner/decision files were edited.
+`npm run typecheck`, `npm run build` and `npm test` all exit 0, with 365 tests: the 297 baseline plus 68 dashboard tests. Logs are in the ignored `var/batch001/`. No shared files, npm scripts, CLI, config or planner/decision files were edited.
 
 ## Integration still needed (designated writer, via Codex)
 
@@ -79,6 +94,6 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
 - **D1 real command:** needs the CLI wiring above. Until then the standalone entry exists.
 - **D7 browser review:** owned by Codex, using the T3 preview.
 - **D11:** Codex's coordinator acceptance of the quota observer through the real viewer.
-- **Shared finding:** `planner/transport.ts` turns a missing `turn.completed` usage field into 0, so unknown becomes zero. It needs a designated-writer fix. The dashboard cannot tell the two apart.
+- **Shared finding (being fixed by the designated writer):** `planner/transport.ts` turns missing usage into 0. The dashboard already accepts the null forms; until that change lands, a missing field still arrives as 0.
 - **Day-level attribution:** charged failures are attributed to a day only at quiescent ledger points, which relies on the adapter's synchronous reconcile-then-record order. Session totals are exact regardless.
 - **Single writer:** two Chunkbot processes writing the same dataDir at once would race on the history file. One app run per dataDir is assumed.

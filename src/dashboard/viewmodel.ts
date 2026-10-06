@@ -74,7 +74,16 @@ export function pips(value: number, max: number, cap = 40): Pip[] {
   return out;
 }
 
+/** A subset breakdown that may be reported for only some turns: never shown as 0 when unreported. */
+export function breakdown(sum: number, knownTurns: number, turnsWithUsage: number): string {
+  if (turnsWithUsage === 0) return 'n/a';
+  if (knownTurns === 0) return 'unknown (not reported)';
+  if (knownTurns < turnsWithUsage) return `≥ ${formatInt(sum)} (reported for ${knownTurns} of ${turnsWithUsage} turns)`;
+  return formatInt(sum);
+}
+
 const fmtNum = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+const posText = (k: Known<{ x: number; y: number; z: number }>) => (k.known ? `${fmtNum(k.value.x)} ${fmtNum(k.value.y)} ${fmtNum(k.value.z)}${k.source === 'client_model' ? ' (client)' : ''}` : 'unknown');
 const provTitle = (k: Known<unknown>) => (k.known ? `${k.source.replace('_', ' ')} · observed ${new Date(k.observedAtMs).toISOString()}` : `unknown: ${k.reason}`);
 
 // ------------------------------------------------------------------ snapshot acceptance
@@ -232,6 +241,7 @@ export interface ViewModel {
     clarification: string | null;
     pending: { instruction: string; state: string; detail: string } | null;
     pendingInstalled: boolean;
+    pause: { text: string; tone: 'warn' | 'muted' } | null;
     survival: string | null;
     historical: boolean;
   };
@@ -348,14 +358,23 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
     jevRows.push({ label: 'Local cap remaining', value: `${formatUsd(j.remainingNanoUsd)} of ${formatUsd(j.capNanoUsd)}`, title: "this run's application spending cap — not the OpenRouter wallet" });
     jevRows.push({ label: 'Attempts', value: `${formatInt(j.attempts)} (${j.validatedResponses} validated, ${j.retries} retries, ${j.chargedFailures} charged failures, ${j.retainedAttempts} ambiguous, ${j.releasedAttempts} not charged, ${j.refused} refused locally)` });
     jevRows.push({ label: 'Tokens', value: `${formatInt(j.inputTokens)} in · ${formatInt(j.outputTokens)} out`, ...(j.tokensUnknownAttempts > 0 ? { title: `${j.tokensUnknownAttempts} attempt(s) have unknown token counts` } : {}) });
+    if (j.chargedFailures > 0) {
+      jevRows.push({
+        label: 'Charged-failure tokens',
+        value: j.chargedFailuresTokensKnown > 0 ? `${formatInt(j.chargedFailureInputTokens)} in · ${formatInt(j.chargedFailureOutputTokens)} out (reported for ${j.chargedFailuresTokensKnown} of ${j.chargedFailures})` : `unknown for all ${j.chargedFailures}`,
+        tone: j.chargedFailuresTokensKnown < j.chargedFailures ? 'warn' : 'muted',
+        title: 'charged attempts whose answer was unusable; their cost is in Confirmed charges',
+      });
+    }
     if (j.tokensUnknownAttempts > 0) jevRows.push({ label: 'Unknown tokens', value: `${j.tokensUnknownAttempts} attempt(s) — counts not reported`, tone: 'warn' });
   } else jevRows.push({ label: 'Jev', value: u && !u.jev.known ? `unknown — ${u.jev.reason}` : 'no session', tone: 'muted' });
   const plannerRows: Row[] = [];
   if (u?.planner.known) {
     const p = u.planner.value;
     plannerRows.push({ label: 'Turns', value: `${p.turns} (${p.completedTurns} completed, ${p.failedTurns} failed)` });
-    plannerRows.push({ label: 'Input tokens', value: `${formatInt(p.inputTokens)} (of which cached ${formatInt(p.cachedInputTokens)})` });
-    plannerRows.push({ label: 'Output tokens', value: `${formatInt(p.outputTokens)} (of which reasoning ${formatInt(p.reasoningOutputTokens)})` });
+    plannerRows.push({ label: 'Input tokens', value: `${formatInt(p.inputTokens)} · cached ${breakdown(p.cachedInputTokens, p.cachedKnownTurns, p.usageKnownTurns)}`, title: 'cached is a subset of input, never added to it' });
+    plannerRows.push({ label: 'Output tokens', value: `${formatInt(p.outputTokens)} · reasoning ${breakdown(p.reasoningOutputTokens, p.reasoningKnownTurns, p.usageKnownTurns)}`, title: 'reasoning is a subset of output, never added to it' });
+    if (p.usageKnownTurns < p.completedTurns + p.failedTurns) plannerRows.push({ label: 'Token totals cover', value: `${p.usageKnownTurns} of ${p.completedTurns + p.failedTurns} finished turn(s)`, tone: 'warn' });
     if (p.usageUnknownTurns > 0) plannerRows.push({ label: 'Unknown usage', value: `${p.usageUnknownTurns} turn(s) — failed/cancelled turns report no usage`, tone: 'warn' });
     plannerRows.push({ label: 'Billing', value: 'Codex subscription usage — no API dollar charge', tone: 'muted' });
   } else plannerRows.push({ label: 'Planner', value: u && !u.planner.known ? `unknown — ${u.planner.reason}` : 'no session', tone: 'muted' });
@@ -370,7 +389,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
     historyVM = {
       available: true,
       timeZone: h.timeZone,
-      coverage: `Recorded by this dashboard since ${new Date(h.recordedSinceMs).toISOString().slice(0, 10)} (${h.timeZone}); not lifetime account usage.${h.gaps.length ? ` ${h.gaps.length} coverage gap(s).` : ''}${unclean ? ` ${unclean} run(s) ended uncleanly.` : ''}`,
+      coverage: `Recorded by this dashboard since ${new Date(h.recordedSinceMs).toISOString().slice(0, 10)} (${h.timeZone}); not lifetime account usage.${h.gaps.length + h.gapsOmitted ? ` ${h.gaps.length + h.gapsOmitted} coverage note(s).` : ''}${unclean ? ` ${unclean} run(s) ended uncleanly.` : ''}${h.rollup ? ` Earlier ${h.rollup.days} day(s) through ${h.rollup.throughDay} are kept as one total: Jev ${formatUsd(h.rollup.totals.jev.confirmedNanoUsd)} confirmed, ${formatUsd(h.rollup.totals.jev.retainedNanoUsd)} retained, ${formatInt(h.rollup.totals.jev.attempts)} calls, ${formatInt(h.rollup.totals.planner.turns)} planner turns.` : ''}`,
       days: keys.map((k) => {
         const d = h.days[k]!;
         return {
@@ -378,7 +397,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
           jevUsd: formatUsd(d.jev.confirmedNanoUsd),
           retainedUsd: formatUsd(d.jev.retainedNanoUsd),
           jevAttempts: formatInt(d.jev.attempts),
-          jevTokens: `${formatInt(d.jev.inputTokens)} / ${formatInt(d.jev.outputTokens)}${d.jev.tokensUnknownAttempts ? ` (+${d.jev.tokensUnknownAttempts} unknown)` : ''}`,
+          jevTokens: `${formatInt(d.jev.inputTokens)} / ${formatInt(d.jev.outputTokens)}${d.jev.chargedFailuresTokensKnown ? ` (+${formatInt(d.jev.chargedFailureInputTokens)} / ${formatInt(d.jev.chargedFailureOutputTokens)} charged failures)` : ''}${d.jev.tokensUnknownAttempts ? ` (+${d.jev.tokensUnknownAttempts} unknown)` : ''}`,
           plannerTurns: formatInt(d.planner.turns),
           plannerTokens: `${formatInt(d.planner.inputTokens)} / ${formatInt(d.planner.outputTokens)}${d.planner.usageUnknownTurns ? ` (+${d.planner.usageUnknownTurns} unknown)` : ''}`,
         };
@@ -432,6 +451,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
           { label: 'Dimension', value: s.connection.dimension.known ? s.connection.dimension.value.replace(/^minecraft:/, '') : 'unknown' },
           { label: 'Mode', value: s.connection.gameMode.known ? s.connection.gameMode.value : 'unknown' },
           { label: 'Version', value: `${s.connection.profile.version} (${s.connection.profile.supportLevel})` },
+          { label: 'Position', value: posText(s.connection.position), ...(s.connection.position.known ? {} : { tone: 'muted' as const }), title: `${provTitle(s.connection.position)}; last server-set position: ${s.connection.serverPosition.known ? `${posText(s.connection.serverPosition)} (${new Date(s.connection.serverPosition.observedAtMs).toISOString().slice(11, 19)} UTC)` : 'none on this connection'}` },
           { label: 'Epoch', value: `connection ${s.connection.epoch}`, tone: 'muted', title: `run ${s.publisher.runId}` },
         ]
       : [],
@@ -469,6 +489,13 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
       clarification: goal?.clarification ? `${goal.clarification.ref}: ${goal.clarification.question} — reply with "answer ${goal.clarification.ref} …"` : null,
       pending: dir?.pending ? { instruction: dir.pending.instruction, state: dir.pending.state.replace(/_/g, ' '), detail: dir.pending.detail ?? 'Not started — the current directive continues until the switch.' } : null,
       pendingInstalled: Boolean(s?.integrations.handoff),
+      pause: !s
+        ? null
+        : !s.integrations.pause || !dir?.pause
+          ? { text: 'Pause state not reported by this Chunkbot build', tone: 'muted' }
+          : dir.pause.paused
+            ? { text: `Automatic work paused${dir.pause.manualGoalsAllowed ? '; a manual goal can still execute' : ''} — ${dir.pause.reason}${dir.pause.sinceMs ? ` (since ${new Date(dir.pause.sinceMs).toISOString().slice(11, 19)} UTC)` : ''}`, tone: 'warn' }
+            : null,
       survival: dir?.survival ? `${dir.survival.routine}: ${dir.survival.reason}${dir.survival.phase ? ` (${dir.survival.phase}${dir.survival.attempt !== undefined ? `, attempt ${dir.survival.attempt}` : ''})` : ''}` : null,
       historical: !appLive,
     },
@@ -483,7 +510,16 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
     memory: !mem
       ? { installed: false, text: 'No session', items: [] }
       : mem.known
-        ? { installed: true, text: `${mem.value.totalItems} remembered item(s)`, items: mem.value.items.map((m) => ({ label: m.label, value: `${m.kind}${m.dimension ? ` · ${m.dimension}` : ''} · ${m.source} · ${new Date(m.observedAtMs).toISOString().slice(0, 16).replace('T', ' ')}` })) }
+        ? {
+            installed: true,
+            text: `${mem.value.worldProfile ? `World profile ${mem.value.worldProfile.id} (revision ${mem.value.worldProfile.revision}) · ` : 'No world profile configured · '}${mem.value.totalItems} remembered item(s)`,
+            items: [
+              ...(mem.value.home
+                ? [{ label: `Home: ${mem.value.home.label}`, value: `${mem.value.home.dimension.replace(/^minecraft:/, '')} ${fmtNum(mem.value.home.at.x)} ${fmtNum(mem.value.home.at.y)} ${fmtNum(mem.value.home.at.z)} · ${mem.value.home.source} · ${new Date(mem.value.home.observedAtMs).toISOString().slice(0, 16).replace('T', ' ')}${mem.value.home.stale ? ' · stale' : ''}`, ...(mem.value.home.stale ? { tone: 'warn' as const } : {}), title: 'remembered, not proof that it still exists' }]
+                : [{ label: 'Home', value: 'none designated', tone: 'muted' as const }]),
+              ...mem.value.items.map((m) => ({ label: m.label, value: `${m.kind}${m.dimension ? ` · ${m.dimension}` : ''}${m.at ? ` · ${fmtNum(m.at.x)} ${fmtNum(m.at.y)} ${fmtNum(m.at.z)}` : ''} · ${m.source} · ${new Date(m.observedAtMs).toISOString().slice(0, 16).replace('T', ' ')}` })),
+            ],
+          }
         : { installed: Boolean(s?.integrations.memory), text: mem.reason, items: [] },
   };
 }
