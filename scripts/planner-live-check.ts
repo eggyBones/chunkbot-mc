@@ -121,6 +121,20 @@ const dist = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.
 async function check(id: string, title: string, fn: (ev: string[], trials: Json[]) => Promise<void>): Promise<void> {
   if (only && !only.has(id)) return;
   currentScenario = id;
+  // MB-FLOW-002-C4: every scenario starts from idle. A goal or pending instruction left
+  // by an earlier (possibly failed) scenario is stopped and its bounded cleanup awaited,
+  // so it cannot cascade into this one. A failure to quiesce fails THIS scenario honestly.
+  let quiesceError: string | undefined;
+  try {
+    await quiesce(`before ${id}`);
+  } catch (error) {
+    quiesceError = error instanceof Error ? error.message : String(error);
+  }
+  if (quiesceError) {
+    results.push({ id, title, pass: false, evidence: [`ERROR: could not reach an idle start: ${quiesceError}`], trials: [] });
+    process.stdout.write(`FAIL ${id} ${title}\n  could not reach an idle start: ${quiesceError.slice(0, 600)}\n`);
+    return;
+  }
   const evidence: string[] = [];
   const trials: Json[] = [];
   const started = Date.now();
@@ -208,16 +222,132 @@ interface GoalRun {
   fromLine: number;
 }
 
-/** Submits through normal intake (owner chat or terminal) and returns the admitted goal id. */
+/** Limits of the CLI process currently driven (set before each startChunkbot); used only for honest wait bounds. */
+let runLimits = { plannerTurnsPerGoal: 20, plannerTimeoutMs: 45_000, cleanupTimeoutMs: 2_000 };
+function setRunLimits(limits: Json | undefined): void {
+  runLimits = {
+    plannerTurnsPerGoal: Number(limits?.plannerTurnsPerGoal ?? 20),
+    plannerTimeoutMs: Number(limits?.plannerTimeoutMs ?? 45_000),
+    cleanupTimeoutMs: Number(limits?.cleanupTimeoutMs ?? 2_000),
+  };
+}
+
+/** Intake timing record per submission (pending preparation vs direct admission). */
+const submissions: Json[] = [];
+
+/**
+ * Submits through normal intake (owner chat or terminal) and returns the admitted goal id.
+ * MB-FLOW-002-C4: with smooth handoff a valid instruction that arrives while a goal is
+ * executing is first PREPARED ("Preparing your new instruction ...") and admitted only after
+ * its plan is ready. Then admission is awaited up to the configured preparation budget
+ * (every preparation turn counts against plannerTurnsPerGoal; each is bounded by the planner
+ * timeout plus process cleanup). A preparation that ends without admission (not started,
+ * discarded, hung until its bounded failure) fails the scenario; a rejected instruction too.
+ */
 async function submit(text: string, via: 'chat' | 'terminal', owner?: Bot): Promise<{ goalId: string; from: number }> {
   const from = chunkbot.length;
+  const sentAtMs = Date.now();
   if (via === 'chat') {
     assert(owner, 'owner bot required for chat intake');
     owner.chat(`!chunkbot ${text}`);
   } else chunkbot.send(text);
-  const line = await chunkbot.waitSince(/\[chunkbot\] Goal (goal-\S+) accepted: /, from, 15_000);
+  const first = await chunkbot.waitSince(/\[chunkbot\] (Goal (goal-\S+) accepted: |Preparing your new instruction|Instruction not accepted: )/, from, 15_000);
+  const record: Json = { scenario: currentScenario, text: text.slice(0, 120), via, sentAtMs };
+  submissions.push(record);
+  if (/Instruction not accepted: /.test(first)) {
+    record.rejected = first;
+    throw new Error(`instruction rejected at intake: ${first.slice(0, 300)}`);
+  }
+  let line = first;
+  if (/Preparing your new instruction/.test(first)) {
+    record.preparingAtMs = chunkbot.lines.slice(from).find((l) => l.text === first)?.atMs ?? Date.now();
+    const budgetMs = runLimits.plannerTurnsPerGoal * (runLimits.plannerTimeoutMs + runLimits.cleanupTimeoutMs) + 10_000;
+    record.preparationBudgetMs = budgetMs;
+    line = await chunkbot.waitSince(/\[chunkbot\] (Goal (goal-\S+) accepted: |Your new instruction was not started |Stopped: the pending new instruction was discarded|The pending new instruction was discarded)/, from, budgetMs);
+    if (!/Goal (goal-\S+) accepted: /.test(line)) {
+      record.preparationEnded = line;
+      throw new Error(`the prepared instruction was not admitted: ${line.slice(0, 300)}`);
+    }
+  }
   const goalId = /Goal (goal-\S+) accepted/.exec(line)?.[1] as string;
+  record.goalId = goalId;
+  record.acceptedAtMs = chunkbot.lines.slice(from).find((l) => l.text === line)?.atMs ?? Date.now();
   return { goalId, from };
+}
+
+/** One `status` rendering: the active goal (if in an active state) and the pending instruction (if any). */
+async function statusSnapshot(): Promise<{ activeGoalId?: string; activeState?: string; pendingIntentId?: string; paused: boolean }> {
+  const from = chunkbot.length;
+  chunkbot.send('status');
+  // `network:` is the first status extra, printed after every engine line of the same rendering.
+  await chunkbot.waitSince(/^\[status\] network: /, from, 10_000);
+  const lines = chunkbot.lines.slice(from).map((l) => l.text);
+  const end = lines.findIndex((t) => /^\[status\] network: /.test(t));
+  const block = lines.slice(0, end + 1);
+  const goal = block.map((t) => /^\[status\] goal: (goal-\S+)(?: \[operator task diagnostic\])? (planning|awaiting_owner|executing|stopping) /.exec(t)).find(Boolean);
+  const pending = block.map((t) => /^\[status\] pending instruction: (intent-\S+) /.exec(t)).find(Boolean);
+  return {
+    ...(goal ? { activeGoalId: goal[1], activeState: goal[2] } : {}),
+    ...(pending ? { pendingIntentId: pending[1] } : {}),
+    paused: block.some((t) => /^\[status\] Automatic work paused/.test(t)),
+  };
+}
+
+/** Planner turns started minus turns that reached a completed/failed record (0 = no planner process running). */
+const plannerTurnsOpen = () => {
+  const ev = runEvents();
+  return ev.filter((e) => e.type === 'planner_turn_started').length - ev.filter((e) => e.type === 'planner_turn_completed' || e.type === 'planner_turn_failed').length;
+};
+
+/** Inter-scenario quiescence records (report.json). */
+const quiesceLog: Json[] = [];
+
+/**
+ * MB-FLOW-002-C4 completed-stop seam BEFORE any world change: revoke active AND pending work
+ * with an ordinary owner stop, then wait for the application's own completion evidence
+ * (the goal's terminal line, written only after its bounded cleanup; the pending
+ * instruction's discard; every started planner turn recorded as ended) and confirm idle via
+ * `status`. The stop latch it sets is cleared with an explicit bare `resume`, so the next
+ * scenario starts from the default idle state. Bounded by the configured cleanup and
+ * planner-turn limits; failure to quiesce throws (never a silent proceed).
+ */
+async function quiesce(label: string): Promise<void> {
+  if (!chunkbot) return;
+  const t0 = Date.now();
+  const before = await statusSnapshot();
+  const entry: Json = { scenario: currentScenario, label, atMs: t0, activeGoalId: before.activeGoalId ?? null, activeState: before.activeState ?? null, pendingIntentId: before.pendingIntentId ?? null };
+  quiesceLog.push(entry);
+  const budgetMs = runLimits.plannerTimeoutMs + 4 * runLimits.cleanupTimeoutMs + 10_000;
+  if (before.activeGoalId || before.pendingIntentId) {
+    const from = chunkbot.length;
+    entry.stopSentAtMs = chunkbot.send('stop');
+    if (before.activeGoalId) {
+      const line = await chunkbot.waitSince(new RegExp(`\\[chunkbot\\] Goal ${before.activeGoalId} (completed|blocked|failed|cancelled) \\(`), from, budgetMs);
+      entry.goalTerminal = line.replace(/^\[chunkbot\] /, '').slice(0, 200);
+    }
+    if (before.pendingIntentId) {
+      const deadline = Date.now() + budgetMs;
+      while (!runEvents().some((e) => e.type === 'preparation_discarded' && e.intentId === before.pendingIntentId)) {
+        if (Date.now() > deadline) throw new Error(`pending instruction ${before.pendingIntentId} was not discarded within ${budgetMs} ms of the stop`);
+        await sleep(100);
+      }
+      entry.pendingDiscarded = true;
+    }
+  }
+  const deadline = Date.now() + budgetMs;
+  while (plannerTurnsOpen() > 0) {
+    if (Date.now() > deadline) throw new Error(`a planner process is still running ${budgetMs} ms after the stop (${plannerTurnsOpen()} turn(s) without an ended record)`);
+    await sleep(100);
+  }
+  const after = await statusSnapshot();
+  if (after.activeGoalId || after.pendingIntentId) throw new Error(`not idle after the stop: goal ${after.activeGoalId ?? 'none'} (${after.activeState ?? '-'}), pending ${after.pendingIntentId ?? 'none'}`);
+  if (after.paused) {
+    const from = chunkbot.length;
+    chunkbot.send('resume');
+    await chunkbot.waitSince(/\[chunkbot\] (Resumed: |Automatic work is not paused)/, from, 10_000);
+    entry.resumed = true;
+  }
+  entry.idleAfterMs = Date.now() - t0;
 }
 
 async function waitTerminal(goalId: string, from: number, timeoutMs: number): Promise<GoalRun> {
@@ -303,6 +433,8 @@ function summarize(g: GoalRun, ev: string[], trials: Json[], extra: Json = {}): 
 }
 
 async function resetScene(): Promise<void> {
+  // MB-FLOW-002-C4: no world change while any goal or preparation still owns control.
+  await quiesce('before scene reset');
   for (const c of sceneClearCommands()) await setup(c);
   await sleep(1_600);
   for (const c of sceneCommands()) await setup(c);
@@ -352,6 +484,7 @@ async function main(): Promise<void> {
   process.stdout.write(`fixture: ${list}\n`);
   const fixturePid = Number(readFileSync(fx.pidFile, 'utf8').trim());
 
+  setRunLimits(cfg.limits);
   chunkbot = await startChunkbot(`run-planner-jev-${jevMode}`, configPath, env);
   const mainEvents = () => eventsPath;
   let owner: Bot | undefined;
@@ -762,6 +895,7 @@ async function main(): Promise<void> {
     missingCapabilities: [],
     verifiedProgress: null,
   });
+  setRunLimits(faultCfg.limits);
   chunkbot = await startChunkbot('run-fault-planner', faultConfigPath, env);
   try {
     await check('F1', 'PLANNER FAULT FIXTURE: code-bearing text, an invented observation handle and invented owner coordinates are rejected before any action; bounded repairs; Chunkbot stays put (RCON)', async (ev, trials) => {
@@ -902,6 +1036,8 @@ async function main(): Promise<void> {
     results,
     setupCommands: setupLog,
     inTrialInterventions: interventions,
+    interScenarioQuiescence: quiesceLog,
+    submissions,
     faultHangChildFile: existsSync(join(faultDir, 'fault-codex-hang-child.json')) ? JSON.parse(readFileSync(join(faultDir, 'fault-codex-hang-child.json'), 'utf8')) : null,
   };
   writeFileSync(join(outDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);

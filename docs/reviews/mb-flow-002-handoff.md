@@ -269,3 +269,32 @@ npm run handoff-live-check -- --fixture 26.2        # with the 26.2 fixture leas
   - `renderMemoryView` omits `prepRef`. `prompt.ts` adds it for preparation subjects; the memory worker may want to own that.
   - The `EngineStatus` flow fields are optional in the type so the dashboard's existing fixtures compile.
 - **Inherited:** the real Jev J1 240 s timeout (MB-NAME-001-C1) is unchanged and not addressed here.
+
+## MB-FLOW-002-C4: planner-live-check inter-scenario quiescence (harness only)
+
+Recorded by root before the work: real 26.2 P4 exceeded the 10-minute harness wait while its goal was still active. The next `resetScene()` then sent world-changing RCON with that goal still running, and P5's `submit` expected "Goal … accepted" within 15 s, although smooth handoff first *prepares* an instruction that arrives while a goal is executing. That lets one real failure cascade. The original P4 failure remains real gameplay evidence; this change does not reclassify it.
+
+The change touches only `scripts/planner-live-check.ts`. There is no production, config, manifest, unit-test or fixture change; `src/` is identical to the accepted `88089893`.
+
+- **`quiesce()`, a completed-stop seam before any world change.** It is called at the start of EVERY scenario (`check`) and at the start of `resetScene()`.
+  - It reads `status` to find an active goal (`planning`/`awaiting_owner`/`executing`/`stopping`) and/or a pending instruction.
+  - If either exists it sends an ordinary owner `stop`, which revokes active AND pending work.
+  - It then waits for the application's own completion evidence:
+    - the goal's terminal line, which the engine writes only after its bounded cleanup;
+    - the pending instruction's `preparation_discarded`;
+    - every `planner_turn_started` matched by a `planner_turn_completed`/`planner_turn_failed`, meaning no planner process is still running.
+  - It confirms idle with a second `status`, then clears the stop latch with an explicit bare `resume` so the next scenario starts from the default idle state.
+  - All waits are bounded by the run's configured `plannerTimeoutMs` + 4 × `cleanupTimeoutMs` + 10 s. There are no arbitrary sleeps.
+  - If quiescence fails, the scenario FAILS with "could not reach an idle start". There is never a silent proceed or skip.
+  - Each step is recorded in `report.json` → `interScenarioQuiescence` (prior goal or intent, stop time, terminal line, discard, resume, idle time).
+- **`submit()` is consistent with pending preparation.**
+  - Direct admission: still "Goal … accepted" within 15 s.
+  - "Preparing your new instruction …": admission is then awaited up to the configured preparation budget, `plannerTurnsPerGoal` × (`plannerTimeoutMs` + `cleanupTimeoutMs`) + 10 s. Every preparation turn counts against the turn limit.
+  - A preparation that ends without admission fails the scenario: "Your new instruction was not started …", a discard, or a hung preparation, which the engine fails after its bounded timeout and retry. A rejected instruction fails too.
+  - Sent, preparing and accepted times are recorded in `report.json` → `submissions`.
+- **Unchanged:**
+  - in-scenario stop, replacement and death assertions (P6, P7, P11), which run after the idle start;
+  - P4's question, stationary, exploration, acquisition and assistance validation, and every real outcome criterion and timeout;
+  - the zero-model unit/fault tests and the exact CLI fixtures.
+
+Checks: `npm run typecheck`, then `npm run check`: exit 0, 469/469. Not run live: I have no fixture lease, and root reruns the affected cases in an isolated copy.
