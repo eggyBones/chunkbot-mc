@@ -1,6 +1,6 @@
-// Optional remote account/key metadata for the viewer, behind ONE globally
-// coalesced backend refresher: at most one read in flight, at most one start
-// per `minIntervalMs` (>= 60 s), bounded timeout, exponential backoff after
+// Optional remote account/key metadata for the viewer, behind one coalesced
+// refresher PER SOURCE shared by all tabs: at most one read in flight, at most
+// one start per `minIntervalMs` (>= 60 s; the Codex quota uses 120 s), bounded timeout, exponential backoff after
 // failures, and a stale label after `staleAfterMs` (5 min) without success.
 // Browser tabs only read the cached normalized state; they can never trigger
 // a read themselves. Only normalized, non-sensitive metrics are kept: never
@@ -217,6 +217,15 @@ export function codexQuotaFetcher(read: (signal: AbortSignal) => Promise<CodexQu
 export interface RemoteSources {
   openRouterKey?: CoalescedSource<OpenRouterKeyValue>;
   codexQuota?: CoalescedSource<CodexQuotaWindow[]>;
+}
+
+/** Human cadence of the configured sources (actual intervals; per source, shared by all tabs). */
+export function remoteCadence(sources: RemoteSources): string {
+  const parts: string[] = [];
+  const every = (ms: number) => (ms % 60_000 === 0 ? (ms === 60_000 ? 'once a minute' : `once every ${ms / 60_000} minutes`) : `once every ${Math.round(ms / 1000)} s`);
+  if (sources.openRouterKey) parts.push(`OpenRouter key at most ${every(sources.openRouterKey.minIntervalMs)}`);
+  if (sources.codexQuota) parts.push(`Codex quota at most ${every(sources.codexQuota.minIntervalMs)}`);
+  return parts.length ? `per source, shared by all tabs: ${parts.join('; ')}` : 'no account metadata reads';
 }
 
 export function remoteMetadata(sources: RemoteSources): RemoteMetadata {

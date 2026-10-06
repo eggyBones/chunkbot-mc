@@ -311,7 +311,7 @@ export const APP_JS = String.raw`
       ]));
     }
     qk.push(el('div', { cls: 'note', text: q.detail }));
-    var acct = panel('Accounts', 'shared, checked at most once a minute', [
+    var acct = panel('Accounts', r.cadence, [
       el('div', { cls: 'note', text: 'OpenRouter key: ' + r.openRouterStatus }),
       r.openRouterKey.length ? kv(r.openRouterKey) : null,
       el('div', { cls: 'note', text: r.wallet }),

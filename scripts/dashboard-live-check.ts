@@ -15,6 +15,7 @@
 //
 //   node scripts/dashboard-live-check.ts [--fixture 26.2] [--read-only]
 //   --read-only: join as DashProbe and compare against `data get` only (no RCON writes).
+//   --hunger-trial: also run the authorized temporary-difficulty food-change trial (restored in finally).
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { join } from 'node:path';
@@ -32,12 +33,28 @@ const PINS = fixturePins(fixtureProfileFromArgv(process.argv));
 const SUFFIX = PINS.profile === DEFAULT_FIXTURE_PROFILE ? '' : `-${PINS.profile}`;
 const fx = fixturePaths(PROJECT_ROOT, PINS);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${SUFFIX}-dashboard${process.argv.includes('--read-only') ? '-readonly' : ''}`);
+const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${SUFFIX}-dashboard${process.argv.includes('--read-only') ? '-readonly' : process.argv.includes('--hunger-trial') ? '-hunger' : ''}`);
 const dataDir = join(outDir, 'data');
 mkdirSync(dataDir, { recursive: true });
 const BOT = 'DashProbe';
 /** `--read-only`: no RCON writes at all (only `data get`); no damage/give/kill/kick/attribute/xp changes. */
 const READ_ONLY = process.argv.includes('--read-only');
+/**
+ * `--hunger-trial` (coordinator-authorized, this fixture only): briefly switch the fixture difficulty from its
+ * recorded original (peaceful) to normal so food can actually change, then restore the exact original in a
+ * finally path and verify it over RCON. Skipped (reported) when any other player is online.
+ */
+const HUNGER_TRIAL = process.argv.includes('--hunger-trial') && !READ_ONLY;
+let difficultyToRestore: string | undefined;
+async function restoreDifficulty(): Promise<string> {
+  if (!difficultyToRestore) return 'not changed';
+  const want = difficultyToRestore;
+  await rcon(`difficulty ${want}`);
+  const now = await rcon('difficulty');
+  const ok = new RegExp(`\\b${want}\\b`, 'i').test(now);
+  if (ok) difficultyToRestore = undefined;
+  return `${ok ? 'restored' : 'NOT RESTORED'}: ${now}`;
+}
 const LATENCY_BOUND_MS = 1_000;
 
 interface Result {
@@ -259,6 +276,46 @@ async function main(): Promise<number> {
     const fd = await published((s) => s.vitals.food.known && s.vitals.food.value === food);
     check('D2-food', 'hunger equals the server foodLevel (static: peaceful fixture)', Boolean(fd), [`server foodLevel=${food}`, `dashboard ${JSON.stringify(status()?.vitals.food)}`]);
 
+    if (HUNGER_TRIAL) {
+      const before = await rcon('difficulty');
+      const original = /difficulty is (\w+)/i.exec(before)?.[1]?.toLowerCase();
+      const online = await rcon('list');
+      const names = (online.split(':')[1] ?? '').split(',').map((n) => n.trim()).filter(Boolean);
+      const others = names.filter((n) => n !== BOT);
+      if (!original) {
+        check('D2-food-change', 'food change reaches the dashboard (temporary normal difficulty)', false, [`could not read the original difficulty: ${before}`]);
+      } else if (others.length > 0) {
+        check('D2-food-change', 'food change reaches the dashboard (temporary normal difficulty)', false, [`skipped: other players online (${others.length}); difficulty not changed`]);
+      } else {
+        const evidence: string[] = [`original difficulty: ${before}`, `players online: ${names.join(', ') || 'none'}`];
+        const tChange = Date.now();
+        try {
+          difficultyToRestore = original;
+          await rcon('difficulty normal');
+          await rcon(`effect give ${BOT} minecraft:hunger 10 99 true`);
+          let f = await serverNumber('foodLevel');
+          while ((f === undefined || f >= 18) && Date.now() - tChange < 8_000) {
+            await sleep(100);
+            f = await serverNumber('foodLevel');
+          }
+          await rcon(`effect clear ${BOT} minecraft:hunger`);
+          evidence.push(`server foodLevel reached ${f} ${Date.now() - tChange} ms after the change began`);
+          await sleep(200);
+          const tTruth = Date.now();
+          const truthFood = await serverNumber('foodLevel');
+          const seen = await published((s) => s.vitals.food.known && s.vitals.food.value === truthFood, 2_000);
+          const view = await viewed(tabB, tChange, (vm) => truthFood !== undefined && String(vm.world.food.text).startsWith(`${truthFood} /`), 2_000);
+          evidence.push(`server foodLevel=${truthFood}; dashboard ${JSON.stringify(status()?.vitals.food)} ${seen ? seen.at - tTruth : 'timeout'} ms after the truth read; viewer frame ${view === undefined ? 'timeout' : 'seen'}`);
+          const changed = truthFood !== undefined && truthFood < 20;
+          check('D2-food-change', 'a real food change (below 20) reaches the file and screen and equals the server', Boolean(changed && seen && seen.at - tTruth <= LATENCY_BOUND_MS && view !== undefined), evidence);
+        } finally {
+          const r = await restoreDifficulty();
+          evidence.push(`difficulty ${r} ${Date.now() - tChange} ms after it was changed`);
+          check('D2-difficulty-restored', 'fixture difficulty restored to its exact original and verified over RCON', r.startsWith('restored'), [r]);
+        }
+      }
+    }
+
     // ---- health: peaceful regenerates 1 HP per second, so the dashboard must show the damage within
     // 1 s and stay within one regeneration step of the server's value read at the same moment.
     let t0 = Date.now();
@@ -344,6 +401,14 @@ async function main(): Promise<number> {
   } catch (error) {
     check('harness', 'harness completed', false, [error instanceof Error ? error.message : String(error)]);
   } finally {
+    if (difficultyToRestore) {
+      try {
+        const r = await restoreDifficulty();
+        check('D2-difficulty-restored', 'fixture difficulty restored (outer finally)', r.startsWith('restored'), [r]);
+      } catch (error) {
+        check('D2-difficulty-restored', 'fixture difficulty restored (outer finally)', false, [error instanceof Error ? error.message : String(error)]);
+      }
+    }
     tabA.close();
     tabB.close();
     try {
@@ -361,7 +426,7 @@ async function main(): Promise<number> {
     await viewer.close();
   }
   const pass = results.every((r) => r.pass);
-  const report = { kind: 'dashboard-live-check', mode: READ_ONLY ? 'read-only' : 'mutating', fixture: PINS.profile, server: `${PINS.host}:${PINS.port}`, at: new Date().toISOString(), pass, results, setupCommands: setupLog };
+  const report = { kind: 'dashboard-live-check', mode: READ_ONLY ? 'read-only' : HUNGER_TRIAL ? 'mutating+hunger-trial' : 'mutating', fixture: PINS.profile, server: `${PINS.host}:${PINS.port}`, at: new Date().toISOString(), pass, results, setupCommands: setupLog };
   writeFileSync(join(outDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(
     join(outDir, 'report.md'),
