@@ -608,18 +608,16 @@ async function main(): Promise<void> {
       await check('L7', `H7 (${label}): two finite windows; measured gap between windows`, async (ev, trials) => {
         owner ??= await fixtureBot('FixtureOwner');
         await resetScene();
-        // Window 1 walks (it cannot satisfy the log outcome); window 2 collects the log. The second
-        // planner turn (lookahead or replan) takes 1 s, shorter than window 1's walk.
-        const interpretation = 'Walk to the obsidian, then collect one oak log.';
-        const w1 = proposal({
-          interpretation,
-          outcome: { kind: 'finite', predicate: LOGS(1) },
-          tasks: [{ objective: 'Walk to the obsidian.', decisionInstruction: 'Walk next to the obsidian block.', allowedCapabilities: ['move_near'], targetSelectors: [wt({ kind: 'registry', key: 'minecraft:obsidian' })], parameters: [], completion: wp({ predicate: 'near_target', target: wt({ kind: 'registry', key: 'minecraft:obsidian' }), within: 1.5 }) }],
-          morePlanningNeeded: true,
-        });
+        // Window 1 walks to the owner (it cannot satisfy the log outcome; move_near the owner is a
+        // proven grounded action); window 2 collects the log. The second planner turn (lookahead or
+        // replan) takes 1 s, shorter than window 1's ~8-block walk.
+        await setup(`tp FixtureOwner ${SCENE.start.x + 6} -60 ${SCENE.start.z + 6} 0 0`);
+        await sleep(800);
+        const interpretation = 'Walk to the owner, then collect one oak log.';
+        const w1 = proposal({ ...comeHere('window 1'), interpretation, outcome: { kind: 'finite', predicate: LOGS(1) }, morePlanningNeeded: true });
         const w2 = proposal({ interpretation, outcome: { kind: 'finite', predicate: LOGS(1) }, tasks: [logTask('Collect 1 oak log.', 1)], morePlanningNeeded: false });
         turnsFor([{ kind: 'proposal', proposal: w1 }, { kind: 'proposal', proposal: w2, delayMs: 1_000 }]);
-        const s = say(owner, 'walk to the obsidian then collect an oak log');
+        const s = say(owner, 'come to me then collect an oak log');
         const g = await goalAccepted(s.from);
         const done = await goalTerminal(g.goalId, s.from, 180_000);
         const gap = runEvents().find((e) => e.type === 'goal_window_gap' && e.goalId === g.goalId);
