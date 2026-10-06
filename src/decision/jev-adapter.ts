@@ -15,7 +15,7 @@ import { bodyFor } from './context.ts';
 import { DecisionError, STICKY_KINDS, TRANSIENT_KINDS } from './errors.ts';
 import { MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, maxAttemptChargeUsd, verifiedProfile, type VerifiedDecisionProfile } from './pricing.ts';
 import type { SpendLedger, SpendReservation } from './spend.ts';
-import { DEFAULT_JEV_ENDPOINT, classifyHttp, validateResponse } from './wire.ts';
+import { DEFAULT_JEV_ENDPOINT, classifyHttp, validateResponse, type TrustedUsage } from './wire.ts';
 
 export interface JevAdapterOptions {
   endpoint?: string;
@@ -68,7 +68,8 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
 
 type AttemptResult =
   | { ok: true; choice: DecisionChoice }
-  | { ok: false; kind: DecisionFailureKind; detail: string; httpStatus?: number; retryAfterMs?: number };
+  /** `usageTrusted`: whitelisted usage of a validated-but-rejected answer (MB-UI-001-C3); absent when not proven. */
+  | { ok: false; kind: DecisionFailureKind; detail: string; httpStatus?: number; retryAfterMs?: number; usageTrusted?: TrustedUsage };
 
 export class JevDecisionAdapter implements DecisionPort {
   private readonly o: JevAdapterOptions;
@@ -200,7 +201,7 @@ export class JevDecisionAdapter implements DecisionPort {
           return { ...result.choice, attempts };
         }
         const retryable = TRANSIENT_KINDS.has(result.kind) && attempt === 1 && !signal.aborted && (result.retryAfterMs ?? 0) <= (this.o.maxRetryAfterMs ?? 5_000);
-        this.o.store.record({ type: 'jev_failure', requestId: request.requestId, attempt, kind: result.kind, detail: result.detail, httpStatus: result.httpStatus ?? null, willRetry: retryable, spend: this.o.spend.snapshot() });
+        this.o.store.record({ type: 'jev_failure', requestId: request.requestId, attempt, kind: result.kind, detail: result.detail, httpStatus: result.httpStatus ?? null, willRetry: retryable, usage: result.usageTrusted ?? null, usageTrusted: Boolean(result.usageTrusted), spend: this.o.spend.snapshot() });
         if (!retryable) throw this.fail(result.kind, result.detail, request, attempts, result.httpStatus);
         retryAfterMs = result.retryAfterMs ?? 0;
       }
@@ -273,7 +274,7 @@ export class JevDecisionAdapter implements DecisionPort {
       if (!v.ok) {
         if (v.usageTrusted) this.o.spend.reconcile(reservation, v.usageTrusted.costUsd);
         else this.o.spend.retain(reservation);
-        return { ok: false, kind: v.kind, detail: v.detail, httpStatus: 200 };
+        return { ok: false, kind: v.kind, detail: v.detail, httpStatus: 200, ...(v.usageTrusted ? { usageTrusted: { ...v.usageTrusted } } : {}) };
       }
       this.o.spend.reconcile(reservation, v.value.usage.costUsd);
       this.stats.lastModel = v.value.model;

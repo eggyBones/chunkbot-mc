@@ -9,6 +9,7 @@ import type { CapabilityCatalog } from './capability.ts';
 import type { ClarificationExchange } from './clarification.ts';
 import type { RequestId } from './ids.ts';
 import type { LookaheadContext, PlanningSubject, PreparationContext } from './handoff.ts';
+import type { MemoryView } from './memory.ts';
 import type { ObservationSnapshot } from './observation.ts';
 import type { TaskFeedback } from './task.ts';
 
@@ -131,6 +132,11 @@ export interface PlannerRequest {
   preparation?: PreparationContext;
   /** `lookahead` turns only: the current window's last task is still running. */
   lookahead?: LookaheadContext;
+  /**
+   * MB-MEM-001: bounded memory view for THIS subject (goal: executable mref-
+   * refs; preparation: non-executable mprep- refs). Absent when memory is not installed.
+   */
+  memory?: MemoryView;
   /** Admission-bound inventory baseline (all items), kept for the goal's lifetime. */
   admission?: AdmissionInventory;
   /** The accepted, immutable goal outcome once a first plan was admitted. */

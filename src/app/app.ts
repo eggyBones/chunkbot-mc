@@ -13,6 +13,7 @@ import type {
   ChatEnvelope,
   Clock,
   KnowledgePort,
+  MemoryPlannerPort,
   ObservationPort,
   PlannerPort,
   SkillExecutor,
@@ -42,7 +43,8 @@ export const TERMINAL_HELP = [
   'Terminal uses the same language as `!chunkbot` chat, without the prefix:',
   '  <any instruction>        new goal (replaces the current one)',
   '  goal <instruction>       explicit goal alias (use for text starting with a reserved word)',
-  '  stop                     stop the current goal, or cancel joining',
+  '  stop                     stop the current goal and any pending instruction (or cancel joining); sets the pause latch',
+  '  resume                   clear the pause latch (bare word; nothing is replayed)',
   '  status                   connection/goal/adapter status (no inference)',
   '  answer [qN] <reply>      reply to the pending clarification question',
   'Operator commands: /reconnect  /quit  /help',
@@ -80,7 +82,9 @@ export interface AppExtensions {
   /** Cancels non-goal actuation (operator diagnostics). Must invalidate ownership synchronously. */
   cancelControl?(reason: string): boolean;
   /** Goal admission ownership (before planning): see GoalEngineDeps.onGoalAdmitted. */
-  onGoalAdmitted?(admission: { goalId: string; epoch: number; admittedAtMs: number }): void;
+  onGoalAdmitted?(admission: { goalId: string; epoch: number; admittedAtMs: number; instruction: string; kind: string }): void;
+  /** Goal terminal (after cleanup): see GoalEngineDeps.onGoalTerminal. */
+  onGoalTerminal?(end: { goalId: string; epoch: number; kind: string; state: string; reason: string; detail: string; interpretation?: string }): void;
   /** Terminal-only operator mechanic diagnostics (`/diag ...`). */
   diagnostic?(args: string): Promise<void>;
 }
@@ -104,6 +108,8 @@ export interface AppAdapters {
   registry?: RegistryFacts;
   /** Ledger-verified prior results by action id. */
   priorResults?: (actionIds: readonly string[]) => PriorResultRef[];
+  /** MB-MEM-001 planner seam (absent: memory not installed). */
+  memory?: MemoryPlannerPort;
 }
 
 export function foundationAdapters(): AppAdapters {
@@ -147,7 +153,7 @@ export class ChunkbotApp implements CommandTarget {
     const limits = deps.config.limits;
     const adapters = { ...foundationAdapters(), ...deps.adapters };
     this.decision = adapters.decision ?? new NotReadyDecision();
-    const { tasks, outcomes, decision: _decision, registry, priorResults, ...ports } = adapters;
+    const { tasks, outcomes, decision: _decision, registry, priorResults, memory, ...ports } = adapters;
     void _decision;
     this.engine = new GoalEngine({
       ...ports,
@@ -155,6 +161,7 @@ export class ChunkbotApp implements CommandTarget {
       ...(outcomes ? { outcomes } : {}),
       ...(registry ? { registry } : {}),
       ...(priorResults ? { priorResults } : {}),
+      ...(memory ? { memory } : {}),
       ...(deps.journal ? { journal: deps.journal } : {}),
       mechanicsVersion: deps.config.minecraft.version,
       store: deps.store,
@@ -172,6 +179,8 @@ export class ChunkbotApp implements CommandTarget {
         travelRadius: limits.travelRadius,
         observationRadius: limits.observationRadius,
       },
+      flow: deps.config.flow,
+      connectionEpoch: () => this.deps.game.connectionEpoch,
       notify: (notice) => {
         this.deps.out(`[chunkbot] ${notice.text}`);
         // Terminal-only operator diagnostics are not whispered in game (no chat spam).
@@ -179,6 +188,7 @@ export class ChunkbotApp implements CommandTarget {
       },
       isGameReady: () => this.deps.game.state === 'ready',
       onGoalAdmitted: (admission) => this.deps.extensions?.onGoalAdmitted?.(admission),
+      onGoalTerminal: (end) => this.deps.extensions?.onGoalTerminal?.(end),
     });
     this.unsubscribe.push(deps.game.onLifecycle((event) => this.onLifecycle(event)));
     this.unsubscribe.push(deps.game.onChat((envelope) => this.onChat(envelope)));
@@ -317,6 +327,15 @@ export class ChunkbotApp implements CommandTarget {
       this.deps.out(`[chunkbot] ${text}`);
       if (origin.surface === 'chat') this.deps.game.replyToOwner(text);
     }
+  }
+
+  resume(origin: IntakeOrigin): void {
+    const { wasPaused } = this.engine.resume(origin.surface);
+    const text = wasPaused
+      ? 'Resumed: automatic work is allowed again. Nothing earlier is replayed and nothing new was started.'
+      : 'Automatic work is not paused; nothing to resume.';
+    this.deps.out(`[chunkbot] ${text}`);
+    if (origin.surface === 'chat') this.deps.game.replyToOwner(text);
   }
 
   status(origin: IntakeOrigin): void {

@@ -13,11 +13,29 @@ import { OwnedProcess } from './process.ts';
 import { classifyPlannerMessage, PlannerError } from './errors.ts';
 import type { PlannerFailureKind } from '../contracts/index.ts';
 
+/**
+ * Token usage reported by the CLI's `turn.completed` event. Input and output
+ * counts are required (otherwise the whole usage is unknown: `null`); the
+ * cached-input and reasoning breakdowns are `null` when absent or invalid.
+ * Absence is never turned into 0 (MB-UI-001-C1).
+ */
 export interface TurnUsage {
   inputTokens: number;
-  cachedInputTokens: number;
+  cachedInputTokens: number | null;
   outputTokens: number;
-  reasoningOutputTokens: number;
+  reasoningOutputTokens: number | null;
+}
+
+const tokenCount = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null);
+
+/** Parses a `turn.completed` usage object; null when the core input/output counts are missing or invalid. */
+export function parseTurnUsage(raw: unknown): TurnUsage | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const u = raw as Record<string, unknown>;
+  const inputTokens = tokenCount(u['input_tokens']);
+  const outputTokens = tokenCount(u['output_tokens']);
+  if (inputTokens === null || outputTokens === null) return null;
+  return { inputTokens, cachedInputTokens: tokenCount(u['cached_input_tokens']), outputTokens, reasoningOutputTokens: tokenCount(u['reasoning_output_tokens']) };
 }
 
 export interface TurnResult {
@@ -111,9 +129,7 @@ export async function runCodexTurn(spec: TurnSpec): Promise<TurnResult> {
       }
       case 'turn.completed': {
         turnCompleted = true;
-        const u = (ev['usage'] ?? {}) as Record<string, unknown>;
-        const n = (k: string) => (typeof u[k] === 'number' && Number.isFinite(u[k]) ? (u[k] as number) : 0);
-        usage = { inputTokens: n('input_tokens'), cachedInputTokens: n('cached_input_tokens'), outputTokens: n('output_tokens'), reasoningOutputTokens: n('reasoning_output_tokens') };
+        usage = parseTurnUsage(ev['usage']);
         return;
       }
       case 'turn.failed': {

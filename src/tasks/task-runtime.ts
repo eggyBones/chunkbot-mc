@@ -241,7 +241,7 @@ export class TaskRuntime implements TaskExecutionPort {
     try {
       assertCurrent();
       // Task-admission baselines (acquisition deltas are measured from here).
-      const bound: BoundPredicate = await deps.predicates.bind(task.spec.completion, task.signal);
+      const bound: BoundPredicate = await deps.predicates.bind(task.spec.completion, task.signal, undefined, { goalId: task.goalId, goalEpoch: task.goalEpoch });
       assertCurrent();
       emit('task_baseline', { baselines: bound.baselines, boundAtMs: bound.boundAtMs });
       const maxRounds = deps.limits.maxRounds ?? 2_000;

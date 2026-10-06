@@ -52,6 +52,8 @@ export interface TaskHints {
   /** Desired items and quantities from the completion predicate (crafting/smelting/inventory); `possess` = held amount counts. */
   outputs: Array<{ key: string; count: number; possess?: boolean }>;
   parameters: Parameters;
+  /** MB-MEM-001: memory refs named by target selectors (resolved only under the goal's ownership fence). */
+  memoryRefs: string[];
 }
 
 export interface ResolveContext {

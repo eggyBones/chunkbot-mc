@@ -98,3 +98,23 @@ export class MemoryRunStore implements RunStore {
     return this.events.filter((e) => e.type === type);
   }
 }
+
+/**
+ * One tee for a run: every event is forwarded ONCE, unchanged, to `target`,
+ * then offered to the observer (if one is installed yet). An observer failure
+ * never affects evidence recording.
+ */
+export function teeRunStore(target: RunStore, observer: () => ((event: EvidenceEvent) => void) | undefined): RunStore {
+  return {
+    runId: target.runId,
+    record(event: EvidenceEvent): void {
+      target.record(event);
+      try {
+        observer()?.(event);
+      } catch {
+        // observation never breaks evidence recording
+      }
+    },
+    close: (summary) => target.close(summary),
+  };
+}

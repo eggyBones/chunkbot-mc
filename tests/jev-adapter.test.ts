@@ -198,6 +198,25 @@ describe('Jev response validation (fail closed)', () => {
     });
   }
 
+  it('MB-UI-001-C3: a rejected but trusted answer carries its validated usage into jev_failure; untrusted rejections carry none', async () => {
+    const { a, store } = adapter();
+    handlers.push(ok((r) => (r.answers.next_action.choice = 'act-invented00')));
+    assert.equal((await failure(a.choose(request(), new AbortController().signal))).kind, 'invalid_response');
+    const trusted = store.ofType('jev_failure').at(-1)!;
+    assert.deepEqual(trusted['usage'], { inputTokens: 420, outputTokens: 30, costUsd: 420 * PROMPT_USD_PER_TOKEN });
+    assert.equal(trusted['usageTrusted'], true);
+    assert.equal(trusted['willRetry'], false, 'rejection behavior unchanged');
+    for (const patch of [(r: Record<string, any>) => delete r.usage, (r: Record<string, any>) => (r.model = 'typesafe/jev-2.0-20261001')]) { // eslint-disable-line @typescript-eslint/no-explicit-any
+      const fresh = adapter();
+      handlers.push(ok(patch));
+      await failure(fresh.a.choose(request(), new AbortController().signal));
+      const ev = fresh.store.ofType('jev_failure').at(-1)!;
+      assert.equal(ev['usage'], null, 'no usage unless proven');
+      assert.equal(ev['usageTrusted'], false);
+    }
+    assert.ok(!JSON.stringify(store.events).includes(KEY), 'no key in evidence');
+  });
+
   it('an oversized response body is rejected without parsing it', async () => {
     const { a, spend } = adapter();
     handlers.push((_q, _b, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(`{"pad":"${'x'.repeat(70_000)}"}`));
