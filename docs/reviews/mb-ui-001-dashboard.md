@@ -64,6 +64,14 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
     - "no longer has an active memory of “L”" (forgotten).
 - **Checks:** `npm run check` on the combined tree exits 0, with 479/479 tests including 79 dashboard tests. The C4/C5 fixes are unchanged.
 
+## Layout correction MB-UI-001-C7
+
+The Memory panel no longer uses the generic two-column `kv` grid, where a long natural-language label became the `max-content` column and squeezed the metadata into about 36 px. Each memory row (home first, then the other items) now stacks:
+- the label on its own line, wrapping as needed;
+- below it at full panel width, the metadata (place, coordinates, source, time, stale) as normally wrapping text, keeping its tone and tooltip.
+
+The data, hooks and metadata semantics are unchanged. The page is layout-only (`page.ts`), and its geometry still needs the root's T3 retest at 1280/1366/1920/390.
+
 ## Viewer behavior
 
 - **Liveness states:** no session, live, disconnected, stale (heartbeat missed while the process exists), crashed (process gone without a clean stop), stopped, and error (malformed file; the last valid update is kept).
