@@ -1,8 +1,8 @@
 # MB-MEM-001 persistent gameplay memory: worker evidence and coordinator integration
 
-**Status: worker modules and corrections are integrated; root module checks pass13/13 on BOTH fixtures, and real Codex/Jev M6 passes after an actual CLI restart on BOTH versions. Final batch regression/publication review is in [the coordinator report](mb-batch001-coordinator-review.md).** Native module evidence below remains labeled by its actual phase.
+**Coordinator acceptance: native modules and C1–C3 corrections are integrated at `692f5773`. Root module checks pass 13/13 on both fixtures, and real Codex/Jev M6 passes after an actual CLI restart on both versions. The selected feature is accepted in [the coordinator report](mb-batch001-coordinator-review.md), with general runtime quality limits retained.** Native module evidence below remains labeled by its actual phase.
 
-This document is worker evidence. It does not change the roadmap, plans, status or acceptance records; the coordinator owns those. Nothing here is whole-feature acceptance.
+The native sections below are worker evidence. The coordinator owns the acceptance statement above, roadmap and final review; native module checks alone were not whole-feature acceptance.
 
 ## Commits
 

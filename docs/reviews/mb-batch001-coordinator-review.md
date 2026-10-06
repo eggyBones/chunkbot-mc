@@ -1,6 +1,6 @@
 # Batch001 independent integration review
 
-Date: 2026-10-06 UTC. Coordinator: Codex. Status: integrated implementation; final acceptance in progress. Public repository: [eggyBones/chunkbot-mc](https://github.com/eggyBones/chunkbot-mc).
+Date: 2026-10-06 UTC. Coordinator: Codex. Status: **MB-UI-001, MB-FLOW-002 and MB-MEM-001 accepted and integrated, with the runtime quality limitations below retained.** Public repository: [eggyBones/chunkbot-mc](https://github.com/eggyBones/chunkbot-mc).
 
 ## Delivered scope
 
@@ -16,6 +16,8 @@ Automatic progression, survival/death recovery, locator use, server control, dep
 
 Final application source/build: `dd51a4c6c3814cbffd01539078cca4c3c9f2265f` (reviewed shared implementation `88089893`, memory correction `692f5773`, dashboard `042b2a0a`). Root `npm run check` exits 0: **483/483**, no skips/failures/cancellations. An isolated archive copy with independent node_modules also passes 483/483; clean `npm ci` exits 0. The manifest/lock dependency bytes are unchanged after that installation.
 
+Subsequent native commits `38a285ad` (UI-C8) and `45816d73` (FLOW-C4) change live-check harnesses and evidence only. Each integrated harness passes root typecheck. Final integration `a59dcde4` has application source, tests, configuration, manifest/lock and vendored bytes identical to `dd51a4c6`; the existing tested application build remains current.
+
 An earlier immutable root build `8d5f3174` was deliberately retained during the 26.2 foundation/skill/controller/planner regression run. Later changes were new memory-view sizing/telemetry and dashboard rendering; those were tested separately before the final build. No build was cleaned under an active harness.
 
 | Evidence | Actual result |
@@ -26,12 +28,13 @@ An earlier immutable root build `8d5f3174` was deliberately retained during the 
 | Root 26.2 planner with loopback Jev | 19/19, exit 0; real planner plus explicit planner-fault scenarios |
 | Root final memory module/hook harness | 13/13 on each version; separate seed/recall processes, real packets/skills, no model calls |
 | Root final handoff harness | 9/9 on each version, exit 0; scripted planner/loopback Jev |
+| Root final dashboard harness after C8 | 13/13 on each version, exit 0; real file/SSE health changes within one second |
 | Root compatibility 26.1.2 | 5/5, exit 0; speed changes reach physics and measured movement |
 | Vendored/official data checks | Byte-identical vendor rebuild, official registry/codec comparisons 22/22 on each version; exits 0 |
 
 Private exact commands, direct exits, timestamps and paths: `var/batch001/final-root-check.json`, `final-copy-check-c7.json`, `final-clean-install.json`, `final-frozen-gates-26-2.json`, `final-feature-gates-26-1-2.json`, and `final-feature-gates-26-2.json`. Reports and logs remain ignored.
 
-The two final real-planner regression processes use different Minecraft fixtures and unique run-store/journal directories, but the existing harness hardcodes the same root data directory for both. Their shared dashboard status/history file is therefore **not aggregate-history acceptance evidence**. Gameplay evidence is correlated to each unique run/goal and fixture. The actual dashboard/memory acceptance above uses distinct data directories. Subsequent parallel checks must use the isolated copy or distinct worktrees; preserve the root fixture-only aggregate as a private trial artifact after both drivers exit.
+The two final real-planner regression processes used different Minecraft fixtures and unique run-store/journal directories, but the existing harness hardcodes the same root data directory for both. Their shared dashboard status/history file is therefore **not aggregate-history acceptance evidence**. Gameplay evidence is correlated to each unique run/goal and fixture. Actual dashboard/memory acceptance uses distinct data directories. Subsequent parallel checks must use the isolated copy or distinct worktrees. After all drivers exited, root archived the fixture-only aggregate under ignored `var/batch001/root-fixture-dashboard-history-*`; it is preserved rather than presented as user history.
 
 ## Real ordinary-goal acceptance
 
@@ -39,9 +42,23 @@ The two final real-planner regression processes use different Minecraft fixtures
 
 **M6, 26.1.2:** ordinary remembered-home and inspect-chest goals completed in the first actual CLI process. It exited, the read-only memory command loaded the same scope, and a second CLI process made no action before a new instruction. “Go home and craft and place a crafting table beside home, using planks from the chest” then used an accepted shown memory reference, inspected the chest freshly before withdrawal, consumed four of twelve planks, crafted and placed the table beside home. Code verified all 3 conditions; RCON confirmed the table at 205,-60,206 and 8 planks left. Zero assistance. Three actual memory views, maximum 3,887 serialized characters. Report: `var/batch001/real-m6-26-1-2/report.json`.
 
-**M6, 26.2:** the same actual CLI restart scenario also passed, with the table at205,-60,206 and8 planks left. Code verified3/3;5 actual memory views, maximum3,885 characters; fresh inspection before withdrawal and zero assistance. Report: `var/batch001/real-m6-26-2/report.json`.
+**M6, 26.2:** the same actual CLI restart scenario also passed, with the table at 205,-60,206 and 8 planks left. Code verified 3/3; 5 actual memory views, maximum 3,885 characters; fresh inspection before withdrawal and zero assistance. Report: `var/batch001/real-m6-26-2/report.json`.
 
-Real Jev diagnostic commands pass on both configs. The final real-Jev suite passes12/12 on26.2 and11/12 on26.1.2: only the separately reproduced inherited J1 movement timeout remains. Full real-planner regression commands are still running; their outcomes must be read before acceptance is closed.
+Real Jev diagnostic commands pass on both configs. The final real-Jev suite passes 12/12 on 26.2 and 11/12 on 26.1.2: the separately reproduced inherited J1 movement timeout remains.
+
+## Provider regressions and remaining quality limits
+
+| Run | Direct result and interpretation |
+| --- | --- |
+| Real Codex + real Jev, 26.1.2 | **19/19, exit 0**; report `2026-10-06T09-08-58-230Z-planner-jev-real` |
+| Real Codex + real Jev, original 26.2 run | **17/19, exit 1**; P4 explored valid frontiers but did not acquire the occluded bread within 10 minutes. P5 then inherited the still-active goal and missed its immediate-admission wait. Report `2026-10-06T09-06-02-950Z-26.2-planner-jev-real` |
+| Corrected FLOW-C4 harness, real 26.2 P0/P4/P5 | **3/3, exit 0**; P0 creates the required fixture owner. P4 acquired/delivered the bread in 114 s, P5 crafted/stored four planks in 34 s, with ordinary goals and server truth. Report `2026-10-06T09-42-45-158Z-26.2-planner-jev-real` |
+| FLOW-C4 active-owner cleanup proof | **Coordinator verification exit 0**. An intentionally failing private QF scenario left a real persistent follow goal executing. Before P5 could reset the world, the harness sent stop, awaited the application's cancelled/owner_stop terminal and planner cleanup, confirmed idle in 107 ms, then P5 passed. The inner harness's exit 1 is the deliberate QF failure, not a passed suite. `var/batch001/final-quiescence-probe.json` |
+| Additional 26.1.2 real-planner/loopback-Jev diagnostic | **Partial, explicitly stopped; exit 143, not a 19/19 pass.** P0/P1 passed, but P2's deterministic fault controller surveyed/explored without acquiring two cobblestone before its 19-minute wait. Root stopped only its proven owned CLI/harness after the failure; the older harness lacked C4 isolation. Log `final-planner-fault-26-1-2.log` and containment proof `fault-26-1-2-containment.json` |
+
+The original 26.2 P4 timeout remains a real gameplay quality observation (**MB-BATCH001-R1**), even though its isolated rerun passed. C4 closes the separate harness contamination/admission assumptions without relaxing acquisition criteria. The partial default fault-controller diagnostic is **MB-BATCH001-R2**; it is not silently called inherited or complete. These limits, plus inherited **MB-NAME-001-C1** J1, prevent claiming universal navigation reliability or completion of unassigned MB-V1-05. The selected dashboard, handoff and memory acceptance scenarios pass.
+
+Two coordinator filtered-run attempts omitted P0, so their fixture owner was never created (0/2 and 0/3). They are retained as invalid setup diagnostics, not gameplay evidence. The corrected run explicitly includes P0. All original failed and stopped reports/logs remain ignored and preserved.
 
 ## Browser and observer evidence
 
@@ -49,7 +66,9 @@ T3 inspected actual integrated CLI data during the live M6 trial: 24/24 health r
 
 Final layout C7 was independently inspected at **1280, 1366, 1920 and 390 px** using the real saved M6 data after graceful app stop. Readings were honestly historical. Memory metadata had 466/501/716/344 px of readable width; no page, memory-row or cost-card horizontal overflow. XP and returned quota bars matched their values; console entries were empty. Exact screenshots/geometry: `var/batch001/final-dashboard-browser-c7.json`. T3 screenshots succeeded; recording remained unavailable, so no video evidence is claimed.
 
-Native 26.2 dashboard live evidence includes 15/15 with real hunger changing 20→17 under a bounded temporary Normal difficulty trial. The original Peaceful difficulty was restored in finally and independently rechecked. The first final root ordinary Peaceful runs passed 12/13 on each version; D2-health's <=17 sampling threshold timed out after 3 damage. Server and dashboard matched afterward. **C8** corrects the harness only (`38a285ad`): established baseline, decisive non-lethal damage, immediate server read, recorded file/stream health samples and command-to-observation latency. Root typecheck exits0 after integration; the sub-second rerun remains pending. These original failed reports are retained, not counted as passing.
+Native 26.2 dashboard live evidence includes 15/15 with real hunger changing 20→17 under a bounded temporary Normal difficulty trial. The original Peaceful difficulty was restored in finally and independently rechecked. The first final root ordinary Peaceful runs passed 12/13 on each version; D2-health's <=17 sampling threshold timed out after 3 damage. Server and dashboard matched afterward. **C8** corrects the harness only (`38a285ad`): established baseline, decisive non-lethal damage, immediate server read, recorded file/stream health samples and command-to-observation latency. A static full-health sample cannot pass.
+
+Both corrected root runs pass **13/13, exit 0**. On 26.1.2 the file/SSE changed in **89/84 ms**, health 10 matched immediate server truth 10. On 26.2 the file/SSE changed in **530/537 ms**; health 12 versus immediate truth 10 is within the explicitly admitted two-HP Peaceful regeneration tolerance. Reports: `2026-10-06T09-19-04-526Z-dashboard` and `2026-10-06T09-27-52-791Z-26.2-dashboard`, under `var/live-check/`; direct exits in `var/batch001/final-dashboard-c8-*.json`. The original 12/13 reports remain failures and are not counted as passing.
 
 The coordinator separately proved the pinned Codex quota adapter with only initialize/initialized, non-refreshing account/read, and rateLimits/read. No thread/turn/inference or auth refresh. Only returned windows were kept; account identity and raw envelopes were discarded. OpenRouter key overview was observed through its supported current-key GET. Tabs share bounded source polling; no account wallet balance is fabricated.
 
@@ -59,10 +78,12 @@ Root reproduced the planner serialization timeout, superseded-preparation cleanu
 
 MB-BATCH001-I1 was an accidental import of an executable memory harness without a lease, disrupting the handoff fixture trial. That entire run was invalidated and rerun. The memory harness now refuses missing/invalid leases before password reads, writes or joins, and does nothing when imported. A native background reviewer was also stopped after violating the no-recursive-workers brief; none of its evidence was used for coordinator acceptance.
 
-The inherited real-Jev J1 movement timeout **MB-NAME-001-C1** was reproduced before the rebrand. It remains a separately recorded baseline limitation; this feature batch cannot silently reclassify it as a pass. Final provider reports will distinguish it from any new failure.
+The inherited real-Jev J1 movement timeout **MB-NAME-001-C1** was reproduced before the rebrand. It remains a separately recorded baseline limitation. R1 and R2 above are separately labeled observations from this batch; none is reclassified as a pass.
 
 ## Publication and runtime
 
-The initial public rebrand push was verified before worker launch. Feature code is locally integrated but not yet pushed. Final publication requires checking all outgoing Git-history blobs, current tracked files and vendored archive contents against actual Microsoft/OpenRouter/Codex/GitHub credentials and token/private-key patterns. Private configs, runtime data, caches, logs and screenshots stay ignored.
+The initial public rebrand push was verified before worker launch. The three selected features are accepted for publication. The coordinator audits all outgoing Git-history blobs and commit objects, current tracked files and vendored archive contents against actual Microsoft/OpenRouter/Codex/GitHub credentials and token/private-key patterns before pushing. Exact audit and verified owner/public/default-main/remote-HEAD evidence are recorded in ignored `var/batch001/final-publication-audit.json` and `final-publication.json`. Private configs, runtime data, caches, logs and screenshots stay ignored.
 
-The live bot remains logged out/stopped. Acceptance used only separately leased loopback fixtures; Jake's client, live server and world were untouched. All three worker branches/worktrees remain available for review.
+At 09:55:16 UTC independent RCON reads confirm **zero players and Peaceful difficulty on both fixtures**. No application or harness process remains; both root fixture leases are explicitly released. A separate read-only viewer on 127.0.0.1:7381 displays the stopped 26.1.2 M6 trial as historical data. It has no Minecraft connection. `var/batch001/final-runtime-release.json` records the check and archived trial history.
+
+The live bot remains logged out/stopped. Acceptance used only separately leased loopback fixtures; Jake's client, live server and world were untouched. All three native sessions are idle, queues empty, and worktrees clean at final commits `45816d73`, `38a285ad` and `692f5773`. They remain available for review; no further feature is assigned.

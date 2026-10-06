@@ -1,6 +1,6 @@
 # MB-FLOW-002 — Continue current work while the next directive loads
 
-Reported: 2026-10-06. Status: **Implemented by native Opus 5.5 and integrated in [batch001](feature-batch-001-plan.md); final coordinator acceptance in progress.**
+Reported: 2026-10-06. Status: **Implemented by native Opus 5.5, integrated and accepted in [batch001](feature-batch-001-plan.md).** See the [independent review](reviews/mb-batch001-coordinator-review.md) for measured acceptance and retained runtime quality limits.
 Parent: [companion upgrades](companion-upgrades-plan.md). Baseline: [goal/planner architecture](v1-architecture-plan.md), [contracts](v1-contracts.md).
 
 ## Outcome and happy path
@@ -57,9 +57,9 @@ Proposed ownership: new preparation/scheduling module, targeted goal/task/planne
 
 Use fake clocks/delayed providers for races, then real packet/world evidence for movement and inventory. Required checks: typecheck/build/test, doctors, connection and controller regressions, planner isolation/cancel diagnostic and planner fault/real checks from the parent plan. Extend existing tests/goal-engine.test.ts, tests/planner-engine.test.ts and tests/app.test.ts with behavior-driven cases.
 
-## Remaining delivery
+## Accepted delivery
 
-Preparation ownership, one settled planner tail, all-discarded cleanup, admission re-grounding, pause/resume and measured lookahead are implemented. Root handoff checks pass9/9 on each fixture; actual H7 on26.2 passes with real Codex/Jev and zero assistance. [Independent integration review](reviews/mb-batch001-coordinator-review.md) records final regression/publication steps. Automatic progression remains unassigned.
+Preparation ownership, one settled planner tail, all-discarded cleanup, admission re-grounding, pause/resume and measured lookahead are implemented. Root handoff checks pass 9/9 on each fixture; actual H7 on 26.2 passes with real Codex/Jev and zero assistance. C1–C4 are closed. [Independent integration review](reviews/mb-batch001-coordinator-review.md) records acceptance and retained navigation limits. Automatic progression remains unassigned.
 
 ## Coordinator review findings
 
@@ -68,6 +68,8 @@ Preparation ownership, one settled planner tail, all-discarded cleanup, admissio
 Reported 2026-10-06 09:20 UTC. Root real planner regression passes19/19 on26.1.2. On26.2 P4's actual controller repeatedly chose valid frontier exploration, never collected the occluded bread, and exceeded the harness's10-minute wait. The goal remained active. Existing `resetScene` then changed the scene without stopping that active owner, and `submit` waited only15 seconds for immediate goal admission although smooth handoff first prepares a draft. P5 consequently missed its admission wait and later scenarios risked the same contamination. These are observed harness assumptions; the original P4 gameplay failure is not reclassified as a harness pass or an inherited bug.
 
 Expected: between distinct scenario trials, revoke active/pending work and wait for bounded owned cleanup before ANY RCON scene reset. Preserve deliberate in-scenario stop/replacement/correction assertions. A fresh trial must still enforce its own real gameplay criteria, including acquisition/exploration, immutable outcomes and zero unrecorded assistance. Native shared writer owns a bounded correction to `scripts/planner-live-check.ts` and its review only, with no production behavior change, provider call or fixture lease. Root reruns affected cases in isolated runtime storage and retains the original failures.
+
+**C4 closure:** native `45816d73` changes only the regression harness/review. It awaits active/pending cleanup and confirms idle before scene mutation, and waits for bounded preparation admission rather than assuming immediate acceptance. Root typecheck exits 0. The initialized real 26.2 P0/P4/P5 rerun passes 3/3 with unchanged acquisition criteria. A separate deliberate failure while following proves that before P5 the harness stops the still-executing owner, awaits its terminal/cleanup and confirms idle in 107 ms; P5 then passes. That proof expects inner exit 1 for the intentional failure and coordinator verification exit 0. Original P4 and the partial default fault-controller timeout remain quality observations, not reclassified successes.
 
 ### MB-FLOW-002-C1 — Planner slot timeout must keep serialization
 

@@ -1,11 +1,13 @@
 # MB-UI-001 — Local Chunkbot dashboard for a second monitor
 
-Reported: 2026-10-06. Status: **Implemented by native Opus 5.5 and integrated in [batch001](feature-batch-001-plan.md); final coordinator acceptance in progress.**
+Reported: 2026-10-06. Status: **Implemented by native Opus 5.5, integrated and accepted in [batch001](feature-batch-001-plan.md).** See the [independent review](reviews/mb-batch001-coordinator-review.md) for measured acceptance and retained runtime quality limits.
 Parent: [companion upgrades](companion-upgrades-plan.md).
 
 ### MB-UI-001-C8 — Peaceful health-change sampling acceptance
 
 Reported 2026-10-06 09:04 UTC; coordinator investigation/native harness correction assigned. Final combined build `dd51a4c` passed memory 13/13 and handoff 9/9 on both fixtures. Dashboard runs `09-00-12-961Z-dashboard` and `09-00-13-966Z-26.2-dashboard` passed 12/13; only D2-health timed out. Both RCON commands reported applying 3 damage, and after the assertion waits both server and dashboard correctly read 20. The assertion requires a published sample <=17 despite its stated allowance of one Peaceful regeneration step and the 2 Hz publisher. Hypothesis: an 18 HP sample is missed by that threshold; this is not yet a reproduced packet fact. Inspect the assertion and actual health source, preserve the sub-second command-to-file/SSE requirement, record baseline/server truth and changed samples, and compare within the admitted regeneration tolerance. Never turn a static/full-health sample into a pass. No production behavior change or fixture access is assigned to the worker. Coordinator reruns the corrected check under the existing exclusive leases; original failures remain evidence.
+
+**C8 closure:** native harness-only correction `38a285ad` is integrated. Root typecheck and both corrected fixture runs exit 0, 13/13 each; genuine damage is observed within one second, with recorded immediate server truth and an explicit two-HP regeneration tolerance. Original 12/13 failures are preserved. Details and report paths are in the independent review.
 
 ## Outcome and happy path
 
@@ -119,9 +121,9 @@ The optional observer may use this supported route with bounded/coalesced pollin
 
 These are observed source/probe findings within dashboard acceptance, not accepted feature behavior. The shared writer owns transport/decision hooks; the dashboard worker owns projection/history corrections and meaningful regression cases.
 
-## Remaining delivery
+## Accepted delivery
 
-Core status/usage publishing, bounded history, local viewer, honest offline state, supported quota/key reads and operator commands are installed. T3 actual-data review passes desktop/mobile layout, precise charges, bars and memory rendering. [Independent integration review](reviews/mb-batch001-coordinator-review.md) records results. C8 requires the final root health-sampling rerun before acceptance closes; automatic survival/update UI consumers remain conditional on their unassigned features.
+Core status/usage publishing, bounded history, local viewer, honest offline state, supported quota/key reads and operator commands are installed. T3 actual-data review passes desktop/mobile layout, precise charges, bars and memory rendering. [Independent integration review](reviews/mb-batch001-coordinator-review.md) records results. C8 is closed: final root checks pass 13/13 on both Peaceful fixtures, including actual file/SSE health changes in 89/84 ms (26.1.2) and 530/537 ms (26.2). Automatic survival/update UI consumers remain conditional on their unassigned features.
 
 ### Real browser review — 2026-10-06T08:36:31.333132+00:00
 

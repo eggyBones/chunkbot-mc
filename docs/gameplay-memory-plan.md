@@ -1,6 +1,6 @@
 # MB-MEM-001 — Persistent gameplay memory
 
-Reported: 2026-10-06. Status: **Implemented by native Opus 5.5 and integrated in [batch001](feature-batch-001-plan.md); final coordinator acceptance in progress.**
+Reported: 2026-10-06. Status: **Implemented by native Opus 5.5, integrated and accepted in [batch001](feature-batch-001-plan.md).** See the [independent review](reviews/mb-batch001-coordinator-review.md) for measured acceptance and retained runtime quality limits.
 Parent: [companion upgrades](companion-upgrades-plan.md). Consumer: [default progression](autonomous-progression-plan.md).
 Related consumer: [MB-FLOW-003 survival routines/death recovery](survival-routines-plan.md).
 
@@ -75,9 +75,9 @@ Run typecheck/build/test and relevant doctor/config checks. Changes to perceptio
 
 At milestone521cf10, MemoryRefRegistry stores goal/epoch/request metadata but resolve validates only connection, dimension and active fact presence. It does not compare the calling owner/epoch or a changed fact revision/coordinates; the counter also wraps at999,999. An old ref must not resolve for another owner or silently alias/misdirect after a fact moves. Require explicit current owner/epoch correlation (or a mandatory equivalent verifier), fact identity/revision/location checks, non-aliasing issuance and fresh re-grounding during preparation-to-admission. Add negative tests for cross-goal access and an owner-corrected location. The worker received the ownership concern and is revising its interface; no acceptance is claimed.
 
-## Remaining delivery
+## Accepted delivery
 
-Storage/world identity, durable facts, fresh references and bounded retrieval are installed in the real CLI. Module seed/restart checks pass13/13 on each version; real M6 passes on26.1.2 and26.2 with zero assistance and fresh container inspection. [Independent integration review](reviews/mb-batch001-coordinator-review.md) records evidence and the remaining final regression/publication steps. Full M7 recovery depends on unassigned MB-FLOW-003; memory-side death persistence is delivered.
+Storage/world identity, durable facts, fresh references and bounded retrieval are installed in the real CLI. Module seed/restart checks pass 13/13 on each version; real M6 passes on 26.1.2 and 26.2 with zero assistance, no action replay and fresh container inspection. C1–C3 are closed, including durable forget and complete memory views at or below 8,000 serialized characters. [Independent integration review](reviews/mb-batch001-coordinator-review.md) records acceptance and retained limits. Full M7 recovery depends on unassigned MB-FLOW-003; memory-side death persistence is delivered.
 
 ### MB-MEM-001-C2 — Forget completion requires durable absence
 

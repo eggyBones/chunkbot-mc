@@ -1,6 +1,6 @@
 # Feature batch001 — Dashboard, handoff and gameplay memory
 
-Reported:2026-10-06 UTC. Status: three native implementations integrated; final coordinator acceptance in progress; MB-NAME-001 initial public push verified at commit `d5eb2fa7826f783354c3a65081cbff151267eb50`.
+Reported: 2026-10-06 UTC. Status: **three native implementations integrated and accepted**, with runtime quality limits retained in the independent review. MB-NAME-001 initial public push was verified at commit `d5eb2fa7826f783354c3a65081cbff151267eb50` before feature launch.
 
 Jake explicitly requested three features in parallel through the standing agent workflow, using native Claude Opus5.5 with full DSH permissions. One must be the dashboard. Codex selects smooth directive handoff and persistent gameplay memory as the two companion foundations.
 
@@ -27,7 +27,7 @@ The public repository must remain free of Minecraft, OpenRouter and Codex creden
 
 The live bot remains logged out under Jake's latest instruction. These features use loopback worlds and a local read-only viewer; no live reconnect or private server modifications are authorized. Existing acceptance failures unrelated to branding are preserved and scoped independently.
 
-All three native implementations are integrated from separate worktrees. Exact paths, sessions, ownership and fixture restrictions are recorded in [supervision](agent-supervision.md); complete private briefs/receipts are under ignored var/batch001. [Independent review](reviews/mb-batch001-coordinator-review.md) records the final 483-test build, both fixtures' memory/handoff checks, real H7/M6 and T3 evidence. Final provider regressions and dashboard health-harness C8 remain in progress; no feature push or live launch is claimed.
+All three native implementations are integrated from separate worktrees. Exact paths, sessions, ownership and fixture restrictions are recorded in [supervision](agent-supervision.md); complete private briefs/receipts are under ignored var/batch001. [Independent review](reviews/mb-batch001-coordinator-review.md) records the final 483-test build, both fixtures' memory/handoff checks, real H7/M6 and T3 evidence. Selected feature acceptance is complete, including real M6 on both versions, dashboard C8 and handoff C4. The review retains inherited J1, the original 26.2 P4 timeout and the partial default fault-controller diagnostic; general V1 final acceptance remains unassigned. All worker sessions are idle and clean, and fixture leases are released. No live launch is claimed.
 
 ## Assigned ownership
 

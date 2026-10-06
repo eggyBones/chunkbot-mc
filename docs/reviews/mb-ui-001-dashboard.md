@@ -1,6 +1,6 @@
-# MB-UI-001 — Local dashboard: worker review draft
+# MB-UI-001 — Local dashboard: worker evidence and coordinator acceptance
 
-Coordinator integration: C4–C7 browser retest passes using real integrated app data at1280/1366/1920/390, with no CSP/overflow errors, correct XP/quota bars, readable memory and exact charges. C8 is a harness-only correction awaiting root rerun on both Peaceful fixtures. [Independent batch review](mb-batch001-coordinator-review.md) owns final acceptance; native evidence below remains labeled by its phase.
+Coordinator acceptance: C4–C7 browser retest passes using real integrated app data at 1280/1366/1920/390, with no CSP/overflow errors, correct XP/quota bars, readable memory and exact charges. C8 is closed: root 13/13 on both Peaceful fixtures, file/SSE health changes within one second (89/84 ms and 530/537 ms), direct exits 0. Final native commit is `38a285ad`. [Independent batch review](mb-batch001-coordinator-review.md) accepts the selected feature and retains actual phase reports and runtime limitations.
 
 Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It is not acceptance evidence until Codex runs the coordinated checks. Plan: [chunkbot-dashboard-plan.md](../chunkbot-dashboard-plan.md).
 
