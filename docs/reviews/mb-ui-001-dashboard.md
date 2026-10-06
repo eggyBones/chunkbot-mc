@@ -53,6 +53,17 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
 - **C5:** the money cards use `repeat(auto-fit, minmax(8.5rem, 1fr))` with `min-width: 0` and `overflow-wrap: anywhere`. They reflow onto more rows instead of clipping, and keep the exact precision (`$0.000558642`). Retained and pending stay separate cards.
 - **Outcome copy:** "Goal outcome" is now a plain sentence built generically from the predicate vocabulary (atomic predicates composed with all/any/not), for example "Done when the bot gains 8 of any logs since the goal started.". A truncated or unreadable contract gets no guessed summary. The raw bounded contract is only under a collapsible "Technical outcome contract".
 
+## Integration correction MB-UI-001-C6
+
+- **Merge:** the reviewed shared dependency `88089893` was merged (authorized) only to compile against the integrated contracts. No shared file was edited.
+- **Renderer:** `outcome-text.ts` handles the integrated memory vocabulary exhaustively, with no default branch:
+  - `memory_ref` targets read as "a place from its saved memory". No label or current presence is guessed, and no ref token is shown.
+  - `memory_state` reads as a local memory-store condition using the supplied label:
+    - "has saved “L” in its memory as a confirmed fact" (recorded);
+    - "… as an unverified note" (noted);
+    - "no longer has an active memory of “L”" (forgotten).
+- **Checks:** `npm run check` on the combined tree exits 0, with 479/479 tests including 79 dashboard tests. The C4/C5 fixes are unchanged.
+
 ## Viewer behavior
 
 - **Liveness states:** no session, live, disconnected, stale (heartbeat missed while the process exists), crashed (process gone without a clean stop), stopped, and error (malformed file; the last valid update is kept).
