@@ -240,3 +240,13 @@ describe('Codex quota observer (fake app-server)', () => {
     assert.deepEqual(m.windows, []);
   });
 });
+
+describe('metadata cadence copy', () => {
+  it('states the actual per-source intervals, shared by all tabs', async () => {
+    const { remoteCadence } = await import('../src/dashboard/remote.ts');
+    const k = new CoalescedSource({ name: 'k', now: () => 0, minIntervalMs: 60_000, fetch: async () => ({ ok: true, value: 1 }) });
+    const q = new CoalescedSource({ name: 'q', now: () => 0, minIntervalMs: 120_000, fetch: async () => ({ ok: true, value: [] }) });
+    assert.equal(remoteCadence({ openRouterKey: k as never, codexQuota: q as never }), 'per source, shared by all tabs: OpenRouter key at most once a minute; Codex quota at most once every 2 minutes');
+    assert.equal(remoteCadence({}), 'no account metadata reads');
+  });
+});

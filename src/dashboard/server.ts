@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo, Socket } from 'node:net';
 import { APP_CSS, APP_JS, INDEX_HTML } from './assets/page.ts';
 import { readHistory } from './history.ts';
-import { refreshAll, remoteMetadata, type RemoteSources } from './remote.ts';
+import { refreshAll, remoteCadence, remoteMetadata, type RemoteSources } from './remote.ts';
 import { StatusFollower, buildViewModel, readStatusFile, type ViewModel } from './viewmodel.ts';
 
 export const DEFAULT_DASHBOARD_PORT = 7381;
@@ -146,6 +146,7 @@ export class DashboardViewer {
       pidAlive: this.o.pidAlive,
       history: !h ? undefined : h.ok ? h : h.reason === 'missing' ? undefined : { ok: false, detail: h.detail },
       remote: remoteMetadata(this.o.remote ?? {}),
+      cadence: remoteCadence(this.o.remote ?? {}),
       timeZone: this.o.timeZone,
     });
   }

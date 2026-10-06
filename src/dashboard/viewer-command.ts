@@ -29,8 +29,9 @@ export const VIEWER_USAGE = `Usage: chunkbot dashboard [--config <file>] [--port
 Local read-only Chunkbot dashboard for a second monitor. Binds loopback only
 (default 127.0.0.1:${DEFAULT_DASHBOARD_PORT}). It follows the status Chunkbot publishes under
 <dataDir>/dashboard/ and keeps working while Chunkbot is stopped. Closing it
-never stops Chunkbot. Optional account metadata is read at most once a minute
-in total, only while a dashboard tab is open.`;
+never stops Chunkbot. Optional account metadata is read per source, shared by
+all tabs and only while a tab is open: the OpenRouter key overview at most once
+a minute, the Codex quota at most once every 2 minutes.`;
 
 /** Parses viewer flags (shared by the standalone entry and the CLI integration). */
 export function parseViewerArgs(argv: readonly string[]): { config?: string; options: ViewerCommandOptions; help: boolean } | string {
@@ -91,7 +92,7 @@ export async function startDashboardViewer(loaded: LoadedConfig, options: Viewer
   const { url } = await viewer.start();
   io.out(`[dashboard] viewing ${paths.dir}`);
   io.out(`[dashboard] open ${url} (loopback only; read-only). Ctrl-C stops only the dashboard.`);
-  io.out(`[dashboard] account metadata: OpenRouter key overview ${remote.openRouterKey ? 'on' : 'off'}, Codex quota ${remote.codexQuota ? 'on' : 'off'} (shared, at most one read per minute, only while a tab is open)`);
+  io.out(`[dashboard] account metadata: OpenRouter key overview ${remote.openRouterKey ? 'on' : 'off'}, Codex quota ${remote.codexQuota ? 'on' : 'off'} (per source, shared by all tabs, only while a tab is open: ${[remote.openRouterKey ? `OpenRouter key at most every ${remote.openRouterKey.minIntervalMs / 1000} s` : '', remote.codexQuota ? `Codex quota at most every ${remote.codexQuota.minIntervalMs / 1000} s` : ''].filter(Boolean).join(', ') || 'no reads'})`);
   return viewer;
 }
 
