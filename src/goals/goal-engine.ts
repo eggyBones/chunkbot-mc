@@ -421,7 +421,7 @@ export class GoalEngine {
       admittedTasks: 0,
       deadline: undefined,
       feedback: [],
-      counters: { plannerTurns: 0, knowledgeRounds: 0, repairs: 0, retries: 0, clarifications: 0, replans: 0, windows: 0, tasksAdmitted: 0 },
+      counters: { plannerTurns: 0, knowledgeRounds: 0, repairs: 0, retries: 0, clarifications: 0, replans: 0, windows: 0, tasksAdmitted: 0, preparationTurns: 0, lookaheads: 0 },
       shown: new Map(),
       anchors: new Set(),
       priorResults: new Map(),
@@ -757,7 +757,7 @@ export class GoalEngine {
         const priorResults = [...active.priorResults.values()];
         const request: PlannerRequest = {
           requestId,
-          goalId: active.record.id,
+          subject: { kind: 'goal', goalId: active.record.id, goalEpoch: active.epoch },
           instruction: active.record.instruction,
           turn: c.plannerTurns,
           maxTurns: limits.plannerTurnsPerGoal,
