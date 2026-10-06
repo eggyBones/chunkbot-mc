@@ -5,6 +5,7 @@ export * from './capability.ts';
 export * from './clarification.ts';
 export * from './common.ts';
 export * from './goal.ts';
+export * from './handoff.ts';
 export * from './ids.ts';
 export * from './knowledge.ts';
 export * from './observation.ts';
