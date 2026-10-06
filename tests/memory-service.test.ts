@@ -577,3 +577,17 @@ describe('memory: forgetting and remembering are satisfied only from DURABLE sta
     await r.memory.close();
   });
 });
+
+describe('memory: status stays truthful after writes and close', () => {
+  it('reports the current revision after writes and a closed (not read-only) store after close', async () => {
+    const h = harness();
+    assert.match(h.memory.status().detail, /fresh assessment/);
+    await designateHome(h);
+    assert.match(h.memory.status().detail, /now at revision \d+/);
+    await h.memory.close();
+    const s = h.memory.status();
+    assert.equal(s.state, 'ready', 'written scope, not a read-only fault');
+    assert.equal(s.writable, false);
+    assert.match(s.detail, /closed/);
+  });
+});
