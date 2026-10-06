@@ -194,7 +194,7 @@ Reports are under `var/live-check/<stamp>-handoff/report.json`; logs are under `
 | `npm run jev-live-check -- --provider fault` | `var/live-check/2026-10-06T08-37-26-191Z-jev-fault/report.json` | **12/12, exit 0** |
 
 Two earlier harness passes on `88089893` failed only at L7; L0–L6 passed both times:
-- **`08-28-46`: 7/9**, harness `6724f3c`'s predecessor. Window 1's "collect 1 log" task mined two logs before its completion check, so the 2-log outcome finished correctly in one window. That is **invalid two-window evidence**, not a failure to honor the goal (coordinator decision).
+- **`08-28-46`: 7/9**, with the harness as committed in frozen `88089893`. Window 1's "collect 1 log" task mined two logs before its completion check, so the 2-log outcome finished correctly in one window. That is **invalid two-window evidence**, not a failure to honor the goal (coordinator decision).
 - **`08-35-36`: 8/9**, harness `2bbf0c4`. A "walk to the obsidian" window found no grounded `move_near` destination. The engine correctly discarded the lookahead (its premise failed) and replanned. The no-lookahead run passed.
 
 The harness-only corrections were:
