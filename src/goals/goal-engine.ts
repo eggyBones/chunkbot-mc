@@ -321,6 +321,8 @@ interface PendingIntent {
   pendingClarification?: PendingClarification;
   draft?: { proposal: PlannerProposal; requestId: string; turnKind: PlannerTurnKind };
   settled: PromiseWithResolvers<'handed_off' | 'discarded'>;
+  /** Bounded cleanup of the discarded preparation's owned planner process (MB-FLOW-002-C3). */
+  cleanupDone?: Promise<void>;
   deadline?: NodeJS.Timeout;
   timeline: HandoffTimeline;
 }
@@ -661,12 +663,26 @@ export class GoalEngine {
     if (!this.pendingCurrent(p)) throw new StaleWorkError();
   }
 
-  /** Ends a pending instruction without admission. Idempotent; never touches the active goal. */
+  /**
+   * Ends a pending instruction without admission. Idempotent; never touches the
+   * active goal. Synchronous part: ownership is invalidated and its planner
+   * process aborted at once. Its owned process cleanup is then awaited (bounded,
+   * `p.cleanupDone`): stop/lifecycle/shutdown await it, and the intent settles
+   * (a parked old goal may resume) only after it (MB-FLOW-002-C3).
+   */
   private discardPending(p: PendingIntent, reason: PreparationDiscardReason, detail: string, notify = true): void {
     if (this.pending !== p) return;
     this.pending = undefined;
     if (p.deadline) clearTimeout(p.deadline);
     p.abort.abort(new Error(reason));
+    const cleanups = [...p.cleanups];
+    p.cleanupDone = cleanups.length === 0
+      ? Promise.resolve()
+      : withTimeout(Promise.allSettled(cleanups.map(async (fn) => fn())).then(() => undefined), this.deps.limits.cleanupTimeoutMs, () => new Error('preparation cleanup timeout')).then(
+          () => this.deps.store.record({ type: 'preparation_cleanup', intentId: p.intentId, cleanups: cleanups.length, outcome: 'settled' }),
+          () => this.deps.store.record({ type: 'preparation_cleanup', intentId: p.intentId, cleanups: cleanups.length, outcome: 'timeout', boundMs: this.deps.limits.cleanupTimeoutMs }),
+        );
+    this.track(p.cleanupDone);
     this.releasePreparation(p.intentId);
     this.totals.discarded += 1;
     this.totals.discardedTurns += p.counters.plannerTurns;
@@ -682,7 +698,7 @@ export class GoalEngine {
             : `Your new instruction was not started (${reason}): ${truncate(detail, 320)}.${continuing}`;
       this.deps.notify({ intentId: p.intentId, text });
     }
-    p.settled.resolve('discarded');
+    void p.cleanupDone.then(() => p.settled.resolve('discarded'));
   }
 
   private preparationRequest(p: PendingIntent, snapshot: ObservationSnapshot | null, requestId: string): PlannerRequest {
@@ -955,7 +971,8 @@ export class GoalEngine {
     };
     if (!proposal || typeof proposal !== 'object' || !Array.isArray((proposal as Record<string, unknown>)['tasks'])) return { proposal, problems, regrounded };
     const r = proposal as Record<string, unknown>;
-    const out = { ...r, tasks: (r['tasks'] as unknown[]).map(walk), ...(r['outcome'] ? { outcome: walk(r['outcome']) } : {}) };
+    // The outcome is walked only while it is not bound yet (prepared drafts); an accepted outcome is immutable.
+    const out = { ...r, tasks: (r['tasks'] as unknown[]).map(walk), ...(r['outcome'] && !active.outcome ? { outcome: walk(r['outcome']) } : {}) };
     return { proposal: out, problems, regrounded };
   }
 
@@ -1145,20 +1162,21 @@ export class GoalEngine {
     const goalId = this.active?.record.id;
     if (!this.active) {
       this.deps.store.record({ type: 'stop_requested', surface, hadActiveGoal: false, hadPendingInstruction: Boolean(pending) });
-      await this.cleanupBarrier;
+      await Promise.all([this.cleanupBarrier, pending?.cleanupDone]);
       return pending ? { stopped: true, intentId: pending.intentId } : { stopped: false };
     }
     this.deps.store.record({ type: 'stop_requested', surface, hadActiveGoal: true, goalId, hadPendingInstruction: Boolean(pending) });
-    await this.revokeActive(reason, reason === 'owner_stop' ? 'stopped by owner' : 'Chunkbot is shutting down');
+    // revokeActive runs its synchronous revocation prefix before the first await; both cleanups are awaited (bounded).
+    await Promise.all([this.revokeActive(reason, reason === 'owner_stop' ? 'stopped by owner' : 'Chunkbot is shutting down'), pending?.cleanupDone]);
     return { stopped: true, ...(goalId ? { goalId } : {}), ...(pending ? { intentId: pending.intentId } : {}) };
   }
 
   /** Ends active ownership AND any pending instruction because of a lifecycle event (death, disconnect, kick, dimension change). */
   async endOwnership(reason: 'death' | 'disconnected' | 'kicked' | 'dimension_change', detail: string): Promise<void> {
     ++this.intakeGeneration;
-    if (this.pending) this.discardPending(this.pending, 'lifecycle', `${reason}: ${detail}`);
-    if (!this.active) return;
-    await this.revokeActive(reason, detail);
+    const pending = this.pending;
+    if (pending) this.discardPending(pending, 'lifecycle', `${reason}: ${detail}`);
+    await Promise.all([this.active ? this.revokeActive(reason, detail) : undefined, pending?.cleanupDone]);
   }
 
   /** Correlated clarification answer. Never revives a cancelled or terminal goal. */
@@ -1624,7 +1642,10 @@ export class GoalEngine {
           const snapshot = await observation.snapshot(active.epoch).catch(() => null);
           this.assertCurrent(active);
           this.remember(active, snapshot);
-          const handles = regroundProposal(draft.proposal, snapshot, observation.translateHandle?.bind(observation));
+          // C2: a prepared draft's outcome is not bound yet, so its references are re-grounded too
+          // (before the initial binding). A lookahead never rewrites the accepted, bound outcome:
+          // it must repeat it exactly and only its new tasks are re-grounded.
+          const handles = regroundProposal(draft.proposal, snapshot, observation.translateHandle?.bind(observation), { outcome: draft.source === 'preparation' && !active.outcome });
           requestId = draft.requestId;
           turnKind = draft.turnKind;
           // Prepared memory refs (mprep-) -> fresh executable refs of the SAME facts, then release the preparation's refs.

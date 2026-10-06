@@ -21,8 +21,14 @@ function isRef(v: unknown): v is { snapshotId: string; handle: string } {
   return Boolean(v && typeof v === 'object' && typeof (v as Record<string, unknown>)['snapshotId'] === 'string' && typeof (v as Record<string, unknown>)['handle'] === 'string');
 }
 
-/** Re-grounds every handle reference inside the proposal's tasks (selectors and parameters). Pure; returns a copy. */
-export function regroundProposal(raw: unknown, fresh: ObservationSnapshot | null, translate: Translate | undefined): RegroundResult {
+/**
+ * Re-grounds every handle reference inside the proposal's tasks (selectors and
+ * parameters) and, with `outcome: true`, inside its goal outcome as well (a
+ * prepared draft whose outcome is not bound yet, MB-FLOW-002-C2). An outcome
+ * that is already accepted and bound is never passed here for rewriting: its
+ * grounded binding is immutable. Pure; returns a copy.
+ */
+export function regroundProposal(raw: unknown, fresh: ObservationSnapshot | null, translate: Translate | undefined, options: { outcome?: boolean } = {}): RegroundResult {
   const problems: string[] = [];
   let regrounded = 0;
   const walk = (v: unknown): unknown => {
@@ -46,5 +52,7 @@ export function regroundProposal(raw: unknown, fresh: ObservationSnapshot | null
   if (!raw || typeof raw !== 'object') return { proposal: raw, problems, regrounded };
   const r = raw as Record<string, unknown>;
   if (!Array.isArray(r['tasks'])) return { proposal: raw, problems, regrounded };
-  return { proposal: { ...r, tasks: (r['tasks'] as unknown[]).map(walk) }, problems, regrounded };
+  const tasks = (r['tasks'] as unknown[]).map(walk);
+  const outcome = options.outcome && r['outcome'] !== undefined ? { outcome: walk(r['outcome']) } : {};
+  return { proposal: { ...r, tasks, ...outcome }, problems, regrounded };
 }

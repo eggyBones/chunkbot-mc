@@ -139,6 +139,8 @@ export class FakeServer implements PredicateEvaluator {
   readonly inventory = new Map<string, number>();
   readonly baselines: Array<{ t: number; counts: Record<string, number> }> = [];
   readonly boundWith: Array<InventoryBaseline | undefined> = [];
+  /** Every predicate actually bound (goal outcomes), as bound. */
+  readonly boundPredicates: OutcomePredicate[] = [];
   readonly log: string[];
   constructor(log: string[]) {
     this.log = log;
@@ -154,6 +156,7 @@ export class FakeServer implements PredicateEvaluator {
   }
   async bind(predicate: OutcomePredicate, _signal: AbortSignal, baseline?: InventoryBaseline): Promise<BoundPredicate> {
     this.boundWith.push(baseline);
+    this.boundPredicates.push(structuredClone(predicate));
     const baselines: Record<string, number> = {};
     if (predicate.predicate === 'inventory_amount') baselines[`inv:${predicate.selector}`] = baseline?.counts?.[predicate.selector] ?? this.inventory.get(predicate.selector) ?? 0;
     return { predicate, boundAtMs: baseline?.capturedAtMs ?? Date.now(), baselines };
