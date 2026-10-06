@@ -6,6 +6,8 @@ Chunkbot joins a Minecraft **Java Edition** server as its own player and accepts
 
 See [feature-plans.md](feature-plans.md) and [docs/v1-foundation-plan.md](docs/v1-foundation-plan.md) for scope.
 
+Chunkbot also has a local dashboard, smooth directive handoff, and optional persistent gameplay memory. These were implemented by three parallel native Claude Opus 5.5 workers through [the agent workflow](agent-workflow.md). Automatic progression, survival/death recovery, and live update management remain separate roadmap work.
+
 ## Requirements
 
 | Component | Version / pin | Notes |
@@ -75,6 +77,8 @@ Key rules:
 - Planner limits: `plannerTurnsPerGoal` 20 (every turn kind counts), `plannerTimeoutMs` 45000 per turn, `planWindowSteps` 8, `totalTaskCeiling` 64, `replans` 8, `goalDeadlineMs` 20 min.
 - `limits` default to the architecture plan's provisional values.
 - `storage.dataDir` (default `var/`, git-ignored) holds run evidence and auth caches.
+- `flow` defaults to `{ "handoff": "smooth", "lookahead": true, "preparationTurnsPerRun": 40 }`. A new instruction prepares while the current task continues; only a validated, freshly grounded plan can take ownership. `handoff: "immediate"` cancels the old goal before planning. Lookahead prepares the next window while the last task runs, within the same goal's limits. Discarded preparations have a separate bounded allowance.
+- Persistent memory is disabled unless explicitly configured. See the memory setup below; an endpoint alone does not identify a world.
 
 ### Microsoft sign-in for online play
 
@@ -100,6 +104,8 @@ npm run chunkbot -- catalog --config <file> [--json]            # capability cat
 npm run chunkbot -- knowledge '<query json>' --config <file>    # one version-knowledge query (offline, read-only)
 npm run chunkbot -- jev-check --config <file> [--json]          # ONE live Jev decision through the real adapter (~USD 0.00002)
 npm run chunkbot -- planner-check --config <file> [--probe]     # isolation/auth gate + ONE isolated Codex subscription turn (+ tool-exposure and cancellation probes)
+npm run chunkbot -- dashboard --config <file> [--port 7381]    # local read-only viewer; never joins Minecraft
+npm run chunkbot -- memory --config <file> [--json]             # inspect saved memory without connecting or changing it
 ```
 
 `planner-check` exit codes: `0` ok, `8` planner gate not ready (version/auth/catalog/feature/neutral-dir check failed), `9` planner turn or probe failed.
@@ -120,9 +126,10 @@ In Minecraft chat, only the owner's prefixed messages are commands. In the termi
 
 | Chat | Terminal | Effect |
 | --- | --- | --- |
-| `!chunkbot <any instruction>` | `<any instruction>` | New goal. It replaces the current goal after the old one is cancelled. |
+| `!chunkbot <any instruction>` | `<any instruction>` | Prepare a new goal while the current task continues, then switch after validation. |
 | `!chunkbot goal <instruction>` | `goal <instruction>` | Explicit alias for the same intake. Use it when the text starts with a reserved word. |
-| `!chunkbot stop` | `stop` | Stops the current goal. While joining, stops the join. |
+| `!chunkbot stop` | `stop` | Stops current and pending work, and latches automatic behavior paused. While joining, stops the join. |
+| `!chunkbot resume` | `resume` | Clears the automatic pause latch; does not replay a goal or reconnect. |
 | `!chunkbot status` | `status` | Shows connection, goal, and adapter readiness. Runs no inference. |
 | `!chunkbot answer [qN] <reply>` | `answer [qN] <reply>` | Answers the pending clarification question `qN`. |
 | — | `/reconnect`, `/quit`, `/help` | Operator-only terminal commands. |
@@ -131,7 +138,43 @@ In Minecraft chat, only the owner's prefixed messages are commands. In the termi
 
 Instructions are never keyword-gated or matched to built-in handlers. “collect stone”, “make yourself armor”, “follow me”, and new combinations all reach the same intake. Reserved first words are `stop`, `status`, `answer`, and `goal`.
 
+Only a bare `resume` is a control command; “resume mining” is an ordinary instruction. Manual goals remain allowed while automatic behavior is paused. Rapid replacement instructions keep only the newest preparation. Stop, disconnect and death revoke pending work as well as the active owner.
+
 Chunkbot rejects empty instructions and instructions longer than `chat.maxInstructionChars` (default 500) **before** touching the current goal. Unprefixed chat, other players, `/tellraw`, console `/say`, and Chunkbot's own messages are ignored. Their text is not stored.
+
+### Dashboard
+
+Start the viewer in another terminal, using the same config and data directory as the app:
+
+```sh
+npm run chunkbot -- dashboard --config chunkbot.config.json
+```
+
+Open <http://127.0.0.1:7381/>. It shows health and actual maximum health, hunger, XP, inventory/equipment, the directive and task, pending preparation, saved memory, model readiness, token usage and dated usage history. Confirmed charges, uncertain retained charges, pending reservations and the remaining local run cap are separate. Missing usage stays unknown; disconnected or stopped readings are marked historical.
+
+The viewer is read-only and binds to loopback. Several tabs share the same bounded reads. Closing it leaves the bot running; starting it does not join Minecraft. Use `--port <number>` if the default port is occupied.
+
+Optional account metadata shows the current OpenRouter key's usage/limit when its configured environment variable is present, and the quota windows actually returned by the pinned Codex CLI. These are account-wide observations, separate from Chunkbot's local spending cap. An OpenRouter wallet balance is unavailable without a management key. `--no-openrouter-key` and `--no-codex-quota` disable those reads; unsupported or unavailable reads do not prevent the dashboard from working.
+
+### Persistent memory
+
+Add an explicit scope to your private config:
+
+```json
+"memory": {
+  "enabled": true,
+  "worldProfile": "my-world",
+  "worldRevision": 1,
+  "botProfile": "chunkbot",
+  "dir": "memory"
+}
+```
+
+`config/examples/fixture-memory.json` is a complete loopback example. Give each distinct world a different profile; increment the revision when a world is reset. A changed endpoint is refused for the same scope unless `rebindEndpoint: true` explicitly identifies a move of that same world.
+
+Use ordinary goals such as “remember this spot as home,” “go home,” or “forget home.” The planner uses bounded, request-scoped references to saved locations. Chunkbot retains grounded places, verified construction progress and outcomes, historical container contents, and death incident evidence under the ignored data directory. It inspects a container again before using remembered contents; contradictory visible evidence revises memory. Unverified notes stay separate from confirmed facts.
+
+Saved facts survive restart. They do not resume actions, reconnect, clear pause, or perform automatic death recovery. `npm run chunkbot -- memory --config chunkbot.config.json` inspects the store without starting gameplay. Corrupt, incompatible or conflicting stores are reported and cannot be silently overwritten with empty memory.
 
 ### Operator mechanic diagnostics (`/diag`)
 

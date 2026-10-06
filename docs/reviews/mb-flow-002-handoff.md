@@ -1,5 +1,7 @@
 # MB-FLOW-002 smooth directive handoff: worker evidence
 
+Coordinator integration: the final shared implementation88089893 and harness/evidence2ba29f39 are merged. Root handoff9/9 passes on BOTH fixtures; real H7 on26.2 completes an ordinary two-window goal with actual lookahead, one immutable verified outcome, RCON confirmation and zero assistance. [Independent batch review](mb-batch001-coordinator-review.md) owns final acceptance; native phase evidence below is retained.
+
 **Status: implemented; verified offline, and on the 26.1.2 fixture (scripted fault planner + loopback Jev only) under the coordinator's lease. FINAL integrated run: source and `dist/` frozen at `88089893` (C1, C2, C3, C3a; UI `24c6744`; memory `e3d41a1`), harness at `0694bb0`. Results: handoff 9/9, live-check 16/16, skills-live-check 33/33, jev-live-check --provider fault 12/12, all exit 0. See "Final integrated runs" below. Real-planner/Jev acceptance and combined integrated live checks are pending (coordinator).** Worker: native Claude Code (Opus 5.5). Branch `chunkbot/mb-flow-002`, base `d5eb2fa`. Date: 2026-10-06 UTC.
 
 This is worker evidence. It does not change the roadmap, plan status or acceptance records; the coordinator owns those.

@@ -1,7 +1,11 @@
 # MB-UI-001 — Local Chunkbot dashboard for a second monitor
 
-Reported: 2026-10-06. Status: **Assigned in [batch001](feature-batch-001-plan.md); native Opus5.5 implementation in progress in an isolated worktree.**
+Reported: 2026-10-06. Status: **Implemented by native Opus 5.5 and integrated in [batch001](feature-batch-001-plan.md); final coordinator acceptance in progress.**
 Parent: [companion upgrades](companion-upgrades-plan.md).
+
+### MB-UI-001-C8 — Peaceful health-change sampling acceptance
+
+Reported 2026-10-06 09:04 UTC; coordinator investigation/native harness correction assigned. Final combined build `dd51a4c` passed memory 13/13 and handoff 9/9 on both fixtures. Dashboard runs `09-00-12-961Z-dashboard` and `09-00-13-966Z-26.2-dashboard` passed 12/13; only D2-health timed out. Both RCON commands reported applying 3 damage, and after the assertion waits both server and dashboard correctly read 20. The assertion requires a published sample <=17 despite its stated allowance of one Peaceful regeneration step and the 2 Hz publisher. Hypothesis: an 18 HP sample is missed by that threshold; this is not yet a reproduced packet fact. Inspect the assertion and actual health source, preserve the sub-second command-to-file/SSE requirement, record baseline/server truth and changed samples, and compare within the admitted regeneration tolerance. Never turn a static/full-health sample into a pass. No production behavior change or fixture access is assigned to the worker. Coordinator reruns the corrected check under the existing exclusive leases; original failures remain evidence.
 
 ## Outcome and happy path
 
@@ -107,6 +111,30 @@ The installed CLI0.160.0 generated the documented account/rateLimits/read schema
 
 The optional observer may use this supported route with bounded/coalesced polling and strict normalization; runtime auth/version/transport failures still display unavailable. Account-wide remaining percentage is observational and cannot authorize spending, model fallback or resumption. The feature worker receives the decision; adapter/browser acceptance remains pending.
 
+## Review findings before acceptance — 2026-10-06
+
+- **MB-UI-001-C1 (missing usage):** existing planner transport emits four zero counters when turn.completed contains no usage. Coordinator fault-only probe reproduces this; no inference occurred. Required correction: absent/invalid core usage stays null/unknown, missing cached/reasoning breakdowns stay unknown, and aggregates carry coverage without double-counting subsets.
+- **MB-UI-001-C2 (history bounds/atomic aggregation):** at publisher milestone e218b15, 44 ordinary retained runs with512 event identities each produce1,069,568bytes; readHistory rejects that writer-produced file as too_large. A separate probe sees persisted ledger cursor20,000nanoUSD while the corresponding dated charge is still0 between setCursor and rollup mutation. Required correction: prune to the serialized reader bound with honest coverage, and commit cursor plus dated delta together. Known historical sums must not be discarded by an avoidable oversize reset. Evidence: ignored var/batch001/usage-review-proof.json.
+- **MB-UI-001-C3 (charged-failure usage):** Jev wire validation can return trusted token/cost usage for a rejected answer, but the adapter discards those tokens before the failure event. D8 requires known usage to survive rejection. Add a whitelisted typed trusted-usage field; keep model/provider/pricing, reconciliation and rejection behavior unchanged. Dashboard must distinguish a validated response from a charged failure with known tokens.
+
+These are observed source/probe findings within dashboard acceptance, not accepted feature behavior. The shared writer owns transport/decision hooks; the dashboard worker owns projection/history corrections and meaningful regression cases.
+
 ## Remaining delivery
 
-Status/usage contracts, data-source and quota gates, bounded aggregate history, transport, live viewer, offline semantics and verified browser/operator flow remain unimplemented. Optional Codex quota/account balance availability is still unproved for the installed account/CLI. Review target: docs/reviews/mb-ui-001-dashboard.md.
+Core status/usage publishing, bounded history, local viewer, honest offline state, supported quota/key reads and operator commands are installed. T3 actual-data review passes desktop/mobile layout, precise charges, bars and memory rendering. [Independent integration review](reviews/mb-batch001-coordinator-review.md) records results. C8 requires the final root health-sampling rerun before acceptance closes; automatic survival/update UI consumers remain conditional on their unassigned features.
+
+### Real browser review — 2026-10-06T08:36:31.333132+00:00
+
+Root's real Codex/Jev H7 trial on 26.2 completed two goal windows with both requested outputs independently confirmed by RCON, zero assistance. The lookahead was used (gap 1,936 ms, fresh revalidation 16 ms); one counted repair was honest. Evidence: `var/batch001/real-h7-26-2/report.json`. A journal counter-label error in the coordinator runner is being corrected from actual `goal_window` events; the terminal already records two windows.
+
+A new T3 tab (`tab_8`) successfully captured the actual integrated dashboard at 1280×800, unlike the earlier tab's generic capture failures. Image inspected: `/Users/jakewilcox/.t3/userdata/browser-artifacts/browser-screenshot-127-0-0-1-muwfaft0-78498110.png`. **MB-UI-001-C4:** XP and quota fills use inline style attributes rejected by the server's `style-src 'self'` CSP on every refresh; XP 0% visibly shows a full green bar. **MB-UI-001-C5:** the confirmed tiny charge is horizontally clipped in its narrow three-column card; exact amount must be readable. Root resumes the UI owner for bounded browser/CSP/readability corrections and human-readable outcome summaries. Full screenshot evidence and served metadata stay ignored; no credential/auth contents were captured.
+
+### Dashboard integrated-contract correction MB-UI-001-C6
+
+Root merged reviewed `98bb0104b29701482732be3bdf5d6f99912d77bb` in source (the running gate build remains frozen), then ran `npm run typecheck`: exit 1, TS2366 at `src/dashboard/outcome-text.ts:27` and `:44`. The generic renderer was compiled on the UI-only branch and omits the integrated `memory_ref` selector and `memory_state` predicate. A memory goal would otherwise describe its condition as undefined. Authorize the UI owner to merge exact reviewed H dependency `88089893` (no shared edits), handle these variants truthfully in NEW renderer/tests, and check the combined types. Evidence: `var/batch001/ui-integrated-typecheck.log`.
+
+### Real memory/browser acceptance (2026-10-06 08:48 UTC)
+
+Final isolated-copy build at `a8b47cfbcac9e6922939586712744402b9379bc0`: check 483/483, exit 0. Real M6 on 26.1.2 passed: two actual CLI processes, durable home/chest recall, no replay, a shown memory_ref accepted, fresh inspect before withdrawal, four planks consumed, crafted table server-confirmed at205,-60,206 beside home; code verified3/3 conditions, zero assistance. Three memory views, max3,887chars. Recorded setup includes fixture max-health24 and XP level4/12points for browser observation; original health cap read/restored in teardown. `var/batch001/real-m6-26-1-2/report.json`.
+
+T3 actual browser screenshot `/Users/jakewilcox/.t3/userdata/browser-artifacts/browser-screenshot-127-0-0-1-muwfr7d9-d6125e71.png`: live24/24health (12 hearts), hunger20, level4, XP80%; DOM fill228.60/286px equals80%; returned quota58% fill195.9/338px, exact charge$0.000229992 readable, no console CSP errors. T3 recording still fails generically (no video claimed). **MB-UI-001-C7**: the Memory panel uses a global max-content label column; long natural-language milestone labels leave metadata only~36px at1280px. UI owner will make memory rows responsive/readable without changing data or runtime hooks; root retests real state at desktop/mobile widths.

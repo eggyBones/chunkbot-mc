@@ -25,7 +25,7 @@ One Java Edition companion accepts open-ended instructions from Jake. The gamepl
 
 ## Authorized next feature batch
 
-Jake requested three parallel native Opus5.5/full-permission DSH features after the initial public push. [Batch001](docs/feature-batch-001-plan.md) selects **MB-UI-001 dashboard**, **MB-FLOW-002 smooth handoff** and **MB-MEM-001 persistent memory**. The initial push is verified; all three native workers are implementing in distinct branches/worktrees from the published base. Integration and acceptance remain pending. Other feature statuses remain unchanged.
+Jake requested three parallel native Opus5.5/full-permission DSH features after the initial public push. [Batch001](docs/feature-batch-001-plan.md) selects **MB-UI-001 dashboard**, **MB-FLOW-002 smooth handoff** and **MB-MEM-001 persistent memory**. The initial push is verified; all three native implementations are integrated from distinct branches/worktrees. Final coordinator acceptance and feature publication are in progress; see [independent review](docs/reviews/mb-batch001-coordinator-review.md). Other feature statuses remain unchanged.
 
 ## Companion feature plans
 
@@ -34,11 +34,11 @@ Jake's requested upgrades are broken down in [the companion roadmap](docs/compan
 | ID | Feature plan | Status |
 | --- | --- | --- |
 | MB-FLOW-001 | [Default progression, upgrades and home building](docs/autonomous-progression-plan.md) | Proposed; unassigned |
-| MB-FLOW-002 | [Continue current work while the next directive loads](docs/smooth-handoff-plan.md) | Assigned in batch001; native implementation in progress |
+| MB-FLOW-002 | [Continue current work while the next directive loads](docs/smooth-handoff-plan.md) | Implemented/integrated in batch001; final acceptance in progress |
 | MB-FLOW-003 | [Survival routines and death recovery — progression subplan](docs/survival-routines-plan.md) | Proposed; unassigned |
 | MB-LOC-001 | [Locator-assisted following and bounded travel](docs/locator-follow-plan.md) | Proposed; unassigned |
-| MB-MEM-001 | [Persistent gameplay memory and known locations](docs/gameplay-memory-plan.md) | Assigned in batch001; native implementation in progress |
-| MB-UI-001 | [Local dashboard, token usage, OpenRouter spend and optional Codex allowance](docs/chunkbot-dashboard-plan.md) | Assigned in batch001; native implementation in progress |
+| MB-MEM-001 | [Persistent gameplay memory and known locations](docs/gameplay-memory-plan.md) | Implemented/integrated in batch001; final acceptance in progress |
+| MB-UI-001 | [Local dashboard, token usage, OpenRouter spend and optional Codex allowance](docs/chunkbot-dashboard-plan.md) | Implemented/integrated in batch001; final acceptance in progress |
 | MB-OPS-001 | [Verified live updates with a brief automatic reconnect](docs/live-update-plan.md) | Proposed; unassigned |
 | MB-OPS-002 | [Vanilla slash commands to bring Chunkbot online or log him out](docs/server-control-plan.md) | Proposed; unassigned |
 

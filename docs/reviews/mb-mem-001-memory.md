@@ -1,6 +1,6 @@
-# MB-MEM-001 persistent gameplay memory: worker evidence (draft)
+# MB-MEM-001 persistent gameplay memory: worker evidence and coordinator integration
 
-**Status: memory modules, memory skills and unit/fault/integration tests are implemented and verified locally by the worker; the PRE-INTEGRATION live harness passed 13/13 on the leased 26.2 fixture. Shared integration (designated writer), the CLI-driven live check, the 26.1.2 run and the real-provider M6 run are NOT done.** Worker: native Claude Code session `mb-mem-001` (Opus 5.5), branch `chunkbot/mb-mem-001`, worktree `/Users/jakewilcox/code/worktrees/chunkbot-mc/mb-mem-001`. Date: 2026-10-06 UTC.
+**Status: worker modules and corrections are integrated; root module checks pass13/13 on BOTH fixtures, and real Codex/Jev M6 passes after an actual CLI restart on BOTH versions. Final batch regression/publication review is in [the coordinator report](mb-batch001-coordinator-review.md).** Native module evidence below remains labeled by its actual phase.
 
 This document is worker evidence. It does not change the roadmap, plans, status or acceptance records; the coordinator owns those. Nothing here is whole-feature acceptance.
 
@@ -18,7 +18,7 @@ This document is worker evidence. It does not change the roadmap, plans, status 
 | `60b630d` | MB-BATCH001-I1 prevention: import-safe entry guard, stricter lease id, `tests/memory-harness-guard.test.ts` |
 | `951975f` | Harness ends unverified steps without `outcome_verified` (no fake milestones); truthful status after writes/close |
 | `e3d41a1` | Leased 26.2 live evidence recorded |
-| (C3) | MB-MEM-001-C3: complete serialized view ≤ 8,000 chars with worst-case ref sizing; refs only for retained facts; whitelisted `memory_view` event |
+| `692f5773` | MB-MEM-001-C3: complete serialized view ≤ 8,000 chars with worst-case ref sizing; refs only for retained facts; whitelisted `memory_view` event |
 
 Base: `d5eb2fa`. Owned paths only: `src/contracts/memory.ts`, `src/memory/**`, `src/skills/memory.ts`, `tests/memory-*.ts`, `scripts/memory-live-check.ts`, this file. No shared path was edited.
 
@@ -91,7 +91,7 @@ Sources: `observation` (line-of-sight perception only), `verified_skill` (server
 | M3 | `memory-service` emptied chest / destroyed workstation; `memory-world` real perception: hidden ore never recorded, prediction never revises | Live 26.2: R3, R4. |
 | M4 | `memory-store` (10 fault tests); `memory-service` corrupt-newest status, retrieval bounds (20 facts, 8,000 chars), C2 durability tests | |
 | M5 | `memory-service` interrupted construction (checkpoints vs unknown effects, restart replays nothing) | Live 26.2: S5, R1 (no unknown effects occurred live; that path is unit-tested). |
-| M6 | Not run (real planner + real Jev, coordinator) | Exact proposal below. |
+| M6 | Root real Codex/Jev acceptance passed on26.1.2 and26.2 | Actual CLI restart; accepted memoryref, fresh inspection, craft/place table, code/RCON verification, zero assistance. |
 | M7 | Memory-side seams only: `memory-service` / `memory-world` death tests | Live 26.2: S6/R0 (capture + persistence only). Full M7 needs MB-FLOW-003. |
 
 Ref/subject tests: cross-owner, expired request window, released goal, lifecycle, moved/changed fact in place, owner-corrected home, preparation → admission re-grounding (wrong generation/dimension, superseded fact, release on stop/supersession/lifecycle).
@@ -103,7 +103,7 @@ Ref/subject tests: cross-owner, expired request window, released goal, lifecycle
 - **MB-MEM-001-C2** (coordinator, against `16684a5`): `forgotten` was satisfied from mutable memory while the write was pending and after it failed. Fixed in `7962081`: durable-absence check, rollback of failed writes, tests for pending, failed rename, restart and already-absent labels.
 - **MB-BATCH001-I1 fixture incident (worker, recorded by the coordinator).** Exact command, run from the worktree while compile-checking the then-uncommitted harness:
   `npx tsc -p tsconfig.json --noEmit 2>&1 | head; node -e "import('./scripts/memory-live-check.ts').catch(e=>{console.log('import err',e.message)})" --input-type=module 2>&1 | head -3 &`
-  The dynamic import executed the module's top-level `main()` (no entry guard, no lease guard then). Timeline (UTC): 08:03:29.956 run directory `var/live-check/2026-10-06T08-03-29-956Z-memory/` created; 08:03:30.629 memory store opened, seed phase read the 26.1.2 fixture RCON password in code (not printed) and sent scene clear/rebuild RCON commands in x196..224 z190..224 (forceload, tp/effect Chunkbot, kill non-player entities and items, fill air/grass/dirt, setblock logs/stone/chest/wall/glass/ores/obsidian, summons, `clear Chunkbot`, `clear FixtureOwner`, `effect clear`, `gamemode survival`, tp, crafting table, two chest `item replace`); 08:03:32.675 joined as `Chunkbot`; ≈08:03:40–50 killed with `pkill -f "memory-live-check"` (a broad pattern; future cleanup targets only a proven owned PID/start time or supported task control). No skill action ran. The 26.1.2 fixture was leased to the handoff worker, whose active run the coordinator invalidated.
+  The dynamic import executed the module's top-level `main()` (no entry guard, no lease guard then). Timeline (UTC): 08:03:29.956 run directory `var/live-check/2026-10-06T08-03-29-956Z-memory/` created; 08:03:30.629 memory store opened, seed phase read the 26.1.2 fixture RCON password in code (not printed) and sent scene clear/rebuild RCON commands in x196..224 z190..224 (forceload, tp/effect Chunkbot, kill non-player entities and items, fill air/grass/dirt, setblock logs/stone/chest/wall/glass/ores/obsidian, summons, `clear Chunkbot`, `clear FixtureOwner`, `effect clear`, `gamemode survival`, tp, crafting table, two chest `item replace`); 08:03:32.675 joined as `Chunkbot`; 08:03:34 UTC stopped with `pkill -f "memory-live-check"` (a broad pattern; future cleanup targets only a proven owned PID/start time or supported task control). No skill action ran. The 26.1.2 fixture was leased to the handoff worker, whose active run the coordinator invalidated.
   Containment and prevention (`8e8dc09` + this revision): the harness runs only as the process entry point (`isEntryPoint(import.meta.url, argv[1])`), so importing it does nothing; `main()` refuses with exit 2 before any password read, RCON, join or output-directory setup unless `--fixture-lease <granted id>` (an id not starting with `-`) is given. `tests/memory-harness-guard.test.ts` verifies this statically (no import) and by spawning the script only with missing/invalid leases (exit 2, no stdout, no output files, no new live-check directory) — no fixture contact. Executable harnesses are never imported for inspection; static typecheck only. The stray run directory remains in this worktree as evidence.
 
 ## Shared integration (designated writer)

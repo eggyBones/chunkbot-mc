@@ -1,6 +1,6 @@
 # MB-MEM-001 — Persistent gameplay memory
 
-Reported: 2026-10-06. Status: **Assigned in [batch001](feature-batch-001-plan.md); native Opus5.5 implementation in progress in an isolated worktree.**
+Reported: 2026-10-06. Status: **Implemented by native Opus 5.5 and integrated in [batch001](feature-batch-001-plan.md); final coordinator acceptance in progress.**
 Parent: [companion upgrades](companion-upgrades-plan.md). Consumer: [default progression](autonomous-progression-plan.md).
 Related consumer: [MB-FLOW-003 survival routines/death recovery](survival-routines-plan.md).
 
@@ -71,6 +71,24 @@ Gate M-G2: specify reliable world scoping and reset handling without operator-on
 
 Run typecheck/build/test and relevant doctor/config checks. Changes to perception/predicates require skill checks; planner/goal context changes require isolation, planner fault and real integration checks from the parent plan. Use temporary stores for persistence faults and loopback worlds for reset/staleness. No live-world fault test.
 
+## Review finding MB-MEM-001-C1 — reference ownership and changed facts
+
+At milestone521cf10, MemoryRefRegistry stores goal/epoch/request metadata but resolve validates only connection, dimension and active fact presence. It does not compare the calling owner/epoch or a changed fact revision/coordinates; the counter also wraps at999,999. An old ref must not resolve for another owner or silently alias/misdirect after a fact moves. Require explicit current owner/epoch correlation (or a mandatory equivalent verifier), fact identity/revision/location checks, non-aliasing issuance and fresh re-grounding during preparation-to-admission. Add negative tests for cross-goal access and an owner-corrected location. The worker received the ownership concern and is revising its interface; no acceptance is claimed.
+
 ## Remaining delivery
 
-Storage/world identity decisions, durable facts, retrieval, fresh-reference integration and restart acceptance remain unverified. Review target: docs/reviews/mb-mem-001-memory.md.
+Storage/world identity, durable facts, fresh references and bounded retrieval are installed in the real CLI. Module seed/restart checks pass13/13 on each version; real M6 passes on26.1.2 and26.2 with zero assistance and fresh container inspection. [Independent integration review](reviews/mb-batch001-coordinator-review.md) records evidence and the remaining final regression/publication steps. Full M7 recovery depends on unassigned MB-FLOW-003; memory-side death persistence is delivered.
+
+### MB-MEM-001-C2 — Forget completion requires durable absence
+
+Reported2026-10-06; native correction assigned. On16684a5, evaluateMemoryState(expect forgotten) checks the mutable book's active facts without verifying the forget is durable. A zero-provider coordinator probe created a durable home, faulted the store before rename, and called forget: predicate was satisfied while the write was pending and remained satisfied after forget returned memory_write_failed. The previous durable revision still contained home. Expected: pending/failed deletion is unknown or unsatisfied until durable absence is confirmed; an already absent label may satisfy only from the last complete durable state. Add service-level pending-write/failure/restart and already-absent regressions. Evidence: ignored var/batch001/memory-forget-review-proof.json. Shared API can remain stable.
+
+### Memory bounded-context correction — 2026-10-06T08:32:58.048150+00:00
+
+Root reviewed final module retrieval and reproduced **MB-MEM-001-C3** without inference/fixture contact: 8 project facts serialize to 8,087 characters, exceeding the promised 8,000 limit. The pre-issuance placeholder undercounts actual/non-executable references, project checkpoint refs, and final omission metadata. The existing bound test allows an unexplained extra 2,000 characters. Proof: `var/batch001/memory-view-bound-review-proof.json`. Memory worker is resumed only to enforce the complete serialized view bound, preserve home and usable shown references, tighten regression coverage and report exact commit. H remains frozen at `88089893` for its 26.1.2 gates; this correction will be integrated and checked separately by root.
+
+### Real memory/browser acceptance (2026-10-06 08:48 UTC)
+
+Final isolated-copy build at `a8b47cfbcac9e6922939586712744402b9379bc0`: check 483/483, exit 0. Real M6 on 26.1.2 passed: two actual CLI processes, durable home/chest recall, no replay, a shown memory_ref accepted, fresh inspect before withdrawal, four planks consumed, crafted table server-confirmed at205,-60,206 beside home; code verified3/3 conditions, zero assistance. Three memory views, max3,887chars. Recorded setup includes fixture max-health24 and XP level4/12points for browser observation; original health cap read/restored in teardown. `var/batch001/real-m6-26-1-2/report.json`.
+
+T3 actual browser screenshot `/Users/jakewilcox/.t3/userdata/browser-artifacts/browser-screenshot-127-0-0-1-muwfr7d9-d6125e71.png`: live24/24health (12 hearts), hunger20, level4, XP80%; DOM fill228.60/286px equals80%; returned quota58% fill195.9/338px, exact charge$0.000229992 readable, no console CSP errors. T3 recording still fails generically (no video claimed). **MB-UI-001-C7**: the Memory panel uses a global max-content label column; long natural-language milestone labels leave metadata only~36px at1280px. UI owner will make memory rows responsive/readable without changing data or runtime hooks; root retests real state at desktop/mobile widths.
