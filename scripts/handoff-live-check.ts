@@ -517,8 +517,11 @@ async function main(): Promise<void> {
       const s = say(o, 'build a tower');
       await lineSince(/\[chunkbot\] Preparing your new instruction/, s.from, 5_000);
       await waitEvent((e) => e.type === 'planner_turn_started' && e.intentId && tOf(e) >= s.at - 5, 10_000);
-      await ownerAction(`tp FixtureOwner ${SCENE.start.x + 7} -60 ${SCENE.start.z + 4}`, 'owner walks so the follow is moving at the stop');
-      await sleep(400);
+      await ownerAction(`tp FixtureOwner ${SCENE.start.x + 9} -60 ${SCENE.start.z + 7}`, 'owner walks so the follow is moving at the stop');
+      // Stop only while a follow ACTION holds the actuator lease (the maintain hold re-observes about once a second).
+      const leaseFrom = Date.now();
+      await waitEvent((e) => e.type === 'lease_acquired' && tOf(e) >= leaseFrom - 5, 10_000);
+      await sleep(300);
       const sentAt = chunkbot.send('stop');
       const cancelled = await lineSince(new RegExp(`Goal ${follow.goalId} cancelled \\(owner_stop\\)`), s.from, 5_000);
       await sleep(300);
@@ -538,7 +541,8 @@ async function main(): Promise<void> {
       ev.push(`after stop the bot moved ${dist(p1, p2).toFixed(2)} blocks while the owner walked away; ${paused}; ${resumed.text}`);
       trials.push({ stopSentAtMs: sentAt, cancelMs, lease: lease ?? null, discarded: discarded ?? null, drift: dist(p1, p2) });
       assert(cancelMs <= 1_000, 'stop did not wait for the planner');
-      if (lease) assert(tOf(lease) - sentAt <= STOP_TARGET_MS && Number(lease.clearMs) <= STOP_TARGET_MS, 'controls cleared within the stop target');
+      assert(lease, 'the stop revoked a held actuator lease (follow action in progress)');
+      assert(tOf(lease) - sentAt <= STOP_TARGET_MS && Number(lease.clearMs) <= STOP_TARGET_MS, 'controls cleared within the stop target');
       assert(discarded, 'the pending preparation was cancelled');
       assert(dist(p1, p2) < 0.6, 'no movement after stop (paused)');
     });
