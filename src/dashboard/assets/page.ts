@@ -60,17 +60,18 @@ html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.
 .xp { display: flex; align-items: center; gap: 10px; }
 .xp .lvl { font-size: 26px; font-weight: 800; color: var(--xp); min-width: 40px; text-align: center; }
 .xpbar { flex: 1; height: 10px; background: var(--xp-off); border-radius: 2px; overflow: hidden; border: 1px solid #1b2414; }
-.xpbar > div { height: 100%; background: var(--xp); }
+.xpbar > .fill { height: 100%; width: 0; background: var(--xp); }
 .inv { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 3px; }
 .inv.hotbar { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
-.slot { position: relative; aspect-ratio: 1; background: var(--panel2); border: 1px solid #262a2e; border-radius: 3px; display: flex; align-items: center; justify-content: center; font: 700 12px/1 var(--mono); color: #f2f2f2; min-width: 0; overflow: hidden; }
-.slot.empty { color: transparent; }
+.slot { position: relative; aspect-ratio: 1; background: hsl(var(--hue, 210), 32%, 27%); border: 1px solid #262a2e; border-radius: 3px; display: flex; align-items: center; justify-content: center; font: 700 12px/1 var(--mono); color: #f2f2f2; min-width: 0; overflow: hidden; }
+.slot.empty { color: transparent; background: var(--panel2); }
 .slot .n { position: absolute; right: 3px; bottom: 2px; font-size: 11px; font-weight: 700; text-shadow: 0 1px 0 #000; }
 .slot.sel { outline: 2px solid #f0f0f0; outline-offset: -1px; }
 .slot .k { position: absolute; left: 3px; top: 2px; font-size: 9px; color: rgba(255,255,255,.4); font-weight: 400; }
 .equip { display: grid; grid-template-columns: repeat(5, 44px) 1fr; gap: 3px; margin-bottom: 8px; align-items: center; }
 .equip .cap { color: var(--faint); font-size: 11px; padding-left: 8px; }
 .note { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.mono { font-family: var(--mono); overflow-wrap: anywhere; }
 .callout { border: 1px solid var(--line); border-left: 3px solid var(--warn); background: #1f1b14; padding: 8px 10px; border-radius: 4px; margin-top: 10px; }
 .phase { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 99px; border: 1px solid currentColor; font-size: 12px; font-weight: 700; }
 .headline { font-size: 26px; line-height: 1.25; font-weight: 700; margin: 10px 0 6px; word-wrap: break-word; }
@@ -84,17 +85,19 @@ html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.
 .kv dd { margin: 0; text-align: right; font-family: var(--mono); font-size: 12.5px; word-break: break-word; }
 .kv.wide dd { text-align: left; font-family: inherit; }
 .money { font-size: 22px; font-weight: 700; font-family: var(--mono); }
-.split { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
-.split div { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; }
+.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: 8px; margin-bottom: 10px; }
+.split > div { min-width: 0; background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; }
 .split .lab { color: var(--muted); font-size: 11px; }
-.split .val { font: 700 15px var(--mono); }
+.split .val { font: 700 15px var(--mono); overflow-wrap: anywhere; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th { text-align: left; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); padding: 3px 4px; }
 td { padding: 3px 4px; border-bottom: 1px solid #202427; font-family: var(--mono); white-space: nowrap; }
 .scroll { overflow-x: auto; }
 .quota { margin: 6px 0; }
 .qbar { height: 8px; background: #23282c; border-radius: 2px; overflow: hidden; margin: 3px 0; }
-.qbar > div { height: 100%; background: var(--active); }
+.qbar > .fill { height: 100%; width: 0; background: var(--active); }
+.qrow { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.mt { margin-top: 12px; }
 .ready { display: grid; grid-template-columns: max-content 1fr; gap: 3px 10px; font-size: 12px; }
 .ready .r { white-space: nowrap; }
 .ready .d { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -115,7 +118,7 @@ export const APP_JS = String.raw`
       if (!Object.prototype.hasOwnProperty.call(attrs, k) || attrs[k] == null) continue;
       if (k === 'text') n.textContent = String(attrs[k]);
       else if (k === 'cls') n.className = attrs[k];
-      else if (k === 'style') n.setAttribute('style', attrs[k]);
+      else if (k === 'css') { for (var p in attrs.css) if (Object.prototype.hasOwnProperty.call(attrs.css, p)) n.style.setProperty(p, attrs.css[p]); }
       else n.setAttribute(k, attrs[k]);
     }
     if (kids) for (var i = 0; i < kids.length; i++) if (kids[i]) n.appendChild(kids[i]);
@@ -181,7 +184,7 @@ export const APP_JS = String.raw`
 
   function slot(s, selected, caption) {
     if (!s.key) return el('div', { cls: 'slot empty' + (selected ? ' sel' : ''), title: (caption ? caption + ': ' : '') + 'empty' }, [caption ? el('span', { cls: 'k', text: caption }) : null]);
-    var d = el('div', { cls: 'slot' + (selected ? ' sel' : ''), title: (caption ? caption + ': ' : '') + s.name + ' x' + s.count, style: 'background:hsl(' + s.hue + ',32%,27%)' }, [
+    var d = el('div', { cls: 'slot' + (selected ? ' sel' : ''), title: (caption ? caption + ': ' : '') + s.name + ' x' + s.count, css: { '--hue': String(s.hue) } }, [
       caption ? el('span', { cls: 'k', text: caption }) : null,
       txt(s.abbr),
       s.count > 1 ? el('span', { cls: 'n', text: s.count }) : null
@@ -189,8 +192,8 @@ export const APP_JS = String.raw`
     return d;
   }
 
-  function panel(title, aside, kids, cls) {
-    var h = el('h2', null, [txt(title), aside ? el('span', { cls: 'aside', text: aside }) : null]);
+  function panel(title, aside, kids, cls, asideCls) {
+    var h = el('h2', null, [txt(title), aside ? el('span', { cls: 'aside' + (asideCls ? ' ' + asideCls : ''), text: aside }) : null]);
     return el('section', { cls: 'panel' + (cls ? ' ' + cls : '') }, [h].concat(kids));
   }
 
@@ -223,10 +226,9 @@ export const APP_JS = String.raw`
     ]);
     var xp = el('div', { cls: 'vital', title: w.xp.title }, [
       el('div', { cls: 'row' }, [el('span', { cls: 'label', text: 'Experience' }), el('span', { cls: 'note', text: w.xp.text })]),
-      el('div', { cls: 'xp' }, [el('span', { cls: 'lvl', text: w.xp.level }), el('div', { cls: 'xpbar' }, [w.xp.progress == null ? null : el('div', { style: 'width:' + Math.round(w.xp.progress * 1000) / 10 + '%' })])])
+      el('div', { cls: 'xp' }, [el('span', { cls: 'lvl', text: w.xp.level }), el('div', { cls: 'xpbar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': w.xp.progress == null ? null : String(Math.round(w.xp.progress * 100)) }, [w.xp.progress == null ? null : el('div', { cls: 'fill', css: { width: Math.round(w.xp.progress * 1000) / 10 + '%' } })])])
     ]);
-    var vit = panel('Vitals', aside, [health, food, xp], hist ? 'historical' : '');
-    if (hist) vit.querySelector('h2 .aside').className = 'aside historical-tag';
+    var vit = panel('Vitals', aside, [health, food, xp], hist ? 'historical' : '', hist ? 'historical-tag' : '');
 
     var inv = w.inventory;
     var eq = el('div', { cls: 'equip' });
@@ -255,7 +257,8 @@ export const APP_JS = String.raw`
     if (d.survival) kids.push(el('div', { cls: 'callout', text: 'Survival routine — ' + d.survival + ' (your directive stays queued)' }));
     if (d.task) kids.push(el('div', { cls: 'task' }, [el('div', { cls: 'lab t-muted', text: 'Current task' }), el('div', { cls: 'obj', text: d.task.objective }), el('div', { cls: 'note', text: d.task.detail })]));
     if (d.pending) kids.push(el('div', { cls: 'pending' }, [el('div', { cls: 'lab', text: 'Next — prepared, not started (' + d.pending.state + ')' }), el('div', { cls: 'obj', text: d.pending.instruction }), el('div', { cls: 'note', text: d.pending.detail })]));
-    if (d.details.length) kids.push(el('div', { style: 'margin-top:12px' }, [kv(d.details, true)]));
+    if (d.details.length) kids.push(el('div', { cls: 'mt' }, [kv(d.details, true)]));
+    if (d.outcomeTechnical) kids.push(el('details', { cls: 'mt' }, [el('summary', { text: 'Technical outcome contract' }), el('div', { cls: 'note mono', text: d.outcomeTechnical })]));
     if (d.lastTask) kids.push(el('div', { cls: 'note', text: 'Last task: ' + d.lastTask }));
     var p = panel('Directive', d.historical ? 'last known — not live' : (d.pendingInstalled ? '' : 'handoff preview not installed'), kids, d.historical ? 'historical' : '');
     var ready = el('div', { cls: 'ready' });
@@ -305,8 +308,8 @@ export const APP_JS = String.raw`
     for (i = 0; i < q.windows.length; i++) {
       var w = q.windows[i];
       qk.push(el('div', { cls: 'quota' }, [
-        el('div', { cls: 'row', style: 'display:flex;justify-content:space-between' }, [el('span', { text: w.bucket + ' · ' + w.duration }), el('b', { text: w.remaining })]),
-        el('div', { cls: 'qbar', title: w.used + '% used' }, [el('div', { style: 'width:' + Math.max(0, 100 - w.used) + '%' })]),
+        el('div', { cls: 'qrow' }, [el('span', { text: w.bucket + ' · ' + w.duration }), el('b', { text: w.remaining })]),
+        el('div', { cls: 'qbar', title: w.used + '% used', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.max(0, 100 - w.used)) }, [el('div', { cls: 'fill', css: { width: Math.max(0, 100 - w.used) + '%' } })]),
         el('div', { cls: 'note', text: 'resets ' + (w.resets.indexOf('unknown') >= 0 ? w.resets : new Date(w.resets).toLocaleString()) })
       ]));
     }
@@ -315,7 +318,7 @@ export const APP_JS = String.raw`
       el('div', { cls: 'note', text: 'OpenRouter key: ' + r.openRouterStatus }),
       r.openRouterKey.length ? kv(r.openRouterKey) : null,
       el('div', { cls: 'note', text: r.wallet }),
-      el('div', { style: 'margin-top:10px' }, [el('div', { cls: 'lab t-muted', text: 'Codex subscription' })].concat(qk))
+      el('div', { cls: 'mt' }, [el('div', { cls: 'lab t-muted', text: 'Codex subscription' })].concat(qk))
     ]);
     return el('div', { cls: 'col usage' }, [jevPanel, planPanel, histPanel, acct]);
   }

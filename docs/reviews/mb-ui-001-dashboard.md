@@ -12,7 +12,7 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
 | Integration facade | `src/dashboard/runtime.ts` | `createDashboardRuntime(deps)` with `tapStore`, `start`, `stop` and `statusLine`. Not wired into `cli.ts` yet (that is a designated-writer task). |
 | Viewer service | `src/dashboard/{server,viewmodel,remote,codex-quota,viewer-command,main}.ts`, `assets/page.ts` | Node `http` plus SSE, with no new dependency. Run standalone with `node dist/dashboard/main.js --config <file> [--port n]`. |
 | Live check | `scripts/dashboard-live-check.ts` | D-G1/D2/D4/D5 against a leased loopback fixture; `--read-only` mode uses `data get` only. Run on 26.2; see below. |
-| Tests | `tests/dashboard-*.test.ts`, `tests/dashboard-fakes.ts` | 68 behavior tests. |
+| Tests | `tests/dashboard-*.test.ts`, `tests/dashboard-fakes.ts` | 78 behavior tests. |
 
 ## Data sources (typed only)
 
@@ -47,6 +47,12 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
   - Trusted usage on `jev_failure` (`usageTrusted` or `usage`) is counted as separate charged-failure tokens. Cost always comes from the ledger once.
 - **History format** is now version 2 (rollup, gapsOmitted, new day fields; no `seen`).
 
+## Browser-review corrections (MB-UI-001-C4/C5, outcome copy)
+
+- **C4:** the renderer never sets an inline `style` attribute. Widths of the XP and quota fills and the item-tile hue are set as CSSOM properties (`style.setProperty`; the hue becomes `--hue`), which the unchanged `style-src 'self'` CSP permits (no `unsafe-inline`). Layout spacing moved to classes. Fills default to `width: 0`, so a missing width can never show a full bar. Both bars carry `role="progressbar"` with `aria-valuenow`. `tests/dashboard-client.test.ts` runs the real `APP_JS` against a fake DOM and asserts zero style-attribute writes on first render and on a streamed refresh, and fill widths of 42.9% (XP) and 59% (quota).
+- **C5:** the money cards use `repeat(auto-fit, minmax(8.5rem, 1fr))` with `min-width: 0` and `overflow-wrap: anywhere`. They reflow onto more rows instead of clipping, and keep the exact precision (`$0.000558642`). Retained and pending stay separate cards.
+- **Outcome copy:** "Goal outcome" is now a plain sentence built generically from the predicate vocabulary (atomic predicates composed with all/any/not), for example "Done when the bot gains 8 of any logs since the goal started.". A truncated or unreadable contract gets no guessed summary. The raw bounded contract is only under a collapsible "Technical outcome contract".
+
 ## Viewer behavior
 
 - **Liveness states:** no session, live, disconnected, stale (heartbeat missed while the process exists), crashed (process gone without a clean stop), stopped, and error (malformed file; the last valid update is kept).
@@ -79,7 +85,7 @@ Branch `chunkbot/mb-ui-001` (base `d5eb2fa`). Worker draft for Codex review. It 
 
 ## Checks run by the worker
 
-`npm run typecheck`, `npm run build` and `npm test` all exit 0, with 365 tests: the 297 baseline plus 68 dashboard tests. Logs are in the ignored `var/batch001/`. No shared files, npm scripts, CLI, config or planner/decision files were edited.
+`npm run typecheck`, `npm run build` and `npm test` all exit 0, with 375 tests: the 297 baseline plus 78 dashboard tests. Logs are in the ignored `var/batch001/`. No shared files, npm scripts, CLI, config or planner/decision files were edited.
 
 ## Live evidence (26.2 fixture, exclusive lease, commit `3333ecd`)
 
