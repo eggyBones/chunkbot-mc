@@ -288,7 +288,7 @@ async function seed(outDir: string, memoryRoot: string): Promise<void> {
     const fact = p.memory.facts().find((f) => f.category === 'home');
     ev.push(`server position ${JSON.stringify(server)}; remembered ${JSON.stringify(fact?.location)}`);
     assert(fact?.location && Math.hypot(fact.location.at.x - server.x, fact.location.at.z - server.z) < 1, 'remembered home matches the server position');
-    p.end('outcome_verified', 'home remembered');
+    p.end('outcome_verified', 'memory_state recorded evaluated satisfied by code');
   });
 
   await p.check('S2', 'an ungrounded label (owner never said it) is only an UNVERIFIED note', async (ev) => {
@@ -314,7 +314,7 @@ async function seed(outDir: string, memoryRoot: string): Promise<void> {
     const table = p.memory.facts().find((f) => f.key === 'minecraft:crafting_table');
     ev.push(`crafting table fact: ${table ? `${table.source} ${JSON.stringify(table.location)}` : 'not seen'}`);
     assert(table?.source === 'observation', 'the visible crafting table is an observation fact');
-    p.end('outcome_verified', 'inspected');
+    p.end('harness_step_end', 'inspection done; no outcome predicate evaluated by the harness');
   });
 
   await p.check('S4', 'mined log is a verified resource location (server block update)', async (ev) => {
@@ -327,7 +327,7 @@ async function seed(outDir: string, memoryRoot: string): Promise<void> {
     const log = p.memory.facts().find((f) => f.key === 'minecraft:oak_log' && f.source === 'verified_skill');
     ev.push(`resource: ${JSON.stringify(log?.location)} (${log?.evidence.at(-1)?.detail})`);
     assert(log, 'verified resource fact');
-    p.end('outcome_verified', 'wood');
+    p.end('harness_step_end', 'mined; no outcome predicate evaluated by the harness');
   });
 
   await p.check('S5', 'construction stopped after two server-confirmed placements persists only those checkpoints (interrupted project)', async (ev) => {
@@ -382,6 +382,9 @@ async function recall(outDir: string, memoryRoot: string): Promise<void> {
     assert(f.some((x) => x.key === 'minecraft:oak_log' && x.source === 'verified_skill'), 'verified resource');
     assert(f.some((x) => x.category === 'project' && x.project?.state === 'interrupted'), 'interrupted project');
     assert(f.some((x) => x.category === 'death' && x.death?.recovery.status === 'unresolved'), 'unresolved death incident');
+    const milestones = f.filter((x) => x.category === 'milestone').map((x) => x.label);
+    ev.push(`milestones: ${JSON.stringify(milestones)}`);
+    assert(milestones.length === 1 && milestones[0] === 'remember this spot as home', 'milestones only for the code-verified outcome');
   });
 
   await p.connect();
@@ -411,7 +414,7 @@ async function recall(outDir: string, memoryRoot: string): Promise<void> {
     const foreign = p.memory.resolveRef(home.ref, { goalEpoch: p.epoch + 1, goalId: 'goal-other001', connectionEpoch: p.game.connectionEpoch, dimension: view.scope?.dimension ?? '' });
     ev.push(`foreign resolution: ${'error' in foreign ? foreign.error : 'RESOLVED'}`);
     assert('error' in foreign, 'cross-goal ref use fails closed');
-    p.end('outcome_verified', 'home');
+    p.end('harness_step_end', 'arrived; server position checked over RCON, no outcome predicate evaluated');
   });
 
   await p.check('R3', 'emptied chest: memory shows HISTORICAL contents until a fresh inspection revises them', async (ev) => {
@@ -427,7 +430,7 @@ async function recall(outDir: string, memoryRoot: string): Promise<void> {
     const fact = p.memory.facts().find((f) => f.key === 'minecraft:chest' && f.status === 'active');
     ev.push(`revised contents: ${JSON.stringify(fact?.container?.contents)}`);
     assert(fact?.container && Object.keys(fact.container.contents).length === 0, 'memory revised to the fresh (empty) server contents');
-    p.end('outcome_verified', 'checked');
+    p.end('harness_step_end', 'chest re-inspected only; no sticks crafted');
   });
 
   await p.check('R4', 'destroyed crafting table: direct observation invalidates the remembered workstation and its ref', async (ev) => {
