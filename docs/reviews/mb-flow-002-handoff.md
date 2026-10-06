@@ -193,9 +193,15 @@ Reports are under `var/live-check/<stamp>-handoff/report.json`; logs are under `
 | `npm run skills-live-check` | `var/live-check/2026-10-06T08-31-13-919Z-skills/report.json` | **33/33, exit 0** |
 | `npm run jev-live-check -- --provider fault` | `var/live-check/2026-10-06T08-37-26-191Z-jev-fault/report.json` | **12/12, exit 0** |
 
-Two earlier harness passes on `88089893` failed only at L7 (L0–L6 passed both times):
-- `08-28-46`: window 1's "collect 1 log" task mined two logs before its completion check, so the 2-log outcome finished in one window.
-- `08-35-36`: a "walk to the obsidian" window found no grounded `move_near` destination. The engine correctly discarded the lookahead (its premise failed) and replanned.
+Two earlier harness passes on `88089893` failed only at L7; L0–L6 passed both times:
+- **`08-28-46`: 7/9**, harness `6724f3c`'s predecessor. Window 1's "collect 1 log" task mined two logs before its completion check, so the 2-log outcome finished correctly in one window. That is **invalid two-window evidence**, not a failure to honor the goal (coordinator decision).
+- **`08-35-36`: 8/9**, harness `2bbf0c4`. A "walk to the obsidian" window found no grounded `move_near` destination. The engine correctly discarded the lookahead (its premise failed) and replanned. The no-lookahead run passed.
+
+The harness-only corrections were:
+- `2bbf0c4`: two distinct predicates instead of two log windows.
+- `0694bb0`: window 1 = walk to the owner (`move_near` owner, completion `near_target` owner), placed about 8 blocks away by one recorded setup `tp`; window 2 = collect 1 oak log (`inventory_delta` logs). Both windows repeat the same accepted outcome (`collect_additional` 1 log, bound to the admission baseline). Each task keeps its own capability and key scope, so window 1 cannot satisfy the outcome.
+
+The gap and second-window assertions were not weakened. There were no other retries.
 
 L7 was then made deterministic (window 1 walks to the owner, proven grounded; window 2 collects the log). Those were harness design issues, not engine faults. A first attempt at the Jev check did not run (exit 1, my own `npm` argument quoting); its correct rerun is the result above.
 
