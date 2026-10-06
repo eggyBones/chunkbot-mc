@@ -316,20 +316,61 @@ async function main(): Promise<number> {
       }
     }
 
-    // ---- health: peaceful regenerates 1 HP per second, so the dashboard must show the damage within
-    // 1 s and stay within one regeneration step of the server's value read at the same moment.
+    // ---- health (MB-UI-001-C8). The publisher writes the LATEST server health packet once per tick
+    // (default 500 ms), and on Peaceful the server regenerates (1 HP / 20 ticks, plus saturation healing at
+    // full food), so a small drop can be partly healed before the next tick. The check therefore uses an
+    // established baseline, a damage large enough that regeneration cannot return to the baseline within the
+    // latency bound (never lethal), the server's own value read immediately after the command, and recorded
+    // file/SSE samples. Pass requires a REAL lower-than-baseline sample in BOTH the file and the SSE stream
+    // within the bound, and that sample within the regeneration tolerance of the server's post-damage value.
+    const REGEN_TOLERANCE_HP = 2; // one Peaceful regen step (1 HP) + one saturation heal step (<= 1 HP)
+    let baseline = await serverNumber('Health');
+    const baselineWaitStart = Date.now();
+    while ((baseline === undefined || baseline < 15) && Date.now() - baselineWaitStart < 8_000) {
+      await sleep(500);
+      baseline = await serverNumber('Health');
+    }
+    const baseSeen = baseline === undefined ? undefined : await published((s) => s.vitals.health.known && Math.abs(s.vitals.health.value - baseline!) < 0.01, 3_000);
+    const damage = baseline === undefined ? 0 : Math.min(10, Math.floor(baseline) - 5);
+    const healthEvidence: string[] = [`baseline: server Health=${baseline} (waited ${Date.now() - baselineWaitStart} ms); dashboard ${baseSeen ? `${baseSeen.s.vitals.health.known ? baseSeen.s.vitals.health.value : '?'} (matches)` : 'never matched the baseline'}`];
     let t0 = Date.now();
-    await rcon(`damage ${BOT} 3 minecraft:generic`);
-    const hp = await published((s) => s.vitals.health.known && s.vitals.health.value <= 17.01, 2_000);
-    const hpView = await viewed(tabA, t0, (vm) => /^1[0-7](\.\d)? \//.test(String(vm.world.health.text)), 2_000);
-    const hpMs = hp ? hp.at - t0 : undefined;
-    const truthHealth = await serverNumber('Health');
-    const dashNow = status()?.vitals.health;
-    const within = truthHealth !== undefined && dashNow?.known ? Math.abs(dashNow.value - truthHealth) : undefined;
-    check('D2-health', `damage reaches the file and screen within ${LATENCY_BOUND_MS} ms of the command; value within one regen step of the server`, Boolean(hpMs !== undefined && hpMs <= LATENCY_BOUND_MS && hpView !== undefined && hpView <= LATENCY_BOUND_MS && within !== undefined && within <= 1.01), [
-      `published ${hp ? `${hp.s.vitals.health.known ? hp.s.vitals.health.value : '?'} ` : ''}${hpMs ?? 'timeout'} ms after the command; viewer frame ${hpView ?? 'timeout'} ms after the command (includes the RCON round trip)`,
-      `then server Health=${truthHealth}, dashboard ${dashNow?.known ? dashNow.value : 'unknown'} (|diff| ${within})`,
-    ]);
+    let healthPass = false;
+    if (baseline === undefined || !baseSeen || damage < 4) {
+      healthEvidence.push(`not attempted: baseline unusable (damage would be ${damage} HP)`);
+    } else {
+      t0 = Date.now();
+      const reply = await rcon(`damage ${BOT} ${damage} minecraft:generic`);
+      const afterCmd = Date.now() - t0;
+      const serverAfter = await serverNumber('Health');
+      const serverAfterAt = Date.now() - t0;
+      healthEvidence.push(`command: damage ${damage} -> "${reply.slice(0, 80)}" (reply after ${afterCmd} ms); server Health read immediately after = ${serverAfter} at +${serverAfterAt} ms`);
+      // Record every distinct published value for 1.5 s (file polled every 20 ms).
+      const fileSamples: Array<{ atMs: number; value: number | null; observedAtMs: number | null }> = [];
+      while (Date.now() - t0 < 1_500) {
+        const h = status()?.vitals.health;
+        const v = h?.known ? h.value : null;
+        if (fileSamples.length === 0 || fileSamples[fileSamples.length - 1]!.value !== v) fileSamples.push({ atMs: Date.now() - t0, value: v, observedAtMs: h?.known ? h.observedAtMs - t0 : null });
+        await sleep(20);
+      }
+      const parseHealth = (text: unknown) => {
+        const m = /^(\d+(?:\.\d+)?)/.exec(String(text));
+        return m ? Number(m[1]) : null;
+      };
+      const sseSamples = tabA.frames.filter((f) => f.atMs >= t0 && f.atMs - t0 <= 1_500).map((f) => ({ atMs: f.atMs - t0, value: parseHealth(f.vm.world.health.text), text: String(f.vm.world.health.text) }));
+      const lower = (v: number | null) => v !== null && v < baseline - 0.5;
+      const firstFile = fileSamples.find((x) => lower(x.value));
+      const firstSse = sseSamples.find((x) => lower(x.value));
+      const diff = firstFile && serverAfter !== undefined ? Math.abs((firstFile.value as number) - serverAfter) : undefined;
+      healthPass = Boolean(firstFile && firstFile.atMs <= LATENCY_BOUND_MS && firstSse && firstSse.atMs <= LATENCY_BOUND_MS && diff !== undefined && diff <= REGEN_TOLERANCE_HP);
+      healthEvidence.push(
+        `file samples (ms after command: value [packet observed at]): ${fileSamples.slice(0, 30).map((x) => `+${x.atMs}: ${x.value === null ? 'unknown' : Math.round(x.value * 100) / 100} [${x.observedAtMs === null ? '-' : `+${x.observedAtMs}`}]`).join(', ')}`,
+        `SSE frames: ${sseSamples.slice(0, 30).map((x) => `+${x.atMs}: "${x.text}"`).join(', ') || 'none'}`,
+        `first lower-than-baseline: file ${firstFile ? `${Math.round((firstFile.value as number) * 100) / 100} at +${firstFile.atMs} ms` : 'NEVER'}; screen ${firstSse ? `"${firstSse.text}" at +${firstSse.atMs} ms` : 'NEVER'}; |file - server after| = ${diff === undefined ? 'n/a' : Math.round(diff * 100) / 100} (tolerance ${REGEN_TOLERANCE_HP} HP)`,
+      );
+      const later = await serverNumber('Health');
+      healthEvidence.push(`informational: server Health at +${Date.now() - t0} ms = ${later}; dashboard ${JSON.stringify(status()?.vitals.health)}`);
+    }
+    check('D2-health', `a real drop below the baseline reaches the file and screen within ${LATENCY_BOUND_MS} ms of the command and matches the server within the regeneration tolerance`, healthPass, healthEvidence);
 
     // ---- max health via attribute
     t0 = Date.now();
