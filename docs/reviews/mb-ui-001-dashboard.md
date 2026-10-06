@@ -107,6 +107,12 @@ Reports are under the ignored `var/live-check/`.
   - `/xp set` does not update the server's total-experience field, so the viewer shows only level and progress.
   - The fixture runs `difficulty=peaceful`, so food cannot change there. The food check is static equality, and health regenerates 1 HP/s, so the health check allows one regeneration step. The harness never reconfigures the server.
 - **Harness corrections during the lease:** two runs failed because of fixture behavior, not dashboard defects (`2026-10-06T08-07-08…`: health raced regeneration; `…08-08-19…`: Hunger has no effect on peaceful).
+- **Authorized hunger trial** (`--fixture 26.2 --hunger-trial`, commit `a766261`, `2026-10-06T08-11-42-866Z-26.2-dashboard-hunger`, exit 0, 15/15):
+  - Before the change: `difficulty` → "The difficulty is Peaceful", and `list` → only DashProbe online.
+  - Steps: `difficulty normal`, then `effect give DashProbe minecraft:hunger 10 99 true`, then foodLevel polling. The server reached 17 after 4083 ms, then `effect clear`.
+  - Result: the dashboard food was 17 (server packet) 3 ms after the truth read, and the screen frame showed `17 / 20`.
+  - Restore, in a finally path: `difficulty peaceful`, then `difficulty` → "The difficulty is Peaceful", 4291 ms after the change. An independent RCON query afterwards also returned Peaceful, with 0 players online.
+  - The health check in this run: published 287 ms after the command, screen 319 ms.
 - **Not run:** 26.1.2, which is owned by the handoff worker.
 
 ## Integration still needed (designated writer, via Codex)
