@@ -18,6 +18,7 @@
 // selector, predicate, config and composition seams.
 import { z } from 'zod';
 import { BOUNDS, DimensionSchema, RegistryKeySchema, Vec3Schema, textSchema } from './common.ts';
+import type { PlanningSubject } from './handoff.ts';
 import type { PredicateEvaluation } from './predicate.ts';
 
 export const MEMORY_SCHEMA_VERSION = 1 as const;
@@ -152,14 +153,11 @@ export type PreparedMemoryRefId = z.infer<typeof PreparedMemoryRefIdSchema>;
 export const MemoryRefTokenSchema = z.union([MemoryRefIdSchema, PreparedMemoryRefIdSchema]);
 
 /**
- * Structural mirror of MB-FLOW-002 `PlanningSubject` (src/contracts/handoff.ts)
- * so memory compiles before that contract is transferred; a PlanningSubject is
- * assignable to it. A preparation owns no goal, epoch, lease or baseline and
- * never receives executable refs.
+ * Memory views are built for the MB-FLOW-002 `PlanningSubject`: an admitted
+ * goal (executable refs) or a non-admitted preparation (prepared refs only; a
+ * preparation owns no goal, epoch, lease or baseline).
  */
-export type MemorySubject =
-  | { kind: 'goal'; goalId: string; goalEpoch: number }
-  | { kind: 'preparation'; intentId: string; generation: number; connectionEpoch: number; activeGoalId: string | null };
+export type MemorySubject = PlanningSubject;
 
 /**
  * Mandatory ownership fence for resolving an executable ref. Every resolver
@@ -469,10 +467,14 @@ export const MemoryStatePredicateSchema = z
   .strict();
 export type MemoryStatePredicate = z.infer<typeof MemoryStatePredicateSchema>;
 
-/** A resolved memory reference (plain data). */
+/** A resolved memory reference (plain data, with its issuance record). */
 export interface ResolvedMemoryRef {
   refId: MemoryRefId;
+  /** Issuance correlation: the goal, epoch and planner request the ref was shown in. */
+  issuedTo: { goalId: string; goalEpoch: number; requestId: string };
   factId: MemoryFactId;
+  /** Fact revision when issued and now (evidence may be added; identity/location/status are unchanged or the ref fails). */
+  factRevision: { issued: number; current: number };
   category: MemoryCategory;
   label: string;
   key?: string;
@@ -529,7 +531,19 @@ export interface MemoryRefResolver {
 /** Code evaluation of `memory_state` (same shape as PredicateEvaluation; the kind is added by the writer). */
 export type MemoryStateEvaluation = Omit<PredicateEvaluation, 'predicate' | 'children'> & { predicate: 'memory_state' };
 
+/**
+ * Binding of a `memory_state` predicate: the memory WRITE SEQUENCE captured at
+ * bind time (monotonic per run; not a timestamp, so a same-millisecond older
+ * write can never satisfy a later binding). The writer stores it in the bound
+ * predicate's baselines (e.g. `baselines['memory:seq']`).
+ */
+export interface MemoryStateBinding {
+  memoryBaseline: number;
+}
+
 /** Predicate-engine seam for `memory_state`. */
 export interface MemoryPredicatePort {
-  evaluateMemoryState(predicate: MemoryStatePredicate, boundAtMs: number): MemoryStateEvaluation;
+  /** Current memory write sequence; capture at bind time. */
+  memoryBaseline(): number;
+  evaluateMemoryState(predicate: MemoryStatePredicate, binding: MemoryStateBinding): MemoryStateEvaluation;
 }

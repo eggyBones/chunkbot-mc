@@ -68,7 +68,7 @@ describe('memory capabilities', () => {
     assert.equal(skill.resolve(resolveCtx(h, snap, {})).unavailable?.[0]?.reason, 'missing_parameter', 'code never invents a label');
     const drafts = skill.resolve(resolveCtx(h, snap, { label: 'home', category: 'home' })).drafts;
     assert.equal(drafts.length, 1);
-    const t0 = h.clock.now();
+    const base = { memoryBaseline: h.memory.memoryBaseline() };
     const r = await skill.execute(execCtx(h, 'remember_location', drafts[0]!.parameters, goalOwner()), skill.params.parse(drafts[0]!.parameters));
     assert.equal(r.status, 'succeeded', r.effect);
     assert.equal(r.confirmation, 'none');
@@ -77,7 +77,7 @@ describe('memory capabilities', () => {
     assert.equal(mem['trust'], 'trusted');
     assert.ok(Number(mem['storeRevision']) > 0);
     assert.match(r.effect, /not a world effect/);
-    assert.equal(h.memory.evaluateMemoryState({ predicate: 'memory_state', label: 'home', expect: 'recorded' }, t0).status, 'satisfied');
+    assert.equal(h.memory.evaluateMemoryState({ predicate: 'memory_state', label: 'home', expect: 'recorded' }, base).status, 'satisfied');
     const fact = h.memory.facts().find((f) => f.category === 'home');
     assert.deepEqual(fact?.location, { dimension: OVERWORLD, at: { x: 12.3, y: 64, z: -7.8 } });
     assert.equal(fact?.evidence[0]?.ownerText, 'remember this as home');

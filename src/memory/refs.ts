@@ -20,6 +20,10 @@ import { MEMORY_BOUNDS, type MemoryFact, type MemoryFactId, type MemoryRefFence,
 
 interface Located {
   factId: string;
+  /** Fact identity at issuance (revision, category, key). */
+  factRevision: number;
+  category: string;
+  key: string | undefined;
   connectionEpoch: number;
   dimension: string;
   at: { x: number; y: number; z: number };
@@ -40,6 +44,7 @@ interface PrepRef extends Located {
 }
 
 const MAX_COUNTER = 36 ** 8 - 1;
+const identity = (f: MemoryFact) => ({ factId: f.id, factRevision: f.revision, category: f.category, key: f.key });
 const sameAt = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) => a.x === b.x && a.y === b.y && a.z === b.z;
 const r1 = (n: number) => Math.round(n * 10) / 10;
 
@@ -75,7 +80,7 @@ export class MemoryRefRegistry {
       this.goalRequests.set(key, list);
     }
     const refId = `mref-${this.nextId()}` as MemoryRefId;
-    this.goalRefs.set(refId, { refId, goalId: ctx.goalId, goalEpoch: ctx.goalEpoch, requestId: ctx.requestId, connectionEpoch: ctx.connectionEpoch, dimension: ctx.dimension, factId: fact.id, at: { ...at }, label: label ?? fact.label });
+    this.goalRefs.set(refId, { refId, goalId: ctx.goalId, goalEpoch: ctx.goalEpoch, requestId: ctx.requestId, connectionEpoch: ctx.connectionEpoch, dimension: ctx.dimension, ...identity(fact), at: { ...at }, label: label ?? fact.label });
     return refId;
   }
 
@@ -84,7 +89,7 @@ export class MemoryRefRegistry {
     // Older generations of the same intent are superseded.
     for (const [id, e] of this.prepRefs) if (e.intentId === ctx.intentId && e.generation !== ctx.generation) this.prepRefs.delete(id);
     const refId = `mprep-${this.nextId()}` as PreparedMemoryRefId;
-    this.prepRefs.set(refId, { refId, intentId: ctx.intentId, generation: ctx.generation, requestId: ctx.requestId, connectionEpoch: ctx.connectionEpoch, dimension: ctx.dimension, factId: fact.id, at: { ...at }, label: label ?? fact.label });
+    this.prepRefs.set(refId, { refId, intentId: ctx.intentId, generation: ctx.generation, requestId: ctx.requestId, connectionEpoch: ctx.connectionEpoch, dimension: ctx.dimension, ...identity(fact), at: { ...at }, label: label ?? fact.label });
     return refId;
   }
 
@@ -99,6 +104,7 @@ export class MemoryRefRegistry {
   private checkFact(e: Located, refId: string, fact: (id: string) => MemoryFact | undefined): MemoryFact | { error: string; detail: string } {
     const f = fact(e.factId);
     if (!f || f.status !== 'active') return { error: 'memory_fact_inactive', detail: `the remembered fact behind ${refId} is ${f ? f.status : 'gone'}${f?.statusDetail ? ` (${f.statusDetail})` : ''}` };
+    if (f.category !== e.category || f.key !== e.key) return { error: 'memory_fact_changed', detail: `the remembered fact behind ${refId} is no longer the same kind of thing` };
     if (!f.location || f.location.dimension !== e.dimension) return { error: 'memory_fact_moved', detail: `the remembered fact behind ${refId} no longer has this location` };
     // Project checkpoint refs point inside the project; plain facts must still be at the issued location.
     if (f.category !== 'project' && !sameAt({ x: r1(f.location.at.x), y: r1(f.location.at.y), z: r1(f.location.at.z) }, { x: r1(e.at.x), y: r1(e.at.y), z: r1(e.at.z) })) {
@@ -121,7 +127,9 @@ export class MemoryRefRegistry {
     if ('error' in f) return f;
     return {
       refId: e.refId,
+      issuedTo: { goalId: e.goalId, goalEpoch: e.goalEpoch, requestId: e.requestId },
       factId: f.id as MemoryFactId,
+      factRevision: { issued: e.factRevision, current: f.revision },
       category: f.category,
       label: e.label,
       ...(f.key && f.category !== 'project' ? { key: f.key } : {}),

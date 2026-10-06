@@ -158,6 +158,55 @@ describe('memory: request-bound refs are fenced and fail closed', () => {
   });
 });
 
+describe('memory: ref identity, revision and location are re-checked at every resolution', () => {
+  it('a fact changed in place (moved location or different kind) fails closed; a resolved ref carries its issuance record and revisions', async () => {
+    const h = harness();
+    await designateHome(h);
+    h.world.snap = snapshot('snap-0001', h.world.conn!, [{ key: 'minecraft:chest', at: { x: 4, y: 64, z: 4 } }]);
+    h.memory.ingestObservation();
+    const conn = h.world.conn!;
+    const v = viewFor(h, goal('goal-0002', 2), 'open the chest at home', 'req-0042');
+    const homeRef = v.facts.find((f) => f.category === 'home')?.ref as string;
+    const chestRef = v.facts.find((f) => f.key === 'minecraft:chest')?.ref as string;
+    const fence = { goalEpoch: 2, goalId: 'goal-0002', connectionEpoch: conn.connectionEpoch, dimension: OVERWORLD };
+    const ok = h.memory.resolveRef(homeRef, fence);
+    assert.ok(!('error' in ok));
+    assert.deepEqual(ok.issuedTo, { goalId: 'goal-0002', goalEpoch: 2, requestId: 'req-0042' });
+    assert.equal(ok.factRevision.issued, ok.factRevision.current);
+    // Fault injection: mutate durable facts in place (no code path does this; resolution must still refuse stale coordinates).
+    const book = (h.memory as unknown as { book: { get(id: string): { location?: { at: { x: number } }; key?: string } } }).book;
+    const homeFact = book.get(ok.factId);
+    homeFact!.location!.at.x += 30;
+    const moved = h.memory.resolveRef(homeRef, fence);
+    assert.ok('error' in moved && moved.error === 'memory_fact_moved', JSON.stringify(moved));
+    const chest = h.memory.resolveRef(chestRef, fence);
+    assert.ok(!('error' in chest));
+    book.get(chest.factId)!.key = 'minecraft:barrel';
+    const changed = h.memory.resolveRef(chestRef, fence);
+    assert.ok('error' in changed && changed.error === 'memory_fact_changed');
+    await h.memory.close();
+  });
+
+  it('lifecycle interruptions and preparation release void prepared refs too', async () => {
+    const h = harness();
+    await designateHome(h);
+    const conn = h.world.conn!;
+    const prep = { kind: 'preparation' as const, intentId: 'intent-0007', generation: 1, connectionEpoch: conn.connectionEpoch, activeGoalId: null };
+    const pr = viewFor(h, prep, 'go home', 'req-0001').facts[0]?.prepRef as string;
+    h.memory.onLifecycle({ type: 'dimension_change', connectionEpoch: conn.connectionEpoch, from: OVERWORLD, to: NETHER });
+    const admission = { intentId: 'intent-0007', generation: 1, goalId: 'goal-0003', goalEpoch: 3, requestId: 'req-0002', connectionEpoch: conn.connectionEpoch, dimension: OVERWORLD };
+    const r = h.memory.regroundPrepared(pr, admission);
+    assert.ok('error' in r && r.error === 'unknown_prepared_ref');
+    const pr2 = viewFor(h, prep, 'go home', 'req-0003').facts[0]?.prepRef as string;
+    h.memory.releasePreparation('intent-0007'); // owner stop / supersession
+    assert.ok('error' in h.memory.regroundPrepared(pr2, admission));
+    // A preparation on an older connection gets no prepared refs at all.
+    const stale = viewFor(h, { ...prep, connectionEpoch: conn.connectionEpoch - 1 }, 'go home', 'req-0004');
+    assert.ok(stale.facts.every((f) => !f.prepRef && !f.ref));
+    await h.memory.close();
+  });
+});
+
 describe('memory: preparation subject (MB-FLOW-002)', () => {
   it('a preparation sees bounded facts with NON-executable prepared refs; admission re-grounds the SAME active fact or fails closed', async () => {
     const h = harness();
@@ -207,9 +256,9 @@ describe('memory: provenance and hallucination (M2)', () => {
     assert.equal(invented.trusted, false);
     assert.equal(invented.fact.source, 'unverified_note');
     assert.equal(invented.fact.location, undefined, 'an ungrounded claim keeps no typed location');
-    const recorded = h.memory.evaluateMemoryState({ predicate: 'memory_state', label: 'diamond cave', expect: 'recorded' }, 0);
+    const recorded = h.memory.evaluateMemoryState({ predicate: 'memory_state', label: 'diamond cave', expect: 'recorded' }, { memoryBaseline: 0 });
     assert.equal(recorded.status, 'unsatisfied');
-    assert.equal(h.memory.evaluateMemoryState({ predicate: 'memory_state', label: 'diamond cave', expect: 'noted' }, 0).status, 'satisfied');
+    assert.equal(h.memory.evaluateMemoryState({ predicate: 'memory_state', label: 'diamond cave', expect: 'noted' }, { memoryBaseline: 0 }).status, 'satisfied');
     // Observed workstation from a filtered snapshot.
     h.world.snap = snapshot('snap-0001', h.world.conn!, [{ key: 'minecraft:crafting_table', at: { x: 3, y: 64, z: 3 } }]);
     h.memory.ingestObservation();
@@ -236,7 +285,7 @@ describe('memory: provenance and hallucination (M2)', () => {
     assert.equal(refused.ok, false);
     assert.equal(!refused.ok && refused.reason, 'not_owner_grounded');
     h.memory.beginGoal({ goalId: 'goal-0003', epoch: 3, instruction: 'forget home' });
-    const t0 = h.clock.now();
+    const t0 = { memoryBaseline: h.memory.memoryBaseline() };
     const done = await h.memory.forget({ goalId: 'goal-0003', label: 'home' });
     assert.ok(done.ok, JSON.stringify(done));
     assert.equal(h.memory.evaluateMemoryState({ predicate: 'memory_state', label: 'home', expect: 'forgotten' }, t0).status, 'satisfied');
@@ -245,18 +294,50 @@ describe('memory: provenance and hallucination (M2)', () => {
     await h.memory.close();
   });
 
-  it('memory_state "recorded" is satisfied only by a durable trusted write made after binding (local memory confirmation)', async () => {
-    const h = harness();
-    const before = h.clock.now();
-    assert.equal(h.memory.evaluateMemoryState({ predicate: 'memory_state', label: 'home', expect: 'recorded' }, before).status, 'unsatisfied');
-    h.clock.advance(1_000);
+  it('memory_state "recorded" is satisfied only by a durable trusted write AFTER the captured write-sequence baseline, even within the same millisecond', async () => {
+    const h = harness(); // the fake clock never advances in this test
+    const p = { predicate: 'memory_state' as const, label: 'home', expect: 'recorded' as const };
+    const first = { memoryBaseline: h.memory.memoryBaseline() };
+    assert.equal(h.memory.evaluateMemoryState(p, first).status, 'unsatisfied');
     await designateHome(h);
-    const ev = h.memory.evaluateMemoryState({ predicate: 'memory_state', label: 'home', expect: 'recorded' }, before);
+    const ev = h.memory.evaluateMemoryState(p, first);
     assert.equal(ev.status, 'satisfied');
     assert.equal(ev.evidence['confirmation'], 'local_memory_store');
-    h.clock.advance(1_000);
-    assert.equal(h.memory.evaluateMemoryState({ predicate: 'memory_state', label: 'home', expect: 'recorded' }, h.clock.now()).status, 'unsatisfied', 'an older write does not satisfy a later binding');
+    // A rapid next goal binds in the SAME millisecond: the older durable fact must not satisfy it.
+    const second = { memoryBaseline: h.memory.memoryBaseline() };
+    assert.equal(h.memory.evaluateMemoryState(p, second).status, 'unsatisfied', 'an older same-millisecond write does not satisfy a later binding');
+    // Only a new owner/skill write after that binding does.
+    await designateHome(h, 'goal-0002', 2);
+    assert.equal(h.memory.evaluateMemoryState(p, second).status, 'satisfied');
+    // After a restart, loaded facts are old for every new binding.
+    await h.memory.flush();
+    const r = await h.restart();
+    assert.equal(r.memory.evaluateMemoryState(p, { memoryBaseline: r.memory.memoryBaseline() }).status, 'unsatisfied');
+    await r.memory.close();
+  });
+
+  it('memory_state is unknown (never satisfied, not even "forgotten") when memory is disabled, conflicted or read-only', async () => {
+    const forgotten = { predicate: 'memory_state' as const, label: 'home', expect: 'forgotten' as const };
+    const disabled = new MemoryService({ config: undefined, rootDir: '/nonexistent', endpoint: 'x:1', clock: { now: () => 0 } });
+    assert.equal(disabled.evaluateMemoryState(forgotten, { memoryBaseline: 0 }).status, 'unknown');
+    const h = harness();
     await h.memory.close();
+    const dir = scopeDirectory(h.root, { worldProfile: 'fixture-world', worldRevision: 1, botProfile: 'chunkbot' });
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(dir, { recursive: true });
+    for (const n of readdirSync(dir).filter((x) => x.startsWith('memory-'))) writeFileSync(join(dir, n), 'garbage');
+    writeFileSync(join(dir, 'memory-00000009.json'), 'garbage');
+    const ro = harness({ root: h.root });
+    assert.equal(ro.memory.status().state, 'read_only');
+    assert.equal(ro.memory.evaluateMemoryState(forgotten, { memoryBaseline: 0 }).status, 'unknown');
+    await ro.memory.close();
+    const conflict = harness({ endpoint: '127.0.0.1:1' });
+    conflict.memory.onConnectionReady();
+    await conflict.memory.close();
+    const moved = harness({ root: conflict.root, endpoint: '127.0.0.1:2' });
+    moved.memory.onConnectionReady();
+    assert.equal(moved.memory.evaluateMemoryState(forgotten, { memoryBaseline: 0 }).status, 'unknown');
+    await moved.memory.close();
   });
 });
 

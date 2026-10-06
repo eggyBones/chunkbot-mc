@@ -27,6 +27,7 @@ import {
   type MemoryRefResolver,
   type MemoryScope,
   type MemoryStateEvaluation,
+  type MemoryStateBinding,
   type MemoryStatePredicate,
   type MemoryStatus,
   type MemoryStoreState,
@@ -111,6 +112,9 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
   private lastWriteError: string | undefined;
   private closed = false;
   private checkedEpoch: number | undefined;
+  /** Monotonic memory write sequence (owner/skill writes); predicate baselines compare against it. */
+  private writeSeq = 0;
+  private readonly factWriteSeq = new Map<string, number>();
 
   constructor(options: MemoryServiceOptions) {
     this.options = options;
@@ -583,6 +587,9 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
   }
 
   private async persistOutcome(fact: MemoryFact, change: WriteResult['change'], affected: string[], detail: string): Promise<MemoryWriteOutcome> {
+    this.writeSeq += 1;
+    this.factWriteSeq.set(fact.id, this.writeSeq);
+    for (const id of affected) this.factWriteSeq.set(id, this.writeSeq);
     const revision = await this.persist('skill');
     if (revision === undefined) return { ok: false, reason: 'memory_write_failed', detail: `the durable write failed (${this.lastWriteError ?? 'unknown error'}); the previous revision is intact` };
     return { ok: true, fact: structuredClone(fact), change, trusted: isTrusted(fact), storeRevision: revision, affected, detail };
@@ -598,23 +605,36 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     return this.refs.resolve(refId, fence, (id) => book.get(id));
   }
 
-  evaluateMemoryState(p: MemoryStatePredicate, boundAtMs: number): MemoryStateEvaluation {
-    const out = (status: MemoryStateEvaluation['status'], detail: string, evidence: MemoryStateEvaluation['evidence'] = {}): MemoryStateEvaluation => ({ status, predicate: 'memory_state', detail, evidence: { confirmation: 'local_memory_store', ...evidence } });
-    if (!this.readable || !this.book) return out('unknown', `memory is not usable: ${this.status().detail}`);
+  /** Current write sequence (capture when a memory_state predicate is bound). */
+  memoryBaseline(): number {
+    return this.writeSeq;
+  }
+
+  /**
+   * `recorded`/`noted`: a matching fact was written by an owner/skill memory
+   * write AFTER the captured write-sequence baseline and is durable.
+   * `forgotten`: no active fact with the label (already absent counts).
+   * Disabled, conflicted, read-only or unreadable memory is always `unknown`.
+   */
+  evaluateMemoryState(p: MemoryStatePredicate, binding: MemoryStateBinding): MemoryStateEvaluation {
+    const out = (status: MemoryStateEvaluation['status'], detail: string, evidence: MemoryStateEvaluation['evidence'] = {}): MemoryStateEvaluation => ({ status, predicate: 'memory_state', detail, evidence: { confirmation: 'local_memory_store', baseline: binding.memoryBaseline, ...evidence } });
+    const state = this.state;
+    if (!this.readable || !this.book || !(state === 'ready' || state === 'empty' || state === 'recovered' || state === 'migrated')) return out('unknown', `memory is not usable (${state}): ${this.status().detail}`);
     const matches = this.book.activeByLabel(p.label);
     if (p.expect === 'forgotten') {
       return matches.length === 0 ? out('satisfied', `no active memory labeled "${clip(p.label, 40)}" in this world profile`, { storeRevision: this.store?.revision ?? 0 }) : out('unsatisfied', `${matches.length} active memory fact(s) labeled "${clip(p.label, 40)}" remain`, { facts: matches.map((f) => f.id).join(',') });
     }
     const wantTrusted = p.expect === 'recorded';
-    const written = matches.filter((f) => isTrusted(f) === wantTrusted && f.lastConfirmedMs >= boundAtMs);
+    const after = (f: MemoryFact) => (this.factWriteSeq.get(f.id) ?? 0) > binding.memoryBaseline;
+    const written = matches.filter((f) => isTrusted(f) === wantTrusted && after(f));
     if (written.length === 0) {
-      const other = matches.filter((f) => isTrusted(f) !== wantTrusted && f.lastConfirmedMs >= boundAtMs);
-      return out('unsatisfied', other.length ? `only ${wantTrusted ? 'an UNVERIFIED note' : 'a trusted fact'} labeled "${clip(p.label, 40)}" was written since binding` : `no ${wantTrusted ? 'trusted fact' : 'note'} labeled "${clip(p.label, 40)}" was written since binding`);
+      const other = matches.filter((f) => isTrusted(f) !== wantTrusted && after(f));
+      return out('unsatisfied', other.length ? `only ${wantTrusted ? 'an UNVERIFIED note' : 'a trusted fact'} labeled "${clip(p.label, 40)}" was written since binding` : `no ${wantTrusted ? 'trusted fact' : 'note'} labeled "${clip(p.label, 40)}" was written since binding (older memory does not count)`);
     }
     const durable = written.filter((f) => (this.durable.get(f.id) ?? 0) >= f.revision);
     if (durable.length === 0) return out('unknown', `memory write for "${clip(p.label, 40)}" is not durable yet (write pending or failed)`, { pendingWrites: this.store?.pending ?? 0 });
     const f = durable[0] as MemoryFact;
-    return out('satisfied', `${wantTrusted ? 'trusted' : 'unverified'} memory "${clip(f.label, 40)}" (${f.id}, ${f.source}) durably written at store revision ${this.store?.revision ?? 0} (local memory confirmation, not a world effect)`, { factId: f.id, source: f.source, factRevision: f.revision, storeRevision: this.store?.revision ?? 0 });
+    return out('satisfied', `${wantTrusted ? 'trusted' : 'unverified'} memory "${clip(f.label, 40)}" (${f.id}, ${f.source}) durably written at store revision ${this.store?.revision ?? 0} (local memory confirmation, not a world effect)`, { factId: f.id, source: f.source, factRevision: f.revision, writeSeq: this.factWriteSeq.get(f.id) ?? 0, storeRevision: this.store?.revision ?? 0 });
   }
 
   // ------------------------------------------------------------ persistence
