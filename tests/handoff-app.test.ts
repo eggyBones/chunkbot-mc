@@ -167,3 +167,41 @@ describe('dashboard integration seams (MB-UI-001 <- MB-FLOW-002)', () => {
     assert.equal(pendingDirectiveFrom(h.app.engine.status()), undefined, 'shutdown discards the pending instruction');
   });
 });
+
+describe('dashboard pause and memory closures (UI 235a727 DTOs)', () => {
+  it('pause reports automatic work paused with manual goals allowed; an executing owner goal is not labeled paused', async () => {
+    const { pauseFrom } = await import('../src/app/status.ts');
+    const { projectDirective } = await import('../src/dashboard/directive.ts');
+    const h = await readyApp();
+    assert.deepEqual(pauseFrom(h.app.engine.status()), { paused: false, reason: 'automatic work allowed', sinceMs: null, manualGoalsAllowed: true });
+    h.game.chat({ kind: 'player', text: '!chunkbot stop', ...OWNER });
+    await until(() => h.app.engine.status().latch.paused);
+    await h.app.handleTerminalLine('follow me');
+    await until(() => h.tasks.runs.length === 1 && h.app.engine.status().goal?.state === 'executing');
+    const status = h.app.engine.status();
+    const pause = pauseFrom(status)!;
+    assert.equal(pause.paused, true);
+    assert.equal(pause.manualGoalsAllowed, true);
+    assert.match(pause.reason, /^Automatic work paused \(stop from chat\)/);
+    const section = projectDirective(status, undefined, undefined, pause);
+    assert.equal(section.mode, 'owner_directive', 'the manual goal is the active directive');
+    assert.equal(section.goal?.phase, 'executing');
+    await h.app.shutdown('operator_quit');
+  });
+
+  it('memory summary carries the configured scope and the remembered home with provenance and staleness (historical, not current)', async () => {
+    const { memorySummaryFrom } = await import('../src/app/status.ts');
+    const base = { evidence: [{ kind: 'owner_instruction' as const, atMs: 1, detail: 'x' }], evidenceCount: 1, firstRecordedMs: 1, revision: 1, labelKey: 'home' };
+    const facts = [
+      { ...base, id: 'mf-home1', category: 'home' as const, label: 'home', source: 'owner_statement' as const, status: 'active' as const, lastConfirmedMs: 1_000, location: { dimension: 'minecraft:overworld', at: { x: 10.04, y: 64, z: -4 } } },
+      { ...base, id: 'mf-ct001', category: 'workstation' as const, label: 'crafting table', labelKey: 'crafting table', source: 'observation' as const, status: 'active' as const, lastConfirmedMs: 5_000, location: { dimension: 'minecraft:overworld', at: { x: 1, y: 64, z: 1 } } },
+      { ...base, id: 'mf-gone1', category: 'location' as const, label: 'old camp', labelKey: 'old camp', source: 'owner_statement' as const, status: 'forgotten' as const, lastConfirmedMs: 9_000 },
+    ];
+    const m = memorySummaryFrom(facts as never, { worldProfile: 'fixture-26-1-2', worldRevision: 1, botProfile: 'chunkbot' }, 100_000, 50_000);
+    assert.equal(m.totalItems, 2, 'forgotten facts are not summarized');
+    assert.deepEqual(m.worldProfile, { id: 'fixture-26-1-2', revision: 1 });
+    assert.deepEqual(m.home, { label: 'home', dimension: 'minecraft:overworld', at: { x: 10.04, y: 64, z: -4 }, source: 'owner_statement', observedAtMs: 1_000, stale: true });
+    assert.equal(m.items[0]?.label, 'crafting table', 'most recently confirmed first');
+    assert.equal(memorySummaryFrom([], undefined, 0, 1).home, null);
+  });
+});

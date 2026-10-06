@@ -1,8 +1,8 @@
 // Status rendering. Status never performs inference or game actions.
 import type { ConnectionState, GoalRecord, ReadyInfo } from '../contracts/index.ts';
 import type { EngineStatus } from '../goals/goal-engine.ts';
-import { DASHBOARD_BOUNDS, type DashboardMemorySummary, type DashboardPendingDirective } from '../contracts/dashboard.ts';
-import type { MemoryFact } from '../contracts/memory.ts';
+import { DASHBOARD_BOUNDS, type DashboardMemorySummary, type DashboardPause, type DashboardPendingDirective } from '../contracts/dashboard.ts';
+import type { MemoryFact, MemoryScope } from '../contracts/memory.ts';
 
 export interface StatusInput {
   connection: ConnectionState;
@@ -99,17 +99,39 @@ export function pendingDirectiveFrom(engine: EngineStatus | undefined): Dashboar
   return { instruction: p.instruction.slice(0, 1_000), state, sinceMs: p.receivedAtMs, detail: detail.slice(0, 1_000) };
 }
 
-/** Dashboard seam (MB-UI-001 <- MB-MEM-001): the most recently confirmed active facts (historical, bounded). */
-export function memorySummaryFrom(facts: readonly MemoryFact[]): DashboardMemorySummary {
+/**
+ * Dashboard seam (MB-UI-001 <- MB-MEM-001): the configured memory scope, the
+ * designated home and the most recently confirmed active facts. Everything is
+ * REMEMBERED (historical) evidence, never a claim about the current world.
+ */
+export function memorySummaryFrom(facts: readonly MemoryFact[], scope: MemoryScope | undefined, nowMs: number, staleAfterMs: number): DashboardMemorySummary {
   const active = facts.filter((f) => f.status === 'active').sort((a, b) => b.lastConfirmedMs - a.lastConfirmedMs);
+  const home = active.find((f) => f.category === 'home' && f.location);
   return {
     totalItems: active.length,
     items: active.slice(0, DASHBOARD_BOUNDS.memoryItems).map((f) => ({
       label: f.label.slice(0, 200),
       kind: f.category,
-      ...(f.location ? { dimension: f.location.dimension } : {}),
+      ...(f.location ? { dimension: f.location.dimension, at: { ...f.location.at } } : {}),
       source: f.source,
       observedAtMs: f.lastConfirmedMs,
     })),
+    worldProfile: scope ? { id: scope.worldProfile, revision: scope.worldRevision } : null,
+    home: home?.location
+      ? { label: home.label.slice(0, 200), dimension: home.location.dimension, at: { ...home.location.at }, source: home.source, observedAtMs: home.lastConfirmedMs, stale: nowMs - home.lastConfirmedMs > staleAfterMs }
+      : null,
   };
+}
+
+/**
+ * Dashboard seam (MB-UI-001 <- MB-FLOW-002): the stop latch pauses AUTOMATIC
+ * work only; explicit owner goals are always allowed (an executing owner goal
+ * is never "paused"). Reading it authorizes nothing.
+ */
+export function pauseFrom(engine: EngineStatus | undefined): DashboardPause | undefined {
+  const latch = engine?.latch;
+  if (!latch) return undefined;
+  return latch.paused
+    ? { paused: true, reason: `Automatic work paused (stop${latch.source ? ` from ${latch.source}` : ''}); resume to allow automatic follow-on work`, sinceMs: latch.sinceMs ?? null, manualGoalsAllowed: true }
+    : { paused: false, reason: 'automatic work allowed', sinceMs: null, manualGoalsAllowed: true };
 }

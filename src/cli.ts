@@ -38,7 +38,7 @@ import { PlannerJournal } from './telemetry/planner-journal.ts';
 import type { PlannerPort, RunStore } from './contracts/index.ts';
 import { createDashboardRuntime, type DashboardRuntime } from './dashboard/runtime.ts';
 import { VIEWER_USAGE, parseViewerArgs, runDashboardViewer } from './dashboard/viewer-command.ts';
-import { memorySummaryFrom, pendingDirectiveFrom } from './app/status.ts';
+import { memorySummaryFrom, pauseFrom, pendingDirectiveFrom } from './app/status.ts';
 import { inspectMemory, renderMemoryReport } from './memory/report.ts';
 import { memoryRoot } from './memory/service.ts';
 
@@ -267,9 +267,10 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
     engine: () => appRef?.engine.status(),
     decisionReadiness: () => decision.readiness(),
     spend,
-    ...(codex ? { planner: codex } : {}),
+    planner: () => codex,
     pending: () => pendingDirectiveFrom(appRef?.engine.status()),
-    ...(memory ? { memory: () => memorySummaryFrom(memory.facts()) } : {}),
+    pause: () => pauseFrom(appRef?.engine.status()),
+    ...(memory ? { memory: () => memorySummaryFrom(memory.facts(), memory.scope, systemClock.now(), config.memory?.staleAfterMs ?? 24 * 3_600_000) } : {}),
     log: (line) => out(line),
   });
   const app = new ChunkbotApp({
