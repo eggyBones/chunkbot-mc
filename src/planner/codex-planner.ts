@@ -13,7 +13,7 @@
 // reroute or a prohibited tool/agent event disables the planner for the rest
 // of the application run. There is never a planner model/provider/billing
 // fallback; quota/auth errors carry actionable subscription evidence.
-import type { EvidenceEvent, PlannerPort, PlannerProposal, PlannerRequest, Readiness, RunStore } from '../contracts/index.ts';
+import { subjectRef, type EvidenceEvent, type PlannerPort, type PlannerProposal, type PlannerRequest, type Readiness, type RunStore } from '../contracts/index.ts';
 import { CODEX_PROFILE, checkManagedAuthAsync, execArgs, verifyIsolation, writeOwnedFile, type IsolationCheck, type PlannerEffort, type VerifiedIsolation } from './codex-cli.ts';
 import { PlannerError, isPlannerError, plannerFailureAdvice } from './errors.ts';
 import type { ProcessTable } from './process.ts';
@@ -149,7 +149,7 @@ export class CodexPlanner implements PlannerPort {
     const schema = this.schemaFor(request);
     const prompt = renderRequest(request, request.limits?.planWindowSteps ?? this.options.windowSteps);
     const journal = this.options.journal ?? this.options.store;
-    const base = { requestId: request.requestId, goalId: request.goalId, turn: request.turn, turnKind: request.turnKind ?? 'initial' };
+    const base = { requestId: request.requestId, ...(request.subject.kind === 'goal' ? { goalId: request.subject.goalId } : { intentId: request.subject.intentId, generation: request.subject.generation }), subject: subjectRef(request.subject), turn: request.turn, turnKind: request.turnKind ?? 'initial' };
     this.inFlight += 1;
     // MB-PLAN-002: re-verify the managed ChatGPT subscription login before EVERY turn
     // (a login changed after startup is caught before inference). Mode only, read-only.

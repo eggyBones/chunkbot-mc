@@ -53,6 +53,8 @@ export const GoalRecordSchema = z
         replans: z.number().int().nonnegative(),
         windows: z.number().int().nonnegative(),
         tasksAdmitted: z.number().int().nonnegative(),
+        preparationTurns: z.number().int().nonnegative(),
+        lookaheads: z.number().int().nonnegative(),
       })
       .strict()
       .optional(),

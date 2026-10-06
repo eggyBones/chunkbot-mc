@@ -87,7 +87,14 @@ export interface GamePort {
 
 export interface ObservationPort {
   readiness(): Readiness;
+  /** A bounded, filtered snapshot. Read-only towards the game (no packets, actuator, interface or resync). */
   snapshot(goalEpoch: Epoch): Promise<ObservationSnapshot | null>;
+  /**
+   * Re-grounds a handle from an earlier snapshot to the SAME target in a newer
+   * snapshot of the same connection/dimension; undefined when it is no longer
+   * produced. Never a fallback to another target (MB-FLOW-002 draft revalidation).
+   */
+  translateHandle?(fromSnapshotId: string, handle: string, toSnapshotId: string): string | undefined;
 }
 
 export interface KnowledgePort {
