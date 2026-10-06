@@ -1,6 +1,6 @@
 # MB-FLOW-002 smooth directive handoff: worker evidence
 
-**Status: implemented; verified offline, and on the 26.1.2 fixture with the scripted fault planner and loopback Jev under the coordinator's lease (final run on frozen revised source `2276a45`: 9/9 scenarios, exit 0; see below). Real-planner/Jev acceptance and combined integrated live checks are pending (coordinator).** Worker: native Claude Code (Opus 5.5). Branch `chunkbot/mb-flow-002`, base `d5eb2fa`. Date: 2026-10-06 UTC.
+**Status: implemented; verified offline, and on the 26.1.2 fixture (scripted fault planner + loopback Jev only) under the coordinator's lease. FINAL integrated run: source and `dist/` frozen at `88089893` (C1, C2, C3, C3a; UI `24c6744`; memory `e3d41a1`), harness at `0694bb0`. Results: handoff 9/9, live-check 16/16, skills-live-check 33/33, jev-live-check --provider fault 12/12, all exit 0. See "Final integrated runs" below. Real-planner/Jev acceptance and combined integrated live checks are pending (coordinator).** Worker: native Claude Code (Opus 5.5). Branch `chunkbot/mb-flow-002`, base `d5eb2fa`. Date: 2026-10-06 UTC.
 
 This is worker evidence. It does not change the roadmap, plan status or acceptance records; the coordinator owns those.
 
@@ -89,6 +89,8 @@ The fixture probe (follow plus an inventory-changing gathering task) is scenario
 - The intent settles, letting a parked old goal resume, only after that cleanup.
 - Supersession acknowledgement stays prompt, and the next turn is serialized behind the real cleanup.
 - Tested with abort-honoring (120 ms) and non-cooperative processes: bounded at 150 ms.
+
+**C3a (superseded preparations).** The engine tracks EVERY outstanding discarded-preparation cleanup in a set, superseded ones included. `stop`, `endOwnership` and repeated `shutdown` await them all, bounded, together with the active goal's revocation. Actuation invalidation stays synchronous, and supersession acknowledgement stays prompt (`2c363c8`; regressions: supersede then immediate stop or lifecycle, and a repeated shutdown).
 
 **Switch order.**
 1. Revoke the old goal: `replaced`. The epoch is invalidated, the task is aborted and cleanup is awaited.
@@ -179,6 +181,33 @@ Reports are under `var/live-check/<stamp>-handoff/report.json`; logs are under `
 | `08-09-38` | L0, L1 | L1 failed on a revised assertion (revocation-at-switch counted as "ended before admission"). |
 | `08-10-38` (`live-run-4-L1`) | L0, L1 | **2/2 passed.** |
 | **`08-24-47` (`live-run-5-revised`)** | L0–L7 | **9/9 passed, exit 0.** Frozen revised source `2276a45` (C1+C2+C3, UI `235a727`, memory `bc785f3`, dashboard/memory wiring), with `dist/` built by `npm run check` (exit 0, 457/457) on the identical tree. The fixture was idle with 0 online before the start, no connection losses, and no leftover processes afterwards. |
+
+### Final integrated runs (frozen `88089893` source and `dist/`; 26.1.2 only; fault and loopback providers only)
+
+`npm run check` passed (exit 0, 469/469), as did doctor on `fixture`, `fixture-26.2` and `fixture-memory` (exit 0). `src/` is unchanged from `88089893` through harness head `0694bb0`; the build includes only `src/`.
+
+| Check | Report | Result |
+| --- | --- | --- |
+| `npm run handoff-live-check` (harness `0694bb0`) | `var/live-check/2026-10-06T08-39-36-205Z-handoff/report.json` | **9/9, exit 0** |
+| `npm run live-check` | `var/live-check/2026-10-06T08-30-36-324Z/report.json` | **16/16, exit 0** |
+| `npm run skills-live-check` | `var/live-check/2026-10-06T08-31-13-919Z-skills/report.json` | **33/33, exit 0** |
+| `npm run jev-live-check -- --provider fault` | `var/live-check/2026-10-06T08-37-26-191Z-jev-fault/report.json` | **12/12, exit 0** |
+
+Two earlier harness passes on `88089893` failed only at L7 (L0–L6 passed both times):
+- `08-28-46`: window 1's "collect 1 log" task mined two logs before its completion check, so the 2-log outcome finished in one window.
+- `08-35-36`: a "walk to the obsidian" window found no grounded `move_near` destination. The engine correctly discarded the lookahead (its premise failed) and replanned.
+
+L7 was then made deterministic (window 1 walks to the owner, proven grounded; window 2 collects the log). Those were harness design issues, not engine faults. A first attempt at the Jev check did not run (exit 1, my own `npm` argument quoting); its correct rerun is the result above.
+
+Final handoff run highlights:
+- **L1.** Acknowledged 1 ms after the chat; the bot moved 4.95 blocks (RCON) during the 3.5 s preparation; switch at 3.95 s.
+- **L2.** Baseline 1 at send equals the admission baseline 1; completed with 2. No pre-admission gain in this run; the gain case is in `08-07-33`.
+- **L3.** Only D admitted; 3 supersessions; killed process groups cleaned; spoofs rejected; 0 overlaps.
+- **L4.** The lease was revoked **3 ms** after the stop (`clearMs=1`, target 250 ms). The cancelled line came at 352 ms, including the bounded preparation-process cleanup wait. 0.00 blocks of drift; "Automatic work paused"; `resume`.
+- **L5, L6.** As before.
+- **L7.** Gap **69 ms** (lookahead; revalidation 24 ms; the lookahead turn ready after 1.13 s) vs **1179 ms** (replan).
+
+No connection losses. 271 recorded setup commands and 8 recorded scripted owner moves. No foreign login on 26.1.2 after the incident. A `skills-live-check --fixture 26.2` process (not mine, targeting 26.2) was seen briefly and had exited.
 
 Revised run (`08-24-47`) highlights:
 - **L1.** Acknowledged 5 ms after send; switch at 3.95 s; the bot moved 4.31 blocks (RCON) during preparation; the old task ended by revocation 308 ms after handoff start; the late old result was discarded; 0 planner overlap.
