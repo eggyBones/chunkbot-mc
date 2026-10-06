@@ -22,7 +22,8 @@
 // Report: var/live-check/<stamp>[-26.2]-memory/report.json (+ phase logs, memory dir).
 import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { DEFAULT_FIXTURE_PROFILE, PROJECT_ROOT, fixturePaths, fixturePins, fixtureProfileFromArgv } from '../src/app/fixture-layout.ts';
 import { SkillRuntime } from '../src/app/skill-runtime.ts';
@@ -505,7 +506,7 @@ async function orchestrate(): Promise<number> {
 async function main(): Promise<number> {
   // Shared fixtures are leased: nothing (no RCON, no password read, no join) happens without an explicit lease id.
   const lease = arg('--fixture-lease');
-  if (!lease || !/^[A-Za-z0-9._-]{2,64}$/.test(lease)) {
+  if (!lease || !/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(lease)) {
     process.stderr.write('refusing to run: pass --fixture-lease <granted lease id> (the shared loopback fixtures are leased by the coordinator)\n');
     return 2;
   }
@@ -520,10 +521,22 @@ async function main(): Promise<number> {
   return json.results.every((r) => r.pass) ? 0 : 1;
 }
 
-main().then(
-  (code) => process.exit(code),
-  (error) => {
-    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-    process.exit(2);
-  },
-);
+/**
+ * Import safety (MB-BATCH001-I1): importing this module never runs anything.
+ * main() starts only when this file is the process entry point, and main()
+ * refuses (exit 2) before any fixture password read, RCON command, join or
+ * output-directory setup unless --fixture-lease <granted id> is given.
+ */
+export function isEntryPoint(moduleUrl: string, argv1: string | undefined): boolean {
+  return argv1 !== undefined && moduleUrl === pathToFileURL(resolve(argv1)).href;
+}
+
+if (isEntryPoint(import.meta.url, process.argv[1])) {
+  main().then(
+    (code) => process.exit(code),
+    (error) => {
+      process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+      process.exit(2);
+    },
+  );
+}

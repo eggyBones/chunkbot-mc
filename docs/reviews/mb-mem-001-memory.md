@@ -14,21 +14,23 @@ This document is worker evidence. It does not change the roadmap, plans, status 
 | `16684a5` | `MemorySubject = PlanningSubject`, ref identity/revision checks, write-sequence `memory_state` baseline (MB-MEM-001-C1) |
 | `7962081` | MB-MEM-001-C2: `forgotten`/`recorded` only from durable state; failed writes rolled back |
 | `8e8dc09` | Lease-guarded pre-integration live harness `scripts/memory-live-check.ts` (not run) |
+| `bc785f3` | This evidence draft and the M6 proposal |
+| (next) | MB-BATCH001-I1 prevention: import-safe entry guard, stricter lease id, `tests/memory-harness-guard.test.ts` |
 
 Base: `d5eb2fa`. Owned paths only: `src/contracts/memory.ts`, `src/memory/**`, `src/skills/memory.ts`, `tests/memory-*.ts`, `scripts/memory-live-check.ts`, this file. No shared path was edited.
 
 ## Checks (actual exit codes)
 
-Node `/opt/homebrew/Cellar/node@24/24.21.0/bin`, from the worktree root, on `7962081` (the harness commit adds only a script that typechecks):
+Node `/opt/homebrew/Cellar/node@24/24.21.0/bin`, from the worktree root, on the MB-BATCH001-I1 prevention commit:
 
 | Command | Exit | Result |
 | --- | --- | --- |
 | `npm run typecheck` | 0 | |
 | `npm run build` | 0 | |
-| `npm test` | 0 | 336/336 (297 inherited baseline + 39 memory tests) |
-| `node scripts/memory-live-check.ts` (no lease) | 2 | refuses before any fixture contact (guard check) |
+| `npm test` | 0 | 343/343 (297 inherited baseline + 46 memory tests) |
+| `tests/memory-harness-guard.test.ts` (in `npm test`) | 0 | harness import-safe; refuses without a valid lease (no fixture contact) |
 
-Logs: `var/batch001/c4-{typecheck,build,test}.log` (ignored, worktree-owned). No doctor run: no config/diagnostic file changed. No live check, no fixture lease, no model or provider call by the worker (see the incident below).
+Logs: `var/batch001/c5-{typecheck,build,test}.log` (ignored, worktree-owned). No doctor run: no config/diagnostic file changed. No live check, no fixture lease, no model or provider call by the worker (see the incident below).
 
 ## Design decisions
 
@@ -91,7 +93,10 @@ Ref/subject tests: cross-owner, expired request window, released goal, lifecycle
 
 - **MB-MEM-001-C1** (coordinator, against `521cf10`): resolution did not verify owner/epoch/request; a moved fact could yield stale coordinates; the counter wrapped. Fixed in `c56e3d4` / `16684a5` with tests.
 - **MB-MEM-001-C2** (coordinator, against `16684a5`): `forgotten` was satisfied from mutable memory while the write was pending and after it failed. Fixed in `7962081`: durable-absence check, rollback of failed writes, tests for pending, failed rename, restart and already-absent labels.
-- **Fixture incident (worker, 2026-10-06 08:03:30–≈08:03:50 UTC):** while compile-checking the then-uncommitted harness I imported it with `node -e "import(...)"`, which executed it. Its seed phase read the 26.1.2 fixture RCON password in code (never printed), sent scene clear/rebuild RCON commands in x196..224 z190..224 (including `clear FixtureOwner`) and joined as `Chunkbot` at 08:03:32.675, while the 26.1.2 fixture was leased to the handoff worker. I killed it within seconds; no skill action ran. The coordinator was informed with the full command list. Containment: the harness now refuses to read the password, send RCON or join without `--fixture-lease <granted id>` (verified: exit 2, no output directory). The stray run directory remains in this worktree's `var/live-check/2026-10-06T08-03-29-956Z-memory/` as evidence.
+- **MB-BATCH001-I1 fixture incident (worker, recorded by the coordinator).** Exact command, run from the worktree while compile-checking the then-uncommitted harness:
+  `npx tsc -p tsconfig.json --noEmit 2>&1 | head; node -e "import('./scripts/memory-live-check.ts').catch(e=>{console.log('import err',e.message)})" --input-type=module 2>&1 | head -3 &`
+  The dynamic import executed the module's top-level `main()` (no entry guard, no lease guard then). Timeline (UTC): 08:03:29.956 run directory `var/live-check/2026-10-06T08-03-29-956Z-memory/` created; 08:03:30.629 memory store opened, seed phase read the 26.1.2 fixture RCON password in code (not printed) and sent scene clear/rebuild RCON commands in x196..224 z190..224 (forceload, tp/effect Chunkbot, kill non-player entities and items, fill air/grass/dirt, setblock logs/stone/chest/wall/glass/ores/obsidian, summons, `clear Chunkbot`, `clear FixtureOwner`, `effect clear`, `gamemode survival`, tp, crafting table, two chest `item replace`); 08:03:32.675 joined as `Chunkbot`; ≈08:03:40–50 killed with `pkill -f "memory-live-check"` (a broad pattern; future cleanup targets only a proven owned PID/start time or supported task control). No skill action ran. The 26.1.2 fixture was leased to the handoff worker, whose active run the coordinator invalidated.
+  Containment and prevention (`8e8dc09` + this revision): the harness runs only as the process entry point (`isEntryPoint(import.meta.url, argv[1])`), so importing it does nothing; `main()` refuses with exit 2 before any password read, RCON, join or output-directory setup unless `--fixture-lease <granted id>` (an id not starting with `-`) is given. `tests/memory-harness-guard.test.ts` verifies this statically (no import) and by spawning the script only with missing/invalid leases (exit 2, no stdout, no output files, no new live-check directory) — no fixture contact. Executable harnesses are never imported for inspection; static typecheck only. The stray run directory remains in this worktree as evidence.
 
 ## Shared integration (designated writer)
 
