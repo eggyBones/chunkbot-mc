@@ -115,6 +115,8 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
   /** Monotonic memory write sequence (owner/skill writes); predicate baselines compare against it. */
   private writeSeq = 0;
   private readonly factWriteSeq = new Map<string, number>();
+  /** Label keys of ACTIVE facts in the last complete durable revision (loaded or written). */
+  private durableActiveLabels = new Set<string>();
 
   constructor(options: MemoryServiceOptions) {
     this.options = options;
@@ -139,6 +141,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     if (this.book && this.load.body) {
       this.persistedVersion = this.book.version;
       for (const f of this.book.facts()) this.durable.set(f.id, f.revision);
+      this.durableActiveLabels = new Set(this.book.facts().filter((f) => f.status === 'active').map((f) => f.labelKey));
     }
     this.options.record?.({ type: 'memory_opened', scope: scopeKey(this.scope), state: this.load.state, detail: this.load.detail, revision: this.load.revision, corruptRevisions: this.load.corruptRevisions, facts: this.book?.facts().length ?? 0 });
     return this.status();
@@ -539,9 +542,10 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     const now = this.options.clock.now();
     const ids = evidenceIds({ goalId: input.goalId, actionId: input.actionId });
     const grounding = ownerGrounding(input.label, texts);
+    const before = this.captureFacts();
     if (!grounding) {
       const r = this.book.note({ label: input.label, text: clip(`unverified ${input.category} "${input.label}" at ${fmt(input.location.at)} in ${input.location.dimension} (${input.basis}); the owner's words do not contain this label${input.note ? `; ${input.note}` : ''}`, 200), evidence: { kind: 'planner_note', atMs: now, detail: clip(`planner-proposed ${input.category} label not found in owner text; ${input.basis}`, 200), ...ids }, nowMs: now, ...(input.goalId ? { goalId: input.goalId } : {}) });
-      const out = await this.persistOutcome(r.fact, r.change, [], `stored as an UNVERIFIED note: the owner's words do not contain "${clip(input.label, 40)}"`);
+      const out = await this.persistOutcome(r.fact, r.change, [], `stored as an UNVERIFIED note: the owner's words do not contain "${clip(input.label, 40)}"`, before);
       return out.ok ? { ...out, downgraded: true } : out;
     }
     const r = this.book.designate({
@@ -554,7 +558,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
       evidence: { kind: 'owner_instruction', atMs: now, detail: clip(`owner designated "${input.label}" (${input.category}); location: ${input.basis}`, 200), ownerText: grounding.excerpt, confirmation: 'local_memory', ...ids },
       nowMs: now,
     });
-    return this.persistOutcome(r.fact, r.change, r.affected.map((f) => f.id), r.affected.length ? `supersedes ${r.affected.map((f) => f.id).join(', ')}` : r.change === 'created' ? 'new owner designation' : 'confirmed existing designation');
+    return this.persistOutcome(r.fact, r.change, r.affected.map((f) => f.id), r.affected.length ? `supersedes ${r.affected.map((f) => f.id).join(', ')}` : r.change === 'created' ? 'new owner designation' : 'confirmed existing designation', before);
   }
 
   /** Planner/decision note: always UNVERIFIED (never trusted, never a target). */
@@ -562,8 +566,9 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     this.ensureScope();
     if (!this.writable || !this.book) return { ok: false, reason: 'memory_not_writable', detail: `memory cannot be written: ${this.status().detail}` };
     const now = this.options.clock.now();
+    const before = this.captureFacts();
     const r = this.book.note({ label: input.label, text: input.text, evidence: { kind: 'planner_note', atMs: now, detail: clip(`unverified note: ${input.text}`, 200), ...evidenceIds({ goalId: input.goalId, actionId: input.actionId }) }, nowMs: now, ...(input.goalId ? { goalId: input.goalId } : {}) });
-    return this.persistOutcome(r.fact, r.change, [], 'unverified note');
+    return this.persistOutcome(r.fact, r.change, [], 'unverified note', before);
   }
 
   /**
@@ -581,17 +586,40 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     const grounded = targets.filter((f) => ownerGrounding(f.label, texts));
     if (grounded.length === 0) return { ok: false, reason: 'not_owner_grounded', detail: `the owner's words do not name "${clip(targets[0]?.label ?? '', 40)}"; ask the owner which memory to forget` };
     const now = this.options.clock.now();
+    const before = this.captureFacts();
     for (const f of grounded) this.book.forget(f, { kind: 'owner_instruction', atMs: now, detail: 'owner asked to forget this', ownerText: clip(texts[0] ?? '', 200), confirmation: 'local_memory', ...evidenceIds({ goalId: input.goalId, actionId: input.actionId }) }, now);
-    const out = await this.persistOutcome(grounded[0] as MemoryFact, 'updated', grounded.map((f) => f.id), `forgot ${grounded.map((f) => `${f.id} (${f.label})`).join(', ')}`);
+    const out = await this.persistOutcome(grounded[0] as MemoryFact, 'updated', grounded.map((f) => f.id), `forgot ${grounded.map((f) => `${f.id} (${f.label})`).join(', ')}`, before);
     return { ...out, forgotten: grounded.map((f) => f.id) };
   }
 
-  private async persistOutcome(fact: MemoryFact, change: WriteResult['change'], affected: string[], detail: string): Promise<MemoryWriteOutcome> {
+  /** Copies of the current facts (rollback point for one owner/skill write). */
+  private captureFacts(): Map<string, MemoryFact> {
+    return new Map((this.book?.facts() ?? []).map((f) => [f.id, structuredClone(f)]));
+  }
+
+  /**
+   * Persists one owner/skill write. On a failed durable write the operation is
+   * ROLLED BACK in memory (its facts restored, created facts dropped, write
+   * sequence restored), so neither memory nor any predicate claims an effect
+   * that the last complete revision does not contain.
+   */
+  private async persistOutcome(fact: MemoryFact, change: WriteResult['change'], affected: string[], detail: string, before?: Map<string, MemoryFact>): Promise<MemoryWriteOutcome> {
+    const touched = [fact.id, ...affected];
+    const priorSeq = new Map(touched.map((id) => [id, this.factWriteSeq.get(id)]));
     this.writeSeq += 1;
-    this.factWriteSeq.set(fact.id, this.writeSeq);
-    for (const id of affected) this.factWriteSeq.set(id, this.writeSeq);
+    for (const id of touched) this.factWriteSeq.set(id, this.writeSeq);
     const revision = await this.persist('skill');
-    if (revision === undefined) return { ok: false, reason: 'memory_write_failed', detail: `the durable write failed (${this.lastWriteError ?? 'unknown error'}); the previous revision is intact` };
+    if (revision === undefined) {
+      if (before && this.book) {
+        this.book.restoreFacts(touched.map((id) => before.get(id)).filter((f): f is MemoryFact => Boolean(f)), touched.filter((id) => !before.has(id)));
+        for (const [id, seq] of priorSeq) {
+          if (seq === undefined) this.factWriteSeq.delete(id);
+          else this.factWriteSeq.set(id, seq);
+        }
+        this.options.record?.({ type: 'memory_write_rolled_back', facts: touched });
+      }
+      return { ok: false, reason: 'memory_write_failed', detail: `the durable write failed (${this.lastWriteError ?? 'unknown error'}); the change was rolled back and the previous complete revision is intact` };
+    }
     return { ok: true, fact: structuredClone(fact), change, trusted: isTrusted(fact), storeRevision: revision, affected, detail };
   }
 
@@ -622,7 +650,12 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     if (!this.readable || !this.book || !(state === 'ready' || state === 'empty' || state === 'recovered' || state === 'migrated')) return out('unknown', `memory is not usable (${state}): ${this.status().detail}`);
     const matches = this.book.activeByLabel(p.label);
     if (p.expect === 'forgotten') {
-      return matches.length === 0 ? out('satisfied', `no active memory labeled "${clip(p.label, 40)}" in this world profile`, { storeRevision: this.store?.revision ?? 0 }) : out('unsatisfied', `${matches.length} active memory fact(s) labeled "${clip(p.label, 40)}" remain`, { facts: matches.map((f) => f.id).join(',') });
+      // Absence counts only when it is DURABLE: the last complete revision must not contain the label either.
+      if (matches.length > 0) return out('unsatisfied', `${matches.length} active memory fact(s) labeled "${clip(p.label, 40)}" remain`, { facts: matches.map((f) => f.id).join(',') });
+      if (this.durableActiveLabels.has(labelKey(p.label))) {
+        return out('unknown', `forgetting "${clip(p.label, 40)}" is not durable yet: the last complete revision ${this.store?.revision ?? 0} still contains it (write pending or failed)`, { pendingWrites: this.store?.pending ?? 0, storeRevision: this.store?.revision ?? 0 });
+      }
+      return out('satisfied', `no active memory labeled "${clip(p.label, 40)}" in this world profile, in memory and in the last complete revision ${this.store?.revision ?? 0}`, { storeRevision: this.store?.revision ?? 0 });
     }
     const wantTrusted = p.expect === 'recorded';
     const after = (f: MemoryFact) => (this.factWriteSeq.get(f.id) ?? 0) > binding.memoryBaseline;
@@ -676,6 +709,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
         const revision = await store.write(body);
         this.persistedVersion = version;
         this.durable = new Map(body.facts.map((f) => [f.id, f.revision]));
+        this.durableActiveLabels = new Set(body.facts.filter((f) => f.status === 'active').map((f) => f.labelKey));
         this.lastWriteError = undefined;
         this.options.record?.({ type: 'memory_written', reason, revision, facts: body.facts.length });
         return revision;
