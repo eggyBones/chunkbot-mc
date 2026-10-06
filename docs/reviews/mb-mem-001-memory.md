@@ -1,6 +1,6 @@
 # MB-MEM-001 persistent gameplay memory: worker evidence (draft)
 
-**Status: memory modules, memory skills and unit/fault/integration tests are implemented and verified locally by the worker. Shared integration (designated writer), live fixture checks and the real-provider M6 run are NOT done.** Worker: native Claude Code session `mb-mem-001` (Opus 5.5), branch `chunkbot/mb-mem-001`, worktree `/Users/jakewilcox/code/worktrees/chunkbot-mc/mb-mem-001`. Date: 2026-10-06 UTC.
+**Status: memory modules, memory skills and unit/fault/integration tests are implemented and verified locally by the worker; the PRE-INTEGRATION live harness passed 13/13 on the leased 26.2 fixture. Shared integration (designated writer), the CLI-driven live check, the 26.1.2 run and the real-provider M6 run are NOT done.** Worker: native Claude Code session `mb-mem-001` (Opus 5.5), branch `chunkbot/mb-mem-001`, worktree `/Users/jakewilcox/code/worktrees/chunkbot-mc/mb-mem-001`. Date: 2026-10-06 UTC.
 
 This document is worker evidence. It does not change the roadmap, plans, status or acceptance records; the coordinator owns those. Nothing here is whole-feature acceptance.
 
@@ -14,21 +14,24 @@ This document is worker evidence. It does not change the roadmap, plans, status 
 | `16684a5` | `MemorySubject = PlanningSubject`, ref identity/revision checks, write-sequence `memory_state` baseline (MB-MEM-001-C1) |
 | `7962081` | MB-MEM-001-C2: `forgotten`/`recorded` only from durable state; failed writes rolled back |
 | `8e8dc09` | Lease-guarded pre-integration live harness `scripts/memory-live-check.ts` (not run) |
+| `bc785f3` | This evidence draft and the M6 proposal |
+| `60b630d` | MB-BATCH001-I1 prevention: import-safe entry guard, stricter lease id, `tests/memory-harness-guard.test.ts` |
+| `951975f` | Harness ends unverified steps without `outcome_verified` (no fake milestones); truthful status after writes/close |
 
 Base: `d5eb2fa`. Owned paths only: `src/contracts/memory.ts`, `src/memory/**`, `src/skills/memory.ts`, `tests/memory-*.ts`, `scripts/memory-live-check.ts`, this file. No shared path was edited.
 
 ## Checks (actual exit codes)
 
-Node `/opt/homebrew/Cellar/node@24/24.21.0/bin`, from the worktree root, on `7962081` (the harness commit adds only a script that typechecks):
+Node `/opt/homebrew/Cellar/node@24/24.21.0/bin`, from the worktree root:
 
 | Command | Exit | Result |
 | --- | --- | --- |
 | `npm run typecheck` | 0 | |
 | `npm run build` | 0 | |
-| `npm test` | 0 | 336/336 (297 inherited baseline + 39 memory tests) |
-| `node scripts/memory-live-check.ts` (no lease) | 2 | refuses before any fixture contact (guard check) |
+| `npm test` | 0 | 344/344 on `951975f` (297 inherited baseline + 47 memory tests) |
+| `tests/memory-harness-guard.test.ts` (in `npm test`) | 0 | harness import-safe; refuses without a valid lease (no fixture contact) |
 
-Logs: `var/batch001/c4-{typecheck,build,test}.log` (ignored, worktree-owned). No doctor run: no config/diagnostic file changed. No live check, no fixture lease, no model or provider call by the worker (see the incident below).
+Logs: `var/batch001/live2-{typecheck,build,test}.log` (344/344 on `951975f`), earlier `c5-*` (ignored, worktree-owned). No doctor run: no config/diagnostic file changed. No model or provider call by the worker. Live runs only under lease `batch001-mem-26-2-0815` (below); the earlier unleased contact is MB-BATCH001-I1.
 
 ## Design decisions
 
@@ -77,13 +80,13 @@ Sources: `observation` (line-of-sight perception only), `verified_skill` (server
 
 | ID | Covered by | Notes |
 | --- | --- | --- |
-| M1 | `memory-service`: restart persistence and scope; endpoint conflict; disabled memory | Real restart across process boundary is in the live harness (not run). |
-| M2 | `memory-service` provenance tests; `memory-skills` invented label, owner-typed coordinates, diagnostics | |
-| M3 | `memory-service` emptied chest / destroyed workstation; `memory-world` real perception: hidden ore never recorded, prediction never revises | Live: harness R3/R4 (not run). |
+| M1 | `memory-service`: restart persistence and scope; endpoint conflict; disabled memory | Live 26.2: S1, R0, R2, R5 (real process restart). |
+| M2 | `memory-service` provenance tests; `memory-skills` invented label, owner-typed coordinates, diagnostics | Live 26.2: S2. |
+| M3 | `memory-service` emptied chest / destroyed workstation; `memory-world` real perception: hidden ore never recorded, prediction never revises | Live 26.2: R3, R4. |
 | M4 | `memory-store` (10 fault tests); `memory-service` corrupt-newest status, retrieval bounds (20 facts, 8,000 chars), C2 durability tests | |
-| M5 | `memory-service` interrupted construction (checkpoints vs unknown effects, restart replays nothing) | Live: harness S5/R1 (not run). |
+| M5 | `memory-service` interrupted construction (checkpoints vs unknown effects, restart replays nothing) | Live 26.2: S5, R1 (no unknown effects occurred live; that path is unit-tested). |
 | M6 | Not run (real planner + real Jev, coordinator) | Exact proposal below. |
-| M7 | Memory-side seams only: `memory-service` / `memory-world` death tests | Full M7 needs MB-FLOW-003. |
+| M7 | Memory-side seams only: `memory-service` / `memory-world` death tests | Live 26.2: S6/R0 (capture + persistence only). Full M7 needs MB-FLOW-003. |
 
 Ref/subject tests: cross-owner, expired request window, released goal, lifecycle, moved/changed fact in place, owner-corrected home, preparation → admission re-grounding (wrong generation/dimension, superseded fact, release on stop/supersession/lifecycle).
 
@@ -91,7 +94,10 @@ Ref/subject tests: cross-owner, expired request window, released goal, lifecycle
 
 - **MB-MEM-001-C1** (coordinator, against `521cf10`): resolution did not verify owner/epoch/request; a moved fact could yield stale coordinates; the counter wrapped. Fixed in `c56e3d4` / `16684a5` with tests.
 - **MB-MEM-001-C2** (coordinator, against `16684a5`): `forgotten` was satisfied from mutable memory while the write was pending and after it failed. Fixed in `7962081`: durable-absence check, rollback of failed writes, tests for pending, failed rename, restart and already-absent labels.
-- **Fixture incident (worker, 2026-10-06 08:03:30–≈08:03:50 UTC):** while compile-checking the then-uncommitted harness I imported it with `node -e "import(...)"`, which executed it. Its seed phase read the 26.1.2 fixture RCON password in code (never printed), sent scene clear/rebuild RCON commands in x196..224 z190..224 (including `clear FixtureOwner`) and joined as `Chunkbot` at 08:03:32.675, while the 26.1.2 fixture was leased to the handoff worker. I killed it within seconds; no skill action ran. The coordinator was informed with the full command list. Containment: the harness now refuses to read the password, send RCON or join without `--fixture-lease <granted id>` (verified: exit 2, no output directory). The stray run directory remains in this worktree's `var/live-check/2026-10-06T08-03-29-956Z-memory/` as evidence.
+- **MB-BATCH001-I1 fixture incident (worker, recorded by the coordinator).** Exact command, run from the worktree while compile-checking the then-uncommitted harness:
+  `npx tsc -p tsconfig.json --noEmit 2>&1 | head; node -e "import('./scripts/memory-live-check.ts').catch(e=>{console.log('import err',e.message)})" --input-type=module 2>&1 | head -3 &`
+  The dynamic import executed the module's top-level `main()` (no entry guard, no lease guard then). Timeline (UTC): 08:03:29.956 run directory `var/live-check/2026-10-06T08-03-29-956Z-memory/` created; 08:03:30.629 memory store opened, seed phase read the 26.1.2 fixture RCON password in code (not printed) and sent scene clear/rebuild RCON commands in x196..224 z190..224 (forceload, tp/effect Chunkbot, kill non-player entities and items, fill air/grass/dirt, setblock logs/stone/chest/wall/glass/ores/obsidian, summons, `clear Chunkbot`, `clear FixtureOwner`, `effect clear`, `gamemode survival`, tp, crafting table, two chest `item replace`); 08:03:32.675 joined as `Chunkbot`; ≈08:03:40–50 killed with `pkill -f "memory-live-check"` (a broad pattern; future cleanup targets only a proven owned PID/start time or supported task control). No skill action ran. The 26.1.2 fixture was leased to the handoff worker, whose active run the coordinator invalidated.
+  Containment and prevention (`8e8dc09` + this revision): the harness runs only as the process entry point (`isEntryPoint(import.meta.url, argv[1])`), so importing it does nothing; `main()` refuses with exit 2 before any password read, RCON, join or output-directory setup unless `--fixture-lease <granted id>` (an id not starting with `-`) is given. `tests/memory-harness-guard.test.ts` verifies this statically (no import) and by spawning the script only with missing/invalid leases (exit 2, no stdout, no output files, no new live-check directory) — no fixture contact. Executable harnesses are never imported for inspection; static typecheck only. The stray run directory remains in this worktree as evidence.
 
 ## Shared integration (designated writer)
 
@@ -105,18 +111,40 @@ Exact steps were sent to the coordinator with `16684a5`; the API is unchanged by
 7. Goal engine: `view({subject, ...})` per goal and preparation turn; `shownRefs` / `shownPreparedRefs` for proposal checks; `regroundPrepared` + fresh `checkProposal` at admission; `releasePreparation` on stop/supersession/discard/admission; `onGoalTerminal({..., kind})`.
 8. Proposal check, wire and prompt variants (`memory_ref`, `memory_state`, `MEMORY_PLANNER_INSTRUCTIONS`, `renderMemoryView`).
 
-## Live harness (prepared, not run)
+## Live harness (pre-integration) — run on the leased 26.2 fixture
 
-`scripts/memory-live-check.ts` composes the real connection, `SkillRuntime`, executor and the memory skills/service with exactly the proposed hooks; the harness plays the owner (fixed owner words) and a fixed decision (one grounded candidate per step). No model is called. Seed and recall are separate Node processes (a real restart); between them the orchestrator destroys the crafting table and empties the chest over RCON.
+`scripts/memory-live-check.ts` composes the real connection, `SkillRuntime`, executor and the memory skills/service with exactly the proposed hooks; the harness plays the owner (fixed owner words) and a fixed decision (one grounded candidate per step). No model, provider, account or credential is used. Seed and recall are separate Node processes (a real restart); between them the orchestrator destroys the crafting table and empties the chest over RCON. Only steps whose outcome a code predicate evaluated end `outcome_verified`.
+
+Lease `batch001-mem-26-2-0815` (26.2 only, 127.0.0.1:25567 / RCON 25577, existing server PID 15009; no start/stop/restart). Command, on a clean head after typecheck 0 / build 0:
 
 ```
-npm run build
-node scripts/memory-live-check.ts --fixture-lease <granted lease id> [--fixture 26.2]
+node scripts/memory-live-check.ts --fixture-lease batch001-mem-26-2-0815 --fixture 26.2
 ```
 
-Checks: S0 empty fresh scope; S1 home designation (local confirmation, matches server position); S2 ungrounded label → note; S3 chest contents (server sync, historical) and observed table; S4 verified mined log; S5 two confirmed placements → interrupted project; S6 death capture with last-alive inventory; R0 restart loads the same scoped facts; R1 idle reconnect replays nothing (ledger, RCON wall truth); R2 `go_to_memory` home from a fresh ref, server position within 3, cross-goal ref refused; R3 historical chest contents until a fresh inspection revises them to empty; R4 destroyed table invalidated, its ref fails; R5 another world revision is empty. Report: `var/live-check/<stamp>[-26.2]-memory/report.json`. It uses the scene area x196..224 z190..224 and the `Chunkbot`/`FixtureOwner` names, so it needs an exclusive lease of that fixture.
+| Run | Commit | UTC | Exit | Result | Report |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `60b630d` | 08:17:18–08:17:47 | 0 | 13/13 | `var/live-check/2026-10-06T08-17-18-356Z-26.2-memory/` |
+| 2 | `951975f` | 08:19:03–08:19:32 | 0 | 13/13 | `var/live-check/2026-10-06T08-19-03-690Z-26.2-memory/` |
 
-After integration, the same scenarios should also be run through the real built CLI (memory installed by the writer); that variant needs the integrated `run` command and is not written yet.
+Run 1 passed but its store showed milestones for steps the harness had ended with `outcome_verified` without any code evaluation (e.g. "craft sticks from the planks in the chest", where no sticks were crafted). That was a harness honesty defect, not a memory defect; `951975f` fixed it and added an R0 assertion that milestones exist only for the code-verified step. Run 2 is the evidence of record.
+
+Run 2 evidence (from `report.json`):
+- S1: `remember_location` succeeded, `confirmation none`, local memory store revision; `memory_state recorded` satisfied; remembered home = RCON server position 205.5,-60,205.5.
+- S2: invented label "treasure" → `partial` / `not_owner_grounded`, an unverified note without location.
+- S3: `inspect_container` server sync: 12 oak_planks, 20 cobblestone recorded as verified, historical; visible crafting table recorded as observation.
+- S4: `mine_block` server block change → verified oak_log resource (cell fact).
+- S5: two `place_block` server-confirmed placements, owner stop → interrupted project with exactly 2 checkpoints, 0 unknown effects.
+- S6: RCON `kill Chunkbot` → incident at the server position (accuracy `client_position_at_death_event`), last-alive inventory `server_sync` (oak_log 1, cobblestone 2, iron_pickaxe 1), unresolved.
+- R0 (new process): `ready` revision 11; home, verified resource, interrupted project, unresolved death; milestones only `["remember this spot as home"]`.
+- R1: idle reconnect for 3 s: 0 ledger entries, 0 skill outcomes; RCON confirms both wall blocks unchanged (nothing replayed).
+- R2: fresh `mref-` home ref; `go_to_memory` arrived (client_only, "presence not verified"); RCON position 206.5,-60,204.52 (1.4 from home); the ref from another goal epoch fails `memory_ref_not_owned`.
+- R3: view shows the chest's 12 planks as `historical: true` (age 20 s); fresh `inspect_container` reads nothing; memory revised to `{}`.
+- R4: the destroyed crafting table (air, directly observable) → `invalid` ("observed air at 207,-60,207 instead of crafting table").
+- R5: world revision 2 at the same endpoint: empty, 0 facts.
+
+Setup and interventions (all recorded in the reports): per run, the seed phase sent 42 RCON commands — the standard scene clear/rebuild inside x196..224 z190..224 (several `tp`/`effect`/`clear`/`gamemode` replies were "No entity/player was found" because they precede Chunkbot's join; Chunkbot was teleported after joining), `setblock 207 -60 207 crafting_table`, two chest `item replace`, five `tp Chunkbot`, `give Chunkbot cobblestone 4`, `give Chunkbot iron_pickaxe 1`, `kill Chunkbot`. Between runs: `setblock 207 -60 207 air`, `data merge block 203 -60 207 {Items:[]}`. The recall phase sent three `tp Chunkbot`. Nothing outside the scene area was changed except Chunkbot's own state. The death drops (Chunkbot's items) were left in the scene area at about 206.5,-60,198.5 (normal despawn; the next scene reset clears the area).
+
+Still to do: the 26.1.2 run (needs a lease) and a CLI-driven variant once the writer has installed memory in the app.
 
 ## M6 proposal (coordinator real-provider run)
 
@@ -148,7 +176,7 @@ No further RCON, chat or answers until the goal is terminal. A clarification que
 ## Unmet criteria / remaining work
 
 - Shared integration by the designated writer (not started in this branch; no shared file edited).
-- Live fixture checks: harness prepared and lease-guarded, not run (needs an exclusive lease).
+- Live fixture checks: pre-integration harness passed on 26.2 (lease released); 26.1.2 not run (H holds it).
 - Real-provider M6: coordinator-owned; proposal above.
 - CLI-driven live variant after integration.
 - M7: only memory-side death seams; recovery policy, death cause parsing and recovery skills belong to MB-FLOW-003.

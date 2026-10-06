@@ -155,7 +155,10 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     if (!this.enabled) return 'disabled';
     if (this.conflict) return 'scope_conflict';
     if (!this.load) return 'empty';
-    if ((this.load.state === 'ready' || this.load.state === 'empty') && !this.store?.canWrite) return 'read_only';
+    // After close() the store is unlocked on purpose: report the loaded state (writable=false), not a fault.
+    if (!this.closed && (this.load.state === 'ready' || this.load.state === 'empty') && !this.store?.canWrite) return 'read_only';
+    // A scope that started empty and has since been written is ready.
+    if (this.load.state === 'empty' && (this.store?.revision ?? 0) > 0) return 'ready';
     return this.load.state;
   }
 
@@ -176,7 +179,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
       ? 'memory disabled: no world profile is configured (set memory.worldProfile, worldRevision and botProfile)'
       : this.conflict
         ? this.conflict
-        : `${this.load?.detail ?? 'not opened'}${this.rebound ? '; endpoint rebound by operator config' : ''}`;
+        : `${this.load?.detail ?? 'not opened'}${this.store && this.load && this.store.revision !== this.load.revision ? `; now at revision ${this.store.revision}` : ''}${this.rebound ? '; endpoint rebound by operator config' : ''}${this.closed ? '; closed' : ''}`;
     return {
       state: this.state,
       detail,
