@@ -449,6 +449,17 @@ export class MemoryBook {
       .sort((a, b) => tier(a) - tier(b) || a.lastConfirmedMs - b.lastConfirmedMs)[0];
   }
 
+  /**
+   * Rolls back facts of a failed durable write: restores the given prior
+   * copies and drops facts the failed operation created. Not an eviction.
+   */
+  restoreFacts(prior: readonly MemoryFact[], created: readonly string[]): void {
+    const byId = new Map(prior.map((f) => [f.id, structuredClone(f)]));
+    const drop = new Set(created);
+    this.data.facts = this.data.facts.filter((f) => !drop.has(f.id)).map((f) => byId.get(f.id) ?? f);
+    this.version += 1;
+  }
+
   /** Removes one fact by id (byte-bound pruning). */
   remove(id: string): void {
     const n = this.data.facts.length;

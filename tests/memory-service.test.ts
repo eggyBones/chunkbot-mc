@@ -489,3 +489,91 @@ describe('memory: corruption status and bounded retrieval (M4)', () => {
     await h.memory.close();
   });
 });
+
+describe('memory: forgetting and remembering are satisfied only from DURABLE state (MB-MEM-001-C2)', () => {
+  const forgotten = { predicate: 'memory_state' as const, label: 'home', expect: 'forgotten' as const };
+  const recorded = { predicate: 'memory_state' as const, label: 'home', expect: 'recorded' as const };
+  let pid = 95_000;
+  function faultable() {
+    const fault: { mode: 'ok' | 'fail' | 'hold'; release?: () => void } = { mode: 'ok' };
+    const h = harness({
+      service: {
+        store: {
+          pid: (pid += 1),
+          isAlive: () => false,
+          beforeRename: async () => {
+            if (fault.mode === 'fail') throw new Error('simulated rename failure');
+            if (fault.mode === 'hold') await new Promise<void>((resolve) => (fault.release = resolve));
+          },
+        },
+      },
+    });
+    return { h, fault };
+  }
+
+  it('a PENDING forget is unknown (not satisfied) until the revision is durable', async () => {
+    const { h, fault } = faultable();
+    await designateHome(h);
+    h.memory.beginGoal({ goalId: 'goal-0002', epoch: 2, instruction: 'forget home' });
+    fault.mode = 'hold';
+    const pending = h.memory.forget({ goalId: 'goal-0002', label: 'home' });
+    for (let i = 0; i < 20 && !fault.release; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(fault.release, 'write is held before the rename');
+    const during = h.memory.evaluateMemoryState(forgotten, { memoryBaseline: 0 });
+    assert.equal(during.status, 'unknown', during.detail);
+    assert.match(during.detail, /not durable yet/);
+    fault.mode = 'ok';
+    fault.release();
+    const r = await pending;
+    assert.ok(r.ok);
+    assert.equal(h.memory.evaluateMemoryState(forgotten, { memoryBaseline: 0 }).status, 'satisfied');
+    await h.memory.close();
+  });
+
+  it('a FAILED forget (rename fault) is rolled back: never satisfied, memory still has home, disk still has home, restart still has home', async () => {
+    const { h, fault } = faultable();
+    await designateHome(h);
+    h.memory.beginGoal({ goalId: 'goal-0002', epoch: 2, instruction: 'forget home' });
+    fault.mode = 'fail';
+    const r = await h.memory.forget({ goalId: 'goal-0002', label: 'home' });
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.reason, 'memory_write_failed');
+    assert.equal(h.memory.evaluateMemoryState(forgotten, { memoryBaseline: 0 }).status, 'unsatisfied');
+    assert.ok(h.memory.facts().some((f) => f.category === 'home' && f.status === 'active'), 'rolled back in memory');
+    assert.ok(viewFor(h, goal('goal-0003', 3), 'go home', 'req-0003').facts.some((f) => f.category === 'home'), 'still retrievable');
+    // A later unrelated successful write must not silently make the failed forget durable.
+    fault.mode = 'ok';
+    h.memory.beginGoal({ goalId: 'goal-0004', epoch: 4, instruction: 'remember this as the mine' });
+    assert.ok((await h.memory.designate({ goalId: 'goal-0004', category: 'location', label: 'mine', location: { dimension: OVERWORLD, at: { x: 1, y: 2, z: 3 } }, basis: 'x' })).ok);
+    await h.memory.flush();
+    const restarted = await h.restart();
+    assert.ok(restarted.memory.facts().some((f) => f.category === 'home' && f.status === 'active'), 'restart: old home still present');
+    assert.equal(restarted.memory.evaluateMemoryState(forgotten, { memoryBaseline: 0 }).status, 'unsatisfied');
+    await restarted.memory.close();
+  });
+
+  it('a FAILED remember is rolled back: recorded never satisfied and nothing is retrieved', async () => {
+    const { h, fault } = faultable();
+    const base = { memoryBaseline: h.memory.memoryBaseline() };
+    h.memory.beginGoal({ goalId: 'goal-0001', epoch: 1, instruction: 'remember this as home' });
+    fault.mode = 'fail';
+    const r = await h.memory.designate({ goalId: 'goal-0001', category: 'home', label: 'home', location: HOME, basis: 'x' });
+    assert.equal(r.ok, false);
+    assert.equal(h.memory.evaluateMemoryState(recorded, base).status, 'unsatisfied');
+    assert.equal(h.memory.facts().some((f) => f.category === 'home'), false);
+    await h.memory.close();
+  });
+
+  it('an already-absent label is satisfied only from the last complete durable state', async () => {
+    const { h } = faultable();
+    assert.equal(h.memory.evaluateMemoryState({ ...forgotten, label: 'castle' }, { memoryBaseline: 0 }).status, 'satisfied', 'never remembered: durably absent');
+    await designateHome(h);
+    h.memory.beginGoal({ goalId: 'goal-0002', epoch: 2, instruction: 'forget home' });
+    assert.ok((await h.memory.forget({ goalId: 'goal-0002', label: 'home' })).ok);
+    await h.memory.flush();
+    const r = await h.restart();
+    const ev = r.memory.evaluateMemoryState(forgotten, { memoryBaseline: 0 });
+    assert.equal(ev.status, 'satisfied', 'durably forgotten across restart');
+    await r.memory.close();
+  });
+});
