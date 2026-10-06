@@ -425,8 +425,10 @@ async function main(): Promise<void> {
       trials.push({ sendAtMs: s.at, receiptAtMs: receipt?.atMs ?? null, ackAtMs: ack.atMs, acceptedAtMs: accepted.atMs, timeline, samples, movedBlocks: moved, oldTaskEventsDuringPrep: continued.length, oldGoal: old, plannerOverlap: overlap });
       assert(ack.atMs - s.at < 1_500, 'acknowledged promptly');
       assert(Number(timeline.receiptToDraftMs) >= PREP_DELAY_MS - 200, 'preparation took the scripted planner delay');
-      const oldEndedBeforeAdmission = runEvents().some((e) => e.type === 'task_terminal' && e.goalId === follow.goalId && tOf(e) < Number(timeline.admittedAtMs) - 1);
-      ev.push(`old follow task ended before admission: ${oldEndedBeforeAdmission}`);
+      // The old task ends only by revocation AT the switch (handoff start -> revoke -> admit).
+      const oldEnd = runEvents().find((e) => e.type === 'task_terminal' && e.goalId === follow.goalId);
+      const oldEndedBeforeAdmission = Boolean(oldEnd && (tOf(oldEnd) < Number(timeline.handoffStartedAtMs) - 1 || oldEnd.reason !== 'ownership_revoked'));
+      ev.push(`old follow task end: ${oldEnd ? `${oldEnd.status} (${oldEnd.reason}) ${tOf(oldEnd) - Number(timeline.handoffStartedAtMs)} ms after handoff start` : 'none'}`);
       assert(moved >= 1.5, 'server-confirmed movement continued during preparation');
       assert(!oldEndedBeforeAdmission, 'the admitted follow task kept running until the switch');
       assert(startedDuringPrep.length === 0, 'no task ran under pending ownership');
