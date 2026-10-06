@@ -2,7 +2,7 @@
 // and readiness sections. Text is bounded and passed through the evidence
 // redactor; nothing here calls an adapter beyond the engine's status read.
 import { isActiveGoalState, type Readiness } from '../contracts/index.ts';
-import { DASHBOARD_BOUNDS, type DashboardGoal, type DashboardPendingDirective, type DashboardStatus } from '../contracts/dashboard.ts';
+import { DASHBOARD_BOUNDS, type DashboardGoal, type DashboardMemorySummary, type DashboardPause, type DashboardPendingDirective, type DashboardStatus } from '../contracts/dashboard.ts';
 import type { EngineStatus } from '../goals/goal-engine.ts';
 import { redactString } from '../telemetry/redact.ts';
 
@@ -37,7 +37,7 @@ export function projectGoal(status: EngineStatus): DashboardGoal | undefined {
   };
 }
 
-export function projectDirective(status: EngineStatus | undefined, pending: DashboardPendingDirective | undefined, survival: SurvivalSummary | undefined): DirectiveSection {
+export function projectDirective(status: EngineStatus | undefined, pending: DashboardPendingDirective | undefined, survival: SurvivalSummary | undefined, pause?: DashboardPause): DirectiveSection {
   const goal = status ? projectGoal(status) : undefined;
   const active = goal !== undefined && isActiveGoalState(goal.phase);
   const mode: DirectiveSection['mode'] = !active ? 'idle' : goal.kind === 'operator_task_diagnostic' ? 'operator_diagnostic' : 'owner_directive';
@@ -45,6 +45,7 @@ export function projectDirective(status: EngineStatus | undefined, pending: Dash
   const l = status?.lastTask;
   return {
     mode,
+    ...(pause ? { pause: { paused: pause.paused, reason: clipText(pause.reason), sinceMs: pause.sinceMs, manualGoalsAllowed: pause.manualGoalsAllowed } } : {}),
     ...(goal ? { goal } : {}),
     task: {
       ...(t ? { current: { taskId: clipShort(t.taskId), objective: clipText(t.objective), mode: clipShort(t.mode), startedAtMs: t.startedAtMs } } : {}),
@@ -80,5 +81,24 @@ export function projectReadiness(status: EngineStatus | undefined, decision: Rea
     tasks: item(r?.tasks, none),
     knowledge: item(r?.knowledge, none),
     capabilityCount: r?.capabilityCount ?? 0,
+  };
+}
+
+const finitePos = (p: { x: number; y: number; z: number }) => ({ x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, z: Math.round(p.z * 10) / 10 });
+
+/** Bounds and redacts a memory summary from the memory feature (labels may be owner-provided text). */
+export function projectMemory(m: DashboardMemorySummary): DashboardMemorySummary {
+  return {
+    items: m.items.slice(0, DASHBOARD_BOUNDS.memoryItems).map((i) => ({
+      label: clipShort(i.label),
+      kind: clipShort(i.kind),
+      ...(i.dimension ? { dimension: clipShort(i.dimension) } : {}),
+      source: clipShort(i.source),
+      observedAtMs: i.observedAtMs,
+      ...(i.at ? { at: finitePos(i.at) } : {}),
+    })),
+    totalItems: m.totalItems,
+    worldProfile: m.worldProfile ? { id: clipShort(m.worldProfile.id), revision: typeof m.worldProfile.revision === 'number' ? m.worldProfile.revision : clipShort(m.worldProfile.revision) } : null,
+    home: m.home ? { label: clipShort(m.home.label), dimension: clipShort(m.home.dimension), at: finitePos(m.home.at), source: clipShort(m.home.source), observedAtMs: m.home.observedAtMs, stale: m.home.stale } : null,
   };
 }

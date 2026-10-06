@@ -11,7 +11,7 @@
 // Read-only towards the game and every adapter. It never calls a model, the
 // actuator, an interface resync, or the network. Failures are reported once
 // on the operator log and never break the application.
-import type { DashboardMemorySummary, DashboardPendingDirective } from '../contracts/dashboard.ts';
+import type { DashboardMemorySummary, DashboardPause, DashboardPendingDirective } from '../contracts/dashboard.ts';
 import type { EvidenceEvent, Readiness, RunStore } from '../contracts/index.ts';
 import type { EngineStatus } from '../goals/goal-engine.ts';
 import type { SurvivalSummary } from './directive.ts';
@@ -38,6 +38,8 @@ export interface DashboardRuntimeDeps {
   pending?: () => DashboardPendingDirective | undefined;
   memory?: () => DashboardMemorySummary | undefined;
   survival?: () => SurvivalSummary | undefined;
+  /** Pause latch (automatic work paused; manual goals may still execute). */
+  pause?: () => DashboardPause | undefined;
   pid?: number;
   intervalMs?: number;
   timeZone?: string;
@@ -80,10 +82,11 @@ export function createDashboardRuntime(deps: DashboardRuntimeDeps): DashboardRun
     ...(deps.engine ? { engine: deps.engine } : {}),
     ...(deps.decisionReadiness ? { decisionReadiness: deps.decisionReadiness } : {}),
     ...(spend ? { spend: () => spend.snapshot() } : {}),
-    ...(planner ? { planner: () => ({ ...planner.totals }) } : {}),
+    ...(planner ? { planner: () => ({ turns: planner.totals.turns, completedTurns: planner.totals.completedTurns, failedTurns: planner.totals.failedTurns }) } : {}),
     ...(deps.pending ? { pending: deps.pending } : {}),
     ...(deps.memory ? { memory: deps.memory } : {}),
     ...(deps.survival ? { survival: deps.survival } : {}),
+    ...(deps.pause ? { pause: deps.pause } : {}),
     ...(history ? { usageSink: history } : {}),
     ...(deps.intervalMs !== undefined ? { intervalMs: deps.intervalMs } : {}),
     ...(deps.log ? { log: deps.log } : {}),

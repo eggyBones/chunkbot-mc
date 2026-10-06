@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import type { DashboardStatus } from '../src/contracts/dashboard.ts';
 import { DashboardStatusPublisher } from '../src/dashboard/publisher.ts';
 import { remoteMetadata } from '../src/dashboard/remote.ts';
-import { StatusFollower, buildViewModel, formatUsd, pips, type ViewModel } from '../src/dashboard/viewmodel.ts';
+import { StatusFollower, breakdown, buildViewModel, formatUsd, pips, type ViewModel } from '../src/dashboard/viewmodel.ts';
 import { FakeConnection, stack, window0 } from './dashboard-fakes.ts';
 
 function scenario(runId = 'run-view0001') {
@@ -180,5 +180,49 @@ describe('dashboard viewer formatting', () => {
     assert.equal(v.usage.jevSplit.length, 0);
     assert.match(v.remote.codex.status, /Remaining Codex allowance unavailable/);
     assert.match(v.remote.wallet, /unavailable/);
+  });
+
+  it('pause latch, clarification and position read as distinct, honest statements', () => {
+    const clock = { t: 9_000_000 };
+    const game = new FakeConnection(clock);
+    const pub = new DashboardStatusPublisher({
+      statusPath: '/dev/null/never',
+      runId: 'run-pause001',
+      pid: 1,
+      now: () => clock.t,
+      game,
+      profile: { version: '26.1.2', supportLevel: 'upstream-tested' },
+      pause: () => ({ paused: true, reason: 'stopped by owner', sinceMs: clock.t - 1000, manualGoalsAllowed: true }),
+      engine: () => ({ goal: { id: 'goal-q001', epoch: 1, instruction: 'fetch wood', origin: { surface: 'chat', principal: 'owner' }, state: 'awaiting_owner', admittedAtMs: 1, updatedAtMs: 1, plannerTurns: 1, progress: '', pendingClarification: { ref: 'q2', question: 'Oak or birch?' } }, readiness: { planner: { ready: true, detail: '' }, knowledge: { ready: true, detail: '' }, observation: { ready: true, detail: '' }, executor: { ready: true, detail: '' }, capabilityCount: 1, catalogVersion: 'x', tasks: { ready: true, detail: '' } } }) as never,
+    });
+    pub.start();
+    game.join();
+    game.ready();
+    game.bot.entity.position = { x: 1, y: 2, z: 3 };
+    const f = new StatusFollower();
+    f.accept(ok(next(pub.snapshot())));
+    const v = vm(f, clock.t);
+    assert.match(v.directive.pause!.text, /^Automatic work paused; a manual goal can still execute/);
+    assert.match(v.directive.clarification!, /^q2: Oak or birch\?/);
+    assert.equal(v.directive.phase, 'Waiting for your answer');
+    const pos = v.identity.find((r) => r.label === 'Position')!;
+    assert.equal(pos.value, '1 2 3 (client)');
+    assert.match(pos.title!, /none on this connection/);
+    pub.stop('t');
+  });
+
+  it('a build without a pause latch says so instead of implying "not paused"', () => {
+    const { clock, game, pub } = scenario();
+    game.join();
+    const f = new StatusFollower();
+    f.accept(ok(next(pub.snapshot())));
+    assert.match(vm(f, clock.t).directive.pause!.text, /not reported/);
+  });
+
+  it('partial planner breakdowns are shown as partial or unknown, never 0', () => {
+    assert.equal(breakdown(0, 0, 3), 'unknown (not reported)');
+    assert.equal(breakdown(800, 1, 2), '≥ 800 (reported for 1 of 2 turns)');
+    assert.equal(breakdown(800, 2, 2), '800');
+    assert.equal(breakdown(0, 0, 0), 'n/a');
   });
 });

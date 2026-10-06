@@ -3,13 +3,18 @@
 // Sources (no terminal text, no log tailing):
 // - SpendLedger.snapshot(): the authoritative per-run accounting (reserved,
 //   reconciled, retained, released, refused, cap, remaining);
-// - validated Jev evidence events (`jev_request`, `jev_response`,
-//   `jev_failure`) observed through a store tee: token usage, retries;
-// - planner evidence events (`planner_turn_*`) and CodexPlanner.totals.
+// - validated Jev evidence events through a store tee: `jev_request` (retries),
+//   `jev_response` (validated usage), `jev_failure` (kind; trusted usage of a
+//   charged-but-unusable answer when the adapter reports it);
+// - planner evidence events `planner_turn_*` (per-turn usage; `null` usage or a
+//   `null` breakdown field means NOT REPORTED) and CodexPlanner.totals (turn
+//   counts).
 //
-// Cumulative ledger values are applied to dated aggregates as deltas against a
-// per-run cursor, so repeated or out-of-order observations never double count
-// and never go backwards. Token usage events are deduplicated by identity. The
+// Cumulative ledger values reach the dated aggregates as deltas against a
+// per-run cursor committed together with the delta (MB-UI-001-C2), so
+// repeated or out-of-order observations never double count and never go
+// backwards. Event-derived usage is deduplicated by identity. Costs always come
+// from the ledger, never from event payloads (no double charge). The
 // aggregates are display-only: nothing here can reserve, release or replenish
 // spending allowance.
 import { z } from 'zod';
@@ -30,27 +35,24 @@ export interface SpendSnapshotLike {
   refused: number;
 }
 
-/** Structural copy of CodexPlanner.totals (src/planner/codex-planner.ts). */
+/** Structural slice of CodexPlanner.totals used for turn COUNTS only. */
 export interface PlannerTotalsLike {
   turns: number;
   completedTurns: number;
   failedTurns: number;
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  reasoningOutputTokens: number;
 }
 
 const nn = z.number().int().nonnegative();
 const reqId = z.string().min(1).max(64);
-const JevRequestEvent = z.object({ type: z.literal('jev_request'), requestId: reqId, attempt: z.number().int().min(1).max(4) }).passthrough();
+const attemptN = z.number().int().min(1).max(4);
+const JevRequestEvent = z.object({ type: z.literal('jev_request'), requestId: reqId, attempt: attemptN }).passthrough();
 const JevResponseEvent = z
-  .object({
-    type: z.literal('jev_response'),
-    requestId: reqId,
-    attempt: z.number().int().min(1).max(4),
-    usage: z.object({ inputTokens: nn, outputTokens: nn, costUsd: z.number().finite().nonnegative() }).passthrough(),
-  })
+  .object({ type: z.literal('jev_response'), requestId: reqId, attempt: attemptN, usage: z.object({ inputTokens: nn, outputTokens: nn, costUsd: z.number().finite().nonnegative() }).passthrough() })
+  .passthrough();
+/** Trusted usage of a charged failure: cost is in the ledger already; tokens may or may not be reported. */
+const TrustedUsage = z.object({ inputTokens: nn.optional(), outputTokens: nn.optional(), costUsd: z.number().finite().nonnegative().optional() }).passthrough();
+const JevFailureEvent = z
+  .object({ type: z.literal('jev_failure'), requestId: reqId, attempt: attemptN, usage: TrustedUsage.nullable().optional(), usageTrusted: TrustedUsage.nullable().optional() })
   .passthrough();
 const PlannerStarted = z.object({ type: z.literal('planner_turn_started'), requestId: reqId, turn: nn }).passthrough();
 const PlannerCompleted = z
@@ -58,24 +60,17 @@ const PlannerCompleted = z
     type: z.literal('planner_turn_completed'),
     requestId: reqId,
     turn: nn,
-    usage: z.object({ inputTokens: nn, cachedInputTokens: nn, outputTokens: nn, reasoningOutputTokens: nn }).passthrough().nullable(),
+    usage: z
+      .object({ inputTokens: nn, outputTokens: nn, cachedInputTokens: nn.nullable().optional(), reasoningOutputTokens: nn.nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough();
-const PlannerFailed = z.object({ type: z.literal('planner_turn_failed'), requestId: reqId, turn: nn, kind: z.string().max(64) }).passthrough();
+const PlannerFailed = z.object({ type: z.literal('planner_turn_failed'), requestId: reqId, turn: nn }).passthrough();
 
 export interface JevDayDelta extends Partial<DayJev> {}
 export interface PlannerDayDelta extends Partial<DayPlanner> {}
-
-/** Delta sink (the durable history); called synchronously as usage is observed. */
-export interface UsageSink {
-  jev(delta: JevDayDelta, atMs: number): void;
-  planner(delta: PlannerDayDelta, atMs: number): void;
-  /** Cumulative ledger state already applied for this run (restart-safe cursor). */
-  cursor(): LedgerCursor;
-  setCursor(c: LedgerCursor): void;
-  /** Event identity already counted for this run? Marks it counted when not. */
-  firstTime(id: string): boolean;
-}
 
 export interface LedgerCursor {
   attempts: number;
@@ -88,6 +83,15 @@ export interface LedgerCursor {
 
 export const ZERO_CURSOR: LedgerCursor = { attempts: 0, reconciledNanoUsd: 0, retainedNanoUsd: 0, reconciled: 0, retained: 0, released: 0 };
 
+/** Delta sink (the durable history). */
+export interface UsageSink {
+  /** Applies an identified event delta at most once per run. Returns false for a duplicate. */
+  applyEvent(id: string, delta: { jev?: JevDayDelta; planner?: PlannerDayDelta }, atMs: number): boolean;
+  /** Advances the ledger cursor and applies its dated delta in ONE commit (no write in between). */
+  commitLedger(next: LedgerCursor, delta: JevDayDelta, atMs: number): void;
+  cursor(): LedgerCursor;
+}
+
 export interface UsageAccumulatorOptions {
   spend?: () => SpendSnapshotLike;
   planner?: () => PlannerTotalsLike;
@@ -95,26 +99,23 @@ export interface UsageAccumulatorOptions {
   now: () => number;
 }
 
-const SEEN_CAP = 4_096;
+const SEEN_CAP = 8_192;
 
 export class UsageAccumulator {
   private readonly o: UsageAccumulatorOptions;
   private readonly seen = new Set<string>();
-  private jevValidated = 0;
-  private jevRetries = 0;
-  private jevIn = 0;
-  private jevOut = 0;
-  private plannerUsageKnown = 0;
+  private jev = { validated: 0, retries: 0, inTok: 0, outTok: 0, cfKnown: 0, cfIn: 0, cfOut: 0 };
+  private plan = { usageKnown: 0, usageUnknown: 0, input: 0, output: 0, cached: 0, cachedKnown: 0, reasoning: 0, reasoningKnown: 0 };
   /** Charged failures already applied to the dated aggregates (this process). */
   private chargedApplied = 0;
-  private plannerEv = { turns: 0, completed: 0, failed: 0, input: 0, cached: 0, output: 0, reasoning: 0, usageUnknown: 0 };
+  /** Charged failures whose tokens were reported but not yet matched to ledger growth. */
+  private cfKnownApplied = 0;
   private lastChange = 0;
 
   constructor(options: UsageAccumulatorOptions) {
     this.o = options;
   }
 
-  /** True only the first time an identity is seen in this process. */
   private once(id: string): boolean {
     if (this.seen.has(id)) return false;
     this.seen.add(id);
@@ -125,80 +126,100 @@ export class UsageAccumulator {
   /** Observes one evidence event (from the store tee). Unknown event types are ignored. */
   observe(event: EvidenceEvent): void {
     const now = this.o.now();
+    const sink = this.o.sink;
     switch (event.type) {
       case 'jev_request': {
         const e = JevRequestEvent.safeParse(event);
         if (!e.success || !this.once(`jreq:${e.data.requestId}:${e.data.attempt}`)) return;
-        if (e.data.attempt > 1) this.jevRetries += 1;
-        this.lastChange = now;
+        if (e.data.attempt > 1) this.jev.retries += 1;
         break;
       }
       case 'jev_response': {
         const e = JevResponseEvent.safeParse(event);
-        const id = e.success ? `jres:${e.data.requestId}:${e.data.attempt}` : '';
-        if (!e.success || !this.once(id)) return;
-        this.jevValidated += 1;
-        this.jevIn += e.data.usage.inputTokens;
-        this.jevOut += e.data.usage.outputTokens;
-        this.lastChange = now;
-        if (this.o.sink?.firstTime(id)) this.o.sink.jev({ validatedResponses: 1, inputTokens: e.data.usage.inputTokens, outputTokens: e.data.usage.outputTokens }, now);
+        if (!e.success) return;
+        const id = `jres:${e.data.requestId}:${e.data.attempt}`;
+        if (!this.once(id)) return;
+        this.jev.validated += 1;
+        this.jev.inTok += e.data.usage.inputTokens;
+        this.jev.outTok += e.data.usage.outputTokens;
+        sink?.applyEvent(id, { jev: { validatedResponses: 1, inputTokens: e.data.usage.inputTokens, outputTokens: e.data.usage.outputTokens } }, now);
         break;
       }
-      case 'jev_failure':
-        this.lastChange = now;
+      case 'jev_failure': {
+        const e = JevFailureEvent.safeParse(event);
+        if (!e.success) return;
+        const id = `jfail:${e.data.requestId}:${e.data.attempt}`;
+        if (!this.once(id)) return;
+        const u = e.data.usageTrusted ?? e.data.usage;
+        // Only a charged failure with BOTH token counts reported has known tokens. Its cost is already in the ledger.
+        if (u && typeof u.inputTokens === 'number' && typeof u.outputTokens === 'number') {
+          this.jev.cfKnown += 1;
+          this.jev.cfIn += u.inputTokens;
+          this.jev.cfOut += u.outputTokens;
+          sink?.applyEvent(id, { jev: { chargedFailureInputTokens: u.inputTokens, chargedFailureOutputTokens: u.outputTokens } }, now);
+        }
         break;
+      }
       case 'planner_turn_started': {
         const e = PlannerStarted.safeParse(event);
-        const id = e.success ? `pstart:${e.data.requestId}:${e.data.turn}` : '';
-        if (!e.success || !this.once(id)) return;
-        this.plannerEv.turns += 1;
-        this.lastChange = now;
-        if (this.o.sink?.firstTime(id)) this.o.sink.planner({ turns: 1 }, now);
+        if (!e.success) return;
+        const id = `pstart:${e.data.requestId}:${e.data.turn}`;
+        if (!this.once(id)) return;
+        sink?.applyEvent(id, { planner: { turns: 1 } }, now);
         break;
       }
       case 'planner_turn_completed': {
         const e = PlannerCompleted.safeParse(event);
-        const id = e.success ? `pdone:${e.data.requestId}:${e.data.turn}` : '';
-        if (!e.success || !this.once(id)) return;
-        this.plannerEv.completed += 1;
+        if (!e.success) return;
+        const id = `pdone:${e.data.requestId}:${e.data.turn}`;
+        if (!this.once(id)) return;
         const u = e.data.usage;
+        const delta: PlannerDayDelta = { completedTurns: 1 };
         if (u) {
-          this.plannerUsageKnown += 1;
-          this.plannerEv.input += u.inputTokens;
-          this.plannerEv.cached += u.cachedInputTokens;
-          this.plannerEv.output += u.outputTokens;
-          this.plannerEv.reasoning += u.reasoningOutputTokens;
-        } else this.plannerEv.usageUnknown += 1;
-        this.lastChange = now;
-        if (this.o.sink?.firstTime(id)) {
-          this.o.sink.planner(
-            u
-              ? { completedTurns: 1, inputTokens: u.inputTokens, cachedInputTokens: u.cachedInputTokens, outputTokens: u.outputTokens, reasoningOutputTokens: u.reasoningOutputTokens }
-              : { completedTurns: 1, usageUnknownTurns: 1 },
-            now,
-          );
+          this.plan.usageKnown += 1;
+          this.plan.input += u.inputTokens;
+          this.plan.output += u.outputTokens;
+          delta.inputTokens = u.inputTokens;
+          delta.outputTokens = u.outputTokens;
+          if (typeof u.cachedInputTokens === 'number') {
+            this.plan.cached += u.cachedInputTokens;
+            this.plan.cachedKnown += 1;
+            delta.cachedInputTokens = u.cachedInputTokens;
+            delta.cachedKnownTurns = 1;
+          }
+          if (typeof u.reasoningOutputTokens === 'number') {
+            this.plan.reasoning += u.reasoningOutputTokens;
+            this.plan.reasoningKnown += 1;
+            delta.reasoningOutputTokens = u.reasoningOutputTokens;
+            delta.reasoningKnownTurns = 1;
+          }
+        } else {
+          this.plan.usageUnknown += 1;
+          delta.usageUnknownTurns = 1;
         }
+        sink?.applyEvent(id, { planner: delta }, now);
         break;
       }
       case 'planner_turn_failed': {
         const e = PlannerFailed.safeParse(event);
-        const id = e.success ? `pfail:${e.data.requestId}:${e.data.turn}` : '';
-        if (!e.success || !this.once(id)) return;
-        this.plannerEv.failed += 1;
-        this.plannerEv.usageUnknown += 1;
-        this.lastChange = now;
-        if (this.o.sink?.firstTime(id)) this.o.sink.planner({ failedTurns: 1, usageUnknownTurns: 1 }, now);
+        if (!e.success) return;
+        const id = `pfail:${e.data.requestId}:${e.data.turn}`;
+        if (!this.once(id)) return;
+        this.plan.usageUnknown += 1;
+        sink?.applyEvent(id, { planner: { failedTurns: 1, usageUnknownTurns: 1 } }, now);
         break;
       }
       default:
         return;
     }
+    this.lastChange = now;
     this.syncLedger();
   }
 
   /**
-   * Applies cumulative ledger growth since the cursor to the dated aggregates.
-   * Called on every observed event and every publish tick. Never negative.
+   * Applies cumulative ledger growth since the cursor to the dated aggregates,
+   * committing cursor and delta together. Called on every observed event and
+   * publish tick. Never negative.
    */
   syncLedger(): void {
     const sink = this.o.sink;
@@ -221,20 +242,25 @@ export class UsageAccumulator {
       retainedAttempts: next.retained - c.retained,
       releasedAttempts: next.released - c.released,
     };
-    // Reconciled without a validated response = charged with a trusted cost but an unusable answer.
-    // Counted only when no reservation is outstanding: the adapter records a validated response
-    // synchronously after reconciling, so R and V are consistent at every quiescent point.
+    // Charged failure = reconciled without a validated response. Counted only at a quiescent ledger
+    // point: the adapter records the validated response synchronously after reconciling.
     let chargedFailures = 0;
+    let cfKnownDelta = 0;
     if (spend.outstandingUsd === 0 && spend.attempts === spend.reconciled + spend.retained + spend.released) {
-      const chargedNow = Math.max(0, spend.reconciled - this.jevValidated);
+      const chargedNow = Math.max(0, spend.reconciled - this.jev.validated);
       if (chargedNow > this.chargedApplied) {
         chargedFailures = chargedNow - this.chargedApplied;
         this.chargedApplied = chargedNow;
       }
+      const knownNow = Math.min(this.jev.cfKnown, this.chargedApplied);
+      if (knownNow > this.cfKnownApplied) {
+        cfKnownDelta = knownNow - this.cfKnownApplied;
+        this.cfKnownApplied = knownNow;
+      }
     }
-    if (chargedFailures === 0 && Object.values(d).every((v) => v === 0)) return;
-    sink.setCursor(next);
-    sink.jev(
+    if (chargedFailures === 0 && cfKnownDelta === 0 && Object.values(d).every((v) => v === 0)) return;
+    sink.commitLedger(
+      next,
       {
         attempts: d.attempts,
         confirmedNanoUsd: d.confirmedNanoUsd,
@@ -242,8 +268,9 @@ export class UsageAccumulator {
         retainedAttempts: d.retainedAttempts,
         releasedAttempts: d.releasedAttempts,
         chargedFailures,
-        // Token counts are unknown for charged failures and for retained (ambiguous) attempts.
-        tokensUnknownAttempts: chargedFailures + d.retainedAttempts,
+        chargedFailuresTokensKnown: cfKnownDelta,
+        // Unknown tokens: charged failures without reported tokens, and every retained (ambiguous) attempt.
+        tokensUnknownAttempts: Math.max(0, chargedFailures - cfKnownDelta) + d.retainedAttempts,
       },
       this.o.now(),
     );
@@ -253,11 +280,11 @@ export class UsageAccumulator {
     return this.lastChange;
   }
 
-  jev(): Known<JevSessionUsage> {
+  jevUsage(): Known<JevSessionUsage> {
     const spend = this.o.spend?.();
     if (!spend) return unknown('no spend ledger installed in this run');
-    const now = this.o.now();
-    const chargedFailures = Math.max(0, spend.reconciled - this.jevValidated);
+    const chargedFailures = Math.max(0, spend.reconciled - this.jev.validated);
+    const cfKnown = Math.min(this.jev.cfKnown, chargedFailures);
     const cap = usdToNano(spend.capUsd);
     const confirmed = usdToNano(spend.reconciledUsd);
     const retained = usdToNano(spend.retainedUsd);
@@ -265,16 +292,19 @@ export class UsageAccumulator {
     return known(
       {
         attempts: spend.attempts,
-        retries: this.jevRetries,
-        validatedResponses: this.jevValidated,
+        retries: this.jev.retries,
+        validatedResponses: this.jev.validated,
         chargedFailures,
         retainedAttempts: spend.retained,
         releasedAttempts: spend.released,
         refused: spend.refused,
-        inputTokens: this.jevIn,
-        outputTokens: this.jevOut,
-        tokensKnownAttempts: this.jevValidated,
-        tokensUnknownAttempts: chargedFailures + spend.retained,
+        inputTokens: this.jev.inTok,
+        outputTokens: this.jev.outTok,
+        tokensKnownAttempts: this.jev.validated,
+        chargedFailuresTokensKnown: cfKnown,
+        chargedFailureInputTokens: this.jev.cfIn,
+        chargedFailureOutputTokens: this.jev.cfOut,
+        tokensUnknownAttempts: chargedFailures - cfKnown + spend.retained,
         confirmedNanoUsd: confirmed,
         retainedNanoUsd: retained,
         pendingNanoUsd: pending,
@@ -282,28 +312,31 @@ export class UsageAccumulator {
         remainingNanoUsd: cap - confirmed - retained - pending,
       },
       'app_accounting',
-      now,
+      this.o.now(),
     );
   }
 
-  planner(): Known<PlannerSessionUsage> {
+  plannerUsage(): Known<PlannerSessionUsage> {
     const totals = this.o.planner?.();
     if (!totals) return unknown('the Codex planner is not installed in this run (disabled profile or not composed)');
-    const ev = this.plannerEv;
-    // CodexPlanner.totals is authoritative for counts and token sums; events tell which turns lacked usage.
+    const p = this.plan;
+    // Token sums come only from turns that REPORTED usage (events); totals give the turn counts.
     const inFlight = Math.max(0, totals.turns - totals.completedTurns - totals.failedTurns);
-    const usageUnknownTurns = Math.max(ev.usageUnknown, totals.failedTurns + Math.max(0, totals.completedTurns - this.plannerUsageKnown));
+    const settled = Math.max(0, totals.turns - inFlight);
+    const usageKnownTurns = Math.min(p.usageKnown, totals.completedTurns);
     return known(
       {
         turns: totals.turns,
         completedTurns: totals.completedTurns,
         failedTurns: totals.failedTurns,
-        usageKnownTurns: Math.min(this.plannerUsageKnown, totals.completedTurns),
-        usageUnknownTurns: Math.min(usageUnknownTurns, Math.max(0, totals.turns - inFlight)),
-        inputTokens: totals.inputTokens,
-        cachedInputTokens: totals.cachedInputTokens,
-        outputTokens: totals.outputTokens,
-        reasoningOutputTokens: totals.reasoningOutputTokens,
+        usageKnownTurns,
+        usageUnknownTurns: Math.max(0, settled - usageKnownTurns),
+        inputTokens: p.input,
+        outputTokens: p.output,
+        cachedInputTokens: p.cached,
+        cachedKnownTurns: Math.min(p.cachedKnown, usageKnownTurns),
+        reasoningOutputTokens: p.reasoning,
+        reasoningKnownTurns: Math.min(p.reasoningKnown, usageKnownTurns),
       },
       'provider_reported',
       this.o.now(),

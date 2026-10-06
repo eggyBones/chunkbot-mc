@@ -17,12 +17,17 @@ import { z } from 'zod';
 export const DASHBOARD_STATUS_SCHEMA = 'chunkbot.dashboard.status' as const;
 export const DASHBOARD_STATUS_VERSION = 1 as const;
 export const DASHBOARD_HISTORY_SCHEMA = 'chunkbot.dashboard.usage-history' as const;
-export const DASHBOARD_HISTORY_VERSION = 1 as const;
+export const DASHBOARD_HISTORY_VERSION = 2 as const;
 
 /** Bounds for the published snapshot (the viewer rejects larger files). */
 export const DASHBOARD_BOUNDS = {
   maxStatusBytes: 256 * 1024,
+  /** Viewer/reader bound for the usage history file. */
   maxHistoryBytes: 1024 * 1024,
+  /** The writer keeps the serialized history at or below this (well inside the reader bound). */
+  historyWriteTargetBytes: 512 * 1024,
+  /** The writer may load an older, oversized history of its own up to this size to compact it. */
+  historyRecoverBytes: 8 * 1024 * 1024,
   shortText: 200,
   text: 600,
   /** Window-0 player inventory slots 5..45 (armor, main, hotbar, off hand). */
@@ -105,8 +110,16 @@ export const ConnectionSectionSchema = z
     changedAtMs: ms,
     lastEnd: z.object({ reason: shortText, detail: text, atMs: ms }).strict().optional(),
     alive: Known_(z.boolean()),
+    /** The bot's OWN position: the client's physics model (client_model), rounded to 0.1. */
+    position: Known_(PositionValueSchema()),
+    /** The last position the SERVER set (teleport/correction packet) on this connection. */
+    serverPosition: Known_(PositionValueSchema()),
   })
   .strict();
+
+function PositionValueSchema() {
+  return z.object({ x: z.number().finite(), y: z.number().finite(), z: z.number().finite() }).strict();
+}
 
 function Known_<T extends z.ZodType>(value: T) {
   return knownSchema(value);
@@ -232,10 +245,26 @@ export const SurvivalSectionSchema = z
   })
   .strict();
 
+/**
+ * Pause latch (MB-FLOW-002/003 seam): automatic work is paused; a manual owner
+ * goal may still execute when `manualGoalsAllowed`. Reading it authorizes nothing.
+ */
+export const PauseSchema = z
+  .object({
+    paused: z.boolean(),
+    reason: text,
+    sinceMs: ms.nullable(),
+    manualGoalsAllowed: z.boolean(),
+  })
+  .strict();
+export type DashboardPause = z.infer<typeof PauseSchema>;
+
 export const DirectiveSectionSchema = z
   .object({
     /** Which authority currently owns control. */
     mode: z.enum(['idle', 'owner_directive', 'operator_diagnostic']),
+    /** Absent: the running application does not report a pause latch. */
+    pause: PauseSchema.optional(),
     goal: GoalSectionSchema.optional(),
     task: TaskSectionSchema,
     pending: PendingDirectiveSchema.optional(),
@@ -280,10 +309,15 @@ export const JevSessionUsageSchema = z
     releasedAttempts: nonNegInt,
     /** Refused locally before dispatch (cap could not be guaranteed, etc.). */
     refused: nonNegInt,
+    /** Tokens of VALIDATED responses only. */
     inputTokens: nonNegInt,
     outputTokens: nonNegInt,
     /** Attempts whose token usage is known (validated responses). */
     tokensKnownAttempts: nonNegInt,
+    /** Charged failures whose trusted usage reported token counts (counted separately from validated). */
+    chargedFailuresTokensKnown: nonNegInt,
+    chargedFailureInputTokens: nonNegInt,
+    chargedFailureOutputTokens: nonNegInt,
     /** Charged or ambiguous attempts whose token usage is unknown. */
     tokensUnknownAttempts: nonNegInt,
     confirmedNanoUsd: nanoUsd,
@@ -305,12 +339,15 @@ export const PlannerSessionUsageSchema = z
     usageKnownTurns: nonNegInt,
     /** Turns whose usage is unknown (failed, cancelled, or no usage reported). */
     usageUnknownTurns: nonNegInt,
+    /** Sum over turns with KNOWN usage. */
     inputTokens: nonNegInt,
-    /** Breakdown of inputTokens (subset), when reported. */
-    cachedInputTokens: nonNegInt,
     outputTokens: nonNegInt,
-    /** Breakdown of outputTokens (subset), when reported. */
+    /** Breakdown of inputTokens (subset), summed only over turns that reported it. */
+    cachedInputTokens: nonNegInt,
+    cachedKnownTurns: nonNegInt,
+    /** Breakdown of outputTokens (subset), summed only over turns that reported it. */
     reasoningOutputTokens: nonNegInt,
+    reasoningKnownTurns: nonNegInt,
   })
   .strict();
 export type PlannerSessionUsage = z.infer<typeof PlannerSessionUsageSchema>;
@@ -335,11 +372,19 @@ export const MemorySummarySchema = z
             dimension: shortText.optional(),
             source: shortText,
             observedAtMs: ms,
+            at: PositionValueSchema().optional(),
           })
           .strict(),
       )
       .max(DASHBOARD_BOUNDS.memoryItems),
     totalItems: nonNegInt,
+    /** Operator-configured world scope of the memory store. */
+    worldProfile: z.object({ id: shortText, revision: z.union([nonNegInt, shortText]) }).strict().nullable(),
+    /** Designated home with provenance; remembered, not proof it still exists. */
+    home: z
+      .object({ label: shortText, dimension: shortText, at: PositionValueSchema(), source: shortText, observedAtMs: ms, stale: z.boolean() })
+      .strict()
+      .nullable(),
   })
   .strict();
 export type DashboardMemorySummary = z.infer<typeof MemorySummarySchema>;
@@ -350,6 +395,7 @@ export const IntegrationsSchema = z
     handoff: z.boolean(),
     memory: z.boolean(),
     survival: z.boolean(),
+    pause: z.boolean(),
   })
   .strict();
 
@@ -381,8 +427,12 @@ export const DayJevSchema = z
     chargedFailures: nonNegInt,
     retainedAttempts: nonNegInt,
     releasedAttempts: nonNegInt,
+    /** Validated responses only. */
     inputTokens: nonNegInt,
     outputTokens: nonNegInt,
+    chargedFailuresTokensKnown: nonNegInt,
+    chargedFailureInputTokens: nonNegInt,
+    chargedFailureOutputTokens: nonNegInt,
     tokensUnknownAttempts: nonNegInt,
     confirmedNanoUsd: nanoUsd,
     retainedNanoUsd: nanoUsd,
@@ -397,9 +447,11 @@ export const DayPlannerSchema = z
     failedTurns: nonNegInt,
     usageUnknownTurns: nonNegInt,
     inputTokens: nonNegInt,
-    cachedInputTokens: nonNegInt,
     outputTokens: nonNegInt,
+    cachedInputTokens: nonNegInt,
+    cachedKnownTurns: nonNegInt,
     reasoningOutputTokens: nonNegInt,
+    reasoningKnownTurns: nonNegInt,
   })
   .strict();
 export type DayPlanner = z.infer<typeof DayPlannerSchema>;
@@ -418,8 +470,6 @@ export const RunCursorSchema = z
     open: z.boolean(),
     endedUncleanly: z.boolean(),
     jev: z.object({ attempts: nonNegInt, reconciledNanoUsd: nanoUsd, retainedNanoUsd: nanoUsd, reconciled: nonNegInt, retained: nonNegInt, released: nonNegInt }).strict(),
-    /** Usage event identities already counted (bounded, most recent). */
-    seen: z.array(z.string().max(120)).max(512),
   })
   .strict();
 export type RunCursor = z.infer<typeof RunCursorSchema>;
@@ -434,9 +484,16 @@ export const UsageHistorySchema = z
     updatedAtMs: ms,
     /** Day key YYYY-MM-DD (in `timeZone`) -> aggregate. */
     days: z.record(z.string().regex(/^\d{4}-\d{2}-\d{2}$/), DayAggregateSchema),
+    /**
+     * Sums of days compacted out of `days` (retention or the size bound). Totals are
+     * kept; only the per-day breakdown before `throughDay` is lost.
+     */
+    rollup: z.object({ throughDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), days: nonNegInt, totals: DayAggregateSchema }).strict().nullable(),
     runs: z.array(RunCursorSchema).max(DASHBOARD_BOUNDS.historyRuns),
     /** Coverage gaps that the totals cannot include (corrupt reset, unclean end, zone change). */
-    gaps: z.array(z.object({ atMs: ms, kind: z.enum(['corrupt_reset', 'unclean_end', 'time_zone_change', 'days_pruned', 'runs_pruned']), detail: text }).strict()).max(64),
+    gaps: z.array(z.object({ atMs: ms, kind: z.enum(['corrupt_reset', 'unclean_end', 'time_zone_change', 'days_pruned', 'runs_pruned', 'migrated']), detail: text }).strict()).max(64),
+    /** Older gap notes dropped to stay bounded (count only). */
+    gapsOmitted: nonNegInt,
   })
   .strict();
 export type UsageHistory = z.infer<typeof UsageHistorySchema>;

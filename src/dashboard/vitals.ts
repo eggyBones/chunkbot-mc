@@ -27,7 +27,9 @@ export interface BotView {
   quickBarSlot?: number;
   experience?: { level: number | null; points: number | null; progress: number | null };
   game?: { dimension?: unknown; gameMode?: unknown };
-  entity?: { attributes?: Record<string, AttributeValue | undefined> };
+  entity?: { attributes?: Record<string, AttributeValue | undefined>; position?: { x: number; y: number; z: number } };
+  on?(event: 'forcedMove', listener: () => void): unknown;
+  removeListener?(event: 'forcedMove', listener: () => void): unknown;
   currentWindow?: { id?: number; inventoryStart?: number } | null;
 }
 

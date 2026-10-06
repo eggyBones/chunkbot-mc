@@ -248,4 +248,50 @@ describe('dashboard projection: directive, readiness, publishing', () => {
     assert.equal(attributeValue({ value: 20, modifiers: [{ amount: 4, operation: 0 }, { amount: 0.5, operation: 1 }, { amount: 0.1, operation: 2 }] }), (24 + 24 * 0.5) * 1.1);
     assert.equal(attributeValue({ value: Number.NaN, modifiers: [] }), undefined);
   });
+
+  it('own position: client model with a separately labeled server-set position; never another player', () => {
+    const p = publisher();
+    game.join();
+    game.ready();
+    game.bot.entity.position = { x: 10.04, y: 64, z: -3.26 };
+    let s = p.snapshot();
+    assert.deepEqual(s.connection.position.known && [s.connection.position.value, s.connection.position.source], [{ x: 10, y: 64, z: -3.3 }, 'client_model']);
+    assert.equal(s.connection.serverPosition.known, false);
+    clock.t += 50;
+    game.serverTeleport(100.5, 70, 100.5);
+    s = p.snapshot();
+    assert.deepEqual(s.connection.serverPosition.known && [s.connection.serverPosition.value, s.connection.serverPosition.source, s.connection.serverPosition.observedAtMs], [{ x: 100.5, y: 70, z: 100.5 }, 'server_packet', clock.t]);
+    game.end();
+    s = p.snapshot();
+    assert.equal(s.connection.position.known, false, 'no live position while disconnected');
+  });
+
+  it('pause latch is projected when the app reports it, and absent otherwise', () => {
+    engine = engineStatus({ state: 'executing' });
+    let s = publisher().snapshot();
+    assert.equal(s.integrations.pause, false);
+    assert.equal(s.directive.pause, undefined);
+    s = publisher({ pause: () => ({ paused: true, reason: 'owner said stop', sinceMs: 7, manualGoalsAllowed: true }) }).snapshot();
+    assert.equal(s.integrations.pause, true);
+    assert.deepEqual(s.directive.pause, { paused: true, reason: 'owner said stop', sinceMs: 7, manualGoalsAllowed: true });
+  });
+
+  it('memory summary is bounded/redacted and carries world profile and home provenance', () => {
+    const long = 'x'.repeat(5_000);
+    const s = publisher({
+      memory: () => ({
+        items: Array.from({ length: 40 }, (_, i) => ({ label: `spot ${i} ${long}`, kind: 'resource', source: 'observed', observedAtMs: 3, at: { x: 1.234, y: 2, z: 3 } })),
+        totalItems: 40,
+        worldProfile: { id: 'fixture-world', revision: 2 },
+        home: { label: 'home sk-or-v1-abcdefghijklmnop0123456789', dimension: 'minecraft:overworld', at: { x: 5.55, y: 64, z: 9 }, source: 'owner_designated', observedAtMs: 4, stale: false },
+      }),
+    }).snapshot();
+    assert.ok(s.memory.known);
+    assert.equal(s.memory.value.items.length, 16);
+    assert.ok(s.memory.value.items[0]!.label.length <= 200);
+    assert.deepEqual(s.memory.value.worldProfile, { id: 'fixture-world', revision: 2 });
+    assert.doesNotMatch(s.memory.value.home!.label, /abcdefghijklmnop/);
+    assert.deepEqual(s.memory.value.home!.at, { x: 5.6, y: 64, z: 9 });
+    assert.ok(DashboardStatusSchema.safeParse(s).success);
+  });
 });

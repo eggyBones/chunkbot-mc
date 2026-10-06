@@ -250,6 +250,7 @@ export const APP_JS = String.raw`
       el('div', null, [el('span', { cls: 'phase t-' + d.phaseTone, text: d.phase }), txt('  '), el('span', { cls: 't-muted', text: d.mode })]),
       el('div', { cls: 'headline' + (d.instruction ? '' : ' none'), text: d.headline })
     ];
+    if (d.pause) kids.push(d.pause.tone === 'warn' ? el('div', { cls: 'callout', text: d.pause.text }) : el('div', { cls: 'note', text: d.pause.text }));
     if (d.clarification) kids.push(el('div', { cls: 'callout', text: 'Question for you — ' + d.clarification }));
     if (d.survival) kids.push(el('div', { cls: 'callout', text: 'Survival routine — ' + d.survival + ' (your directive stays queued)' }));
     if (d.task) kids.push(el('div', { cls: 'task' }, [el('div', { cls: 'lab t-muted', text: 'Current task' }), el('div', { cls: 'obj', text: d.task.objective }), el('div', { cls: 'note', text: d.task.detail })]));

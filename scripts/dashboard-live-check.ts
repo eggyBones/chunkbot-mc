@@ -13,7 +13,8 @@
 //     never live; graceful stop -> stopped;
 //   - viewing/refreshing with several tabs sends NO interaction packets.
 //
-//   npm run build && npm run fixture -- status && npm run build && node scripts/dashboard-live-check.ts [--fixture 26.2]
+//   node scripts/dashboard-live-check.ts [--fixture 26.2] [--read-only]
+//   --read-only: join as DashProbe and compare against `data get` only (no RCON writes).
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { join } from 'node:path';
@@ -31,10 +32,12 @@ const PINS = fixturePins(fixtureProfileFromArgv(process.argv));
 const SUFFIX = PINS.profile === DEFAULT_FIXTURE_PROFILE ? '' : `-${PINS.profile}`;
 const fx = fixturePaths(PROJECT_ROOT, PINS);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${SUFFIX}-dashboard`);
+const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${SUFFIX}-dashboard${process.argv.includes('--read-only') ? '-readonly' : ''}`);
 const dataDir = join(outDir, 'data');
 mkdirSync(dataDir, { recursive: true });
 const BOT = 'DashProbe';
+/** `--read-only`: no RCON writes at all (only `data get`); no damage/give/kill/kick/attribute/xp changes. */
+const READ_ONLY = process.argv.includes('--read-only');
 const LATENCY_BOUND_MS = 1_000;
 
 interface Result {
@@ -201,12 +204,14 @@ async function main(): Promise<number> {
     // ---- join
     const info = await game.connect(new AbortController().signal);
     tapWrites();
-    await rcon(`clear ${BOT}`);
-    await rcon(`effect clear ${BOT}`);
-    await rcon(`attribute ${BOT} minecraft:max_health base reset`);
-    await rcon(`xp set ${BOT} 0 levels`);
-    await rcon(`xp set ${BOT} 0 points`);
-    await rcon(`gamemode survival ${BOT}`);
+    if (!READ_ONLY) {
+      await rcon(`clear ${BOT}`);
+      await rcon(`effect clear ${BOT}`);
+      await rcon(`attribute ${BOT} minecraft:max_health base reset`);
+      await rcon(`xp set ${BOT} 0 levels`);
+      await rcon(`xp set ${BOT} 0 points`);
+      await rcon(`gamemode survival ${BOT}`);
+    }
     const first = await published((s) => s.connection.state === 'ready' && s.vitals.health.known && s.vitals.epoch === s.connection.epoch, 10_000);
     check('G1-join', 'joined; status published with own bot name, dimension and server-backed health', Boolean(first && first.s.connection.botName.known && first.s.connection.botName.value === BOT), [
       `server ${info.serverVersion}/${info.protocolVersion}, dimension ${info.dimension}`,
@@ -215,6 +220,39 @@ async function main(): Promise<number> {
     const mh0 = status()?.vitals.maxHealth;
     check('G1-maxhealth-initial', 'max health provenance at join (attribute packet)', true, [`maxHealth=${JSON.stringify(mh0)} (unknown is acceptable evidence: the server did not send max_health)`]);
 
+    // ---- own position vs the server's entity data (client model, labeled)
+    await sleep(500);
+    const posReply = await rcon(`data get entity ${BOT} Pos`);
+    const pm = /\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]/.exec(posReply);
+    const sp = status()?.connection.position;
+    const close = pm && sp?.known ? Math.hypot(sp.value.x - Number(pm[1]), sp.value.y - Number(pm[2]), sp.value.z - Number(pm[3])) : undefined;
+    check('G1-position', "own position (client model, labeled) is within 0.6 blocks of the server's entity position", close !== undefined && close <= 0.6, [`server Pos ${pm ? pm.slice(1).join(' ') : 'unparsed'}`, `dashboard ${JSON.stringify(sp)}`, `serverPosition ${JSON.stringify(status()?.connection.serverPosition)}`]);
+
+    const noActions = async () => {
+      const before = new Map(sent);
+      const tabs = [sse(port), sse(port), sse(port)];
+      for (let i = 0; i < 10; i += 1) {
+        await new Promise<void>((r) => request({ host: '127.0.0.1', port, path: '/api/state', headers: { host: `127.0.0.1:${port}` } }, (res) => res.resume().on('end', () => r())).end());
+        await sleep(100);
+      }
+      for (const t of tabs) t.close();
+      const interactions = ['window_click', 'close_window', 'held_item_slot', 'use_item', 'block_dig', 'block_place', 'chat_message', 'chat_command', 'client_command', 'set_creative_slot', 'entity_action', 'use_entity'];
+      const delta = interactions.map((n) => [n, (sent.get(n) ?? 0) - (before.get(n) ?? 0)] as const).filter(([, d]) => d > 0);
+      check('D5-no-actions', 'viewing with 5 tabs and 10 refreshes sends no interaction packets', delta.length === 0, [`interaction packets during viewing: ${JSON.stringify(delta)}`, `all client packets seen: ${JSON.stringify(Object.fromEntries(sent))}`]);
+    };
+
+    if (READ_ONLY) {
+      // Server truth via `data get` only; the dashboard must already agree (no world changes).
+      const h = await serverNumber('Health');
+      const f = await serverNumber('foodLevel');
+      const l = await serverNumber('XpLevel');
+      const xpp = await serverNumber('XpP');
+      const truth = await serverInventory();
+      const want = truth.map((x) => `${x.slot}:${x.item}x${x.count}`);
+      const agree = await published((s) => s.vitals.health.known && h !== undefined && Math.abs(s.vitals.health.value - h) < 0.01 && s.vitals.food.known && s.vitals.food.value === f && s.vitals.xp.known && s.vitals.xp.value.level === l && xpp !== undefined && Math.abs(s.vitals.xp.value.progress - xpp) < 0.01 && JSON.stringify(slotsOf(s)) === JSON.stringify(want), 5_000);
+      check('G1-readonly-truth', 'health, hunger, XP and slot inventory equal the server entity data (no world changes)', Boolean(agree), [`server Health=${h} foodLevel=${f} XpLevel=${l} XpP=${xpp}`, `server inventory ${JSON.stringify(want)}`, `dashboard vitals ${JSON.stringify(status()?.vitals)}`.slice(0, 600), `dashboard inventory ${JSON.stringify(status() ? slotsOf(status()!) : [])}`]);
+      await noActions();
+    } else {
     // ---- health
     let t0 = Date.now();
     await rcon(`damage ${BOT} 3 minecraft:generic`);
@@ -266,16 +304,7 @@ async function main(): Promise<number> {
     check('D2-inventory', 'slot inventory (main, hotbar, armor, off hand) equals the server NBT', Boolean(inv && offhandSeen && offhandSeen.at - tLast <= LATENCY_BOUND_MS && invView !== undefined), [`server ${JSON.stringify(want)}`, `dashboard ${JSON.stringify(slotsOf(status()!))}`, `last change published ${offhandSeen ? offhandSeen.at - tLast : 'timeout'} ms after its command; full match confirmed; viewer ${invView ?? 'timeout'} ms after the first command`, `source ${(() => { const c = status()?.inventory.contents; return c?.known ? c.source : 'unknown'; })()}`]);
 
     // ---- no interaction packets while viewing (several tabs, refreshes)
-    const before = new Map(sent);
-    const tabs = [sse(port), sse(port), sse(port)];
-    for (let i = 0; i < 10; i += 1) {
-      await new Promise<void>((r) => request({ host: '127.0.0.1', port, path: '/api/state', headers: { host: `127.0.0.1:${port}` } }, (res) => res.resume().on('end', () => r())).end());
-      await sleep(100);
-    }
-    for (const t of tabs) t.close();
-    const interactions = ['window_click', 'close_window', 'held_item_slot', 'use_item', 'block_dig', 'block_place', 'chat_message', 'chat_command', 'client_command', 'set_creative_slot', 'entity_action', 'use_entity'];
-    const delta = interactions.map((n) => [n, (sent.get(n) ?? 0) - (before.get(n) ?? 0)] as const).filter(([, d]) => d > 0);
-    check('D5-no-actions', 'viewing with 5 tabs and 10 refreshes sends no interaction packets', delta.length === 0, [`interaction packets during viewing: ${JSON.stringify(delta)}`, `all client packets seen: ${JSON.stringify(Object.fromEntries(sent))}`]);
+    await noActions();
 
     // ---- death
     await rcon(`kill ${BOT}`);
@@ -301,6 +330,7 @@ async function main(): Promise<number> {
       `epoch ${epoch1} -> ${reconnect?.s.connection.epoch}`,
       `fresh epoch-${fresh?.s.vitals.epoch} readings: slots=${fresh ? JSON.stringify(slotsOf(fresh.s)) : 'timeout'}`,
     ]);
+    }
 
     // ---- graceful stop of the publisher (the bot stays connected)
     runtime.stop('dashboard live check complete');
@@ -312,10 +342,12 @@ async function main(): Promise<number> {
     tabA.close();
     tabB.close();
     try {
-      await rcon(`clear ${BOT}`);
-      await rcon(`attribute ${BOT} minecraft:max_health base reset`);
-      await rcon(`xp set ${BOT} 0 levels`);
-      await rcon(`xp set ${BOT} 0 points`);
+      if (!READ_ONLY) {
+        await rcon(`clear ${BOT}`);
+        await rcon(`attribute ${BOT} minecraft:max_health base reset`);
+        await rcon(`xp set ${BOT} 0 levels`);
+        await rcon(`xp set ${BOT} 0 points`);
+      }
     } catch {
       // the bot may be offline already
     }
@@ -324,7 +356,7 @@ async function main(): Promise<number> {
     await viewer.close();
   }
   const pass = results.every((r) => r.pass);
-  const report = { kind: 'dashboard-live-check', fixture: PINS.profile, server: `${PINS.host}:${PINS.port}`, at: new Date().toISOString(), pass, results, setupCommands: setupLog };
+  const report = { kind: 'dashboard-live-check', mode: READ_ONLY ? 'read-only' : 'mutating', fixture: PINS.profile, server: `${PINS.host}:${PINS.port}`, at: new Date().toISOString(), pass, results, setupCommands: setupLog };
   writeFileSync(join(outDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(
     join(outDir, 'report.md'),
