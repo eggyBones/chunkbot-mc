@@ -44,7 +44,7 @@ Jake's requested upgrades are broken down in [the companion roadmap](docs/compan
 | MB-MEM-001 | [Persistent gameplay memory and known locations](docs/gameplay-memory-plan.md) | Implemented/integrated; accepted in batch001 |
 | MB-UI-001 | [Local dashboard, token usage, OpenRouter spend and optional Codex allowance](docs/chunkbot-dashboard-plan.md) | Implemented/integrated; accepted in batch001 |
 | MB-OPS-001 | [Verified live updates with a brief automatic reconnect](docs/live-update-plan.md) | Proposed; unassigned |
-| MB-OPS-002 | [Local play scripts and proposed vanilla server controls](docs/server-control-plan.md) | Local slice L1 authorized; vanilla bridge proposed/unassigned |
+| MB-OPS-002 | [Local play scripts and proposed vanilla server controls](docs/server-control-plan.md) | Local slice L1 implemented/accepted; vanilla bridge proposed/unassigned |
 
 Confirmed operating flow: progression by default after connection; owner commands take priority; return to progression after finite task completion; stop remains paused until explicit resume. Recommended foundations: handoff and memory before full progression. Locator and dashboard are separable assignments. See the companion roadmap for ownership, dependencies and acceptance.
 

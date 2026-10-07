@@ -1,6 +1,6 @@
 # MB-OPS-002 — Vanilla slash commands to bring Chunkbot online or log him out
 
-Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Status: **Vanilla slash-command bridge proposed and unassigned; local controls slice MB-OPS-002-L1 authorized on 2026-10-07.**
+Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Status: **Local controls MB-OPS-002-L1 accepted; vanilla slash-command bridge proposed and unassigned.**
 Parent: [companion upgrades](companion-upgrades-plan.md). Shared runtime: [verified updates](live-update-plan.md).
 
 ## Outcome and confirmed decisions
@@ -78,7 +78,7 @@ Remaining delivery: shared manager, private bridge, fixture-proved vanilla contr
 
 ## MB-OPS-002-L1 — simple local play, dashboard and logout scripts
 
-Reported: 2026-10-07 03:03 UTC. Status: authorized and assigned to native S; implementation in progress. Jake asks: “log him back in please. While we go can you make me some simple scripts to spin up him and his dashboard in our world, and log him out that I can run from my machine?” This is a separate local operator slice; it does not authorize the proposed vanilla datapack/bridge or MB-OPS-001 automatic updates.
+Reported: 2026-10-07 03:03 UTC. Status: implemented and independently accepted; native S draft completed by Codex at Jake’s explicit request after the subscription limit. Jake asks: “log him back in please. While we go can you make me some simple scripts to spin up him and his dashboard in our world, and log him out that I can run from my machine?” This is a separate local operator slice; it does not authorize the proposed vanilla datapack/bridge or MB-OPS-001 automatic updates.
 
 Happy path: on this Mac, run/double-click `play.command` to start the registered accepted Chunkbot artifact using the existing ignored world config, bot-owned Microsoft cache and external model credentials, then reuse/start/open the local dashboard. `dashboard.command` starts or opens only the read-only viewer. `logout.command` gracefully stops only the proven owned bot process and confirms logout, leaving the dashboard open with historical status. Ordinary owner gameplay commands stay `!chunkbot ...`.
 
@@ -99,3 +99,6 @@ Recorded by Codex on 2026-10-07 UTC during the first full controller-source revi
 
 
 Coordinator continuation: Jake explicitly chose “Finish with Codex now” after the native Claude subscription reported a session limit until11:10PM Arizona. Codex owns finishing/reviewing/testing ONLY the local-control slice and its C1 fixes. Preserve native S draft and three worker feature branches; no alternate Claude model or API billing route is substituted. Feature implementation/acceptance gaps stay recorded separately.
+
+
+L1 delivery: the reviewed scripts and operator docs are published as90450c4 in public eggyBones/chunkbot-mc and installed in the coordinator checkout.31 credential-free tests and the actual loopback startup/duplicate/dashboard/logout/TCP/publisher trial pass. Live play/dashboard reuse preserves bot71629 and viewer65554; no live logout/restart was used to accept helpers. [Operator procedure and review](reviews/mb-ops-002-local-controls.md). Full outgoing tree/history/archive audit compares20 actual credentials from Microsoft, Codex, OpenRouter and GitHub and has no findings. App release remains the isolated accepted d348d58 artifact; batch002 is not deployed by this publication.

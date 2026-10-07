@@ -68,6 +68,8 @@ Use strictly disjoint files/modules in the shared checkout with an explicit owne
 
 ### Shared runtimes and final acceptance
 
+During live play, use the registered accepted artifact through `play.command`, `dashboard.command` and `logout.command`. Its ignored operator profile pins the build and private world config. Keep development builds and fixture status in independent data directories. Development workers never invoke these controls against the real profile, fetch the operator's credentials, or interrupt the live bot to test a helper. The coordinator accepts controls on a separately leased loopback fixture, then verifies reuse of the existing live session.
+
 Worktrees do not isolate Minecraft worlds, ports, RCON scene resets, provider quotas or the DSH host. Codex grants exclusive time windows for shared fixture resets/live harnesses and schedules real-provider acceptance. Separate fixtures are an option only when actually provisioned and verified under the assigned scope. Workers do not restart/stop a shared fixture or DSH while another worker uses it. Coordinate a required DSH restart around **all** active native turns.
 
 Parallel source work may continue in isolated worktrees while Codex tests an immutable integration build. No other worker may edit that checkout or reset its fixture during acceptance. Verify each feature and the integrated result; record failures under stable IDs and send consolidated corrections to the responsible worker. Continue ready branches while a dependency is being reviewed.
