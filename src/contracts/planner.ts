@@ -10,6 +10,7 @@ import type { ClarificationExchange } from './clarification.ts';
 import type { RequestId } from './ids.ts';
 import type { LookaheadContext, PlanningSubject, PreparationContext } from './handoff.ts';
 import type { MemoryView } from './memory.ts';
+import type { AutonomyPlannerContext } from './autonomy.ts';
 import type { ObservationSnapshot } from './observation.ts';
 import type { TaskFeedback } from './task.ts';
 
@@ -154,6 +155,13 @@ export interface PlannerRequest {
   mechanicsVersion?: string;
   /** Limits the planner must respect (read-only facts; the planner cannot change them). */
   limits?: { travelRadius: number; observationRadius: number; planWindowSteps: number };
+  /**
+   * MB-FLOW-001: present only for an AUTOMATIC goal (progression/support). The
+   * instruction is then code-generated, not owner words; this bounded context
+   * says why the goal exists, what was recently verified/blocked, the session
+   * allowance left and the home project. Data, not instructions.
+   */
+  autonomy?: AutonomyPlannerContext;
 }
 
 /**
