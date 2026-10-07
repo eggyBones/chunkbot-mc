@@ -272,7 +272,8 @@ export const APP_JS = String.raw`
     ];
     if (d.pause) kids.push(d.pause.tone === 'warn' ? el('div', { cls: 'callout', text: d.pause.text }) : el('div', { cls: 'note', text: d.pause.text }));
     if (d.clarification) kids.push(el('div', { cls: 'callout', text: 'Question for you — ' + d.clarification }));
-    if (d.survival) kids.push(el('div', { cls: 'callout', text: 'Survival routine — ' + d.survival + ' (your directive stays queued)' }));
+    // P-C7: no claim about the owner's directive here; whether one is held, interrupted or absent is shown by the canonical owner-intent line below.
+    if (d.survival) kids.push(el('div', { cls: 'callout', text: 'Survival routine — ' + d.survival }));
     if (d.autonomy) {
       var auKids = [el('div', { cls: 'lab t-muted', text: 'Automatic work (read-only)' })];
       for (var ai = 0; ai < d.autonomy.length; ai++) auKids.push(el('div', { cls: 'note', text: d.autonomy[ai] }));
