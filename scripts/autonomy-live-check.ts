@@ -22,9 +22,10 @@
 //       engine path (surface supervisor, source progression); the planner input is labelled
 //       automatic and carries the autonomy context; outcome code-verified; RCON inventory confirms
 //   U2  A4 owner priority: an owner instruction during an automatic task takes over (old goal
-//       replaced, no automatic task after the switch); the owner goal completes
-//   U3  A5 durable stop: owner stop -> latch durable on disk; restart -> latch restored (no
-//       automatic goal); bare resume -> fresh assessment starts automatic work
+//       replaced, no automatic task after the switch); the owner goal completes and progression
+//       returns after it
+//   U3  A5 durable stop: owner stop DURING an automatic planner turn cancels it; latch durable on
+//       disk; restart -> latch restored (no automatic goal); bare resume -> fresh assessment
 //   U4  A3/A6 home: the automatic goal approves a site and builds small_shelter_v1; outcome
 //       structure_state complete verified by code; EVERY blueprint cell confirmed over RCON;
 //       verified home recorded in memory; project durable on disk
@@ -34,7 +35,8 @@
 //
 // Requires an exclusive coordinator lease on the fixture. Scene footprint: x 196..224,
 // z 190..224, y -63..-50 (the existing skills scene area, reset with flat grass and one oak
-// trunk), the bot's and FixtureOwner's inventories, forceload of that area (as the other
+// trunk), the bot's and FixtureOwner's inventories (the bot gets 8 bread above the default
+// safe-food reserve, then 64 cobblestone + crafting table, furnace and chest for the home), forceload of that area (as the other
 // scene harnesses). No difficulty, gamerule or time change. Independent data directory under
 // the report directory (fresh memory/autonomy scope per run). Never rebuild dist while it runs.
 //
@@ -255,6 +257,9 @@ class Harness {
       `fill ${x1} -63 ${z1} ${x2} -62 ${z2} dirt`,
       ...SCENE.logs.map((p) => `setblock ${p.x} ${p.y} ${p.z} oak_log`),
       `clear ${BOT}`,
+      // Above survival's default safe-food reserve (low 2, high 6), so no resupply support goal
+      // competes with the scripted progression turns (survival behavior is MB-FLOW-003's gate).
+      `give ${BOT} minecraft:bread 8`,
       `clear ${OWNER}`,
       `effect clear ${BOT}`,
       `gamemode survival ${BOT}`,
@@ -495,12 +500,14 @@ async function run(outDir: string): Promise<Json> {
       check(logs1 >= logs0 + 1, 'server inventory confirms the log');
     });
 
+    let inFlight: string | undefined;
     await h.scenarioRun('U2', 'owner priority: an owner instruction during an automatic task takes over; the owner goal completes', async (ev) => {
       const sinceMs = Date.now();
       h.turns([
         { kind: 'proposal', proposal: collectLogs(2, 'Collect two more oak logs.') },
         { kind: 'proposal', proposal: comeHere() },
-        { kind: 'proposal', proposal: nothingAttainable(), delayMs: 6_000 },
+        // The assessment after the owner's verified completion: a slow planner turn, stopped in U3.
+        { kind: 'proposal', proposal: nothingAttainable(), delayMs: 12_000 },
       ]);
       const sub = await h.waitEvent((e) => e.type === 'autonomy_goal_submitted' && e.source?.kind === 'progression' && Date.parse(String(e.t)) >= sinceMs, 30_000, 'the next automatic progression');
       const autoId = String(sub.goalId);
@@ -518,11 +525,22 @@ async function run(outDir: string): Promise<Json> {
       const ownerEnd = await h.waitTerminal(String(ownerAdm.goalId), 90_000);
       ev.push(`owner goal ${ownerEnd.state} (${ownerEnd.reason}); chat line: ${h.cli!.lines.slice(from).find((l) => /owner: !chunkbot come here/.test(l.text))?.text ?? 'n/a'}`);
       check(ownerEnd.state === 'completed', 'the owner goal completed');
+      const ownerEndAt = Date.parse(String(ownerEnd.t));
+      const back = await h.waitEvent((e) => e.type === 'autonomy_goal_submitted' && e.source?.kind === 'progression' && Date.parse(String(e.t)) >= ownerEndAt, AFTER_COMPLETION_MS + 15_000, 'progression to return after the owner goal');
+      ev.push(`progression returned ${Date.parse(String(back.t)) - ownerEndAt} ms after the owner goal: ${back.goalId}`);
+      await h.waitEvent((e) => e.type === 'planner_request' && e.goalId === back.goalId, 15_000, 'its planner turn to start');
+      inFlight = String(back.goalId);
     });
 
     await h.scenarioRun('U3', 'durable stop: latch on disk, restored after restart (no automatic goal), resume reassesses afresh', async (ev) => {
+      check(inFlight, 'U2 left an automatic goal planning');
+      const stopAt = Date.now();
       const from = h.say('stop');
       await h.cli!.waitSince(/\[chat\] owner: !chunkbot stop/, from, 10_000);
+      const cancelled = await h.waitTerminal(inFlight, 10_000);
+      const plannerEnd = h.events().find((e) => (e.type === 'planner_turn_failed' || e.type === 'planner_turn_completed' || e.type === 'goal_cleanup') && (e.goalId === inFlight || e.goalId === undefined) && Date.parse(String(e.t)) >= stopAt);
+      ev.push(`stop during automatic planning: ${inFlight} ${cancelled.state} (${cancelled.reason}) ${Date.parse(String(cancelled.t)) - stopAt} ms after the stop; planner turn end: ${plannerEnd ? `${plannerEnd.type} ${String(plannerEnd.failure ?? plannerEnd.kind ?? '')}`.trim() : 'n/a'}`);
+      check(cancelled.state === 'cancelled', 'the planning automatic goal was cancelled by the stop');
       await sleep(800);
       const st = await h.status();
       ev.push(...st.filter((l) => /stop latch/.test(l)));
@@ -537,6 +555,7 @@ async function run(outDir: string): Promise<Json> {
       ev.push(line);
       check(/PAUSED \(stop latch restored; say resume\)/.test(line), 'latch restored at startup');
       await h.setup(`clear ${BOT}`);
+      await h.setup(`give ${BOT} minecraft:bread 8`);
       await h.setup(`give ${BOT} ${BUILD_MATERIAL} 64`);
       for (const item of ['minecraft:crafting_table', 'minecraft:furnace', 'minecraft:chest']) await h.setup(`give ${BOT} ${item} 1`);
       await h.setup(`tp ${BOT} ${SCENE.start.x} ${SCENE.start.y} ${SCENE.start.z} 0 0`);
@@ -647,7 +666,12 @@ async function run(outDir: string): Promise<Json> {
       results: h.results,
       setup: h.setupLog,
       interventions: h.interventions,
-      runs: h.runs,
+      runs: h.runs.map((r) => {
+        const ev = readJsonl(r.events);
+        const bySource: Record<string, number> = {};
+        for (const e of ev.filter((x) => x.type === 'goal_admitted')) bySource[String(e.source?.kind ?? 'none')] = (bySource[String(e.source?.kind ?? 'none')] ?? 0) + 1;
+        return { ...r, admissionsBySource: bySource, plannerRequests: ev.filter((x) => x.type === 'planner_request').length, terminals: ev.filter((x) => x.type === 'goal_terminal').map((x) => ({ goalId: x.goalId, state: x.state, reason: x.reason })) };
+      }),
       plannerInputs: h.prompts(),
       jevCalls: h.jevCalls,
       home: h.home ?? null,
