@@ -33,6 +33,7 @@ import type {
   DecisionRequest,
   IdSource,
   JsonValue,
+  LowHealthAllowancePort,
   ObservationSnapshot,
   PredicateEvaluation,
   PredicateEvaluator,
@@ -93,6 +94,13 @@ export interface TaskRuntimeDeps {
   sleep?(ms: number, signal: AbortSignal): Promise<void>;
   /** Local re-observation interval while a maintained condition holds (default 1000 ms; never an inference trigger). */
   holdGuardMs?: number;
+  /**
+   * MB-FLOW-003 narrow low-health allowance (survival-issued grant bound to the
+   * goal/epoch/connection/dimension, fresh safe food or rest, expiry and an
+   * action count). Absent or refused: the guard blocks as before. Never a
+   * threshold change and never planner-granted.
+   */
+  lowHealthAllowance?: LowHealthAllowancePort;
 }
 
 function guardSleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -109,6 +117,13 @@ function guardSleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 class Revoked extends Error {}
+
+/** A candidate inside a low-health allowance: its capability is granted and any `item` parameter is a granted item (none granted: no item may be used). */
+function withinAllowance(c: ActionCandidate, capabilities: readonly string[], items: readonly string[]): boolean {
+  if (!capabilities.includes(c.capability)) return false;
+  const item = (c.parameters as Record<string, unknown>)['item'];
+  return typeof item !== 'string' || items.includes(item);
+}
 
 const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
@@ -211,6 +226,9 @@ export class TaskRuntime implements TaskExecutionPort {
     let actions = 0;
     let localContinuations = 0;
     let holding = false;
+    let allowanceAnnounced = false;
+    /** Allowance under which the frozen choice was dispatched (counted after execution). */
+    let dispatchedUnder: string | undefined;
     let sustain: { candidate: ActionCandidate; jevActionId: string } | undefined;
     const emit = (kind: string, data: Record<string, unknown>) => {
       store.record({ type: kind, taskId: task.taskId, goalId: task.goalId, goalEpoch: task.goalEpoch, ...data });
@@ -268,11 +286,19 @@ export class TaskRuntime implements TaskExecutionPort {
         if (clock.now() - lastProgressAt > deps.limits.noProgressMs) {
           return finish('blocked', 'no_progress', `no verified progress for ${Math.round((clock.now() - lastProgressAt) / 1000)}s (window ${Math.round(deps.limits.noProgressMs / 1000)}s); last completion check: ${evaluation.detail}`);
         }
-        if (snapshot.self.health > 0 && snapshot.self.health <= deps.limits.lowHealth) {
-          return finish('blocked', 'low_health', `health ${snapshot.self.health} is at or below the interruption threshold ${deps.limits.lowHealth}`);
+        // MB-FLOW-003 narrow allowance: at the guard, only a survival-issued grant for THIS goal
+        // epoch lets the round continue, and then only with its capabilities/items.
+        const allowance = this.lowHealthCheck(task, snapshot);
+        if (allowance && !allowance.allowed) {
+          return finish('blocked', 'low_health', `health ${snapshot.self.health} is at or below the interruption threshold ${deps.limits.lowHealth}${allowance.reason === 'no_port' ? '' : ` (low-health allowance refused: ${allowance.reason}: ${allowance.detail})`}`);
+        }
+        if (allowance?.allowed && !allowanceAnnounced) {
+          allowanceAnnounced = true;
+          emit('task_low_health_allowance', { round: rounds, health: snapshot.self.health, threshold: deps.limits.lowHealth, allowanceId: allowance.allowanceId, capabilities: [...allowance.capabilities], items: [...allowance.items], detail: allowance.detail });
         }
         // 4. Candidates from the registered resolvers of the allowed capabilities.
-        const set = deps.candidates.generate(task.spec, snapshot);
+        const generated = deps.candidates.generate(task.spec, snapshot);
+        const set = allowance?.allowed ? { ...generated, candidates: generated.candidates.filter((c) => withinAllowance(c, allowance.capabilities, allowance.items)) } : generated;
         lastUnavailable = set.unavailable;
         const excludedFailing = (c: ActionCandidate) => (failures.get(this.key(c)) ?? 0) > deps.limits.perTargetRetries;
         const excludedRepeating = (c: ActionCandidate) => (unproductive.get(this.key(c)) ?? 0) > deps.limits.perTargetRetries;
@@ -369,6 +395,12 @@ export class TaskRuntime implements TaskExecutionPort {
         // 5. Revalidate against the CURRENT world through the same resolvers.
         const fresh = deps.perception.take(task.goalEpoch);
         if (!fresh || fresh.connectionEpoch !== chosen.connectionEpoch) throw new Revoked();
+        // The allowance is re-checked against the FRESH snapshot after the Jev await, before dispatch.
+        const freshAllowance = this.lowHealthCheck(task, fresh);
+        if (freshAllowance && (!freshAllowance.allowed || !withinAllowance(chosen, freshAllowance.capabilities, freshAllowance.items))) {
+          return finish('blocked', 'low_health', `health ${fresh.self.health} is at or below the interruption threshold ${deps.limits.lowHealth} at dispatch; ${freshAllowance.allowed ? `${chosen.capability} is outside the low-health allowance` : `allowance refused: ${freshAllowance.reason}: ${freshAllowance.detail}`}`);
+        }
+        dispatchedUnder = freshAllowance?.allowed ? freshAllowance.allowanceId : undefined;
         const regen = deps.candidates.generate(task.spec, fresh);
         const want = this.key(chosen);
         if (!regen.candidates.some((c) => this.key(c) === want)) {
@@ -380,12 +412,41 @@ export class TaskRuntime implements TaskExecutionPort {
         // 6. Execute the frozen candidate under the single actuator lease.
         const outcome = await this.execute(task, chosen, 'jev', recent, emit, requestId);
         actions += 1;
+        if (dispatchedUnder) {
+          try {
+            deps.lowHealthAllowance?.consumed(dispatchedUnder, { actionId: chosen.id, capability: chosen.capability, status: outcome.status });
+          } catch (error) {
+            store.record({ type: 'low_health_allowance_error', taskId: task.taskId, message: error instanceof Error ? error.message : String(error) });
+          }
+          dispatchedUnder = undefined;
+        }
         sustain = this.afterOutcome(task, chosen, outcome, failures, succeeded, unproductive, chosen.id, () => (lastProgressAt = clock.now()));
       }
     } catch (error) {
       if (error instanceof Revoked || !task.isCurrent() || task.signal.aborted) return finish('cancelled', 'ownership_revoked', 'the owning goal was stopped, replaced or ended; no further action');
       const message = error instanceof Error ? error.message : String(error);
       return finish('failed', 'runtime_error', message);
+    }
+  }
+
+  /**
+   * Low-health guard decision: undefined when health is above the guard;
+   * otherwise the survival allowance check for THIS goal epoch/task (or a
+   * refusal when no allowance port is installed).
+   */
+  private lowHealthCheck(task: AdmittedTask, snapshot: ObservationSnapshot): ({ allowed: true; allowanceId: string; capabilities: readonly string[]; items: readonly string[]; detail: string } | { allowed: false; reason: string; detail: string }) | undefined {
+    const { deps } = this;
+    if (!(snapshot.self.health > 0 && snapshot.self.health <= deps.limits.lowHealth)) return undefined;
+    const port = deps.lowHealthAllowance;
+    if (!port) return { allowed: false, reason: 'no_port', detail: 'no low-health allowance is installed' };
+    try {
+      const r = port.check({ goalId: task.goalId, goalEpoch: task.goalEpoch, taskId: task.taskId, allowedCapabilities: task.spec.allowedCapabilities }, snapshot);
+      if (!r.allowed) return r;
+      // Only capabilities this task itself allows; the allowance never widens the task.
+      const capabilities = r.capabilities.filter((c) => task.spec.allowedCapabilities.includes(c));
+      return capabilities.length > 0 ? { ...r, capabilities } : { allowed: false, reason: 'no_allowed_capability', detail: 'none of the allowance capabilities is allowed in this task' };
+    } catch (error) {
+      return { allowed: false, reason: 'allowance_error', detail: error instanceof Error ? error.message : String(error) };
     }
   }
 

@@ -41,7 +41,9 @@ import {
   BOUNDS,
   TaskSpecSchema,
   type AdmissionInventory,
+  type AutonomyPlannerContext,
   type ControlLatch,
+  type GoalSource,
   type GoalCounters,
   type HandoffTotals,
   type InventoryBaseline,
@@ -60,6 +62,7 @@ import {
   type EvidenceEvent,
   type WindowGap,
   isActiveGoalState,
+  isAutomaticSource,
   isPredicateWithinDepth,
   type GoalKind,
   type GoalOutcomeContract,
@@ -154,14 +157,21 @@ export interface GoalEngineDeps {
   /** Current connection epoch; a pending instruction belongs to the connection it arrived on. */
   connectionEpoch?: () => number;
   /**
+   * MB-FLOW-001 P2: called SYNCHRONOUSLY whenever the explicit pause latch
+   * changes (owner stop sets it before any await; resume clears it). The
+   * supervisor cancels its scheduling here and persists the latch durably.
+   * Must not throw; failures are recorded.
+   */
+  onLatchChanged?: (latch: ControlLatch, cause: 'owner_stop' | 'resume') => void;
+  /**
    * Admission ownership hook: called synchronously once a valid instruction has
    * replaced any old goal and the new goal epoch is current, BEFORE planning.
    * Execution adapters capture admission-bound state here (e.g. the goal's
    * travel anchor). Must not throw; failures are recorded, not fatal.
    */
-  onGoalAdmitted?: (admission: { goalId: string; epoch: number; admittedAtMs: number; instruction: string; kind: GoalKind }) => void;
+  onGoalAdmitted?: (admission: { goalId: string; epoch: number; admittedAtMs: number; instruction: string; kind: GoalKind; source?: GoalSource }) => void;
   /** Called once when a goal reaches a terminal state (after cleanup). Must not throw; failures are recorded. */
-  onGoalTerminal?: (end: { goalId: string; epoch: number; kind: GoalKind; state: TerminalGoalState; reason: TerminalReasonCode; detail: string; interpretation?: string }) => void;
+  onGoalTerminal?: (end: GoalTerminalEvent) => void;
   /** MB-MEM-001 planner seam (bounded view per request, shown refs, prepared-ref re-grounding). */
   memory?: MemoryPlannerPort;
   /**
@@ -182,7 +192,38 @@ export interface GoalEngineDeps {
   mechanicsVersion?: string;
 }
 
-export type SubmitRejection = 'empty' | 'too_long' | 'not_connected' | 'shutting_down' | 'invalid_task' | 'tasks_not_installed';
+export type SubmitRejection = 'empty' | 'too_long' | 'not_connected' | 'shutting_down' | 'invalid_task' | 'tasks_not_installed' | 'busy' | 'paused';
+
+/** What the terminal hook reports (MB-FLOW-001 adds source, outcome and counters for the supervisor). */
+export interface GoalTerminalEvent {
+  goalId: string;
+  epoch: number;
+  kind: GoalKind;
+  state: TerminalGoalState;
+  reason: TerminalReasonCode;
+  detail: string;
+  interpretation?: string;
+  instruction?: string;
+  source?: GoalSource;
+  /** The accepted outcome contract, when one was bound. */
+  outcome?: GoalOutcomeContract;
+  outcomeStatus?: { status: 'satisfied' | 'unsatisfied' | 'unknown'; detail: string };
+  counters?: GoalCounters;
+  admittedAtMs?: number;
+  /** Absolute goal deadline. */
+  deadlineAtMs?: number;
+  /** Server-confirmed admission inventory (counts null when unknown). */
+  baseline?: { capturedAtMs: number; counts: Record<string, number> | null };
+  progress?: string;
+}
+
+/** Code-owned ceilings of one support admission (survival proposal; never above the goal limits). */
+export interface GoalCeilings {
+  plannerTurns: number;
+  tasks: number;
+  replans: number;
+  deadlineMs: number;
+}
 
 export type SubmitResult =
   | { status: 'admitted'; goal: GoalRecord; replacedGoalId?: string }
@@ -208,7 +249,7 @@ export interface EngineStatus {
     tasks: Readiness;
   };
   /** The task currently executing for the active goal, if any. */
-  task?: { taskId: string; objective: string; mode: TaskMode; startedAtMs: number };
+  task?: { taskId: string; objective: string; mode: TaskMode; startedAtMs: number; capabilities?: string[] };
   /** The last finished task of the latest goal (verified result summary). */
   lastTask?: { taskId: string; status: string; reason: string; detail: string; decisions: number; actions: number; localContinuations: number };
   /** MB-FLOW-002: the single pending (not admitted) instruction, if any. */
@@ -261,6 +302,14 @@ interface LookaheadState {
 interface ActiveGoal {
   record: GoalRecord;
   epoch: number;
+  /** MB-FLOW-001: code-owned source (owner unless the supervisor submitted it). */
+  source: GoalSource | undefined;
+  /** Planner context of an automatic goal. */
+  autonomy?: AutonomyPlannerContext;
+  /** Absolute goal deadline. */
+  deadlineAtMs: number;
+  /** Per-goal planner-turn/task/replan ceilings (the configured limits, or lower for a support admission). */
+  caps: { plannerTurns: number; tasks: number; replans: number };
   abort: AbortController;
   cleanups: Set<Cleanup>;
   clarifications: ClarificationExchange[];
@@ -348,6 +397,7 @@ const TERMINAL_STATE_FOR: Record<TerminalReasonCode, TerminalGoalState> = {
   decision_not_ready: 'blocked',
   no_progress: 'blocked',
   low_health: 'blocked',
+  safety_interrupted: 'blocked',
   death: 'failed',
   disconnected: 'failed',
   kicked: 'failed',
@@ -475,6 +525,8 @@ export class GoalEngine {
   /** Every outstanding (bounded) owned-process cleanup of discarded preparations, superseded ones included (C3a). */
   private readonly preparationCleanups = new Set<Promise<void>>();
   private readonly windowGaps: WindowGap[] = [];
+  /** Owner/operator intakes between validation and admission (an automatic admission never overtakes one). */
+  private ownerIntakesInFlight = 0;
 
   constructor(deps: GoalEngineDeps) {
     this.deps = deps;
@@ -517,7 +569,145 @@ export class GoalEngine {
     const wasPaused = this.latch.paused;
     this.latch = { paused: false };
     this.deps.store.record({ type: 'control_resumed', surface, wasPaused });
+    this.latchChanged('resume');
     return { wasPaused };
+  }
+
+  /** Startup only: restores a durable latch (MB-FLOW-001 P2) without notifying the hook. */
+  restoreLatch(latch: ControlLatch): void {
+    this.latch = { ...latch };
+    this.deps.store.record({ type: 'control_latch_restored', paused: latch.paused, source: latch.source ?? null });
+  }
+
+  private latchChanged(cause: 'owner_stop' | 'resume'): void {
+    try {
+      this.deps.onLatchChanged?.({ ...this.latch }, cause);
+    } catch (error) {
+      this.deps.store.record({ type: 'latch_hook_error', cause, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /**
+   * Why an automatic (supervisor) admission may not start NOW, or undefined.
+   * Synchronous: an automatic goal never replaces an owner goal, a pending
+   * instruction or an owner intake in flight, and never runs while paused.
+   */
+  automaticBlocker(): { reason: SubmitRejection; detail: string } | undefined {
+    if (this.closed) return { reason: 'shutting_down', detail: 'Chunkbot is shutting down' };
+    if (!this.deps.isGameReady()) return { reason: 'not_connected', detail: 'not connected to the game' };
+    if (this.latch.paused) return { reason: 'paused', detail: 'automatic work is paused (stop latch)' };
+    if (this.pending) return { reason: 'busy', detail: 'an owner instruction is being prepared' };
+    if (this.ownerIntakesInFlight > 0) return { reason: 'busy', detail: 'an owner instruction is being admitted' };
+    if (this.active) return { reason: 'busy', detail: `goal ${this.active.record.id} owns control` };
+    return undefined;
+  }
+
+  /** Source of the goal that owns control now (undefined: idle or an operator diagnostic). */
+  get activeSource(): GoalSource | undefined {
+    return this.active?.source;
+  }
+
+  /**
+   * MB-FLOW-001 single automatic intake: the supervisor's progression or
+   * support goal enters through the SAME admission path (replacement, epoch,
+   * travel-anchor hook, admission baseline, planner slot, limits) as owner
+   * goals. Refused synchronously (no side effects, no owner notice) while
+   * anything owner-related or a pause holds. A later owner instruction or stop
+   * supersedes it through the intake generation. `replaceAutomatic` lets a
+   * support need replace an ACTIVE automatic goal (never an owner goal).
+   */
+  async submitAutomatic(instruction: string, source: GoalSource, options: { context?: AutonomyPlannerContext; ceilings?: GoalCeilings; replaceAutomatic?: boolean } = {}): Promise<SubmitResult> {
+    const origin: IntakeOrigin = { surface: 'supervisor', principal: 'supervisor' };
+    if (source.kind === 'owner') return this.rejectQuiet('invalid_task', 'owner goals use submit', origin);
+    if (source.kind === 'support' && source.execution !== 'planner_goal') return this.rejectQuiet('invalid_task', 'a code_task support routine uses submitSupportTask', origin);
+    const blocker = this.automaticBlockerFor(options.replaceAutomatic === true);
+    if (blocker) return this.rejectQuiet(blocker.reason, blocker.detail, origin);
+    const text = instruction.trim();
+    if (text.length === 0 || text.length > BOUNDS.longText) return this.rejectQuiet(text.length === 0 ? 'empty' : 'too_long', 'automatic instruction out of bounds', origin);
+    const admitted = await this.admit(text, origin, 'owner_goal', undefined, {
+      source,
+      ...(options.context ? { autonomy: options.context } : {}),
+      ...(options.ceilings ? { ceilings: options.ceilings } : {}),
+    });
+    if (admitted.status !== 'admitted') return admitted.result;
+    const label = source.kind === 'support' ? `Automatic ${source.priority === 'safety' ? 'safety' : 'support'} routine (${source.routine})` : 'Automatic progression';
+    this.deps.notify({ goalId: admitted.active.record.id, text: `${label} goal ${admitted.active.record.id} started: ${truncate(source.kind === 'support' ? source.reason : 'assessing a useful, attainable milestone', 160)}. Say stop to pause automatic work.` });
+    this.track(this.plan(admitted.active));
+    return admitted.result;
+  }
+
+  /** As automaticBlocker; with `replaceAutomatic`, an ACTIVE automatic goal may be replaced (support over progression). */
+  private automaticBlockerFor(replaceAutomatic: boolean): { reason: SubmitRejection; detail: string } | undefined {
+    const b = this.automaticBlocker();
+    if (b && replaceAutomatic && b.reason === 'busy' && this.active && !this.pending && this.ownerIntakesInFlight === 0 && this.active.source && this.active.source.kind !== 'owner') return undefined;
+    return b;
+  }
+
+  /**
+   * MB-FLOW-001 x MB-FLOW-003: a survival `code_task` (small preapproved
+   * eat/rest TaskSpec built by code) admitted through the SAME admission path
+   * (replacement, epoch, admission hook — where the low-health allowance is
+   * granted — travel anchor) and run by the SAME task runtime, Jev choice,
+   * fenced executor and lease. No planner turn. The task's completion
+   * predicate is the goal outcome, verified by code. Never reachable from chat
+   * and never labeled an operator diagnostic.
+   */
+  async submitSupportTask(rawSpec: unknown, mode: TaskMode, source: GoalSource, options: { ceilings?: GoalCeilings; replaceAutomatic?: boolean } = {}): Promise<SubmitResult> {
+    const origin: IntakeOrigin = { surface: 'supervisor', principal: 'supervisor' };
+    if (source.kind !== 'support' || source.execution !== 'code_task') return this.rejectQuiet('invalid_task', 'only survival code_task support uses submitSupportTask', origin);
+    if (!this.deps.tasks) return this.rejectQuiet('tasks_not_installed', 'the generic task runtime is not installed', origin);
+    const blocker = this.automaticBlockerFor(options.replaceAutomatic === true);
+    if (blocker) return this.rejectQuiet(blocker.reason, blocker.detail, origin);
+    const parsed = TaskSpecSchema.safeParse(rawSpec);
+    if (!parsed.success) return this.rejectQuiet('invalid_task', `invalid support TaskSpec: ${parsed.error.issues.slice(0, 2).map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`, origin);
+    const spec = parsed.data;
+    const unknown = spec.allowedCapabilities.filter((c) => !this.deps.capabilities.has(c));
+    if (unknown.length > 0) return this.rejectQuiet('invalid_task', `support TaskSpec names capabilities that are not implemented: ${unknown.join(', ')}`, origin);
+    if (!isPredicateWithinDepth(spec.completion)) return this.rejectQuiet('invalid_task', 'support completion predicate nesting exceeds the supported depth', origin);
+    const label = truncate(`[support ${source.routine}] ${spec.objective}`, BOUNDS.longText);
+    const admitted = await this.admit(label, origin, 'support_task', undefined, { source, ...(options.ceilings ? { ceilings: options.ceilings } : {}) });
+    if (admitted.status !== 'admitted') return admitted.result;
+    const active = admitted.active;
+    this.deps.notify({ goalId: active.record.id, text: `Automatic ${source.priority === 'safety' ? 'safety' : 'support'} routine (${source.routine}) ${active.record.id}: ${truncate(source.reason, 160)}. Say stop to pause automatic work.` });
+    active.admittedTasks += 1;
+    active.counters.tasksAdmitted += 1;
+    this.track(this.runSupportTask(active, spec, mode));
+    return admitted.result;
+  }
+
+  private async runSupportTask(active: ActiveGoal, spec: TaskSpec, mode: TaskMode): Promise<void> {
+    try {
+      await this.captureBaseline(active);
+      const result = await this.runTask(active, spec, mode);
+      if (!result || result.status === 'cancelled' || this.active !== active) return;
+      const reason = terminalForTask(result);
+      await this.finishIfCurrent(active, reason, `${result.status === 'completed' ? 'support task completion verified by code' : `support task ${result.status} (${result.reason})`}: ${result.detail}; decisions ${result.decisions}, actions ${result.actions}`);
+    } catch (error) {
+      if (error instanceof StaleWorkError || this.active !== active) return;
+      const message = error instanceof Error ? error.message : String(error);
+      this.deps.store.record({ type: 'task_runtime_error', goalId: active.record.id, message });
+      await this.finishIfCurrent(active, 'runtime_error', truncate(message, 300));
+    }
+  }
+
+  /**
+   * MB-FLOW-003 safety decision (`revoke_unsafe`): synchronously revokes the
+   * ACTIVE goal — any source, owner included — as `safety_interrupted`. A
+   * pending owner instruction is untouched (it still takes priority over
+   * support). The supervisor keeps the interrupted owner intent visible.
+   */
+  async revokeForSafety(detail: string): Promise<{ revoked: boolean; goalId?: string; source?: GoalSource }> {
+    const active = this.active;
+    if (!active) return { revoked: false };
+    ++this.intakeGeneration;
+    this.deps.store.record({ type: 'safety_revocation', goalId: active.record.id, source: active.source ?? null, detail: truncate(detail, 300) });
+    await this.revoke(active, 'safety_interrupted', detail, true);
+    return { revoked: true, goalId: active.record.id, ...(active.source ? { source: active.source } : {}) };
+  }
+
+  private rejectQuiet(reason: SubmitRejection, detail: string, origin: IntakeOrigin): SubmitResult {
+    this.deps.store.record({ type: 'automatic_intake_refused', reason, detail: truncate(detail, 200), surface: origin.surface });
+    return { status: 'rejected', reason, detail };
   }
 
   /** The single intake surface for every natural-language instruction (chat or terminal). */
@@ -532,7 +722,13 @@ export class GoalEngine {
       this.deps.store.record({ type: 'preparation_allowance_exhausted', discardedTurns: this.totals.discardedTurns, allowance: this.totals.discardedTurnAllowance });
       this.deps.notify({ text: `The per-run allowance for preparing instructions in the background (${this.totals.discardedTurnAllowance} planner turns of discarded drafts) is used up; switching to your new instruction directly.` });
     }
-    const admitted = await this.admit(text, origin, 'owner_goal');
+    this.ownerIntakesInFlight += 1;
+    let admitted: Awaited<ReturnType<GoalEngine['admit']>>;
+    try {
+      admitted = await this.admit(text, origin, 'owner_goal', undefined, { source: { kind: 'owner' } });
+    } finally {
+      this.ownerIntakesInFlight -= 1;
+    }
     if (admitted.status !== 'admitted') return admitted.result;
     this.deps.notify({ goalId: admitted.active.record.id, text: `Goal ${admitted.active.record.id} accepted: "${truncate(text, 120)}". Planning…` });
     this.track(this.plan(admitted.active));
@@ -902,7 +1098,7 @@ export class GoalEngine {
       this.discardPending(p, 'not_connected', 'the game connection changed before the switch');
       return;
     }
-    const admitted = await this.admit(p.instruction, p.origin, 'owner_goal', p);
+    const admitted = await this.admit(p.instruction, p.origin, 'owner_goal', p, { source: { kind: 'owner' } });
     if (admitted.status !== 'admitted') {
       if (this.pending === p) this.discardPending(p, this.closed ? 'shutdown' : 'superseded', 'superseded during the switch', !this.closed);
       return;
@@ -999,7 +1195,13 @@ export class GoalEngine {
   // ------------------------------------------------------------ admission
 
   /** Replacement, epoch, record and synchronous admission hook (travel anchor) — shared by every intake. */
-  private async admit(text: string, origin: IntakeOrigin, kind: GoalKind, prepared?: PendingIntent): Promise<{ status: 'admitted'; active: ActiveGoal; result: SubmitResult } | { status: 'not_admitted'; result: SubmitResult }> {
+  private async admit(
+    text: string,
+    origin: IntakeOrigin,
+    kind: GoalKind,
+    prepared?: PendingIntent,
+    extras: { source?: GoalSource; autonomy?: AutonomyPlannerContext; ceilings?: GoalCeilings } = {},
+  ): Promise<{ status: 'admitted'; active: ActiveGoal; result: SubmitResult } | { status: 'not_admitted'; result: SubmitResult }> {
     if (!prepared && this.pending) this.discardPending(this.pending, 'superseded', 'replaced by a directly admitted instruction', false);
     const generation = prepared ? prepared.generation : ++this.intakeGeneration;
     const replaced = this.active?.record.id;
@@ -1023,10 +1225,23 @@ export class GoalEngine {
       updatedAtMs: now,
       plannerTurns: 0,
       progress: '',
+      ...(extras.source ? { source: extras.source } : {}),
+    };
+    const lim = this.deps.limits;
+    const cl = extras.ceilings;
+    const deadlineAtMs = now + (cl ? Math.min(cl.deadlineMs, lim.goalDeadlineMs) : lim.goalDeadlineMs);
+    const caps = {
+      plannerTurns: cl ? Math.min(cl.plannerTurns, lim.plannerTurnsPerGoal) : lim.plannerTurnsPerGoal,
+      tasks: cl ? Math.min(cl.tasks, lim.totalTaskCeiling) : lim.totalTaskCeiling,
+      replans: cl ? Math.min(cl.replans, lim.replans ?? 8) : (lim.replans ?? 8),
     };
     const active: ActiveGoal = {
       record,
       epoch: this.epoch,
+      source: extras.source,
+      ...(extras.autonomy ? { autonomy: extras.autonomy } : {}),
+      deadlineAtMs,
+      caps,
       abort: new AbortController(),
       cleanups: new Set(),
       clarifications: [],
@@ -1059,17 +1274,17 @@ export class GoalEngine {
       prepared.settled.resolve('handed_off');
     }
     // The record shows the live counters (one object; never reset across windows).
-    if (kind === 'owner_goal') record.counters = active.counters;
+    if (kind === 'owner_goal' || kind === 'support_task') record.counters = active.counters;
     active.deadline = setTimeout(() => {
-      void this.finishIfCurrent(active, 'limit_exhausted', `goal deadline of ${Math.round(this.deps.limits.goalDeadlineMs / 1000)}s reached`);
-    }, this.deps.limits.goalDeadlineMs);
+      void this.finishIfCurrent(active, 'limit_exhausted', `goal deadline of ${Math.round((deadlineAtMs - now) / 1000)}s reached${cl ? ' (support ceiling)' : ''}`);
+    }, Math.max(0, deadlineAtMs - now));
     active.deadline.unref?.();
     this.active = active;
     this.last = record;
     this.currentTask = undefined;
     this.lastTask = undefined;
     try {
-      this.deps.onGoalAdmitted?.({ goalId: record.id, epoch: record.epoch, admittedAtMs: now, instruction: text, kind });
+      this.deps.onGoalAdmitted?.({ goalId: record.id, epoch: record.epoch, admittedAtMs: now, instruction: text, kind, ...(extras.source ? { source: extras.source } : {}) });
     } catch (error) {
       this.deps.store.record({ type: 'goal_admission_hook_error', goalId: record.id, message: error instanceof Error ? error.message : String(error) });
     }
@@ -1081,6 +1296,8 @@ export class GoalEngine {
       surface: origin.surface,
       instruction: truncate(text, BOUNDS.text),
       replacedGoalId: replaced,
+      ...(extras.source ? { source: extras.source } : {}),
+      ...(cl ? { ceilings: { ...caps, deadlineMs: deadlineAtMs - now } } : {}),
       ...(prepared ? { intentId: prepared.intentId, preparedTurns: prepared.counters.plannerTurns, timeline: active.handoff?.timeline } : {}),
     });
     const result: SubmitResult = replaced ? { status: 'admitted', goal: { ...record }, replacedGoalId: replaced } : { status: 'admitted', goal: { ...record } };
@@ -1098,7 +1315,7 @@ export class GoalEngine {
     const taskId = this.deps.ids.next('task');
     if (active.record.state !== 'executing') this.setState(active, 'executing');
     const startedAtMs = this.deps.clock.now();
-    this.currentTask = { taskId, objective: truncate(spec.objective, 200), mode, startedAtMs };
+    this.currentTask = { taskId, objective: truncate(spec.objective, 200), mode, startedAtMs, capabilities: [...spec.allowedCapabilities] };
     this.deps.store.record({ type: 'task_admitted', goalId: active.record.id, epoch: active.epoch, taskId, mode, objective: truncate(spec.objective, BOUNDS.text), allowedCapabilities: spec.allowedCapabilities });
     this.recordTimings(active, startedAtMs);
     const running = tasks.run({ taskId, goalId: active.record.id, goalEpoch: active.epoch, spec, mode, signal: active.abort.signal, isCurrent: () => this.active === active && this.epoch === active.epoch && !active.abort.signal.aborted });
@@ -1164,7 +1381,10 @@ export class GoalEngine {
    */
   async stop(reason: 'owner_stop' | 'shutdown' = 'owner_stop', surface: string = 'terminal'): Promise<{ stopped: boolean; goalId?: string; intentId?: string }> {
     ++this.intakeGeneration;
-    if (reason === 'owner_stop') this.latch = { paused: true, sinceMs: this.deps.clock.now(), source: surface };
+    if (reason === 'owner_stop') {
+      this.latch = { paused: true, sinceMs: this.deps.clock.now(), source: surface };
+      this.latchChanged('owner_stop');
+    }
     // Synchronous prefix: the pending planner process is cancelled and the
     // active goal revoked (task/action aborted) before anything is awaited.
     const pending = this.pending;
@@ -1383,7 +1603,24 @@ export class GoalEngine {
     // A handed-off goal that ended before its draft was revalidated still releases the preparation's refs.
     if (active.handoff) this.releasePreparation(active.handoff.intentId);
     try {
-      this.deps.onGoalTerminal?.({ goalId: active.record.id, epoch: active.epoch, kind: active.record.kind ?? 'owner_goal', state, reason, detail: active.record.terminal.detail, ...(active.record.interpretation ? { interpretation: active.record.interpretation } : {}) });
+      this.deps.onGoalTerminal?.({
+        goalId: active.record.id,
+        epoch: active.epoch,
+        kind: active.record.kind ?? 'owner_goal',
+        state,
+        reason,
+        detail: active.record.terminal.detail,
+        ...(active.record.interpretation ? { interpretation: active.record.interpretation } : {}),
+        instruction: active.record.instruction,
+        ...(active.source ? { source: active.source } : {}),
+        ...(active.outcome ? { outcome: active.outcome.contract } : {}),
+        ...(active.outcomeStatus ? { outcomeStatus: { ...active.outcomeStatus } } : {}),
+        counters: { ...active.counters },
+        admittedAtMs: active.record.admittedAtMs,
+        deadlineAtMs: active.deadlineAtMs,
+        ...(active.baseline ? { baseline: { capturedAtMs: active.baseline.capturedAtMs, counts: active.baseline.counts ? { ...active.baseline.counts } : null } } : {}),
+        progress: active.record.progress,
+      });
     } catch (error) {
       this.deps.store.record({ type: 'goal_terminal_hook_error', goalId: active.record.id, message: error instanceof Error ? error.message : String(error) });
     }
@@ -1448,13 +1685,13 @@ export class GoalEngine {
   private goalRequest(active: ActiveGoal, snapshot: ObservationSnapshot | null, requestId: string, turnKind: PlannerTurnKind, extra: Partial<PlannerRequest> = {}): PlannerRequest {
     const { capabilities, limits } = this.deps;
     const c = active.counters;
-    const maxReplans = limits.replans ?? 8;
+    const maxReplans = active.caps.replans;
     return {
       requestId,
       subject: { kind: 'goal', goalId: active.record.id, goalEpoch: active.epoch },
       instruction: active.record.instruction,
       turn: c.plannerTurns,
-      maxTurns: limits.plannerTurnsPerGoal,
+      maxTurns: active.caps.plannerTurns,
       catalog: capabilities.catalog(),
       observation: snapshot,
       clarifications: [...active.clarifications],
@@ -1466,10 +1703,10 @@ export class GoalEngine {
       ...(active.outcomeStatus ? { outcomeStatus: active.outcomeStatus } : {}),
       counters: { ...c },
       remaining: {
-        plannerTurns: limits.plannerTurnsPerGoal - c.plannerTurns,
-        tasks: limits.totalTaskCeiling - active.admittedTasks,
+        plannerTurns: active.caps.plannerTurns - c.plannerTurns,
+        tasks: active.caps.tasks - active.admittedTasks,
         replans: maxReplans - c.replans,
-        deadlineMs: Math.max(0, active.record.admittedAtMs + limits.goalDeadlineMs - this.deps.clock.now()),
+        deadlineMs: Math.max(0, active.deadlineAtMs - this.deps.clock.now()),
         windowSteps: limits.planWindowSteps,
       },
       ownerCoordinates: this.ownerCoords(active),
@@ -1478,6 +1715,7 @@ export class GoalEngine {
       ...(this.deps.mechanicsVersion ? { mechanicsVersion: this.deps.mechanicsVersion } : {}),
       limits: { travelRadius: limits.travelRadius ?? 128, observationRadius: limits.observationRadius ?? 32, planWindowSteps: limits.planWindowSteps },
       ...this.memoryField({ kind: 'goal', goalId: active.record.id, goalEpoch: active.epoch }, requestId, active.record.instruction, active.clarifications, snapshot),
+      ...(active.autonomy ? { autonomy: active.autonomy } : {}),
       ...extra,
     };
   }
@@ -1544,7 +1782,7 @@ export class GoalEngine {
     const c = active.counters;
     if (!this.flow.lookahead || active.record.kind !== undefined || active.lookahead || this.pending || this.closed) return;
     // Keep at least one turn for an ordinary replan if the lookahead is discarded.
-    if (limits.plannerTurnsPerGoal - c.plannerTurns < 2 || c.replans >= (limits.replans ?? 8)) return;
+    if (active.caps.plannerTurns - c.plannerTurns < 2 || c.replans >= active.caps.replans) return;
     if (!this.deps.planner.readiness().ready) return;
     const abort = new AbortController();
     const la: LookaheadState = { requestId: this.deps.ids.next('req'), abort, startedAtMs: this.deps.clock.now(), promise: Promise.resolve({ failure: { kind: 'aborted', detail: 'not started' } }) };
@@ -1617,7 +1855,7 @@ export class GoalEngine {
   /** Bounded planner turns for the active goal until a terminal state or a clarification wait. */
   private async plan(active: ActiveGoal, carriedIn?: CarriedPlan): Promise<void> {
     const { planner, knowledge, observation, capabilities, executor, limits } = this.deps;
-    const maxReplans = limits.replans ?? 8;
+    const maxReplans = active.caps.replans;
     const maxRepairs = limits.maxConsecutiveRepairs ?? 2;
     const maxRetries = limits.maxConsecutiveRetries ?? 1;
     const c = active.counters;
@@ -1633,12 +1871,12 @@ export class GoalEngine {
       while (true) {
         this.assertCurrent(active);
         await this.parkWhilePending(active);
-        if (!carried && c.plannerTurns >= limits.plannerTurnsPerGoal) {
-          await this.finishIfCurrent(active, 'limit_exhausted', `planner turn limit (${limits.plannerTurnsPerGoal}) reached; ${this.progressSummary(active)}`);
+        if (!carried && c.plannerTurns >= active.caps.plannerTurns) {
+          await this.finishIfCurrent(active, 'limit_exhausted', `planner turn limit (${active.caps.plannerTurns}) reached; ${this.progressSummary(active)}`);
           return;
         }
-        if (active.admittedTasks >= limits.totalTaskCeiling) {
-          await this.finishIfCurrent(active, 'limit_exhausted', `total task ceiling (${limits.totalTaskCeiling}) reached; ${this.progressSummary(active)}`);
+        if (active.admittedTasks >= active.caps.tasks) {
+          await this.finishIfCurrent(active, 'limit_exhausted', `total task ceiling (${active.caps.tasks}) reached; ${this.progressSummary(active)}`);
           return;
         }
         let raw: unknown;
@@ -1726,7 +1964,7 @@ export class GoalEngine {
         const check = checkProposal(
           raw,
           capabilities,
-          { planWindowSteps: limits.planWindowSteps, remainingTaskAllowance: limits.totalTaskCeiling - active.admittedTasks },
+          { planWindowSteps: limits.planWindowSteps, remainingTaskAllowance: active.caps.tasks - active.admittedTasks },
           {
             ...(this.deps.registry ? { registry: this.deps.registry } : {}),
             shown: active.shown,
@@ -1742,6 +1980,11 @@ export class GoalEngine {
           return;
         }
         const proposal = check.proposal;
+        // MB-FLOW-001: an automatic goal must have a FINITE outcome (it can never hold control indefinitely).
+        if (proposal.disposition === 'plan' && !active.outcome && isAutomaticSource(active.source) && proposal.outcome.kind !== 'finite') {
+          if (await this.rejectAndMaybeRepair(active, requestId, 'semantic', ['automatic (progression/support) goals need a finite, code-verifiable outcome; persistent outcomes are only for owner instructions'], maxRepairs)) continue;
+          return;
+        }
         // Accepted outcome is immutable: a later plan may not silently change it.
         if (proposal.disposition === 'plan' && active.outcome && active.outcome.canonical !== canonicalJson(proposal.outcome)) {
           if (await this.rejectAndMaybeRepair(active, requestId, 'semantic', ['the plan changes the accepted goal outcome; repeat acceptedOutcome exactly (a changed outcome needs a new owner instruction)'], maxRepairs)) continue;
@@ -1765,6 +2008,11 @@ export class GoalEngine {
             continue;
           }
           case 'needs_clarification': {
+            if (isAutomaticSource(active.source)) {
+              // Nobody asked for an automatic goal: it never waits on the owner (no repeated inference, no hidden wait).
+              await this.finishIfCurrent(active, 'cannot_execute', `the automatic goal needed an owner decision (${truncate(proposal.question, 200)}); not asked — automatic goals cannot wait for answers; ${this.progressSummary(active)}`);
+              return;
+            }
             this.clarificationCounter += 1;
             c.clarifications += 1;
             const request: ClarificationRequest = {
