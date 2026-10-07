@@ -246,6 +246,8 @@ export interface ViewModel {
     /** Raw bounded outcome contract, for an optional technical disclosure. */
     outcomeTechnical: string | null;
     survival: string | null;
+    /** MB-FLOW-001 read-only automatic-work lines (null: not composed in this run). */
+    autonomy: string[] | null;
     historical: boolean;
   };
   readiness: Array<{ name: string; ready: boolean; detail: string }>;
@@ -352,7 +354,29 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
   if (goal?.progress) details.push({ label: 'Progress', value: goal.progress });
   if (goal?.terminal) details.push({ label: 'Ended', value: `${goal.terminal.reason.replace(/_/g, ' ')} — ${goal.terminal.detail}`, tone: goal.phase === 'completed' ? 'ok' : goal.phase === 'cancelled' ? 'muted' : 'bad' });
   if (goal?.counters) details.push({ label: 'Planner', value: `${goal.counters.plannerTurns} turns · ${goal.counters.windows} windows · ${goal.counters.tasksAdmitted} tasks · ${goal.counters.replans} replans`, tone: 'muted' });
-  const modeLabel = dir?.mode === 'owner_directive' ? 'Owner directive' : dir?.mode === 'operator_diagnostic' ? 'Operator diagnostic (/task)' : 'No active directive';
+  const modeLabel =
+    dir?.mode === 'owner_directive'
+      ? 'Owner directive'
+      : dir?.mode === 'operator_diagnostic'
+        ? 'Operator diagnostic (/task)'
+        : dir?.mode === 'automatic_progression'
+          ? 'Automatic progression (not an owner command)'
+          : dir?.mode === 'automatic_support'
+            ? 'Automatic survival support (not an owner command)'
+            : 'No active directive';
+  const au = dir?.autonomy;
+  const autonomyLines: string[] | null = au
+    ? [
+        `Automatic work: ${au.mode.replace(/_/g, ' ')} — ${au.detail}`,
+        `Stop latch: ${au.latch.paused ? `paused (${au.latch.source ?? 'stop'}; durable ${au.latch.durable}) — say resume to allow automatic work` : `clear (durable ${au.latch.durable})`}; scope ${au.scope ?? 'none'} (${au.persistence.state})`,
+        ...(au.ownerIntent ? [`Your ${au.ownerIntent.state.replace(/_/g, ' ')} instruction: "${au.ownerIntent.instruction}"${au.ownerIntent.requiresOwnerDecision ? ' — needs your decision (a new instruction replaces it)' : ''}`] : []),
+        `Session: progression ${au.session.progressionGoals}/${au.session.maxProgressionGoals}, support ${au.session.supportGoals}/${au.session.maxSupportGoals}, automatic planner turns ${au.session.plannerTurns}/${au.session.maxPlannerTurns}, verified ${au.session.completed}`,
+        ...(au.blocker ? [`Waiting on: ${au.blocker.code.replace(/_/g, ' ')} — ${au.blocker.detail}`] : []),
+        ...(au.home ? [`Home: ${au.home.state} at ${au.home.at.x} ${au.home.at.y} ${au.home.at.z} (${au.home.dimension}); own blocks ${au.home.ownConfirmed}/${au.home.cells}; ${au.home.verified ? `last check ${au.home.verified}` : 'not checked yet'}`] : []),
+        ...(au.route ? [`Route: ${au.route.state}; legs ${au.route.legsUsed}/${au.route.maxLegs}; moved ${au.route.distanceUsed}/${au.route.maxTotalDistance}; ${Math.round(au.route.remainingMs / 1000)}s left${au.route.admissionAnchor ? `; original anchor ${au.route.admissionAnchor.x} ${au.route.admissionAnchor.y} ${au.route.admissionAnchor.z}` : ''}${au.route.blocker ? `; ${au.route.blocker}` : ''}`] : []),
+        ...(au.locator ? [`Locator: ${au.locator.actionable ? `owner ${au.locator.direction ?? '?'}, ${au.locator.distanceBand}, ${au.locator.elevation}` : `not actionable (${au.locator.reason.replace(/_/g, ' ')})`} — a coarse hint, not visibility`] : []),
+      ]
+    : null;
 
   const u = s?.usage;
   const jevRows: Row[] = [];
@@ -505,6 +529,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
             ? { text: `Automatic work paused${dir.pause.manualGoalsAllowed ? '; a manual goal can still execute' : ''} — ${dir.pause.reason}${dir.pause.sinceMs ? ` (since ${new Date(dir.pause.sinceMs).toISOString().slice(11, 19)} UTC)` : ''}`, tone: 'warn' }
             : null,
       survival: dir?.survival ? `${dir.survival.routine}: ${dir.survival.reason}${dir.survival.phase ? ` (${dir.survival.phase}${dir.survival.attempt !== undefined ? `, attempt ${dir.survival.attempt}` : ''})` : ''}` : null,
+      autonomy: autonomyLines,
       historical: !appLive,
     },
     readiness: s

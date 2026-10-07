@@ -2,7 +2,9 @@
 // and readiness sections. Text is bounded and passed through the evidence
 // redactor; nothing here calls an adapter beyond the engine's status read.
 import { isActiveGoalState, type Readiness } from '../contracts/index.ts';
-import { DASHBOARD_BOUNDS, type DashboardGoal, type DashboardMemorySummary, type DashboardPause, type DashboardPendingDirective, type DashboardStatus } from '../contracts/dashboard.ts';
+import { DASHBOARD_BOUNDS, type DashboardAutonomy, type DashboardGoal, type DashboardMemorySummary, type DashboardPause, type DashboardPendingDirective, type DashboardStatus } from '../contracts/dashboard.ts';
+import type { AutonomyStatus } from '../contracts/autonomy.ts';
+import type { LocatorHint } from '../contracts/locator.ts';
 import type { EngineStatus } from '../goals/goal-engine.ts';
 import { redactString } from '../telemetry/redact.ts';
 
@@ -37,10 +39,45 @@ export function projectGoal(status: EngineStatus): DashboardGoal | undefined {
   };
 }
 
-export function projectDirective(status: EngineStatus | undefined, pending: DashboardPendingDirective | undefined, survival: SurvivalSummary | undefined, pause?: DashboardPause): DirectiveSection {
+/** Input of the read-only autonomy projection (supervisor status + route admission anchor + coarse locator hint). */
+export interface AutonomyView {
+  status: AutonomyStatus;
+  admission?: { anchor: { x: number; y: number; z: number }; radius: number } | null;
+  locator?: LocatorHint | null;
+}
+
+const r1 = (n: number) => Math.round(n * 10) / 10;
+
+/** Bounded, redacted projection of the supervisor status (no controls, no inference). */
+export function projectAutonomy(v: AutonomyView): DashboardAutonomy {
+  const s = v.status;
+  const src = s.active?.source;
+  return {
+    mode: clipShort(s.mode),
+    detail: clipText(s.detail),
+    scope: s.scope ? clipShort(`${s.scope.worldProfile}@r${s.scope.worldRevision}/${s.scope.botProfile}`) : null,
+    persistence: { state: clipShort(s.persistence.state), detail: clipText(s.persistence.detail) },
+    latch: { paused: s.latch.paused, durable: clipShort(s.latch.durable), ...(s.latch.source ? { source: clipShort(s.latch.source) } : {}), ...(s.latch.sinceMs !== undefined ? { sinceMs: s.latch.sinceMs } : {}) },
+    active: s.active ? { goalId: clipShort(s.active.goalId), source: clipShort(src?.kind ?? 'owner'), ...(src?.kind === 'support' ? { routine: clipShort(src.routine) } : {}), priority: clipShort(s.active.priority) } : null,
+    ownerIntent: s.ownerIntent ? { state: clipShort(s.ownerIntent.state), instruction: clipText(s.ownerIntent.instruction), detail: clipText(s.ownerIntent.detail), requiresOwnerDecision: s.ownerIntent.requiresOwnerDecision } : null,
+    session: { progressionGoals: s.session.progressionGoals, maxProgressionGoals: s.session.limits.maxProgressionGoals, supportGoals: s.session.supportGoals, maxSupportGoals: s.session.limits.maxSupportGoals, plannerTurns: s.session.plannerTurns, maxPlannerTurns: s.session.limits.maxPlannerTurns, completed: s.session.completed, consecutiveUnproductive: s.session.consecutiveUnproductive },
+    nextAssessmentAtMs: s.nextAssessmentAtMs,
+    blocker: s.blocker ? { code: clipShort(s.blocker.code), detail: clipText(s.blocker.detail) } : null,
+    home: s.home
+      ? { state: clipShort(s.home.state), detail: clipText(s.home.detail), ownConfirmed: s.home.progress.ownConfirmed, cells: s.home.progress.cells, verified: s.home.verified ? clipShort(`${s.home.verified.status} ${s.home.verified.satisfied}/${s.home.verified.total}`) : null, dimension: clipShort(s.home.dimension), at: { x: s.home.origin.x, y: s.home.origin.y, z: s.home.origin.z } }
+      : null,
+    route: s.route
+      ? { state: clipShort(s.route.state), legsUsed: s.route.legsUsed, maxLegs: s.route.maxLegs, distanceUsed: r1(s.route.distanceUsed), maxTotalDistance: s.route.maxTotalDistance, remainingMs: s.route.remainingMs, blocker: s.route.blocker ? clipShort(`${s.route.blocker.reason}: ${s.route.blocker.detail}`) : null, admissionAnchor: v.admission ? { x: r1(v.admission.anchor.x), y: r1(v.admission.anchor.y), z: r1(v.admission.anchor.z) } : null }
+      : null,
+    locator: v.locator ? { actionable: v.locator.actionable, reason: clipShort(v.locator.reason), direction: v.locator.direction, distanceBand: v.locator.distanceBand, elevation: v.locator.elevation, ageMs: v.locator.ageMs } : null,
+  };
+}
+
+export function projectDirective(status: EngineStatus | undefined, pending: DashboardPendingDirective | undefined, survival: SurvivalSummary | undefined, pause?: DashboardPause, autonomy?: AutonomyView): DirectiveSection {
   const goal = status ? projectGoal(status) : undefined;
   const active = goal !== undefined && isActiveGoalState(goal.phase);
-  const mode: DirectiveSection['mode'] = !active ? 'idle' : goal.kind === 'operator_task_diagnostic' ? 'operator_diagnostic' : 'owner_directive';
+  const source = status?.goal?.source?.kind;
+  const mode: DirectiveSection['mode'] = !active ? 'idle' : goal.kind === 'operator_task_diagnostic' ? 'operator_diagnostic' : source === 'progression' ? 'automatic_progression' : source === 'support' ? 'automatic_support' : 'owner_directive';
   const t = status?.task;
   const l = status?.lastTask;
   return {
@@ -65,6 +102,7 @@ export function projectDirective(status: EngineStatus | undefined, pending: Dash
           },
         }
       : {}),
+    ...(autonomy ? { autonomy: projectAutonomy(autonomy) } : {}),
   };
 }
 

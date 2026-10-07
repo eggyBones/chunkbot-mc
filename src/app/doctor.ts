@@ -24,6 +24,8 @@ import { allSkills } from '../skills/index.ts';
 import { NAVIGATION_POLICY } from '../skills/navigation.ts';
 import { inspectMemory, renderMemoryReport } from '../memory/report.ts';
 import { memoryRoot } from '../memory/service.ts';
+import { AutonomyConfigSchema } from '../contracts/autonomy.ts';
+import { resolveAutonomyScope } from '../autonomy/scope.ts';
 import { systemClock } from '../contracts/index.ts';
 import { FIXTURE_PINS, PROJECT_ROOT, fixtureProfileFor, fixturePaths } from './fixture-layout.ts';
 
@@ -227,6 +229,17 @@ export function runDoctor(configPath: string, env: NodeJS.ProcessEnv = process.e
         add('warn', 'memory', `memory store could not be inspected: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
       }
     } else add('info', 'memory', config.memory ? 'disabled by configuration (memory.enabled = false); no memory capability is registered' : 'not configured (no memory section); no memory capability is registered');
+    // MB-FLOW-001 automatic work (read-only: no store is opened, locked or written).
+    {
+      const auto = AutonomyConfigSchema.parse(config.autonomy ?? {});
+      const scope = resolveAutonomyScope(auto.scope, config.memory);
+      if (!auto.enabled) add('info', 'autonomy', 'automatic work disabled by configuration (autonomy.enabled = false); manual goals only');
+      else if (config.models.planner.mode !== 'codex') add('info', 'autonomy', 'inference-free profile (planner disabled): `run` never schedules automatic work');
+      else if (scope.source === 'conflict') add('warn', 'autonomy', `${scope.conflict}`);
+      else if (scope.source === 'none') add('warn', 'autonomy', 'no durable scope (memory profile or autonomy.scope): automatic work will be scope_blocked; manual goals work');
+      else add('pass', 'autonomy', `normal \`run\` starts automatic progression (opt out: --no-autonomy); scope ${scope.scope.worldProfile}@r${scope.scope.worldRevision}/${scope.scope.botProfile} (from ${scope.source}); survival ${config.survival?.enabled === false ? 'disabled' : 'enabled'}; home construction ${auto.home.enabled ? `enabled (interior ${auto.home.interior})` : 'disabled'}; session limits ${auto.session.maxProgressionGoals} progression / ${auto.session.maxSupportGoals} support goals, ${auto.session.maxPlannerTurns} automatic planner turns`);
+      add('info', 'locator', config.locator?.enabled === false ? 'locator disabled by configuration' : `locator hints enabled; routes ${config.locator?.routes?.enabled === false ? 'disabled' : `enabled for ${(config.locator?.routes?.sources ?? ['owner']).join('/')}`}`);
+    }
     const fl = config.flow;
     add('info', 'flow', `directive handoff ${fl.handoff === 'smooth' ? 'SMOOTH: a new owner instruction is prepared while the current task continues and switches after fresh revalidation' : 'IMMEDIATE: a new owner instruction replaces the current goal at once'}; window lookahead ${fl.lookahead ? 'on (counted planner turns, revalidated before use)' : 'off'}; discarded-preparation allowance ${fl.preparationTurnsPerRun} planner turns per run; one planner process at a time`);
 

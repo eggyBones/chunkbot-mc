@@ -273,6 +273,11 @@ export const APP_JS = String.raw`
     if (d.pause) kids.push(d.pause.tone === 'warn' ? el('div', { cls: 'callout', text: d.pause.text }) : el('div', { cls: 'note', text: d.pause.text }));
     if (d.clarification) kids.push(el('div', { cls: 'callout', text: 'Question for you — ' + d.clarification }));
     if (d.survival) kids.push(el('div', { cls: 'callout', text: 'Survival routine — ' + d.survival + ' (your directive stays queued)' }));
+    if (d.autonomy) {
+      var auKids = [el('div', { cls: 'lab t-muted', text: 'Automatic work (read-only)' })];
+      for (var ai = 0; ai < d.autonomy.length; ai++) auKids.push(el('div', { cls: 'note', text: d.autonomy[ai] }));
+      kids.push(el('div', { cls: 'task' }, auKids));
+    }
     if (d.task) kids.push(el('div', { cls: 'task' }, [el('div', { cls: 'lab t-muted', text: 'Current task' }), el('div', { cls: 'obj', text: d.task.objective }), el('div', { cls: 'note', text: d.task.detail })]));
     if (d.pending) kids.push(el('div', { cls: 'pending' }, [el('div', { cls: 'lab', text: 'Next — prepared, not started (' + d.pending.state + ')' }), el('div', { cls: 'obj', text: d.pending.instruction }), el('div', { cls: 'note', text: d.pending.detail })]));
     if (d.details.length) kids.push(el('div', { cls: 'mt' }, [kv(d.details, true)]));

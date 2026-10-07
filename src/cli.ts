@@ -302,6 +302,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     planner = new NotReadyPlanner('Codex subscription planner disabled by configuration (models.planner.mode = "disabled": inference-free test profile); goals end planner_not_ready');
     out('[chunkbot] planner: disabled by configuration (inference-free profile)');
   }
+  let supervisor: AutonomySupervisor | undefined;
   // MB-UI-001 local dashboard publisher (read-only; no inference, actuator or network).
   dashboard = createDashboardRuntime({
     dataDir: loaded.dataDir,
@@ -315,10 +316,27 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     planner: () => codex,
     pending: () => pendingDirectiveFrom(appRef?.engine.status()),
     pause: () => pauseFrom(appRef?.engine.status()),
+    // MB-FLOW-001/003/LOC-001 read-only status (no controls).
+    autonomy: () => {
+      if (!supervisor) return undefined;
+      const epoch = appRef?.engine.currentEpoch;
+      const view = epoch !== undefined ? runtime.routeView(epoch) : undefined;
+      return { status: supervisor.status(), admission: view?.admission ?? null, locator: runtime.locator?.ownerHint() ?? null };
+    },
+    ...(runtime.survival
+      ? {
+          survival: () => {
+            const st = runtime.survival?.status(systemClock.now());
+            const active = st?.activeRoutine;
+            if (!active) return undefined;
+            const incident = st.incidents[0];
+            return { routine: active.routine, reason: st.lastDecision?.reason ?? 'support routine running', ...(incident ? { phase: incident.phase, attempt: incident.attempts.used } : {}), sinceMs: active.since };
+          },
+        }
+      : {}),
     ...(memory ? { memory: () => memorySummaryFrom(memory.facts(), memory.scope, systemClock.now(), config.memory?.staleAfterMs ?? 24 * 3_600_000) } : {}),
     log: (line) => out(line),
   });
-  let supervisor: AutonomySupervisor | undefined;
   const reservationUsd = JEV_CONTEXT_TOKENS * PROMPT_USD_PER_TOKEN;
   const app = new ChunkbotApp({
     config,

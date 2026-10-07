@@ -329,7 +329,7 @@ async function main(): Promise<void> {
   const fixturePid = Number(readFileSync(fx.pidFile, 'utf8').trim());
 
   // The key (real mode) reaches the CLI only through the inherited environment.
-  chunkbot = new CliProcess(`run-jev-${mode}`, ['run', '--config', configPath], env);
+  chunkbot = new CliProcess(`run-jev-${mode}`, ['run', '--no-autonomy', '--config', configPath], env);
   let owner: Bot | undefined;
   try {
     await check('J0', 'built CLI joins; decision adapter ready (route/model/price ceiling); natural-language goals still planner_not_ready', async (ev) => {

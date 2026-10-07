@@ -259,16 +259,46 @@ export const PauseSchema = z
   .strict();
 export type DashboardPause = z.infer<typeof PauseSchema>;
 
+/**
+ * MB-FLOW-001/003/LOC-001 read-only automatic-work section. Reading it
+ * authorizes nothing; there are no controls. Values are the supervisor's
+ * code-owned status, bounded and redacted.
+ */
+export const AutonomySectionSchema = z
+  .object({
+    mode: shortText,
+    detail: text,
+    scope: shortText.nullable(),
+    persistence: z.object({ state: shortText, detail: text }).strict(),
+    latch: z.object({ paused: z.boolean(), durable: shortText, source: shortText.optional(), sinceMs: ms.optional() }).strict(),
+    active: z.object({ goalId: shortText, source: shortText, routine: shortText.optional(), priority: shortText }).strict().nullable(),
+    ownerIntent: z.object({ state: shortText, instruction: text, detail: text, requiresOwnerDecision: z.boolean() }).strict().nullable(),
+    session: z
+      .object({ progressionGoals: nonNegInt, maxProgressionGoals: nonNegInt, supportGoals: nonNegInt, maxSupportGoals: nonNegInt, plannerTurns: nonNegInt, maxPlannerTurns: nonNegInt, completed: nonNegInt, consecutiveUnproductive: nonNegInt })
+      .strict(),
+    nextAssessmentAtMs: ms.nullable(),
+    blocker: z.object({ code: shortText, detail: text }).strict().nullable(),
+    home: z.object({ state: shortText, detail: text, ownConfirmed: nonNegInt, cells: nonNegInt, verified: shortText.nullable(), dimension: shortText, at: PositionValueSchema() }).strict().nullable(),
+    route: z
+      .object({ state: shortText, legsUsed: nonNegInt, maxLegs: nonNegInt, distanceUsed: finite, maxTotalDistance: finite, remainingMs: nonNegInt, blocker: shortText.nullable(), admissionAnchor: PositionValueSchema().nullable() })
+      .strict()
+      .nullable(),
+    locator: z.object({ actionable: z.boolean(), reason: shortText, direction: shortText.nullable(), distanceBand: shortText, elevation: shortText, ageMs: nonNegInt.nullable() }).strict().nullable(),
+  })
+  .strict();
+export type DashboardAutonomy = z.infer<typeof AutonomySectionSchema>;
+
 export const DirectiveSectionSchema = z
   .object({
-    /** Which authority currently owns control. */
-    mode: z.enum(['idle', 'owner_directive', 'operator_diagnostic']),
+    /** Which authority currently owns control (automatic modes: MB-FLOW-001). */
+    mode: z.enum(['idle', 'owner_directive', 'operator_diagnostic', 'automatic_progression', 'automatic_support']),
     /** Absent: the running application does not report a pause latch. */
     pause: PauseSchema.optional(),
     goal: GoalSectionSchema.optional(),
     task: TaskSectionSchema,
     pending: PendingDirectiveSchema.optional(),
     survival: SurvivalSectionSchema.optional(),
+    autonomy: AutonomySectionSchema.optional(),
   })
   .strict();
 
@@ -396,6 +426,8 @@ export const IntegrationsSchema = z
     memory: z.boolean(),
     survival: z.boolean(),
     pause: z.boolean(),
+    /** MB-FLOW-001 supervisor composed in this run (absent in older status files). */
+    autonomy: z.boolean().optional(),
   })
   .strict();
 
