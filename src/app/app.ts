@@ -28,7 +28,7 @@ import type { ChunkbotConfig } from '../config/schema.ts';
 import { parseChatLine, parseTerminalLine, type ParsedCommand } from '../commands/parse.ts';
 import { routeCommand, type CommandTarget } from '../commands/router.ts';
 import { evaluateOwner, ownerPolicyFromConfig, type OwnerPolicy } from '../game/identity.ts';
-import { GoalEngine } from '../goals/goal-engine.ts';
+import { GoalEngine, type GoalEngineDeps, type GoalTerminalEvent } from '../goals/goal-engine.ts';
 import {
   NotReadyDecision,
   NotReadyKnowledge,
@@ -82,9 +82,22 @@ export interface AppExtensions {
   /** Cancels non-goal actuation (operator diagnostics). Must invalidate ownership synchronously. */
   cancelControl?(reason: string): boolean;
   /** Goal admission ownership (before planning): see GoalEngineDeps.onGoalAdmitted. */
-  onGoalAdmitted?(admission: { goalId: string; epoch: number; admittedAtMs: number; instruction: string; kind: string }): void;
+  onGoalAdmitted?(admission: Parameters<NonNullable<GoalEngineDeps['onGoalAdmitted']>>[0]): void;
   /** Goal terminal (after cleanup): see GoalEngineDeps.onGoalTerminal. */
-  onGoalTerminal?(end: { goalId: string; epoch: number; kind: string; state: string; reason: string; detail: string; interpretation?: string }): void;
+  onGoalTerminal?(end: GoalTerminalEvent): void;
+  /** MB-FLOW-001: synchronous pause-latch hook (stop/resume) — see GoalEngineDeps.onLatchChanged. */
+  onLatchChanged?: GoalEngineDeps['onLatchChanged'];
+  /** MB-FLOW-001: a pending owner instruction ended without admission. */
+  onPreparationDiscarded?: GoalEngineDeps['onPreparationDiscarded'];
+  /** MB-LOC-001: owner coordinates newly parsed from a clarification answer. */
+  onOwnerCoordinates?: GoalEngineDeps['onOwnerCoordinates'];
+  /** MB-LOC-001 planner-request views (read-only). */
+  routeView?: GoalEngineDeps['routeView'];
+  locatorHint?: GoalEngineDeps['locatorHint'];
+  /** Optional evaluators installed (proposal validation). */
+  installed?: GoalEngineDeps['installed'];
+  /** Extra status lines and chat summary for autonomy/survival/route (read-only; no inference). */
+  autonomyStatus?(): { lines: string[]; chat: string } | undefined;
   /** Terminal-only operator mechanic diagnostics (`/diag ...`). */
   diagnostic?(args: string): Promise<void>;
 }
@@ -189,6 +202,12 @@ export class ChunkbotApp implements CommandTarget {
       isGameReady: () => this.deps.game.state === 'ready',
       onGoalAdmitted: (admission) => this.deps.extensions?.onGoalAdmitted?.(admission),
       onGoalTerminal: (end) => this.deps.extensions?.onGoalTerminal?.(end),
+      onLatchChanged: (latch, cause) => this.deps.extensions?.onLatchChanged?.(latch, cause),
+      onPreparationDiscarded: (p) => this.deps.extensions?.onPreparationDiscarded?.(p),
+      onOwnerCoordinates: (e) => this.deps.extensions?.onOwnerCoordinates?.(e),
+      ...(deps.extensions?.routeView ? { routeView: deps.extensions.routeView } : {}),
+      ...(deps.extensions?.locatorHint ? { locatorHint: deps.extensions.locatorHint } : {}),
+      ...(deps.extensions?.installed ? { installed: deps.extensions.installed } : {}),
     });
     this.unsubscribe.push(deps.game.onLifecycle((event) => this.onLifecycle(event)));
     this.unsubscribe.push(deps.game.onChat((envelope) => this.onChat(envelope)));
@@ -347,8 +366,9 @@ export class ChunkbotApp implements CommandTarget {
       decision: this.decision.readiness(),
     };
     this.deps.store.record({ type: 'status_requested', surface: origin.surface });
-    for (const line of [...renderStatusLines(input), ...(this.deps.statusExtras?.() ?? [])]) this.deps.out(`[status] ${line}`);
-    if (origin.surface === 'chat') this.deps.game.replyToOwner(renderStatusChat(input));
+    const autonomy = this.deps.extensions?.autonomyStatus?.();
+    for (const line of [...renderStatusLines(input), ...(autonomy?.lines ?? []), ...(this.deps.statusExtras?.() ?? [])]) this.deps.out(`[status] ${line}`);
+    if (origin.surface === 'chat') this.deps.game.replyToOwner(`${renderStatusChat(input)}${autonomy ? `; ${autonomy.chat}` : ''}`);
   }
 
   answer(reply: string, ref: string | undefined, origin: IntakeOrigin): void {

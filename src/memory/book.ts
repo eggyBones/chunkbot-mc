@@ -293,6 +293,33 @@ export class MemoryBook {
     this.setStatus(fact, 'forgotten', `forgotten by the owner`, nowMs, evidence);
   }
 
+  /**
+   * MB-FLOW-001: a code-VERIFIED complete shelter. Trusted `verified_skill`
+   * fact. Never overrides an owner-designated home (then it is recorded as a
+   * location labeled "chunkbot shelter"); an earlier verified shelter elsewhere
+   * is superseded.
+   */
+  recordVerifiedHome(input: { location: MemoryLocation; evidence: MemoryEvidence; nowMs: number }): WriteResult {
+    const sameAt = (f: MemoryFact) => f.location?.dimension === input.location.dimension && f.location && sameBlock(f.location.at, input.location.at);
+    const ownerHome = this.active().find((f) => f.category === 'home' && f.source === 'owner_statement');
+    const category: MemoryCategory = ownerHome ? 'location' : 'home';
+    const label = ownerHome ? 'chunkbot shelter' : 'home';
+    const existing = this.active().find((f) => f.source === 'verified_skill' && f.category === category && f.labelKey === label && sameAt(f));
+    if (existing) {
+      existing.lastConfirmedMs = input.nowMs;
+      this.addEvidence(existing, input.evidence);
+      this.touch(existing, input.nowMs);
+      return { fact: existing, change: 'updated', affected: [] };
+    }
+    const affected = this.active().filter((f) => f.source === 'verified_skill' && f.category === category && f.labelKey === label);
+    const fact = this.create({ category, label, source: 'verified_skill', evidence: input.evidence, nowMs: input.nowMs, location: input.location });
+    for (const f of affected) {
+      this.setStatus(f, 'superseded', `a newer verified shelter was recorded (${fact.id})`, input.nowMs, input.evidence);
+      f.supersededBy = fact.id;
+    }
+    return { fact, change: 'created', affected };
+  }
+
   // ------------------------------------------------------------ projects
 
   projectForGoal(goalId: string): MemoryFact | undefined {
@@ -391,10 +418,20 @@ export class MemoryBook {
   }
 
   /** Verified regained items reduce `missing`; status follows. Only verified evidence may call this. */
-  updateDeathRecovery(id: string, update: { regained?: Array<{ key: string; count: number }>; status?: 'abandoned'; detail?: string }, evidence: MemoryEvidence, nowMs: number): MemoryFact | undefined {
+  updateDeathRecovery(id: string, update: { regained?: Array<{ key: string; count: number }>; retained?: Array<{ key: string; count: number }>; status?: 'abandoned'; detail?: string }, evidence: MemoryEvidence, nowMs: number): MemoryFact | undefined {
     const fact = this.get(id);
     const d = fact?.death;
     if (!fact || !d) return undefined;
+    // Retained possessions reduce what is missing but are NOT regained (recovered) evidence.
+    for (const k of update.retained ?? []) {
+      if (k.count <= 0) continue;
+      const list = (d.recovery.retained ??= []);
+      const have = list.find((x) => x.key === k.key);
+      if (have) have.count += k.count;
+      else if (list.length < 41) list.push({ key: k.key, count: k.count });
+      const m = d.recovery.missing.find((x) => x.key === k.key);
+      if (m) m.count = Math.max(0, m.count - k.count);
+    }
     for (const g of update.regained ?? []) {
       if (g.count <= 0) continue;
       d.recovery.regained.push({ key: g.key, count: g.count, atMs: nowMs });
@@ -403,7 +440,7 @@ export class MemoryBook {
     }
     d.recovery.missing = d.recovery.missing.filter((m) => m.count > 0);
     if (d.recovery.regained.length > 32) d.recovery.regained.splice(0, d.recovery.regained.length - 32);
-    d.recovery.status = update.status ?? (d.recovery.missing.length === 0 ? 'recovered' : d.recovery.regained.length > 0 ? 'partially_recovered' : 'unresolved');
+    d.recovery.status = update.status ?? (d.recovery.missing.length === 0 ? (d.recovery.regained.length > 0 ? 'recovered' : (d.recovery.retained?.length ?? 0) > 0 ? 'no_loss' : 'recovered') : d.recovery.regained.length > 0 ? 'partially_recovered' : 'unresolved');
     d.recovery.updatedAtMs = nowMs;
     if (update.detail) d.recovery.detail = update.detail.slice(0, 200);
     this.addEvidence(fact, evidence);

@@ -41,6 +41,13 @@ import { VIEWER_USAGE, parseViewerArgs, runDashboardViewer } from './dashboard/v
 import { memorySummaryFrom, pauseFrom, pendingDirectiveFrom } from './app/status.ts';
 import { inspectMemory, renderMemoryReport } from './memory/report.ts';
 import { memoryRoot } from './memory/service.ts';
+import { join } from 'node:path';
+import { AutonomyConfigSchema, type AutonomyScope } from './contracts/autonomy.ts';
+import { AutonomyControl } from './autonomy/control.ts';
+import { AutonomySupervisor } from './autonomy/supervisor.ts';
+import { autonomyStatusChat, autonomyStatusLines } from './autonomy/status-text.ts';
+import { JEV_CONTEXT_TOKENS, PROMPT_USD_PER_TOKEN } from './decision/pricing.ts';
+import { createHash } from 'node:crypto';
 
 export const EXIT = {
   ok: 0,
@@ -74,6 +81,7 @@ Commands:
 Options:
   --config <file>   Configuration file (default: $CHUNKBOT_CONFIG or ./chunkbot.config.json)
   --no-terminal     (run) do not read terminal commands from stdin; exit 3 when the connection ends
+  --no-autonomy     (run) no automatic progression/survival scheduling (manual goals only; harnesses use this)
   --json            (doctor) machine-readable output
   --probe           (planner-check) also run the isolation and cancellation probes
 `;
@@ -83,13 +91,14 @@ interface Args {
   sub: string | undefined;
   config: string | undefined;
   noTerminal: boolean;
+  noAutonomy: boolean;
   json: boolean;
   help: boolean;
   probe: boolean;
 }
 
 function parseArgs(argv: string[]): Args | string {
-  const args: Args = { command: 'run', sub: undefined, config: undefined, noTerminal: false, json: false, help: false, probe: false };
+  const args: Args = { command: 'run', sub: undefined, config: undefined, noTerminal: false, noAutonomy: false, json: false, help: false, probe: false };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i] ?? '';
@@ -100,6 +109,7 @@ function parseArgs(argv: string[]): Args | string {
       i += 1;
     } else if (a.startsWith('--config=')) args.config = a.slice('--config='.length);
     else if (a === '--no-terminal') args.noTerminal = true;
+    else if (a === '--no-autonomy') args.noAutonomy = true;
     else if (a === '--json') args.json = true;
     else if (a === '--probe') args.probe = true;
     else if (a === '--help' || a === '-h') args.help = true;
@@ -155,8 +165,31 @@ function runFacts(loaded: LoadedConfig): Record<string, unknown> {
   };
 }
 
-function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: ChunkbotApp; store: RunStore; game: MineflayerConnection } {
+/**
+ * MB-FLOW-001 autonomy enablement: only a normal `run` with the real planner and
+ * no `--no-autonomy`; connect-check/diagnostics/inference-free profiles never schedule.
+ */
+function autonomyEnablement(loaded: LoadedConfig, requested: boolean): { enabled: boolean; reason: string } {
+  const cfg = AutonomyConfigSchema.parse(loaded.config.autonomy ?? {});
+  if (!requested) return { enabled: false, reason: 'automatic work is off for this command (run --no-autonomy, connect-check or a diagnostic)' };
+  if (!cfg.enabled) return { enabled: false, reason: 'automatic work disabled by configuration (autonomy.enabled = false)' };
+  if (loaded.config.models.planner.mode !== 'codex') return { enabled: false, reason: 'inference-free profile (models.planner.mode = "disabled"): no automatic work' };
+  return { enabled: true, reason: 'enabled for this run' };
+}
+
+/** Explicit durable scope: autonomy.scope, else the enabled memory profile (never derived from the endpoint). */
+function autonomyScope(loaded: LoadedConfig): AutonomyScope | undefined {
+  const cfg = AutonomyConfigSchema.parse(loaded.config.autonomy ?? {});
+  if (cfg.scope) return cfg.scope;
+  const m = loaded.config.memory;
+  return m && m.enabled !== false ? { worldProfile: m.worldProfile, worldRevision: m.worldRevision, botProfile: m.botProfile } : undefined;
+}
+
+function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { autonomy?: boolean } = {}): { app: ChunkbotApp; store: RunStore; game: MineflayerConnection } {
   const { config } = loaded;
+  const autonomyConfig = AutonomyConfigSchema.parse(config.autonomy ?? {});
+  const autonomy = autonomyEnablement(loaded, options.autonomy === true);
+  const scope = autonomy.enabled ? autonomyScope(loaded) : undefined;
   const fileStore = new FileRunStore({
     runsDir: loaded.runsDir,
     runId: randomIds.next('run'),
@@ -174,7 +207,9 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
     dir: fileStore.dir,
     eventsPath: fileStore.eventsPath,
   };
+  let runtimeRef: SkillRuntime | undefined;
   const game = new MineflayerConnection({
+    onBotCreated: (bot, epoch) => runtimeRef?.onBotCreated(bot as never, epoch),
     host: config.minecraft.host,
     port: config.minecraft.port,
     version: config.minecraft.version,
@@ -206,7 +241,14 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
     minIntervalMs: config.limits.decisionMinIntervalMs,
     attemptsPerGoal: config.limits.decisionRequestsPerGoal,
   });
+  const control = new AutonomyControl({ scope, rootDir: join(loaded.dataDir, autonomyConfig.dir), endpoint: `${config.minecraft.host}:${config.minecraft.port}`, rebindEndpoint: autonomyConfig.rebindEndpoint, clock: systemClock, record: (e) => store.record(e) });
+  const survivalWanted = autonomy.enabled && config.survival?.enabled !== false;
   const runtime = new SkillRuntime({
+    features: {
+      ...(config.locator?.enabled === false ? {} : { locator: true }),
+      ...(survivalWanted ? { survival: { config: config.survival, scope } } : {}),
+      ...(autonomy.enabled && autonomyConfig.home.enabled && scope ? { home: { control, interior: autonomyConfig.home.interior as 2 | 3, maxSiteDistance: autonomyConfig.home.maxSiteDistance } } : {}),
+    },
     config,
     session: () => game.session(),
     connectionEpoch: () => game.connectionEpoch,
@@ -221,6 +263,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
     emitTask: (kind, data) => out(`[task-json] ${JSON.stringify(redact({ kind, ...data }, { maxStringChars: 600, maxArrayItems: 32, maxDepth: 6 }))}`),
     dataDir: loaded.dataDir,
   });
+  runtimeRef = runtime;
   const memory = runtime.memory;
   if (memory) for (const line of memory.statusLines()) out(`[chunkbot] ${line}`);
   else out(`[chunkbot] memory: ${config.memory ? 'disabled by configuration (memory.enabled = false)' : 'not configured (no memory section); no memory capability is registered'}`);
@@ -273,6 +316,8 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
     ...(memory ? { memory: () => memorySummaryFrom(memory.facts(), memory.scope, systemClock.now(), config.memory?.staleAfterMs ?? 24 * 3_600_000) } : {}),
     log: (line) => out(line),
   });
+  let supervisor: AutonomySupervisor | undefined;
+  const reservationUsd = JEV_CONTEXT_TOKENS * PROMPT_USD_PER_TOKEN;
   const app = new ChunkbotApp({
     config,
     game,
@@ -299,18 +344,82 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false): { app: Chu
       onLifecycle: (event) => {
         if (event.type === 'death' || event.type === 'dimension_change' || event.type === 'ended') diagnostics?.cancel(`lifecycle_${event.type}`);
         runtime.onLifecycle(event);
+        supervisor?.onLifecycle(event);
       },
       cancelControl: (reason) => diagnostics?.cancel(reason) ?? false,
-      onGoalAdmitted: (admission) => runtime.onGoalAdmitted(admission),
-      onGoalTerminal: (end) => runtime.onGoalTerminal(end),
+      onGoalAdmitted: (admission) => {
+        runtime.onGoalAdmitted(admission);
+        supervisor?.onGoalAdmitted(admission);
+      },
+      onGoalTerminal: (end) => {
+        runtime.onGoalTerminal(end);
+        supervisor?.onGoalTerminal(end);
+      },
+      onLatchChanged: (latch, cause) => supervisor?.onLatchChanged(latch, cause),
+      onPreparationDiscarded: (p) => supervisor?.onPreparationDiscarded(p),
+      onOwnerCoordinates: (e) => runtime.onOwnerCoordinates(e),
+      ...(runtime.routes ? { routeView: (goalEpoch: number) => runtime.routeView(goalEpoch) } : {}),
+      ...(runtime.locator ? { locatorHint: () => runtime.locator?.ownerHint() } : {}),
+      installed: { structures: Boolean(runtime.home), survival: Boolean(runtime.survival) },
+      autonomyStatus: () => {
+        if (!supervisor) return undefined;
+        const s = supervisor.status();
+        const epoch = appRef?.engine.currentEpoch;
+        const view = epoch !== undefined ? runtime.routeView(epoch) : undefined;
+        return { lines: autonomyStatusLines(s, { locator: runtime.locator?.ownerHint() ?? null, admission: view?.admission ?? null }), chat: autonomyStatusChat(s) };
+      },
       diagnostic: (args) => diagnostics!.handle(args),
     },
   });
   appRef = app;
+  supervisor = new AutonomySupervisor({
+    engine: app.engine,
+    control,
+    config: autonomyConfig,
+    enabled: autonomy,
+    clock: systemClock,
+    record: (e) => store.record(e),
+    notify: (text) => {
+      out(`[chunkbot] ${text}`);
+      game.replyToOwner(text);
+    },
+    connection: () => {
+      const info = game.statusInfo();
+      return game.state === 'ready' ? { ready: true, connectionEpoch: game.connectionEpoch, dimension: String(info.dimension ?? 'unknown') } : null;
+    },
+    observe: () => runtime.perception.snapshot(0),
+    providers: () => {
+      const planner = app.engine.status().readiness.planner;
+      const jev = decision.readiness();
+      if (!planner.ready) return { ready: false, code: 'planner_not_ready', detail: `planner: ${planner.detail}` };
+      if (!jev.ready) return { ready: false, code: 'decision_not_ready', detail: `Jev: ${jev.detail}` };
+      if (spend.remainingUsd() < reservationUsd) return { ready: false, code: 'spend_cap', detail: `the per-run OpenRouter cap cannot cover another Jev reservation (USD ${spend.remainingUsd().toFixed(6)} left)` };
+      return { ready: true, detail: 'planner and Jev ready' };
+    },
+    stateFingerprint: () => {
+      const s = game.session();
+      if (!s) return 'disconnected';
+      const inv = [...(s.bot.inventory?.items?.() ?? [])].map((i) => `${i.name}:${i.count}`).sort().join(',');
+      const p = s.bot.entity.position;
+      const h = runtime.home?.project();
+      return createHash('sha256').update(`${String(s.bot.game.dimension)}|${Math.floor(p.x / 8)},${Math.floor(p.z / 8)}|${inv}|${h ? `${h.state}:${h.checkpoints.length}` : 'nohome'}`).digest('hex').slice(0, 16);
+    },
+    goalLimits: { plannerTurns: config.limits.plannerTurnsPerGoal, tasks: config.limits.totalTaskCeiling, replans: config.limits.replans, deadlineMs: config.limits.goalDeadlineMs },
+    home: () => runtime.home?.summary() ?? null,
+    ...(runtime.survival ? { survival: runtime.survival } : {}),
+    ...(runtime.routes ? { route: runtime.routes } : {}),
+  });
+  supervisor.start();
+  out(`[chunkbot] autonomy: ${autonomy.enabled ? `enabled; scope ${scope ? `${scope.worldProfile}@r${scope.worldRevision}/${scope.botProfile}` : 'MISSING (automatic work blocked; manual goals work)'}; ${control.persistence().state}${control.latch().paused ? '; PAUSED (stop latch restored; say resume)' : ''}` : autonomy.reason}`);
+  if (runtime.survival) out(`[chunkbot] survival: ${runtime.survival.status(systemClock.now()).store.state}`);
+  if (runtime.routes) out(`[chunkbot] locator: ${runtime.locator?.enabled ? 'enabled' : 'codec unavailable/disabled'}; routes ${runtime.routes.policy.enabled ? `enabled for ${runtime.routes.policy.sources.join('/')}` : 'disabled'}`);
   const publisher = dashboard;
   publisher.start();
   // Final snapshot (marked stopped) only after the app's full teardown.
   void app.closed.then(async (code) => {
+    // Supervisor timers and durable control state close after the app's owned gameplay cleanup.
+    await supervisor?.close().catch((error: unknown) => out(`[chunkbot] autonomy close failed: ${error instanceof Error ? error.message : String(error)}`));
+    if (runtime.survival) await runtime.survival.close().catch((error: unknown) => out(`[chunkbot] survival close failed: ${error instanceof Error ? error.message : String(error)}`));
     // Durable memory is flushed and its writer lock released after the final teardown.
     if (memory) await memory.close().catch((error: unknown) => out(`[chunkbot] memory close failed: ${error instanceof Error ? error.message : String(error)}`));
     publisher.stop(`shutdown (exit ${code})`);
@@ -347,8 +456,8 @@ function finish(code: number): void {
   }, 5_000).unref();
 }
 
-async function commandRun(loaded: LoadedConfig, noTerminal: boolean): Promise<void> {
-  const { app } = buildApp(loaded, noTerminal);
+async function commandRun(loaded: LoadedConfig, noTerminal: boolean, noAutonomy: boolean): Promise<void> {
+  const { app } = buildApp(loaded, noTerminal, { autonomy: !noAutonomy });
   installSignalHandlers(app);
   let rl: ReturnType<typeof createInterface> | undefined;
   if (!noTerminal) {
@@ -529,7 +638,7 @@ async function main(): Promise<void> {
       commandDoctor(configPath, parsed.json);
       return;
     case 'run':
-      await commandRun(loadOrExit(configPath), parsed.noTerminal);
+      await commandRun(loadOrExit(configPath), parsed.noTerminal, parsed.noAutonomy);
       return;
     case 'connect-check':
       await commandConnectCheck(loadOrExit(configPath));

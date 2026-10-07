@@ -284,8 +284,11 @@ export const DeathPayloadSchema = z
     relatedTo: MemoryFactIdSchema.optional(),
     recovery: z
       .object({
-        status: z.enum(['unresolved', 'partially_recovered', 'recovered', 'abandoned']),
+        /** `no_loss`: the fresh respawn inventory RETAINED the items (nothing was regained by recovery). */
+        status: z.enum(['unresolved', 'partially_recovered', 'recovered', 'abandoned', 'no_loss']),
         regained: z.array(z.object({ key: RegistryKeySchema, count: z.number().int().positive(), atMs }).strict()).max(BOUNDS.listMedium),
+        /** Possessions RETAINED through respawn (never counted as regained/recovered evidence). */
+        retained: z.array(z.object({ key: RegistryKeySchema, count: z.number().int().positive() }).strict()).max(BOUNDS.listMedium + 9).optional(),
         /** Items believed still missing (from the last-alive record minus verified regains). */
         missing: z.array(z.object({ key: RegistryKeySchema, count: z.number().int().positive() }).strict()).max(BOUNDS.listMedium + 9),
         updatedAtMs: atMs,

@@ -4,6 +4,9 @@
 import { isIP } from 'node:net';
 import { z } from 'zod';
 import { MemoryConfigSchema } from '../contracts/memory.ts';
+import { AutonomyConfigSchema } from '../contracts/autonomy.ts';
+import { SurvivalConfigSchema } from '../contracts/survival.ts';
+import { LocatorConfigSchema } from '../contracts/locator.ts';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
@@ -210,6 +213,18 @@ export const ConfigSchema = z
      * view is built. Requires an operator-named worldProfile/worldRevision/botProfile.
      */
     memory: MemoryConfigSchema.optional(),
+    /**
+     * MB-FLOW-001 progression (supervisor, durable stop latch, home project).
+     * Absent: enabled with defaults; it still needs an explicit durable scope
+     * (memory or autonomy.scope), otherwise automatic work is scope_blocked and
+     * manual goals keep working. `run --no-autonomy`, the disabled-planner
+     * profile and every diagnostic command suppress scheduling.
+     */
+    autonomy: AutonomyConfigSchema.optional(),
+    /** MB-FLOW-003 survival routines/recovery. Absent: enabled with defaults whenever autonomy runs; `enabled: false` turns it off. */
+    survival: SurvivalConfigSchema.optional(),
+    /** MB-LOC-001 locator hints and code-owned route legs. Absent: defaults (routes only for owner goals). */
+    locator: LocatorConfigSchema.optional(),
   })
   .strict()
   .superRefine((cfg, ctx) => {
