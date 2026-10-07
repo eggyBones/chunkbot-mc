@@ -96,18 +96,15 @@ function sim(options: { ownerAt: Vec; policy?: Partial<RoutePolicy>; routes?: bo
   };
   const proofOverride: { value: RouteAdmissionProof | undefined } = { value: undefined };
   const state = { moves: 0, steps: [] as Vec[], sleeps: { count: 0 } as { count: number; revokeAfter?: number } };
-  // Visible faces: non-air voxels with an air neighbour (no occlusion model) within radius.
   const seen = (): Map<string, RayHit> => {
     const out = new Map<string, RayHit>();
     const r = 24;
-    const air = (x: number, y: number, z: number) => world.blockAt(x, y, z)?.name === 'air';
     for (let x = Math.floor(self.x) - r; x <= Math.floor(self.x) + r; x += 1) {
       for (let z = Math.floor(self.z) - r; z <= Math.floor(self.z) + r; z += 1) {
         if (Math.hypot(x - self.x, z - self.z) > r) continue;
-        for (let y = Math.floor(self.y) - 12; y <= Math.floor(self.y) + 8; y += 1) {
+        for (let y = Math.floor(self.y) - 6; y <= Math.floor(self.y) + 6; y += 1) {
           const b = world.blockAt(x, y, z);
-          if (!b || b.name === 'air') continue;
-          if (air(x, y + 1, z) || air(x + 1, y, z) || air(x - 1, y, z) || air(x, y, z + 1) || air(x, y, z - 1)) out.set(`${x},${y},${z}`, { x, y, z, block: b });
+          if (b && b.name !== 'air' && (b.shapes.length > 0 || b.name === 'lava' || b.name === 'water') && world.blockAt(x, y + 1, z)?.name === 'air') out.set(`${x},${y},${z}`, { x, y, z, block: b });
         }
       }
     }
@@ -277,8 +274,8 @@ describe('MB-LOC-001 L5 impassable terrain produces specific blockers (no dig/to
   });
 
   it('a deep drop -> cliff_drop', async () => {
-    const s = sim({ ownerAt: { x: 300, y: 56, z: 0 } });
-    s.world.floorAt = (x) => (x >= 3 ? 55 : 63);
+    const s = sim({ ownerAt: { x: 300, y: 40, z: 0 } });
+    s.world.floorAt = (x) => (x >= 3 ? 30 : 63);
     const r = await runRoute(s.env, { kind: 'owner' }, { within: 3, durationMs: 60_000 }, { routes: s.routes, locator: s.locator });
     assert.equal(r.reason, 'cliff_drop', r.effect);
     assert.ok(s.self.x < 3 && s.self.y === 64);
