@@ -182,7 +182,7 @@ export function assessInput(h: Harness, over: Partial<Parameters<SurvivalService
     snapshot: h.snap.value ?? snapshot({ at: h.pos.at }),
     autonomyAllowed: true,
     active: { kind: 'none' },
-    ownerIntentPending: false,
+    ownerIntakePending: false,
     ownerIntentInterrupted: false,
     goalLimits: { plannerTurns: 20, tasks: 64, replans: 8, deadlineMs: 20 * 60_000 },
     ...over,
