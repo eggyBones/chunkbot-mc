@@ -335,3 +335,24 @@ This is broadcast and module evidence only. The **ordinary-follow regression** (
 5. **26.1.2 regression.** Run the root `skills-live-check` and ordinary-follow scenarios after integrating H1–H6, so the shared wiring is proven not to alter visible following.
 
 L7 (real Codex/Jev choosing these tasks from the shared catalog) and the production all-skill guard remain undelivered. The module harness's executor runs are not L7 evidence.
+
+## Integrated 26.2 regression (lease `batch002-locator-integrated-262-regress-01`)
+
+**Run.**
+- **Checkout:** immutable coordinator acceptance checkout `/Users/jakewilcox/code/reviews/chunkbot-mc/batch002-674dab6c`, clean HEAD `674dab6c21bad07caa892d70f00d54eb5e168554`. Not modified.
+- **Command:** `node scripts/skills-live-check.ts --fixture 26.2`, 02:57:33–02:59:32 UTC, Node 24.21.0. The CLI runs used `run --no-autonomy` with `fixture-inference-free.json` and travel-radius-8.
+- **Result:** exit **1**, **13/33** (`cliExit` 0). Report: `var/live-check/2026-10-07T02-57-33-606Z-26.2-skills/report.json` inside that checkout.
+- **Passed:** K1, M2, V1, X3, X4, I1, X7, B0–B5.
+
+**Root cause (from the report and harness source; no rerun).**
+- **Stale capability count.** `scripts/skills-live-check.ts` S0 waits for `skills: 20 capabilities` and `capabilities=20`. The integrated build registers **22** — the extra two are `seek_owner` and `route_travel`; the transcript shows `capabilities=22 (catalog skills-22-268d72d2779d)`.
+- **Setup skipped.** S0 times out before `setupScene()`, so the standard scene was never rebuilt and `/diag anchor` never re-anchored.
+- **Cascade.** P1, C0, M1, CR1, M3, PR1, F1, T1, T2, E1, PL1, N1, FL1, N2, X1, X2, PL2, X5 and X6 then failed on a missing scene, or on the stale diagnostic anchor at Chunkbot's login position (1001.5, −55.1, 1120.5). That position is where the locator gate harness last left Chunkbot on the 26.2 world.
+
+**Correction proposals (shared/harness-owned; not edited by this worker).**
+- **(a) Capability count.** `skills-live-check` S0 should assert the actual registered catalog instead of a hard-coded 20, or at least 20 plus the documented locator capabilities.
+- **(b) Locator harness exit position (owned; offline proposal).** `scripts/locator-live-check.ts` could return Chunkbot and the fake players to the standard skills scene start before disconnecting. Fixture harnesses then never inherit its far-away login position. This was not changed during this lease.
+
+**Cleanup.**
+- No process from this run remains.
+- An unrelated root clean-install live CLI process (PID 71629, started 02:59:41 UTC) was observed and NOT touched.
