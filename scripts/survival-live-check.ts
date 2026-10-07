@@ -293,7 +293,7 @@ class Gate {
 
   assessInput(over: Partial<Parameters<SurvivalService['assess']>[0]> = {}): Parameters<SurvivalService['assess']>[0] {
     const s = this.snapshot();
-    return { nowMs: Date.now(), connection: { ready: this.game.state === 'ready', connectionEpoch: this.game.connectionEpoch, dimension: s.dimension }, snapshot: s, autonomyAllowed: true, active: { kind: 'none' }, ownerIntentPending: false, ownerIntentInterrupted: false, goalLimits: { plannerTurns: 20, tasks: 64, replans: 8, deadlineMs: 20 * 60_000 }, ...over };
+    return { nowMs: Date.now(), connection: { ready: this.game.state === 'ready', connectionEpoch: this.game.connectionEpoch, dimension: s.dimension }, snapshot: s, autonomyAllowed: true, active: { kind: 'none' }, ownerIntakePending: false, ownerIntentInterrupted: false, goalLimits: { plannerTurns: 20, tasks: 64, replans: 8, deadlineMs: 20 * 60_000 }, ...over };
   }
 
   /** Harness-as-supervisor: admit survival's own proposal under a fresh code goal epoch. */

@@ -16,6 +16,7 @@ import type { MemoryFact, MemoryScope } from '../contracts/memory.ts';
 import type { ObservationSnapshot } from '../contracts/observation.ts';
 import {
   GATED_LATER_SLICES,
+  NECESSARY_ROUTINES,
   type AllowanceTaskRef,
   type InterruptedDirective,
   type DropIdentity,
@@ -419,7 +420,9 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     }
     if (!input.autonomyAllowed) return this.decide({ kind: 'none', reason: 'paused by the owner (stop); nothing automatic starts until resume' }, now);
     if (a.kind === 'owner_goal' || a.kind === 'diagnostic') return this.decide({ kind: 'none', reason: 'owner/operator work has priority' }, now);
-    if (input.ownerIntentPending) return this.decide({ kind: 'none', reason: 'a pending owner instruction has priority' }, now);
+    if (input.ownerIntakePending) return this.decide({ kind: 'none', reason: 'a live owner instruction or unanswered owner question has priority' }, now);
+    // C4: a retained interrupted directive (supervisor flag OR survival's own durable record) allows only necessary support.
+    const interrupted = input.ownerIntentInterrupted || this.hasInterruptedOwnerIntent();
     if (a.kind === 'support' || this.active) return this.decide({ kind: 'none', reason: 'a support routine is already running' }, now);
     // The open episode needs its loss assessment when the respawn was not observed by this process (restart).
     const ep = this.book?.open();
@@ -428,7 +431,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       this.persistSoon();
     }
     while (this.admissions.length && this.admissions[0]! < now - 3_600_000) this.admissions.shift();
-    const serves: SurvivalProposal['serves'] = input.ownerIntentInterrupted ? 'owner_intent' : a.kind === 'progression' ? 'progression' : 'none';
+    const serves: SurvivalProposal['serves'] = interrupted ? 'owner_intent' : a.kind === 'progression' ? 'progression' : 'none';
     const ctx: PolicyContext = {
       now,
       cfg,
@@ -450,6 +453,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     };
     let firstBlocked: (RoutineEval & { blocked: object }) | undefined;
     for (const routine of ROUTINE_ORDER) {
+      if (interrupted && !(NECESSARY_ROUTINES as readonly string[]).includes(routine)) continue;
       if (this.onCooldown(routine, now)) continue;
       const ev = this.evaluate(routine, ctx, now);
       if (!ev.need) {
@@ -484,7 +488,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       const b = firstBlocked.blocked as { reason: string; detail: string; transient: boolean };
       return this.decide({ kind: 'blocked', routine: firstBlocked.routine, reason: b.reason, detail: b.detail, signature: firstBlocked.need ? firstBlocked.signature : '', ...(b.transient ? { retryAfterMs: 60_000 } : {}) }, now);
     }
-    return this.decide({ kind: 'none', reason: 'no survival routine needed' }, now);
+    return this.decide({ kind: 'none', reason: interrupted ? 'an interrupted owner directive awaits the owner; no necessary support is needed (other upkeep and progression wait)' : 'no survival routine needed' }, now);
   }
 
   /** Route policy id the recovery proposal used (`local` within the travel bound). */
@@ -651,6 +655,14 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   /** True while an interrupted owner directive awaits the owner's decision (status/supervisor). */
   hasInterruptedOwnerIntent(): boolean {
     return this.allInterrupted().some((d) => d.state === 'awaiting_owner');
+  }
+
+  interruptedOwnerIntent(): ReadonlyArray<{ goalId: string; instruction: string; reason: string; interruptedAtMs: number; durable: boolean }> {
+    const durable = this.storeWritable;
+    const fromBook = new Set([...(this.book?.episodes() ?? []).map((e) => e.interrupted).filter((x): x is InterruptedDirective => Boolean(x)), ...(this.book?.interrupted() ?? [])]);
+    return this.allInterrupted()
+      .filter((d) => d.state === 'awaiting_owner')
+      .map((d) => ({ goalId: d.goalId, instruction: d.instruction, reason: d.reason, interruptedAtMs: d.interruptedAtMs, durable: durable && fromBook.has(d) }));
   }
 
   abandonRecovery(detail: string, atMs: number): void {

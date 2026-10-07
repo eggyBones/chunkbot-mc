@@ -75,6 +75,9 @@ export type SurvivalRoutine = z.infer<typeof SurvivalRoutineSchema>;
 export const SURVIVAL_PRIORITIES = ['safety', 'support'] as const;
 export type SurvivalPriority = (typeof SURVIVAL_PRIORITIES)[number];
 
+/** C4: the only routines proposed while an interrupted owner directive awaits the owner. */
+export const NECESSARY_ROUTINES = ['eat', 'rest', 'death_recovery'] as const satisfies readonly SurvivalRoutine[];
+
 /** Routines whose code-built task may run under the narrow low-health allowance. */
 export const LOW_HEALTH_ROUTINES = ['eat', 'rest'] as const satisfies readonly SurvivalRoutine[];
 
@@ -596,9 +599,22 @@ export interface SurvivalAssessmentInput {
   /** Owner pause latch (stop until explicit resume): no automatic proposal while false. */
   autonomyAllowed: boolean;
   active: ActiveWorkFacts;
-  /** A pending/unanswered/blocked owner instruction exists (it keeps priority and stays visible). */
-  ownerIntentPending: boolean;
-  /** An interrupted owner directive awaits the owner's decision (support may address it; progression waits). */
+  /**
+   * MB-FLOW-003-C4 canonical semantics. LIVE owner intake only: a new owner
+   * instruction being prepared/handed off, or an owner question awaiting the
+   * owner's answer. Survival yields to it (only `revoke_unsafe` still applies).
+   * An already interrupted, retained directive is NOT intake; pass it as
+   * `ownerIntentInterrupted` instead.
+   */
+  ownerIntakePending: boolean;
+  /**
+   * A retained interrupted owner directive awaits the owner's decision (its
+   * accepted outcome/baseline stay held; nothing is replayed). Survival then
+   * proposes only NECESSARY support (eat, rest, death recovery) serving
+   * `owner_intent`; other upkeep and all unrelated progression wait. Survival
+   * also ORs in its own DURABLE record (`interruptedOwnerIntent()`), so a
+   * process restart cannot drop it. Bare `resume` never clears it.
+   */
   ownerIntentInterrupted: boolean;
   /** Remaining goal-level limits the supervisor would grant a support goal (ceilings never exceed these). */
   goalLimits: { plannerTurns: number; tasks: number; replans: number; deadlineMs: number };
@@ -874,6 +890,13 @@ export interface SurvivalPolicyPort {
   onOwnerInstruction(atMs: number): void;
   /** Owner explicitly dismissed an interrupted directive. */
   dismissInterrupted(goalId: string, atMs: number): boolean;
+  /**
+   * C4: the durable interrupted owner directives still awaiting the owner
+   * (survived restart when scoped). The supervisor must keep unrelated
+   * progression blocked while any is listed; only a new explicit owner
+   * instruction (`onOwnerInstruction`) or an explicit dismissal clears them.
+   */
+  interruptedOwnerIntent(): ReadonlyArray<{ goalId: string; instruction: string; reason: string; interruptedAtMs: number; durable: boolean }>;
   /** Owner dismissed/redirected recovery explicitly (episode abandoned). */
   abandonRecovery(detail: string, atMs: number): void;
   status(nowMs: number): SurvivalStatus;
