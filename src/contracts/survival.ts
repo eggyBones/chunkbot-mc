@@ -23,6 +23,7 @@ import { BOUNDS, CapabilityIdSchema, DimensionSchema, RegistryKeySchema, Vec3Sch
 import { MemoryFactIdSchema, MemoryScopeSchema, type MemoryScope } from './memory.ts';
 import type { ObservationSnapshot } from './observation.ts';
 import type { GameLifecycleEvent } from './ports.ts';
+import type { RouteDestinationProvider } from './locator.ts';
 import type { OutcomePredicate, PredicateEvaluation } from './predicate.ts';
 import type { TaskMode, TaskSpec } from './task.ts';
 
@@ -668,7 +669,7 @@ export interface LowHealthAllowanceGrant {
 }
 
 export type LowHealthCheck =
-  | { allowed: true; allowanceId: string; capabilities: readonly string[]; items: readonly string[]; detail: string }
+  | { allowed: true; allowanceId: string; capabilities: readonly string[]; items: readonly string[]; detail: string; /** Actions left AFTER this result (reserve: after counting this one). */ remainingActions?: number }
   | { allowed: false; reason: string; detail: string };
 
 /** The task identity every allowance call carries (the runtime's admitted task). */
@@ -688,14 +689,24 @@ export interface AllowanceTaskRef {
  * revalidation, and BEFORE execution, the runtime calls `recheck` with the
  * chosen candidate and the fresh snapshot (ownership, connection/dimension,
  * expiry, remaining actions, health/food, visible threat, item still owned);
- * a refusal executes nothing. The executor's lease/epoch fencing still
+ * a refusal executes nothing. `reserve` must precede EVERY dispatch (Jev and
+ * sustained local continuation) and counts before execution. The executor's lease/epoch fencing still
  * applies. Without the port, or on refusal, the guard blocks `low_health` as
  * today. There is no generic restore/escape exception and no global disable.
  */
 export interface LowHealthAllowancePort {
   check(task: AllowanceTaskRef, snapshot: ObservationSnapshot): LowHealthCheck;
-  recheck(allowanceId: string, task: AllowanceTaskRef, candidate: { capability: string; parameters: Readonly<Record<string, unknown>> }, snapshot: ObservationSnapshot): LowHealthCheck;
-  /** Called after each action executed under an allowance (counts it; never extends it). */
+  /** Pure post-choice recheck (no accounting). */
+  recheck(allowanceId: string, task: AllowanceTaskRef, candidate: { id?: string; capability: string; parameters: Readonly<Record<string, unknown>> }, snapshot: ObservationSnapshot): LowHealthCheck;
+  /**
+   * Conservative accounting (C2): call immediately BEFORE EVERY dispatch under
+   * the allowance — a Jev-chosen action AND every sustained local
+   * continuation. It rechecks and, only when allowed, counts the action
+   * before it runs, so an abort, exception or missing outcome still consumed
+   * it. The last allowed action leaves zero; further windows are refused.
+   */
+  reserve(allowanceId: string, task: AllowanceTaskRef, candidate: { id: string; capability: string; parameters: Readonly<Record<string, unknown>> }, snapshot: ObservationSnapshot): LowHealthCheck;
+  /** Outcome note after a dispatch. A reserved action is never counted twice; an unreserved one is counted conservatively. Never extends anything. */
   consumed(allowanceId: string, outcome: { actionId: string; capability: string; status: string }): void;
 }
 
@@ -771,16 +782,17 @@ export interface SurvivalLifecyclePort {
 }
 
 /**
- * Structural copy of the locator `RouteDestinationProvider` (b894867): the
- * CURRENT incident's own proven historical site, returned only for the bound
- * recovery goal epoch on the same connection and dimension. Far recovery
- * stays honestly blocked until the route port is integrated; the original
- * travel bound is never relaxed and a stale target is never replayed.
+ * The CANONICAL locator `RouteDestinationProvider` (b323883): the CURRENT
+ * incident's own proven historical site with `provenance: 'own_incident'`,
+ * returned only for the bound recovery goal epoch on the same connection and
+ * dimension, only with an exact capture -> memory fact -> episode link, and
+ * only while the incident identity frozen at admission (episode, fact,
+ * dimension, coordinates, source) is unchanged; the destinationId encodes that
+ * whole identity so a changed coordinate can never reuse it. Far recovery stays
+ * blocked until the corrected route port is integrated; the travel bound is
+ * never relaxed and a stale target is never replayed.
  */
-export interface OwnDeathDestinationProvider {
-  readonly kind: 'own_death';
-  current(ctx: { connectionEpoch: number; dimension: string; goalEpoch: number }): { destinationId: string; dimension: string; at: { x: number; y: number; z: number }; recordedAtMs: number; label: string } | undefined;
-}
+export type OwnDeathDestinationProvider = RouteDestinationProvider;
 
 // ---------------------------------------------------------------- supervisor hooks
 

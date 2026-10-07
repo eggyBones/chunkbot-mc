@@ -27,7 +27,7 @@ No existing file was edited.
 
 - `npm run typecheck`: 0
 - `npm run build`: 0
-- `npm test`: 0, 553/553 passing. That includes 70 survival tests across 8 files: contract, tracker, recovery, upkeep, store, skills, wiring and harness guard.
+- `npm test`: 0, 563/563 passing. That includes 80 survival tests across 9 files: contract, tracker, recovery, upkeep, allowance (C2), store, skills, wiring and harness guard.
 - The harness guard spawns `scripts/survival-live-check.ts` with a missing or invalid lease. Each run exits 2 before any password read, RCON command, join or output directory.
 - Not run (they need a lease or provider): the fixture gates, live-check, skills-live-check, planner and Jev checks, doctor.
 
@@ -58,8 +58,9 @@ No existing file was edited.
   - `rest_in_place`: succeeds only on a server-stated health gain. Taking damage, a visible threat or no regeneration end it honestly.
   - `equip_suitable_tool`: picks the cheapest capable tool that isn't nearly worn, according to server durability.
 - **`survival_state` predicate.** For recovery, `recovered` is satisfied only when nothing is sought (`recovered` or `no_loss`). `concluded` is satisfied when the episode ended or the bounded visible search at the site found nothing. Its detail and evidence say "NOT a full recovery" and carry `recoveryStatus`. `eat`, `rest`, `tool_upkeep`, `inventory_room` and `resupply` use `satisfied` from fresh server facts. All of them are fenced to the bound support goal.
-- **Low-health allowance (R6, R-G3).**
+- **Low-health allowance (R6, R-G3, C2).**
   - At most one grant per admitted support epoch. It is bound to goal id and epoch, connection, dimension and the first task id, with exact capabilities and items, a fixed expiry (90 s) and a maximum of 4 actions. There is no renewal.
+  - `reserve` must precede every dispatch (Jev or sustained local continuation) and counts before execution; the last allowed action leaves zero and a further window is refused.
   - `check` gates the low-health round and `recheck` runs after the Jev choice. Both refuse on a visible hostile within 8 blocks, full food (eat), food below 18 (rest), an item no longer owned, a stale snapshot, or another dimension or connection.
 - **Upkeep (R7).**
   - Tool replacement: proposed only when every owned tool of a kind is nearly worn by server metadata; unknown metadata is never treated as worn.
@@ -93,7 +94,7 @@ No existing file was edited.
 1. **Composition.** Build the service with `createSurvivalService({survival: config.survival, scope: <enabled memory scope>, dataDir, minecraftVersion, limits: {lowHealth, travelRadius}, now, record, memory, latestSnapshot})` and add `survival: SurvivalConfigSchema.optional()` to `ChunkbotConfig`. Normal runs: enabled with explicit scope. Explicit disable, diagnostics and inference-free profiles stay off.
 2. **Packet tap.** A synchronous `onBotCreated(bot, epoch)` hook calling `survival.attachConnection(bot._client, {connectionEpoch, selfPosition, containerLayout?})` before login. Fallback seed: `librarySeed(bot)`.
 3. **Lifecycle order.** Engine revocation, then `survival.onLifecycle(e)`, then memory captures with `survival.deathContext()` and returns the captured `MemoryFact` (approved), then `survival.linkIncident(ctx.captureId, fact.id)`, then ledger, perception and interface invalidation. `memory.close()` and `survival.close()` run after owned cleanup.
-4. **TaskRuntime.** Add `lowHealthAllowance?: LowHealthAllowancePort`. At the guard, `check`, then `allowedUnderAllowance(candidates, check)`. After the Jev choice and fresh revalidation, `recheck(allowanceId, task, chosen, freshSnapshot)` before execute, then `consumed(...)`.
+4. **TaskRuntime (MB-FLOW-003-C2, progression owns the fix).** Add `lowHealthAllowance?: LowHealthAllowancePort`. At the guard, `check`, then `allowedUnderAllowance(candidates, check)`. Immediately before EVERY dispatch under an allowance — the Jev-chosen action after its fresh revalidation AND every sustained local continuation — call `reserve(allowanceId, task, candidate, freshSnapshot)`; a refusal dispatches nothing. `reserve` counts before execution, so an abort or exception still consumed the action, and the same action id is never counted twice. `consumed(...)` after the outcome is an idempotent note; an unreserved dispatch is still counted conservatively.
 5. **Predicate.** Add `SurvivalStatePredicateSchema` to the atomic union, evaluated through `survival.evaluateSurvivalState(p, owner)`, and expose it in the planner wire schema.
 6. **Supervisor.**
    - `assess` gets `ownerIntentInterrupted` from `survival.hasInterruptedOwnerIntent()` or the supervisor's own owner-intent state.
@@ -102,7 +103,7 @@ No existing file was edited.
    - Handle `revoke_unsafe` by revoking the running goal with owner intent retained.
 7. **Skills.** Register `survivalSkills(service)`, which is empty when disabled.
 8. **Status and dashboard.** Use `survival.statusLines(now)` and `survival.status(now)`, at most 4,000 characters, read-only.
-9. **Routing.** Pass `farRoute` and the own-death provider (`survival` implements `current(ctx)` with the canonical `RouteDestinationProvider` shape) to locator's RoutePort when it is integrated.
+9. **Routing.** Pass `farRoute` and the own-death provider to locator's RoutePort when the corrected routing is integrated. `SurvivalService` implements the canonical `RouteDestinationProvider` (locator `b323883`, cherry-picked unchanged): `current(ctx)` returns `provenance: 'own_incident'` only for the bound recovery goal epoch, connection and dimension, with an exact capture → memory fact → episode link, and only while the whole incident identity frozen at admission (episode, fact, dimension, coordinates, source) is unchanged. The `destinationId` encodes that whole identity; a changed coordinate gives no destination (`destination_changed`). Far recovery stays blocked until then.
 10. **Optional memory extension.** `updateDeathRecovery({retained})` so a respawn-retained inventory isn't recorded as "regained". The current use is labeled in the detail text.
 
 ## Lease request (R-G1/R-G2/R-G3 gate)
