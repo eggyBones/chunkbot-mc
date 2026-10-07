@@ -16,7 +16,7 @@ const config = parseConfig({
 const OWNER = { senderUuid: offlinePlayerUuid('FixtureOwner'), senderListName: 'FixtureOwner' };
 const GUEST = { senderUuid: offlinePlayerUuid('FixtureGuest'), senderListName: 'FixtureGuest' };
 
-function makeApp(planner?: ScriptedPlanner, exitOnConnectionEnd = false) {
+function makeApp(planner?: ScriptedPlanner, exitOnConnectionEnd = false, extensions?: ConstructorParameters<typeof ChunkbotApp>[0]['extensions']) {
   const game = new FakeGame();
   game.selfUuid = offlinePlayerUuid('Chunkbot');
   const store = new MemoryRunStore();
@@ -31,6 +31,7 @@ function makeApp(planner?: ScriptedPlanner, exitOnConnectionEnd = false) {
     runFacts: {},
     ...(planner ? { adapters: { planner } } : {}),
     exitOnConnectionEnd,
+    ...(extensions ? { extensions } : {}),
   });
   return { app, game, store, lines };
 }
@@ -109,6 +110,18 @@ describe('stop and clarification across surfaces', () => {
     const { app, lines } = await readyApp();
     await app.handleTerminalLine('stop');
     assert.ok(lines.some((l) => /Nothing to stop; Chunkbot is idle/.test(l)));
+  });
+
+  it('with automatic work installed, idle stop and resume say what the latch means (MB-FLOW-001)', async () => {
+    const h = makeApp(undefined, false, { autonomyStatus: () => ({ lines: [], chat: 'automatic: idle', automatic: true }) });
+    const connected = h.app.connect();
+    h.game.completeJoin();
+    await connected;
+    await h.app.handleTerminalLine('stop');
+    assert.ok(h.lines.some((l) => /Nothing was running; automatic work stays paused until you say resume/.test(l)));
+    assert.equal(h.app.engine.status().latch.paused, true);
+    await h.app.handleTerminalLine('resume');
+    assert.ok(h.lines.some((l) => /Resumed: automatic work is allowed again\. Nothing earlier is replayed; automatic work restarts from a fresh assessment\./.test(l)));
   });
 });
 

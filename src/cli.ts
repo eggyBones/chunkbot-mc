@@ -398,7 +398,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
         const s = supervisor.status();
         const epoch = appRef?.engine.currentEpoch;
         const view = epoch !== undefined ? runtime.routeView(epoch) : undefined;
-        return { lines: autonomyStatusLines(s, { locator: runtime.locator?.ownerHint() ?? null, admission: view?.admission ?? null }), chat: autonomyStatusChat(s) };
+        return { lines: autonomyStatusLines(s, { locator: runtime.locator?.ownerHint() ?? null, admission: view?.admission ?? null }), chat: autonomyStatusChat(s), automatic: s.mode !== 'disabled' && s.mode !== 'scope_blocked' };
       },
       diagnostic: (args) => diagnostics!.handle(args),
     },
