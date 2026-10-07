@@ -27,7 +27,7 @@ No existing file was edited.
 
 - `npm run typecheck`: 0
 - `npm run build`: 0
-- `npm test`: 0, 586/586 passing. That includes 103 survival tests across 12 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring and harness guard.
+- `npm test`: 0, 588/588 passing. That includes 105 survival tests across 12 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring and harness guard.
 - The harness guard spawns `scripts/survival-live-check.ts` with a missing or invalid lease. Each run exits 2 before any password read, RCON command, join or output directory.
 - Not run (they need a lease or provider): the fixture gates, live-check, skills-live-check, planner and Jev checks, doctor.
 
@@ -66,6 +66,7 @@ No existing file was edited.
   - At most one grant per admitted support epoch. It is bound to goal id and epoch, connection, dimension and the first task id, with exact capabilities and items, a fixed expiry (90 s) and a maximum of 4 actions. There is no renewal.
   - `reserve` must precede every dispatch (Jev or sustained local continuation) and counts before execution; the last allowed action leaves zero and a further window is refused.
   - `check` gates the low-health round and `recheck` runs after the Jev choice. Both refuse on a visible hostile within 8 blocks, full food (eat), food below 18 (rest), an item no longer owned, a stale snapshot, or another dimension or connection.
+- **Necessary low-health eat/rest (C6).** A routine cooldown from an earlier completed eat or rest never suppresses a necessary low-health eat or rest.
 - **Valuable/custom preservation (C3).** A food or tool key with any custom-named or enchanted stack is never auto-eaten or auto-selected, because use-by-key cannot choose which stack. Ordinary tools are preferred over valuable ones, and safe-food reserves exclude custom stacks.
 - **Upkeep (R7).**
   - Tool replacement: proposed only when every owned tool of a kind is nearly worn by server metadata; unknown metadata is never treated as worn.
@@ -128,18 +129,33 @@ No existing file was edited.
     Without the seam, recovery is blocked as `incident_durability_unknown`. The synchronous `onLifecycle` fact return stays the exact CAPTURE association; durability is a separate, later check made before planning or action, never on the revocation path. The gate harness uses a labeled stand-in that reads memory's last complete on-disk revision (`inspectMemory`).
 12. **Optional memory extension.** `updateDeathRecovery({retained})` so a respawn-retained inventory isn't recorded as "regained". The current use is labeled in the detail text.
 
-## Lease request (R-G1/R-G2/R-G3 gate)
+## Lease request (R-G1/R-G2/R-G3 gate; corrected for MB-FLOW-003-C6)
 
-- **Frozen source:** the HEAD reported in the handoff message, clean tree. The harness records `git rev-parse HEAD` and the dirty count, and imports `src` directly, as the memory harness does. No `dist` is needed, and the build won't be cleaned during the run.
+- **Frozen source:** the HEAD reported in the handoff message, clean tree. The harness records `git rev-parse HEAD` and the dirty count, and imports `src` directly, as the memory harness does. No `dist` is needed, and the build won't be cleaned during the run. This is a module gate, not integrated-application acceptance.
 - **Commands:**
   - 26.1.2: `node scripts/survival-live-check.ts --fixture-lease <id> [--with-settings]`
   - 26.2: the same command with `--fixture 26.2`
-- **Scene footprint:** forceload and reset of x 196..224, z 190..224, y −61..−50 (the existing skills scene area).
-- **Bot state changes:** `spawnpoint Chunkbot 205 -60 205`, `clear`, `effect clear`, tp, give (damaged iron pickaxe, bread, cobblestone), `kill Chunkbot`, summoned item entities (dirt, bread) inside the area, `damage Chunkbot`, hunger and saturation effects.
-- **Settings, only with `--with-settings`:** difficulty Peaceful → Easy (needed for real hunger and regeneration on the peaceful fixture), `gamerule keepInventory true`, `gamerule naturalRegeneration false`, and `time set 13000` for the night bed observation. All are read first and restored in `finally`, and every command and reply is recorded in the report.
-- **Gates:** G1, G2 and G4 (daytime bed use and respawn data, through the existing `interact_block`) need no settings. G1k, G3 and G4n run only with `--with-settings`. G4 and G4n are mechanics observations for R8 only; no bed routine is enabled.
+- **Owned write footprint** (every block and entity write stays inside it; static guard test enforced):
+  - scene x 196..224, y −61..−50, z 190..224: block fills and item/experience-orb entity removal only within `x=196,y=-61,z=190,dx=28,dy=11,dz=34`;
+  - backup x 196..224, y 200..211, z 190..224: holds the pre-trial scene copy. It must be verified empty first (a non-destructive masked self-clone count); otherwise the trial refuses before changing anything.
+  - forceload: each scene chunk is queried, and only chunks this trial added are removed;
+  - foreign test piles use a unique per-run tag `cbsurv_<time>_<pid>`, always further scoped to the owned volume.
+- **Bot state changes (fixture bot only):** `clear`, `effect clear`, `tp` inside the scene (no `spawnpoint` command), `give` (a damaged iron pickaxe, bread, cobblestone, an enchanted diamond sword), `kill Chunkbot`, `damage Chunkbot`, hunger effects. G4 and G4n may set the bot's respawn point to the trial bed; the before and after values are recorded. That bed is removed by the scene restore.
+- **Settings, only with `--with-settings`:** difficulty → easy, `keepInventory` → true for G1k only, `naturalRegeneration` → true then false (each verified by query before the assertion that depends on it), and time of day → 1000 (day, G4) and 13000 (night, G4n).
+- **Restoration (all verified, ANY failure fails the report through a `RESTORE` result):**
+  - original difficulty, `keepInventory`, `naturalRegeneration` and daytime (±100 ticks) restored and re-queried;
+  - tagged piles removed and verified gone;
+  - scene item/xp entities removed;
+  - scene cloned back from the backup and verified with `execute if blocks … all`;
+  - backup volume cleared and verified empty;
+  - trial-added forceload removed and verified;
+  - bot inventory and effects cleared, bot moved to just above the scene.
+- **Gates and assertions:**
+  - G1, G2, G2b: no settings needed. G1 additionally requires the server-stated own death location.
+  - G3: eating is completed only when `survival_state eat` is satisfied (food ≥ `eatUntil`). A necessary low-health eat runs right after it, which proves the cooldown fix. With regeneration verified on, rest must give a server health gain of at least 1. With regeneration verified off, rest must end `no_regeneration` inside its bounded window with no gain.
+  - G4 and G4n are R8 OBSERVATIONS only, with day or night set at trial start. They record the server respawn data, `sleeping_pos`, bed occupancy and daytime after sleeping. R8 stays gated; no sleep/spawn support is claimed.
 - **Join:** the offline `Chunkbot` from the inference-free example configs. No model calls.
-- **Report:** `var/live-check/<stamp>[-26.2]-survival/report.json`.
+- **Report:** `var/live-check/<stamp>[-26.2]-survival/report.json`, including footprint, restoration checks, every RCON command and reply, packet order and survival events.
 
 ## Known gaps and honest limits
 

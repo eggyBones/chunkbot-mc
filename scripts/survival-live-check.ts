@@ -17,28 +17,43 @@
 // candidate). Every RCON setup command is recorded; server truth is
 // cross-checked over RCON (positions, LastDeathLocation, inventory counts).
 //
-// Gates:
+// Gates (none claims integrated-application acceptance; this is a module gate):
 //   G1  death order: kill-packet freeze before clearing slots, server death
 //       GlobalPos vs RCON LastDeathLocation, memory records the same capture,
 //       fresh respawn assessment (missing manifest), death cause key.
-//   G1k keepInventory=true death: retained inventory, no trip   [--with-settings]
 //   G2  C3 mixed piles: a foreign 64-bread pile (oversized), unrelated dirt and
 //       a diamond sword with a DIFFERENT enchantment are refused BEFORE any
 //       collection (server-stated stacks/identity; RCON confirms none taken)
 //   G2b C3 ordinary recovery after the foreign piles are removed: own drops,
 //       including the enchanted sword (identity match), are collected with
 //       server collect evidence; recovered vs concluded reported honestly
-//   G3  food/health on Easy: hunger -> eat_safe_food raises server food;
-//       low health -> allowance check/recheck + eat; rest regenerates; with
-//       naturalRegeneration=false rest ends no_regeneration   [--with-settings]
+//   [--with-settings only]
+//   G1k keepInventory=true death: retained inventory, no trip
+//   G3  Easy difficulty: eating completes ONLY at the admitted threshold
+//       (survival_state eat satisfied, food >= eatUntil); a necessary low-health
+//       eat runs through the allowance (check, reserve-before-dispatch); with
+//       naturalRegeneration verified TRUE rest must raise server health by >= 1;
+//       with it verified FALSE rest must end `no_regeneration` (bounded)
+//   G4  R8 OBSERVATION (no routine, no R8 claim): daytime set explicitly, bed
+//       use via interact_block; server respawn data recorded
+//   G4n R8 OBSERVATION: night set explicitly; server sleeping position, bed
+//       occupancy and daytime after 6 s recorded (sole-player only, never
+//       generalized to multiplayer)
 //
 //   npm run fixture -- status                     (fixture lease required)
 //   node scripts/survival-live-check.ts --fixture-lease <granted id> [--fixture 26.2] [--with-settings]
 //
-// --with-settings authorizes ONLY: difficulty peaceful->easy, gamerule
-// keepInventory and naturalRegeneration; all are read first and restored in
-// `finally`. Scene footprint: x 196..224, z 190..224, y -61..-50 (the existing
-// skills scene area) plus the bot's own spawnpoint inside it.
+// OWNED WRITE FOOTPRINT (C6) — every block/entity write stays inside these:
+//   scene   x 196..224, y -61..-50, z 190..224 (blocks and item/xp entities)
+//   backup  x 196..224, y 200..211, z 190..224 (pre-trial scene copy; must be
+//           verified EMPTY before use, else the trial refuses to start;
+//           restored/cleared and re-verified at the end)
+//   forceload: only chunks this trial added are removed again
+//   bot: inventory/effects/position/health/food of the fixture bot only; G4/G4n
+//        may set its respawn point to the trial bed (recorded before/after)
+//   settings [--with-settings]: difficulty, gamerules keepInventory and
+//        naturalRegeneration, time of day — read first, restored in `finally`
+//        and re-verified; ANY failed restoration or verification fails the report
 //
 // Report: var/live-check/<stamp>[-26.2]-survival/report.json
 import { execFileSync } from 'node:child_process';
@@ -79,7 +94,15 @@ const BOT = 'Chunkbot';
 const AREA = { x1: 196, z1: 190, x2: 224, z2: 224 };
 const START = { x: 205.5, y: -60, z: 205.5 };
 const DEATH_AT = { x: 212.5, y: -60, z: 205.5 };
-const ITEM_AREA = `x=${AREA.x1},y=-64,z=${AREA.z1},dx=${AREA.x2 - AREA.x1},dy=40,dz=${AREA.z2 - AREA.z1}`;
+const SCENE_Y = { y1: -61, y2: -50 };
+const BACKUP_Y = { y1: 200, y2: 211 };
+/** Entity selector volume == the declared owned scene (C6). */
+const ITEM_AREA = `x=${AREA.x1},y=${SCENE_Y.y1},z=${AREA.z1},dx=${AREA.x2 - AREA.x1},dy=${SCENE_Y.y2 - SCENE_Y.y1},dz=${AREA.z2 - AREA.z1}`;
+const SCENE_BOX = `${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} ${AREA.x2} ${SCENE_Y.y2} ${AREA.z2}`;
+const BACKUP_BOX = `${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2}`;
+/** Unique per-run tag for foreign test piles (never matches another run's or harness's entities). */
+const FOREIGN_TAG = `cbsurv_${Date.now().toString(36)}_${process.pid.toString(36)}`;
+const BED = { foot: { x: 208, y: -60, z: 208 }, head: { x: 208, y: -60, z: 209 } };
 
 interface Result {
   id: string;
@@ -251,21 +274,29 @@ class Gate {
     throw new Error(`timed out waiting for ${what}`);
   }
 
+  /** Trial scene inside the owned footprint (blocks + item/xp entities only); the pre-trial copy is in the backup volume. */
   async scene(): Promise<void> {
     const { x1, z1, x2, z2 } = AREA;
     for (const c of [
-      `forceload add ${x1} ${z1} ${x2} ${z2}`,
       `kill @e[type=item,${ITEM_AREA}]`,
       `kill @e[type=experience_orb,${ITEM_AREA}]`,
-      `fill ${x1} -60 ${z1} ${x2} -50 ${z2} air`,
-      `fill ${x1} -61 ${z1} ${x2} -61 ${z2} grass_block`,
-      `spawnpoint ${BOT} ${Math.floor(START.x)} ${START.y} ${Math.floor(START.z)}`,
+      `fill ${x1} -60 ${z1} ${x2} ${SCENE_Y.y2} ${z2} air`,
+      `fill ${x1} ${SCENE_Y.y1} ${z1} ${x2} ${SCENE_Y.y1} ${z2} grass_block`,
       `clear ${BOT}`,
       `effect clear ${BOT}`,
       `tp ${BOT} ${START.x} ${START.y} ${START.z} 0 20`,
     ])
       await this.rcon(c);
     await sleep(1_000);
+  }
+
+  /** Non-destructive count of non-air blocks in a box (clone onto itself, masked). */
+  async nonAirBlocks(box: string): Promise<number | undefined> {
+    const [x1, y1, z1] = box.split(' ');
+    const r = await this.rcon(`clone ${box} ${x1} ${y1} ${z1} masked force`, false);
+    const m = /cloned (\d+) block/i.exec(r);
+    if (m) return Number(m[1]);
+    return /no blocks/i.test(r) ? 0 : undefined;
   }
 
   admit(goalId: string): void {
@@ -351,7 +382,10 @@ async function killWithKit(g: Gate, ev: string[]): Promise<{ captureId: string |
   const mark = g.packets.length;
   await g.rcon(`kill ${BOT}`);
   await g.waitFor('respawn ready', () => g.survival.tracker.life === 'alive' && g.packets.slice(mark).some((p) => p.name === 'respawn'), 15_000);
-  await sleep(1_500);
+  await sleep(1_000);
+  // No spawnpoint change: return the respawned bot to the scene start (its own position only).
+  await g.rcon(`tp ${BOT} ${START.x} ${START.y} ${START.z} 0 20`);
+  await sleep(1_000);
   ev.push(`packet order around death: ${g.packets.slice(mark, mark + 40).map((p) => `${p.name}${p.detail ? `[${p.detail}]` : ''}`).join(' > ')}`);
   const d = g.survival.tracker.latest();
   const status = g.survival.status(Date.now());
@@ -359,9 +393,30 @@ async function killWithKit(g: Gate, ev: string[]): Promise<{ captureId: string |
   return { captureId: d?.captureId, factId: inc?.incidentFactId };
 }
 
+interface RestoreCheck {
+  what: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** Chunks of the owned scene (x/z); each is queried before forceloading so only trial-added ones are removed. */
+function sceneChunks(): Array<{ cx: number; cz: number }> {
+  const out: Array<{ cx: number; cz: number }> = [];
+  for (let cx = Math.floor(AREA.x1 / 16); cx <= Math.floor(AREA.x2 / 16); cx += 1) for (let cz = Math.floor(AREA.z1 / 16); cz <= Math.floor(AREA.z2 / 16); cz += 1) out.push({ cx, cz });
+  return out;
+}
+
+async function query(g: Gate, cmd: string, re: RegExp): Promise<string | undefined> {
+  return re.exec(await g.rcon(cmd, false))?.[1];
+}
+
 async function run(outDir: string, withSettings: boolean): Promise<Json> {
   const g = new Gate(outDir);
-  const restore: string[] = [];
+  /** Settings to restore in `finally` (command, and how to verify it). */
+  const restore: Array<{ what: string; command: string; verify: () => Promise<boolean> }> = [];
+  const restoreChecks: RestoreCheck[] = [];
+  const addedForceload: Array<{ cx: number; cz: number }> = [];
+  let backupTaken = false;
   let source = { head: 'unknown', dirty: -1 };
   try {
     source = { head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(), dirty: execFileSync('git', ['status', '--porcelain'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).split('\n').filter(Boolean).length };
@@ -370,33 +425,46 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
   }
   try {
     await g.connect();
+    // ---- footprint preconditions (C6): forceload only what is missing; the backup volume must be empty.
+    for (const ch of sceneChunks()) {
+      const r = await g.rcon(`forceload query ${ch.cx * 16} ${ch.cz * 16}`, false);
+      if (/is not marked/i.test(r)) {
+        await g.rcon(`forceload add ${ch.cx * 16} ${ch.cz * 16}`);
+        addedForceload.push(ch);
+      }
+    }
+    await sleep(1_000);
+    const backupNonAir = await g.nonAirBlocks(BACKUP_BOX);
+    check(backupNonAir === 0, `backup volume ${BACKUP_BOX} is not verified empty (${backupNonAir ?? 'unknown'} non-air blocks); refusing to change the scene`);
+    const backupReply = await g.rcon(`clone ${SCENE_BOX} ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1}`);
+    check(/cloned/i.test(backupReply) || /no blocks/i.test(backupReply), `scene backup failed: ${backupReply.slice(0, 120)}`);
+    backupTaken = true;
     await g.scene();
 
     await g.gate('G1', 'death order, server death location, same-capture memory link, fresh loss assessment', async (ev) => {
       const { captureId, factId } = await killWithKit(g, ev);
       const d = g.survival.tracker.latest();
       check(d, 'no captured death');
-      ev.push(`capture ${captureId}: frozenAt=${d.lastAlive.frozenAt} clearingPacketsAfterFreeze=${d.lastAlive.clearingPacketsAfterFreeze} lastAlive=${d.lastAlive.stacks.map((s) => `${s.key}x${s.count}`).join(',')} cause=${d.cause.translationKey ?? d.cause.kind} site=${d.site.source} ${JSON.stringify(d.site.at)} offBy=${d.site.clientEstimateOffBy ?? 'n/a'}`);
+      ev.push(`capture ${captureId}: frozenAt=${d.lastAlive.frozenAt} clearingPacketsAfterFreeze=${d.lastAlive.clearingPacketsAfterFreeze} lastAlive=${d.lastAlive.stacks.map((s) => `${s.key}x${s.count}${s.meta.digest ? '#' : ''}`).join(',')} cause=${d.cause.translationKey ?? d.cause.kind} site=${d.site.source} ${JSON.stringify(d.site.at)} offBy=${d.site.clientEstimateOffBy ?? 'n/a'}`);
       ev.push(`RCON LastDeathLocation: ${(await g.lastDeathLocation()).slice(0, 200)}`);
       ev.push(`memory fact ${factId}; memory status ${g.memory.status().state}`);
       check(d.lastAlive.stacks.length >= 3, 'last-alive inventory kept the kit (frozen before clearing)');
+      check(d.site.source === 'server_death_location', 'the server stated the own death location');
       check(factId && /^mf-/.test(factId), 'memory recorded the SAME capture and it was linked exactly');
       const inc = g.survival.status(Date.now()).incidents.at(-1);
       ev.push(`incident: ${JSON.stringify(inc)}`.slice(0, 900));
       check(inc && inc.missing.length >= 3, 'fresh respawn assessment lists the missing kit');
-      const items = await g.rcon(`execute if entity @e[type=item,x=${DEATH_AT.x - 6},y=-64,z=${DEATH_AT.z - 6},dx=12,dy=10,dz=12]`, false);
-      ev.push(`item entities near the site (RCON): ${items.slice(0, 120)}`);
+      const items = await g.rcon(`execute if entity @e[type=item,${ITEM_AREA}]`, false);
+      ev.push(`item entities in the owned scene (RCON): ${items.slice(0, 120)}`);
     });
 
     await g.gate('G2', 'C3 mixed piles: oversized pile, unrelated loot and a different-identity valuable are refused before collection', async (ev) => {
-      // Foreign loot near the site, AFTER the death drops landed: a 64-bread pile (oversized vs 4 missing),
-      // unrelated dirt, and a diamond sword with a DIFFERENT enchantment (identity mismatch).
-      await g.rcon(`summon item ${DEATH_AT.x + 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:bread",count:64},PickupDelay:0s,Tags:["chunkbot_foreign"]}`);
-      await g.rcon(`summon item ${DEATH_AT.x - 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:dirt",count:3},PickupDelay:0s,Tags:["chunkbot_foreign"]}`);
-      await g.rcon(`summon item ${DEATH_AT.x} ${DEATH_AT.y} ${DEATH_AT.z - 4} {Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":1}}},PickupDelay:0s,Tags:["chunkbot_foreign"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x + 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:bread",count:64},PickupDelay:0s,Tags:["${FOREIGN_TAG}"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x - 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:dirt",count:3},PickupDelay:0s,Tags:["${FOREIGN_TAG}"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x} ${DEATH_AT.y} ${DEATH_AT.z - 4} {Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":1}}},PickupDelay:0s,Tags:["${FOREIGN_TAG}"]}`);
       await sleep(1_500);
       await g.durable();
-      ev.push(`durability before recovery: survival=${g.survival.durability()} memory-disk=${JSON.stringify(g.survival.status(Date.now()).incidents.at(-1)?.incidentFactId)}`);
+      ev.push(`durability before recovery: survival=${g.survival.durability()}`);
       const decision = g.survival.assess(g.assessInput());
       ev.push(`decision: ${decision.kind} ${decision.kind === 'propose' ? decision.proposal.routine : 'reason' in decision ? decision.reason : ''}`);
       check(decision.kind === 'propose' && decision.proposal.routine === 'death_recovery', 'recovery proposed');
@@ -416,12 +484,10 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         ev.push(`recover_lost_items: ${o.status}${o.reason ? ` (${o.reason})` : ''} ${o.effect.slice(0, 220)}`);
         await sleep(300);
       }
-      const refusals = g.unavailable('recover_lost_items');
-      ev.push(`resolver refusals now: ${refusals.join(' | ').slice(0, 600)}`);
+      ev.push(`resolver refusals now: ${g.unavailable('recover_lost_items').join(' | ').slice(0, 600)}`);
       const counts = { bread: await g.count('bread'), dirt: await g.count('dirt'), diamond_sword: await g.count('diamond_sword') };
       ev.push(`server inventory (RCON clear 0): ${JSON.stringify(counts)}`);
-      const foreign = await g.rcon('execute if entity @e[type=item,tag=chunkbot_foreign]', false);
-      ev.push(`foreign piles still on the ground (RCON): ${foreign.slice(0, 120)}`);
+      ev.push(`foreign piles still on the ground (RCON): ${(await g.rcon(`execute if entity @e[type=item,tag=${FOREIGN_TAG},${ITEM_AREA}]`, false)).slice(0, 120)}`);
       check(counts.dirt === 0, 'no unrelated dirt was collected');
       check(counts.bread <= 4, 'the oversized 64-bread pile was not collected');
       check(g.outcomes.every((o) => o.capability !== 'recover_lost_items' || o.reason !== 'unscoped_item_collected'), 'no unplanned loot was collected');
@@ -429,8 +495,7 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
 
     await g.gate('G2b', 'C3 ordinary unambiguous recovery with server-confirmed collection; recovered vs concluded', async (ev) => {
       check(g.recovery, 'G2 admitted the recovery goal');
-      // Remove only the foreign piles (tagged); the own death drops stay.
-      await g.rcon('kill @e[type=item,tag=chunkbot_foreign]');
+      await g.rcon(`kill @e[type=item,tag=${FOREIGN_TAG},${ITEM_AREA}]`);
       await sleep(1_000);
       for (let i = 0; i < 10; i += 1) {
         const o = await g.act('recover_lost_items', [], 30_000);
@@ -455,17 +520,24 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
     });
 
     if (!withSettings) {
-      g.skip('G1k', 'keepInventory death retains inventory (no trip)', 'requires --with-settings (gamerule keepInventory)');
-      g.skip('G3', 'food/health on Easy, allowance, rest/no-regeneration', 'requires --with-settings (difficulty, naturalRegeneration)');
+      for (const [id, title] of [['G1k', 'keepInventory death'], ['G3', 'food/health on Easy'], ['G4', 'R8 day bed observation'], ['G4n', 'R8 night bed observation']] as const) g.skip(id, title, 'requires --with-settings (difficulty, gamerules, time of day)');
     } else {
-      const difficulty = /The difficulty is (\w+)/.exec(await g.rcon('difficulty'))?.[1]?.toLowerCase() ?? 'peaceful';
-      const keep = /currently set to: (\w+)/.exec(await g.rcon('gamerule keepInventory'))?.[1] ?? 'false';
-      const regen = /currently set to: (\w+)/.exec(await g.rcon('gamerule naturalRegeneration'))?.[1] ?? 'true';
-      restore.push(`difficulty ${difficulty}`, `gamerule keepInventory ${keep}`, `gamerule naturalRegeneration ${regen}`);
+      const difficulty = (await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase();
+      const keep = await query(g, 'gamerule keepInventory', /currently set to: (\w+)/);
+      const regen = await query(g, 'gamerule naturalRegeneration', /currently set to: (\w+)/);
+      const day = await query(g, 'time query daytime', /The time is (\d+)/);
+      check(difficulty && keep && regen && day, `could not read original settings (difficulty=${difficulty} keepInventory=${keep} naturalRegeneration=${regen} daytime=${day}); nothing changed`);
+      restore.push(
+        { what: 'difficulty', command: `difficulty ${difficulty}`, verify: async () => (await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase() === difficulty },
+        { what: 'keepInventory', command: `gamerule keepInventory ${keep}`, verify: async () => (await query(g, 'gamerule keepInventory', /currently set to: (\w+)/)) === keep },
+        { what: 'naturalRegeneration', command: `gamerule naturalRegeneration ${regen}`, verify: async () => (await query(g, 'gamerule naturalRegeneration', /currently set to: (\w+)/)) === regen },
+        { what: 'daytime', command: `time set ${day}`, verify: async () => Math.abs(Number(await query(g, 'time query daytime', /The time is (\d+)/)) - Number(day)) <= 100 },
+      );
 
       await g.gate('G1k', 'keepInventory death retains inventory (no trip)', async (ev) => {
         await g.scene();
         await g.rcon('gamerule keepInventory true');
+        check((await query(g, 'gamerule keepInventory', /currently set to: (\w+)/)) === 'true', 'keepInventory verified true for the trial');
         const { factId } = await killWithKit(g, ev);
         const inc = g.survival.status(Date.now()).incidents.at(-1);
         ev.push(`incident ${factId}: ${inc?.status} missing=${JSON.stringify(inc?.missing)}`);
@@ -473,33 +545,43 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         check(inc?.status === 'no_loss', 'retained inventory: no_loss, no trip');
       });
 
-      await g.gate('G3', 'food/health on Easy: eat raises server food, low-health allowance, rest regen and no-regeneration', async (ev) => {
+      await g.gate('G3', 'Easy: eat to the admitted threshold; necessary low-health eat; verified regeneration on/off', async (ev) => {
         await g.scene();
         await g.rcon('difficulty easy');
-        await g.rcon(`give ${BOT} minecraft:bread 6`);
-        await g.rcon(`effect give ${BOT} minecraft:hunger 20 120 true`);
-        await g.waitFor('food at or below 14', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) <= 14, 30_000);
+        check((await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase() === 'easy', 'difficulty verified easy');
+        await g.rcon('gamerule naturalRegeneration true');
+        check((await query(g, 'gamerule naturalRegeneration', /currently set to: (\w+)/)) === 'true', 'naturalRegeneration verified true');
+        await g.rcon(`give ${BOT} minecraft:bread 12`);
+        await g.rcon(`effect give ${BOT} minecraft:hunger 30 120 true`);
+        await g.waitFor('food at or below 10', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) <= 10, 40_000);
         await g.rcon(`effect clear ${BOT} minecraft:hunger`);
-        const before = g.survival.vitals(g.game.connectionEpoch);
+        await sleep(500);
+        // (a) ordinary eat: complete ONLY when survival_state eat is satisfied (food >= eatUntil).
+        const cfg = g.survival.config();
+        check(cfg, 'survival config');
         let d = g.survival.assess(g.assessInput());
-        ev.push(`food ${before?.food}: decision ${d.kind} ${d.kind === 'propose' ? d.proposal.routine : ''}`);
+        ev.push(`food ${g.survival.vitals(g.game.connectionEpoch)?.food}: decision ${d.kind} ${d.kind === 'propose' ? d.proposal.routine : 'reason' in d ? d.reason : ''}`);
         check(d.kind === 'propose' && d.proposal.routine === 'eat', 'eat proposed at low food');
         g.admitProposal(d.proposal);
-        const eat = await g.act('eat_safe_food');
-        await sleep(500);
-        const after = g.survival.vitals(g.game.connectionEpoch);
-        ev.push(`eat: ${eat?.status} ${eat?.effect.slice(0, 160)}; server food ${before?.food} -> ${after?.food}`);
-        check((after?.food ?? 0) > (before?.food ?? 0), 'server food rose');
-        g.endSupport(d.proposal, 'outcome_verified');
-        // Low health: allowance bound to the admitted support goal; recheck after the choice.
+        const owner = { goalId: g.goalId, goalEpoch: g.epoch };
+        let eatState = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'eat', expect: 'satisfied' }, owner);
+        for (let i = 0; i < 4 && eatState.status !== 'satisfied'; i += 1) {
+          const o = await g.act('eat_safe_food');
+          await sleep(600);
+          eatState = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'eat', expect: 'satisfied' }, owner);
+          ev.push(`eat ${i + 1}: ${o?.status} ${o?.effect.slice(0, 120)}; server food ${g.survival.vitals(g.game.connectionEpoch)?.food}; eat state ${eatState.status}`);
+        }
+        g.endSupport(d.proposal, eatState.status === 'satisfied' ? 'outcome_verified' : 'no_progress');
+        check(eatState.status === 'satisfied' && (g.survival.vitals(g.game.connectionEpoch)?.food ?? 0) >= cfg.food.eatUntil, `eat completed only at the admitted threshold (food >= ${cfg.food.eatUntil})`);
+        // (b) necessary low-health eat right after (the ordinary eat cooldown must NOT suppress it).
         await g.rcon(`damage ${BOT} 13 minecraft:generic`);
         await g.waitFor('health <= 8', () => (g.survival.vitals(g.game.connectionEpoch)?.health ?? 20) <= 8, 10_000);
         await g.rcon(`effect give ${BOT} minecraft:hunger 10 60 true`);
-        await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 30_000);
+        await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 40_000);
         await g.rcon(`effect clear ${BOT} minecraft:hunger`);
         d = g.survival.assess(g.assessInput());
         ev.push(`low health decision: ${d.kind} ${d.kind === 'propose' ? `${d.proposal.routine} allowance=${JSON.stringify(d.proposal.lowHealthAllowance)}` : 'reason' in d ? d.reason : ''}`);
-        check(d.kind === 'propose' && d.proposal.lowHealthAllowance, 'a narrow allowance is proposed at low health');
+        check(d.kind === 'propose' && d.proposal.routine === 'eat' && d.proposal.lowHealthAllowance, 'a necessary low-health eat with a narrow allowance is proposed despite the earlier eat cooldown');
         const grant = g.admitProposal(d.proposal);
         check(grant, 'grant issued once for the admitted support epoch');
         const ref = { goalId: g.goalId, goalEpoch: g.epoch, taskId: 'task-gate1', connectionEpoch: g.game.connectionEpoch, allowedCapabilities: grant.capabilities };
@@ -511,52 +593,146 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         const rc = g.survival.reserve(c1.allowanceId, ref, cand, g.snapshot());
         ev.push(`reserve (recheck + count before dispatch): ${JSON.stringify(rc).slice(0, 200)}`);
         check(rc.allowed, 'post-choice recheck/reservation passes');
+        const foodBefore = g.survival.vitals(g.game.connectionEpoch)?.food ?? 0;
         const out = await g.executor.execute(cand, new AbortController().signal, { kind: 'goal', goalEpoch: g.epoch, goalId: g.goalId, taskId: 'task-gate1' });
         g.survival.consumed(c1.allowanceId, { actionId: out.actionId, capability: cand.capability, status: out.status });
-        ev.push(`low-health eat: ${out.status} ${out.effect.slice(0, 160)}`);
-        g.endSupport(d.proposal, 'outcome_verified');
-        // Rest with natural regeneration on: server health must rise.
-        await g.rcon(`effect give ${BOT} minecraft:saturation 2 10 true`);
-        await sleep(2_500);
+        await sleep(600);
+        const foodAfter = g.survival.vitals(g.game.connectionEpoch)?.food ?? 0;
+        ev.push(`low-health eat: ${out.status} ${out.effect.slice(0, 160)}; server food ${foodBefore} -> ${foodAfter}`);
+        check(foodAfter > foodBefore, 'the low-health eat raised the server food level');
+        g.endSupport(d.proposal, 'no_progress'); // one dispatch observed; not labeled a completed routine
+        // (c) regeneration ON (verified above): resting must raise server health by >= 1.
+        for (let i = 0; i < 4 && (g.survival.vitals(g.game.connectionEpoch)?.food ?? 0) < 18; i += 1) {
+          g.admit(randomIds.next('goal'));
+          await g.act('eat_safe_food');
+          await sleep(600);
+        }
+        check((g.survival.vitals(g.game.connectionEpoch)?.food ?? 0) >= 18, 'food >= 18 before the regeneration trial');
         const h0 = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
         g.admit(randomIds.next('goal'));
-        const restOut = await g.act('rest_in_place', [], 20_000);
-        ev.push(`rest (regen on): ${restOut?.status} ${restOut?.effect.slice(0, 160)}; health ${h0} -> ${g.survival.vitals(g.game.connectionEpoch)?.health}`);
-        // Regeneration unavailable: honest end.
+        const restOn = await g.act('rest_in_place', [], 20_000);
+        const h1 = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
+        ev.push(`rest (regen verified on): ${restOn?.status} ${restOn?.effect.slice(0, 160)}; server health ${h0} -> ${h1}`);
+        check(restOn?.status === 'succeeded' && h1 - h0 >= 1, 'meaningful server-confirmed health gain (>= 1) while resting');
+        // (d) regeneration OFF (verified): bounded honest failure, no gain.
         await g.rcon(`damage ${BOT} 4 minecraft:generic`);
         await g.rcon('gamerule naturalRegeneration false');
+        check((await query(g, 'gamerule naturalRegeneration', /currently set to: (\w+)/)) === 'false', 'naturalRegeneration verified false');
         await sleep(500);
-        const noRegen = await g.act('rest_in_place', [], 20_000);
-        ev.push(`rest (regen off): ${noRegen?.status} ${noRegen?.reason ?? ''} ${noRegen?.effect.slice(0, 160)}`);
+        const h2 = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
+        const t0 = Date.now();
+        g.admit(randomIds.next('goal'));
+        const restOff = await g.act('rest_in_place', [], 20_000);
+        const h3 = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
+        ev.push(`rest (regen verified off): ${restOff?.status} ${restOff?.reason ?? ''} after ${Date.now() - t0}ms; server health ${h2} -> ${h3}`);
         await g.rcon(`gamerule naturalRegeneration ${regen}`);
-        check(noRegen?.status === 'failed' && noRegen.reason === 'no_regeneration', 'no regeneration ends honestly');
+        check(restOff?.status === 'failed' && restOff.reason === 'no_regeneration' && h3 <= h2 && Date.now() - t0 < 20_000, 'no regeneration ends honestly within the bounded window');
+      });
+
+      await g.gate('G4', 'R8 OBSERVATION: daytime bed use; server respawn data recorded (no routine, no R8 claim)', async (ev) => {
+        await g.scene();
+        await g.rcon(`difficulty ${difficulty}`);
+        await g.rcon('time set 1000');
+        const t = Number(await query(g, 'time query daytime', /The time is (\d+)/));
+        check(t >= 0 && t < 12_000, `day established at trial start (daytime ${t})`);
+        await g.rcon(`setblock ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[facing=south,part=foot]`);
+        await g.rcon(`setblock ${BED.head.x} ${BED.head.y} ${BED.head.z} red_bed[facing=south,part=head]`);
+        await g.rcon(`tp ${BOT} 208.5 -60 206.5 0 40`);
+        await sleep(1_500);
+        ev.push(`respawn before: ${(await g.rcon(`data get entity ${BOT} respawn`, false)).slice(0, 200)}`);
+        g.admit(randomIds.next('goal'));
+        const used = await g.act('interact_block', ['minecraft:red_bed'], 15_000);
+        ev.push(`interact_block bed (day): ${used?.status} ${used?.reason ?? ''} ${used?.effect.slice(0, 200)}`);
+        await sleep(1_000);
+        const after = await g.rcon(`data get entity ${BOT} respawn`, false);
+        ev.push(`respawn after: ${after.slice(0, 200)}`);
+        const spawnSetToBed = new RegExp(`${BED.foot.x}, ${BED.foot.y}, ${BED.foot.z}|${BED.head.x}, ${BED.head.y}, ${BED.head.z}`).test(after);
+        ev.push(`OBSERVED: respawn point at the bed = ${spawnSetToBed} (observation only; R8 remains gated)`);
+        check(used, 'a bed candidate existed (bed visible and in reach)');
+      });
+
+      await g.gate('G4n', 'R8 OBSERVATION: night sleep, sole player (recorded, not generalized)', async (ev) => {
+        await g.scene();
+        await g.rcon(`setblock ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[facing=south,part=foot]`);
+        await g.rcon(`setblock ${BED.head.x} ${BED.head.y} ${BED.head.z} red_bed[facing=south,part=head]`);
+        await g.rcon('time set 13000');
+        const t = Number(await query(g, 'time query daytime', /The time is (\d+)/));
+        check(t >= 12_542 && t < 23_460, `night established at trial start (daytime ${t})`);
+        await g.rcon(`tp ${BOT} 208.5 -60 206.5 0 40`);
+        await sleep(1_500);
+        g.admit(randomIds.next('goal'));
+        const used = await g.act('interact_block', ['minecraft:red_bed'], 15_000);
+        ev.push(`interact_block bed (night): ${used?.status} ${used?.reason ?? ''} ${used?.effect.slice(0, 200)}`);
+        await sleep(1_000);
+        const sleeping = await g.rcon(`data get entity ${BOT} sleeping_pos`, false);
+        const occupied = /passed/i.test(await g.rcon(`execute if block ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[occupied=true]`, false));
+        ev.push(`OBSERVED: server sleeping_pos: ${sleeping.slice(0, 160)}; bed occupied=${occupied}`);
+        await sleep(6_000);
+        ev.push(`OBSERVED: daytime after ~7 s: ${(await g.rcon('time query daytime', false)).slice(0, 80)}; players online: ${(await g.rcon('list', false)).slice(0, 120)}`);
+        ev.push('R8 sleep/spawn remains gated: these are sole-player observations, not a supported routine');
+        check(used, 'a bed candidate existed at night');
       });
     }
+  } catch (error) {
+    g.results.push({ id: 'SETUP', title: 'trial setup/preconditions', status: 'fail', evidence: [error instanceof Error ? error.message : String(error)] });
   } finally {
-    for (const c of restore) {
+    // ---- restoration (C6): every step verified; any failure fails the report.
+    const step = async (what: string, fn: () => Promise<boolean | string>) => {
       try {
-        await g.rcon(c);
+        const r = await fn();
+        restoreChecks.push({ what, ok: r === true, detail: r === true ? 'verified' : String(r) });
       } catch (error) {
-        g.setup.push({ atMs: Date.now(), command: `RESTORE FAILED: ${c}`, reply: error instanceof Error ? error.message : String(error) });
+        restoreChecks.push({ what, ok: false, detail: error instanceof Error ? error.message : String(error) });
       }
-    }
-    try {
-      await g.rcon(`kill @e[type=item,${ITEM_AREA}]`);
+    };
+    for (const r of restore) await step(`setting ${r.what}`, async () => ((await g.rcon(r.command)) !== undefined && (await r.verify()) ? true : `not restored (${r.command})`));
+    await step('foreign test piles removed', async () => {
+      await g.rcon(`kill @e[type=item,tag=${FOREIGN_TAG},${ITEM_AREA}]`);
+      return /failed|no entity|0/i.test(await g.rcon(`execute if entity @e[type=item,tag=${FOREIGN_TAG}]`, false)) || 'tagged piles remain';
+    });
+    await step('bot state cleared', async () => {
       await g.rcon(`clear ${BOT}`);
-    } catch {
-      // best effort cleanup inside the scene area
+      await g.rcon(`effect clear ${BOT}`);
+      await g.rcon(`tp ${BOT} ${START.x} ${SCENE_Y.y2 + 1} ${START.z} 0 20`);
+      return true;
+    });
+    if (backupTaken) {
+      await step('scene item/xp entities removed', async () => {
+        await g.rcon(`kill @e[type=item,${ITEM_AREA}]`);
+        await g.rcon(`kill @e[type=experience_orb,${ITEM_AREA}]`);
+        return true;
+      });
+      await step('scene restored from backup', async () => {
+        await g.rcon(`clone ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2} ${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} replace force`);
+        const v = await g.rcon(`execute if blocks ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2} ${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} all`, false);
+        return /passed/i.test(v) || `scene differs from the pre-trial copy: ${v.slice(0, 120)}`;
+      });
+      await step('backup volume cleared and verified empty', async () => {
+        await g.rcon(`fill ${BACKUP_BOX} air`);
+        const n = await g.nonAirBlocks(BACKUP_BOX);
+        return n === 0 || `backup volume still has ${n ?? 'unknown'} non-air blocks`;
+      });
+    }
+    for (const ch of addedForceload) {
+      await step(`forceload ${ch.cx},${ch.cz} removed (trial-added)`, async () => {
+        await g.rcon(`forceload remove ${ch.cx * 16} ${ch.cz * 16}`);
+        return /is not marked/i.test(await g.rcon(`forceload query ${ch.cx * 16} ${ch.cz * 16}`, false)) || 'still force-loaded';
+      });
     }
     await g.memory.close().catch(() => undefined);
     await g.survival.close().catch(() => undefined);
     await g.game.disconnect('operator_stop').catch(() => undefined);
   }
+  const restoreOk = restoreChecks.every((c) => c.ok);
+  g.results.push({ id: 'RESTORE', title: 'verified restoration of settings, scene, entities and forceload', status: restoreOk ? 'pass' : 'fail', evidence: restoreChecks.map((c) => `${c.ok ? 'OK' : 'FAILED'} ${c.what}: ${c.detail}`) });
   const counted = g.results.filter((r) => r.status !== 'skipped');
   return {
-    check: 'MB-FLOW-003 survival mechanics gate (pre-integration harness; no model calls)',
+    check: 'MB-FLOW-003 survival mechanics gate (pre-integration module harness; no model calls; NOT integrated-application acceptance)',
     fixture: PINS.profile,
     source,
     withSettings,
-    restoredSettings: restore,
+    footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, foreignTag: FOREIGN_TAG, addedForceload },
+    restoration: restoreChecks,
     pass: counted.length > 0 && counted.every((r) => r.status === 'pass'),
     results: g.results,
     setup: g.setup,
