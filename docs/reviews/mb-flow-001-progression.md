@@ -107,11 +107,14 @@ The progression-owned and shared-writer commits are listed first. The companion 
 - `e6b6698` dashboard/doctor status, `--no-autonomy` opt-outs and config examples.
 - `4a28142` planner wire/prompt fix.
 - `bb3594a` autonomy-live-check and truthful stop/resume replies.
-- (this commit) harness A4/A5 extensions and this review.
+- `5503827` harness A4/A5 extensions and this review.
 
 Companion cherry-picks:
 
-- **Survival:** `1307958`, `6370ed5`, `f0841dc`, `29c6c0a`, `7d63bdb`, `31779ca`, `14577e2`, `80c3995`.
+- **Survival:** `1307958`, `6370ed5`, `f0841dc`, `29c6c0a`, `7d63bdb`, `31779ca`, `14577e2`, `80c3995`, then the authorized C6 and C1-retained picks `9f876b4` (from `8ca45c3f9e0479b4f4a558bdd468dd8fcdce0120`) and `ff8d043` (from `8c756b101a9caac0212d4bbe0fe135bc1402bf3c`).
+  - The C6 pick conflicted only in `scripts/survival-live-check.ts`. This branch's copy of that survival-owned harness had drifted from survival's lineage (it lacked the G4 bed-mechanics gate present at `9af4ef3`), while every other survival path matched `9af4ef3` exactly.
+  - The conflict was resolved by taking survival's own `8ca45c3` file unchanged. No manual edit was made.
+  - After both picks, all survival paths (`src/survival/`, `src/skills/survival.ts`, `src/contracts/survival.ts`, `tests/survival-*`, the survival harness and review) are byte-identical to `8c756b1`.
 - **Locator:** `940d7bc`, `2d6d178`, `393148a`, `4bc7ea6`, `97504cf`, `d3a98e3`.
 
 ## Changed paths (excluding companion-owned modules)
@@ -151,8 +154,9 @@ The `src/contracts/survival.ts` and `src/contracts/locator.ts` changes are cherr
 | --- | --- | --- |
 | `npm run typecheck` | 0 | |
 | `npm run build` | 0 | |
-| `npm test` | 1 | 732 tests, 731 pass. The single failure is locator-owned `pre-H2: travelBounds is accepted only when goal-owned AND equal to the route authorization admission anchor` (asserts pre-H2 behavior; Codex/locator own the fix). |
+| `npm test` | 1 | At `ff8d043`: 735 tests, 734 pass. The single failure is the obsolete locator-owned `pre-H2: travelBounds is accepted only when goal-owned AND equal to the route authorization admission anchor` (asserts pre-H2 behavior). Locator fixed the canonical admission-proof tests at `a87b07aa`, and root integrates that history. |
 | `npm run doctor -- --config config/examples/{fixture,fixture-autonomy,fixture-26.2-autonomy,fixture-inference-free,fixture-memory}.json` | 0 each | read-only |
+| `node --test tests/survival-*.test.ts tests/autonomy-*.test.ts tests/construction-*.test.ts` | 0 | At `ff8d043`: 184 of 184 pass. |
 | `node --test tests/autonomy-harness-guard.test.ts` | 0 | Import-safe. Refuses exit 2 with no lease, an empty lease, an invalid lease, or `--fixture 26.2` alone; creates no output directory. |
 
 ## Acceptance status (A1–A9)
