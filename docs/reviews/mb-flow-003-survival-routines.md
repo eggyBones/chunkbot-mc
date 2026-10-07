@@ -27,7 +27,7 @@ No existing file was edited.
 
 - `npm run typecheck`: 0
 - `npm run build`: 0
-- `npm test`: 0, 563/563 passing. That includes 80 survival tests across 9 files: contract, tracker, recovery, upkeep, allowance (C2), store, skills, wiring and harness guard.
+- `npm test`: 0, 571/571 passing. That includes 88 survival tests across 10 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), store, skills, wiring and harness guard.
 - The harness guard spawns `scripts/survival-live-check.ts` with a missing or invalid lease. Each run exits 2 before any password read, RCON command, join or output directory.
 - Not run (they need a lease or provider): the fixture gates, live-check, skills-live-check, planner and Jev checks, doctor.
 
@@ -53,7 +53,11 @@ No existing file was edited.
   - cross-dimension, unknown sites and sites beyond the travel bound are blocked; far sites need code-owned routing, and the bound is not relaxed
 - **Skills.**
   - `go_to_death_site`: only for the bound recovery goal epoch, connection and dimension, inside the travel bounds, and refused if lava is visible at the site.
-  - `recover_lost_items`: only still-sought keys, within 8 blocks of the site. Counted from the server collect packet, capped at the missing count, labeled as prior possessions.
+  - `recover_lost_items` (corrected for MB-FLOW-003-C3): candidates come only from SERVER-stated drop stacks — the tracker reads each item entity's own `spawn_entity`/`entity_metadata` packets, including the component identity digest, and never parses display labels.
+    - Refused BEFORE any movement: a pile larger than the still-missing count (oversized or merged), unknown server stack facts, any other item entity within pickup range (2.5 blocks) that is not itself acceptable (visible or not), a valuable item whose server identity differs (`metadata_mismatch`) or cannot be proven (`valuable_identity_unproven`), and anything outside the task's named-target scope (no fallback).
+    - Revalidated on every movement poll: newly in-range loot must be acceptable and the target pile must not change, otherwise it stops.
+    - Counting is per collect packet: only planned entities count, with their frozen identity, capped at the missing count. Unplanned collections are reported as `partial` / `unscoped_item_collected` and never counted.
+    - Valuable manifest items keep their per-stack server identity digests. Unknown pre-death metadata leaves them unproven: never collected, never claimed recovered.
   - `eat_safe_food`: never risky or precious food, never at full hunger. It delegates to `use_held_item`.
   - `rest_in_place`: succeeds only on a server-stated health gain. Taking damage, a visible threat or no regeneration end it honestly.
   - `equip_suitable_tool`: picks the cheapest capable tool that isn't nearly worn, according to server durability.
@@ -62,6 +66,7 @@ No existing file was edited.
   - At most one grant per admitted support epoch. It is bound to goal id and epoch, connection, dimension and the first task id, with exact capabilities and items, a fixed expiry (90 s) and a maximum of 4 actions. There is no renewal.
   - `reserve` must precede every dispatch (Jev or sustained local continuation) and counts before execution; the last allowed action leaves zero and a further window is refused.
   - `check` gates the low-health round and `recheck` runs after the Jev choice. Both refuse on a visible hostile within 8 blocks, full food (eat), food below 18 (rest), an item no longer owned, a stale snapshot, or another dimension or connection.
+- **Valuable/custom preservation (C3).** A food or tool key with any custom-named or enchanted stack is never auto-eaten or auto-selected, because use-by-key cannot choose which stack. Ordinary tools are preferred over valuable ones, and safe-food reserves exclude custom stacks.
 - **Upkeep (R7).**
   - Tool replacement: proposed only when every owned tool of a kind is nearly worn by server metadata; unknown metadata is never treated as worn.
   - Owned unworn armor: a code task through `equip_item`.
@@ -80,7 +85,7 @@ No existing file was edited.
 | --- | --- |
 | R1 | Implemented and tested offline (tracker, linkage, manifest, retained and unknown cases). Live packet order and metadata provenance still need the G1 gate. |
 | R2 | Mechanism implemented (skills, fencing, regain accounting, predicate). Live pickup needs the G2 gate. Real planner/Jev recovery is Codex acceptance after integration. |
-| R3 | Offline: mixed and extra drops are not counted, lava and void are not `known_destroyed`, and there is no despawn or XP promise. Live G2 shows only scoped pickup. Full-inventory pickup refusal relies on the existing `pickup_item` reporting and is not separately live-tested. |
+| R3 | Offline (C3): oversized piles refused, named-target fencing, unrelated nearby loot refused, valuable identity match/mismatch/unproven, never counted twice; lava and void never `known_destroyed`; no despawn or XP promise. Live: G2 (mixed piles refused before collection) and G2b (ordinary server-confirmed recovery including the enchanted sword) need the lease. A full inventory is reported by the collect path, not separately live-tested. |
 | R4 | Offline: far, cross-dimension and repeated-hazard cases block; the original incident is kept; limits survive restart. Far routing is blocked until locator routing is integrated. |
 | R5 | Offline: pause, owner priority, stale admission and terminal callbacks, lifecycle clearing of pending proposals and allowances. Still needed: real stop races through the integrated supervisor. |
 | R6 | Offline: thresholds, safe-food selection, all allowance bindings, regeneration requirements. Live server food and health rise needs the G3 gate with authorized settings. |

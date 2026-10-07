@@ -5,6 +5,7 @@
 // minecraft-data for the exact configured version through a small adapter;
 // the risky/precious/valuable lists are documented code policy (coordinator
 // assumptions), not world observations. Unknown metadata stays unknown.
+import { createHash } from 'node:crypto';
 import type { ItemMetadata, TrackedStack } from '../contracts/survival.ts';
 
 /** Minimal registry facts survival needs (adapter over minecraft-data; test doubles in tests). */
@@ -15,6 +16,8 @@ export interface SurvivalItemRegistry {
   maxDurability(key: string): number | undefined;
   /** Food facts (absent: not a food). */
   food(key: string): { foodPoints: number; saturation: number } | undefined;
+  /** Protocol entity type id of dropped item entities (exact version), when known. */
+  itemEntityTypeId?: number;
 }
 
 export const strip = (key: string): string => key.replace(/^minecraft:/, '');
@@ -92,9 +95,11 @@ export interface FoodChoice {
  * food and the configured avoid list. Prefers the smallest food that does not
  * waste much (closest to the missing hunger), then higher saturation.
  */
-export function safeFoods(stacks: readonly { key: string; count: number }[], registry: SurvivalItemRegistry, food: number, avoid: readonly string[] = []): FoodChoice[] {
+export function safeFoods(stacks: readonly { key: string; count: number; meta?: ItemMetadata }[], registry: SurvivalItemRegistry, food: number, avoid: readonly string[] = []): FoodChoice[] {
   const totals = new Map<string, number>();
-  for (const s of stacks) totals.set(mk(s.key), (totals.get(mk(s.key)) ?? 0) + s.count);
+  // A key with ANY custom/enchanted stack is excluded entirely: use-by-key cannot choose which stack is eaten.
+  const protectedKeys = new Set(stacks.filter((s) => s.meta?.customName || s.meta?.enchanted).map((s) => mk(s.key)));
+  for (const s of stacks) if (!protectedKeys.has(mk(s.key))) totals.set(mk(s.key), (totals.get(mk(s.key)) ?? 0) + s.count);
   const missing = Math.max(0, 20 - food);
   const out: FoodChoice[] = [];
   for (const [key, count] of totals) {
@@ -130,6 +135,23 @@ export function nearlyWorn(stack: Pick<TrackedStack, 'meta'>, wornFraction: numb
 
 // ---------------------------------------------------------------- raw slot parsing
 
+/** Component patches that distinguish one item from another of the same key (C3 identity). */
+const IDENTITY_COMPONENTS = new Set(['damage', 'max_damage', 'enchantments', 'stored_enchantments', 'custom_name', 'trim', 'unbreakable', 'item_name', 'lore']);
+
+function stable(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(typeof v === 'bigint' ? String(v) : v) ?? 'null';
+  if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`;
+  return `{${Object.keys(v as object)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`)
+    .join(',')}}`;
+}
+
+/** Valuable or custom stacks are never auto-eaten, auto-selected or deposited. */
+export function isProtectedStack(s: { key: string; meta?: ItemMetadata }): boolean {
+  return Boolean(s.meta?.enchanted || s.meta?.customName) || isValuable(s.key, s.meta);
+}
+
 interface RawComponent {
   type?: unknown;
   data?: unknown;
@@ -155,7 +177,9 @@ export function parseSlot(raw: RawSlot | null | undefined, registry: SurvivalIte
   let enchanted = false;
   let customName = false;
   let unbreakable = false;
+  const identity: Array<[string, unknown]> = [];
   for (const c of raw.components ?? []) {
+    if (typeof c.type === 'string' && IDENTITY_COMPONENTS.has(c.type)) identity.push([c.type, c.data ?? null]);
     const t = typeof c.type === 'string' ? c.type : undefined;
     if (t === 'damage' && typeof c.data === 'number') damage = c.data;
     else if (t === 'max_damage' && typeof c.data === 'number') maxDurability = c.data;
@@ -163,9 +187,13 @@ export function parseSlot(raw: RawSlot | null | undefined, registry: SurvivalIte
     else if (t === 'custom_name') customName = true;
     else if (t === 'unbreakable') unbreakable = true;
   }
-  for (const r of raw.removeComponents ?? []) if (r.type === 'max_damage') maxDurability = undefined;
+  for (const r of raw.removeComponents ?? []) {
+    if (r.type === 'max_damage') maxDurability = undefined;
+    if (typeof r.type === 'string' && IDENTITY_COMPONENTS.has(r.type)) identity.push([`-${r.type}`, null]);
+  }
   if (unbreakable) maxDurability = undefined;
-  const meta: ItemMetadata = { metadata: 'server_slot', ...(maxDurability !== undefined ? { maxDurability, damage: damage ?? 0 } : {}), ...(enchanted ? { enchanted } : {}), ...(customName ? { customName } : {}) };
+  const digest = createHash('sha256').update(`${key}|${stable(identity.sort((a, b) => a[0].localeCompare(b[0])))}`).digest('hex').slice(0, 16);
+  const meta: ItemMetadata = { metadata: 'server_slot', ...(maxDurability !== undefined ? { maxDurability, damage: damage ?? 0 } : {}), ...(enchanted ? { enchanted } : {}), ...(customName ? { customName } : {}), digest };
   return { key, count: raw.itemCount, meta };
 }
 
