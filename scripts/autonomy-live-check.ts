@@ -33,12 +33,27 @@
 //       after restart the stored project is historical, build_home inspects afresh, re-places the
 //       missing cell and code re-verifies completion; RCON confirms
 //
-// Requires an exclusive coordinator lease on the fixture. Scene footprint: x 196..224,
-// z 190..224, y -63..-50 (the existing skills scene area, reset with flat grass and one oak
-// trunk), the bot's and FixtureOwner's inventories (the bot gets 8 bread above the default
-// safe-food reserve, then 64 cobblestone + crafting table, furnace and chest for the home), forceload of that area (as the other
-// scene harnesses). No difficulty, gamerule or time change. Independent data directory under
-// the report directory (fresh memory/autonomy scope per run). Never rebuild dist while it runs.
+// Requires an exclusive coordinator lease on the fixture. Footprint (P-C8, complete):
+//   blocks    x 196..224, z 190..224, y -63..-50 (the existing skills scene area): reset to dirt
+//             (y -63..-62), grass (y -61) and air (y -60..-50) plus one oak trunk at 208,-60..-58,202;
+//             the shelter the bot builds stays there for later inspection (the next standard reset
+//             clears it; no baseline clone).
+//   entities  kills (non-player in the reset, items at cleanup) ONLY inside the selector box
+//             x 196..224, y -64..-24, z 190..224 (`x=196,y=-64,z=190,dx=28,dy=40,dz=34`).
+//   players   Chunkbot and FixtureOwner: inventories cleared/given (bot: 8 bread above the default
+//             safe-food reserve, then 64 cobblestone + crafting table, furnace, chest), Chunkbot
+//             effects (slow_falling during the reset, `effect clear`; cleared again at cleanup),
+//             Chunkbot gamemode survival, positions teleported inside the block area.
+//   forceload the chunks covering the block area (x 12..14, z 11..14). The existing forceloaded set
+//             is queried BEFORE any change; at finalization only the chunks this run newly added are
+//             removed, and the full set is verified equal to the recorded one.
+// No difficulty, gamerule or time change. Independent data directory under the report directory
+// (fresh memory/autonomy scope per run). Never rebuild dist while it runs.
+//
+// Cleanup is reconciled, never best effort: every cleanup step (owned CLI exit, awaited even
+// after the bounded SIGKILL fallback; item/inventory/effect cleanup; forceload restoration and
+// verification; owner bot and loopback Jev shutdown) is recorded, and any unreconciled step makes
+// the report and the exit code fail, while the scenario evidence is kept unchanged.
 //
 //   npm run build && npm run fixture -- status            (under the granted lease)
 //   node scripts/autonomy-live-check.ts --fixture-lease <granted id> [--fixture 26.2]
@@ -87,6 +102,20 @@ const INTERIOR = 2 as const;
 const START_DELAY_MS = 8_000;
 const AFTER_COMPLETION_MS = 5_000;
 const BUILD_MATERIAL = 'minecraft:cobblestone';
+/** Chunks covering the block area (the only chunks this harness forceloads). */
+const AREA_CHUNKS: string[] = (() => {
+  const out: string[] = [];
+  for (let cx = Math.floor(AREA.x1 / 16); cx <= Math.floor(AREA.x2 / 16); cx += 1) for (let cz = Math.floor(AREA.z1 / 16); cz <= Math.floor(AREA.z2 / 16); cz += 1) out.push(`${cx},${cz}`);
+  return out;
+})();
+
+/** Parses `forceload query` (all chunks in the executing dimension); null when unrecognized. */
+export function parseForceloadQuery(reply: string): Set<string> | null {
+  const pairs = [...reply.matchAll(/\[(-?\d+), (-?\d+)\]/g)].map((m) => `${m[1]},${m[2]}`);
+  if (pairs.length > 0) return new Set(pairs);
+  if (/^no\b.*force ?load/i.test(reply.trim())) return new Set();
+  return null;
+}
 
 interface Result {
   id: string;
@@ -177,6 +206,10 @@ class Harness {
   readonly setupLog: Array<{ atMs: number; scenario: string; command: string; reply: string }> = [];
   readonly interventions: Array<{ atMs: number; scenario: string; command: string; reply: string; why: string }> = [];
   readonly runs: Array<{ name: string; pid: number | undefined; events: string; exit: Json | null }> = [];
+  /** Reconciled cleanup record; any `ok: false` fails the report and the exit code. */
+  readonly cleanup: Array<{ atMs: number; step: string; ok: boolean; detail: string }> = [];
+  /** Forceloaded chunks recorded before any change (null until recorded). */
+  forceloadBefore: Set<string> | null = null;
   readonly outDir: string;
   readonly dataDir: string;
   readonly faultDir: string;
@@ -235,6 +268,36 @@ class Harness {
     }
     return out;
   }
+  note(step: string, ok: boolean, detail: string): void {
+    this.cleanup.push({ atMs: Date.now(), step, ok, detail: detail.slice(0, 300) });
+  }
+
+  /** Read-only: records the forceloaded set before any world change (fails closed if unrecognized). */
+  async recordForceload(): Promise<void> {
+    const reply = await this.query('forceload query');
+    const set = parseForceloadQuery(reply);
+    if (!set) throw new Error(`unrecognized \`forceload query\` reply; refusing to change the world: ${reply.slice(0, 160)}`);
+    this.forceloadBefore = set;
+    this.setupLog.push({ atMs: Date.now(), scenario: 'preflight', command: 'forceload query (read-only, before any change)', reply: reply.slice(0, 200) });
+  }
+
+  /** Removes only the area chunks this run newly forceloaded, then verifies the full set equals the recorded one. */
+  async restoreForceload(): Promise<void> {
+    const before = this.forceloadBefore;
+    if (!before) {
+      this.note('forceload', true, 'not recorded and never changed (no scene reset ran)');
+      return;
+    }
+    const added = AREA_CHUNKS.filter((c) => !before.has(c));
+    for (const c of added) {
+      const [cx, cz] = c.split(',').map(Number) as [number, number];
+      await this.setup(`forceload remove ${cx * 16} ${cz * 16}`);
+    }
+    const after = parseForceloadQuery(await this.query('forceload query'));
+    const same = after !== null && after.size === before.size && [...before].every((c) => after.has(c));
+    this.note('forceload', same, same ? `restored: removed ${added.length} newly added chunk(s); set equals the recorded ${before.size}` : `NOT restored: recorded [${[...before].join(' ')}], now ${after ? `[${[...after].join(' ')}]` : 'unrecognized'}`);
+  }
+
   async blockIs(p: { x: number; y: number; z: number }, key: string): Promise<boolean> {
     const r = await this.query(`execute if block ${p.x} ${p.y} ${p.z} ${key}`);
     return /Test passed/i.test(r);
@@ -244,6 +307,7 @@ class Harness {
 
   async resetScene(): Promise<void> {
     const { x1, z1, x2, z2 } = AREA;
+    check(this.forceloadBefore, 'the forceloaded set must be recorded before the first forceload change');
     await this.setup(`forceload add ${x1} ${z1} ${x2} ${z2}`);
     await this.setup(`tp ${BOT} ${SCENE.start.x} ${SCENE.start.y + 30} ${SCENE.start.z}`);
     await this.setup(`effect give ${BOT} slow_falling 5 0 true`);
@@ -345,11 +409,17 @@ class Harness {
     const p = this.cli;
     if (!p) return;
     p.send('/quit');
-    const exited = await Promise.race([p.exited, sleep(20_000).then(() => undefined)]);
-    // Only the harness's own child (spawned above) is ever signalled.
-    if (!exited && p.child.exitCode === null) p.child.kill('SIGKILL');
+    let exited = await Promise.race([p.exited, sleep(20_000).then(() => undefined)]);
+    let killed = false;
+    // Only the harness's own child (spawned above) is ever signalled; its exit is still awaited.
+    if (!exited && p.child.exitCode === null) {
+      killed = p.child.kill('SIGKILL');
+      exited = await Promise.race([p.exited, sleep(10_000).then(() => undefined)]);
+    }
     const run = this.runs.find((r) => r.pid === p.pid);
-    if (run) run.exit = exited ? { code: exited.code, signal: exited.signal } : { killed: 'SIGKILL after 20 s' };
+    const exit = exited ? { code: exited.code, signal: exited.signal, ...(killed ? { sigkillAfterMs: 20_000 } : {}) } : { notExited: true, sigkill: killed };
+    if (run) run.exit = exit;
+    this.note(`cli-exit pid ${p.pid ?? '?'}`, Boolean(exited) && !killed, exited ? (killed ? `exited only after SIGKILL (${JSON.stringify(exit)})` : `exited (${JSON.stringify(exit)})`) : 'did NOT exit within 10 s after SIGKILL');
     p.save(this.outDir);
     this.cli = undefined;
   }
@@ -434,6 +504,7 @@ async function run(outDir: string): Promise<Json> {
     throw new Error(`fixture not reachable over RCON (${String(error)}); the coordinator starts it under the lease`);
   });
   process.stdout.write(`fixture: ${list}\n`);
+  await h.recordForceload();
 
   // Generated config: the fixture autonomy profile with an independent data dir, a fresh scope,
   // the planner fault fixture and the loopback Jev endpoint. No secrets (the Jev key is a placeholder).
@@ -638,31 +709,60 @@ async function run(outDir: string): Promise<Json> {
       check(restored, 'the server confirms the repaired cell');
     });
   } finally {
-    try {
-      if (h.cli) {
-        h.cli.send('stop');
-        await sleep(500);
-        await h.quit();
+    const step = async (name: string, fn: () => Promise<string | void>) => {
+      try {
+        const detail = await fn();
+        if (detail !== undefined) h.note(name, true, detail);
+      } catch (error) {
+        h.note(name, false, `failed: ${error instanceof Error ? error.message : String(error)}`);
       }
-    } catch {
-      // the CLI may already have exited
+    };
+    if (h.cli) {
+      await step('cli-stop', async () => {
+        h.cli!.send('stop');
+        await sleep(500);
+        return 'stop sent to the owned CLI';
+      });
+      await step('cli-quit', async () => {
+        await h.quit(); // records its own cli-exit entry
+      });
     }
-    try {
-      await h.setup(`kill @e[type=item,${ITEM_AREA}]`);
-      await h.setup(`clear ${BOT}`);
-      await h.setup(`clear ${OWNER}`);
-    } catch {
-      // best effort cleanup inside the scene area
-    }
-    h.owner?.quit();
-    h.jevServer?.close();
+    await step('items', async () => `kill items in the entity box: ${(await h.setup(`kill @e[type=item,${ITEM_AREA}]`)).slice(0, 80)}`);
+    await step('bot-inventory', async () => `clear ${BOT}: ${(await h.setup(`clear ${BOT}`)).slice(0, 80)}`);
+    await step('owner-inventory', async () => `clear ${OWNER}: ${(await h.setup(`clear ${OWNER}`)).slice(0, 80)}`);
+    await step('bot-effects', async () => `effect clear ${BOT}: ${(await h.setup(`effect clear ${BOT}`)).slice(0, 80)}`);
+    await step('forceload-restore', async () => {
+      await h.restoreForceload(); // records its own forceload entry
+    });
+    await step('owner-quit', async () => {
+      const o = h.owner;
+      if (!o) return 'owner bot never joined';
+      const ended = new Promise<void>((r) => o.once('end', () => r()));
+      o.quit();
+      const ok = await Promise.race([ended.then(() => true), sleep(10_000).then(() => false)]);
+      if (!ok) throw new Error('owner bot did not end within 10 s');
+      return 'owner bot disconnected';
+    });
+    await step('jev-close', async () => {
+      const srv = h.jevServer;
+      if (!srv) return 'loopback Jev never started';
+      srv.closeAllConnections();
+      await new Promise<void>((r, j) => srv.close((e) => (e ? j(e) : r())));
+      return 'loopback Jev closed';
+    });
     const counted = h.results.filter((r) => r.status !== 'skipped');
+    const scenariosPass = counted.length > 0 && counted.every((r) => r.status === 'pass');
+    const cleanupFailures = h.cleanup.filter((c) => !c.ok);
     report = {
       check: 'MB-FLOW-001 automatic progression live check (PLANNER FAULT FIXTURE + loopback Jev; harness validation, no inference)',
       fixture: PINS.profile,
       sourceFreeze: freeze,
       config: { path: h.configPath, base: basePath, scope: h.scope, dataDir: h.dataDir, interior: INTERIOR, material: BUILD_MATERIAL },
-      pass: counted.length > 0 && counted.every((r) => r.status === 'pass'),
+      // An unreconciled cleanup fails the run even when every scenario passed (never silently).
+      pass: scenariosPass && cleanupFailures.length === 0,
+      scenariosPass,
+      cleanup: { reconciled: cleanupFailures.length === 0, failures: cleanupFailures, steps: h.cleanup, forceloadBefore: h.forceloadBefore ? [...h.forceloadBefore] : null, areaChunks: AREA_CHUNKS },
+      footprint: { blocks: { x: [AREA.x1, AREA.x2], y: [-63, -50], z: [AREA.z1, AREA.z2] }, entitySelector: ITEM_AREA, entityBox: { x: [AREA.x1, AREA.x2], y: [-64, -24], z: [AREA.z1, AREA.z2] }, players: [BOT, OWNER], shelterLeftForInspection: h.home ?? null },
       results: h.results,
       setup: h.setupLog,
       interventions: h.interventions,
@@ -706,6 +806,8 @@ async function main(): Promise<number> {
   process.stdout.write(`autonomy live check (${PINS.profile}, lease ${lease}) -> ${outDir}\n`);
   const report = await run(outDir);
   writeFileSync(join(outDir, 'report.json'), `${JSON.stringify({ ...report, lease }, null, 2)}\n`);
+  const cleanup = report['cleanup'] as { reconciled: boolean; failures: Array<{ step: string; detail: string }> } | undefined;
+  if (cleanup && !cleanup.reconciled) for (const f of cleanup.failures) process.stdout.write(`CLEANUP NOT RECONCILED: ${f.step} — ${f.detail}\n`);
   process.stdout.write(`${report['pass'] ? 'PASS' : 'FAIL'} autonomy live check — ${outDir}\n`);
   return report['pass'] ? 0 : 1;
 }

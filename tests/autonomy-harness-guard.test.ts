@@ -8,6 +8,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { PROJECT_ROOT } from '../src/app/fixture-layout.ts';
+import { parseForceloadQuery } from '../scripts/autonomy-live-check.ts';
 
 const SCRIPT = join(PROJECT_ROOT, 'scripts', 'autonomy-live-check.ts');
 const source = readFileSync(SCRIPT, 'utf8');
@@ -33,6 +34,26 @@ describe('autonomy live harness guard', () => {
     // It drives the CLI WITH autonomy (never --no-autonomy) and never signals anything but its own child.
     assert.ok(!/'--no-autonomy'/.test(source));
     assert.ok(!/process\.kill\(|pkill|killall/.test(source));
+  });
+
+  it('P-C8: records forceload before any change, removes only its additions, awaits its own child after SIGKILL, and fails on unreconciled cleanup', () => {
+    const run = source.slice(source.indexOf('async function run('));
+    assert.ok(run.indexOf('await h.recordForceload()') > 0 && run.indexOf('await h.recordForceload()') < run.indexOf("h.scenarioRun('U0'"), 'forceload recorded before the first scenario');
+    assert.ok(source.includes("check(this.forceloadBefore, 'the forceloaded set must be recorded before the first forceload change')"));
+    assert.ok(/const added = AREA_CHUNKS\.filter\(\(c\) => !before\.has\(c\)\)/.test(source), 'only newly added area chunks are removed');
+    assert.ok(/killed = p\.child\.kill\('SIGKILL'\);\s*exited = await Promise\.race\(\[p\.exited/.test(source), 'child exit awaited after SIGKILL');
+    assert.ok(source.includes('pass: scenariosPass && cleanupFailures.length === 0'), 'cleanup gates pass and exit');
+    assert.ok(!/catch \{\s*\/\/ best effort/.test(source), 'no silent best-effort cleanup');
+    assert.ok(source.includes("const ITEM_AREA = `x=${AREA.x1},y=-64,z=${AREA.z1},dx=${AREA.x2 - AREA.x1},dy=40,dz=${AREA.z2 - AREA.z1}`"), 'entity box is the documented y -64..-24 box');
+    for (const kill of source.match(/kill @e\[[^\]]*\]/g) ?? []) assert.ok(kill.includes('${ITEM_AREA}'), `kill stays inside the reviewed entity box: ${kill}`);
+  });
+
+  it('parses forceload query replies; unrecognized replies fail closed', () => {
+    assert.deepEqual([...parseForceloadQuery('No force loaded chunks were found in minecraft:overworld')!], []);
+    assert.deepEqual([...parseForceloadQuery('A force loaded chunk was found in minecraft:overworld at: [12, 11]')!], ['12,11']);
+    assert.deepEqual([...parseForceloadQuery('2 force loaded chunks were found in minecraft:overworld at: [12, 11], [-3, 14]')!].sort(), ['-3,14', '12,11']);
+    assert.equal(parseForceloadQuery('Unknown or incomplete command'), null);
+    assert.equal(parseForceloadQuery(''), null);
   });
 
   for (const args of [[], ['--fixture-lease'], ['--fixture-lease', '../x;rm'], ['--fixture', '26.2']]) {
