@@ -1,6 +1,6 @@
 # MB-LOC-001 — Locator-assisted following: worker handoff evidence
 
-Worker: native Claude Opus 5.5 (local DSH), branch `chunkbot/mb-loc-001`, base `f05628f`. Status: **new modules, contracts, tests and gate harness implemented and verified offline. Pre-integration module gates G1/G2/G3/G5 passed 19/19 on 26.2 (`batch002-locator-262-gates-01`) and 26.1.2 (`batch002-locator-261-gates-01`); production source equals the gated `7b28c90` (the offline observed-label change `2fb02f6` was reverted per coordinator decision).** Shared-hook integration (H1–H6), ordinary-follow regression, root gates and real Codex/Jev L7 are pending. No provider call has been made. Not accepted.
+Worker: native Claude Opus 5.5 (local DSH), branch `chunkbot/mb-loc-001`, base `f05628f`. Status: **new modules, contracts, tests and gate harness implemented and verified offline. Pre-integration module gates G1/G2/G3/G5 passed 19/19 on 26.2 (`batch002-locator-262-gates-01`) and 26.1.2 (`batch002-locator-261-gates-01`); the C5 observed-geometry labels (`2fb02f6`, reapplied in `ef78a84`) passed 26.2 gates 19/19 (`batch002-locator-262-gates-02`); 26.1.2 for `ef78a84` is still to be rerun.** Shared-hook integration (H1–H6), ordinary-follow regression, root gates and real Codex/Jev L7 are pending. No provider call has been made. Not accepted.
 
 ## Commits
 
@@ -263,13 +263,35 @@ This is broadcast and module evidence only. The **ordinary-follow regression** (
 | `var/live-check/2026-10-07T02-15-17-487Z-26.2-locator` | 26.2 | `bce707f` | 1 (13/19) | G5 valid; G1 oracle unproven (C6). |
 | `var/live-check/2026-10-07T02-19-17-753Z-26.2-locator` | 26.2 | `7b28c90` | 0 (19/19) | Module gates passed. |
 | `var/live-check/2026-10-07T02-22-35-525Z-locator` | 26.1.2 | `7b28c90` | 0 (19/19) | Module gates passed. |
+| `var/live-check/2026-10-07T02-30-37-871Z-26.2-locator` | 26.2 | `ef78a84` | 0 (19/19) | Observed-geometry labels certified on 26.2 (lease `batch002-locator-262-gates-02`). |
 
-## MB-LOC-001-C5: wall label decision (`2fb02f6` reverted by `96ed4ad`)
+## MB-LOC-001-C5: observed-geometry blocker labels (`2fb02f6`; reverted `96ed4ad`; reapplied `ef78a84`)
 
-- **Change:** `2fb02f6` derived wall/drop labels only from observed voxels, offline.
-- **Coordinator decision:** the original run-1 wall finding is recorded as INVALID geometry, so no production wall-label correction is needed, and the scope must not be broadened.
-- **Result:** the change was reverted with `git revert` (`96ed4ad`), and production/test sources are again byte-identical to the gated `7b28c90`.
-- **Evidence still holds:** the valid corrected wall scenes passed on 26.2 (`02-19-17-753Z`) and 26.1.2 (`02-22-35-525Z`) with the specific `wall` label.
+**What changed.**
+- `classifyBlocker` names `wall`, `cliff_drop`, hazard and water only from voxels in the current line-of-sight observation. The world view is read only for chunk loadedness; a content-read spy test proves this.
+- Columns with nothing observed are labelled `unobserved_terrain`.
+- The original run-1 wall scene stays recorded as INVALID geometry, separately from this code finding.
+
+**History.**
+- The change was reverted once (`96ed4ad`) on an earlier coordinator note.
+- The coordinator then reviewed it as within C5 scope and asked for it to be certified, so it was reapplied (`ef78a84`).
+
+**Live evidence for `ef78a84`.**
+- **Freeze:** clean HEAD; typecheck, build and test exit 0 (569/569).
+- **26.2 gate:** lease `batch002-locator-262-gates-02`, approvals `batch002-locator-262-rules-02` / `batch002-locator-262-scene-02`. Exit 0, 19/19. Report: `var/live-check/2026-10-07T02-30-37-871Z-26.2-locator/report.json`.
+- **Labels from the new code:**
+  - wall scene: `wall` — "an observed wall or rise higher than one block toward east";
+  - platform scene: `cliff_drop` — "an observed drop deeper than 3 blocks";
+  - lava scene: a safe detour to the owner.
+  - No contact, damage or death in any scene.
+- **G1–G3:**
+  - G1 variants, sectors and withdrawals matched the 7b runs.
+  - G2 gamerule and range checks passed.
+  - G3: two legs, 206.2 of 1024 route blocks, server distance 2.2, admission anchor unchanged.
+- **Packets:** 43.
+- **Cleanup:** `restoreFailures` empty, every restore verified, all fake players disconnected, no harness process left.
+
+**Pending:** 26.1.2 has not been rerun for `ef78a84`. Its last 26.1.2 evidence certifies `7b28c90` only.
 
 ## LOC-C3/H2 test adaptation (`tests/locator-skills.test.ts`)
 
