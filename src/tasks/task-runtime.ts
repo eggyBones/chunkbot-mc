@@ -439,16 +439,22 @@ export class TaskRuntime implements TaskExecutionPort {
     const port = deps.lowHealthAllowance;
     if (!port) return refused('no allowance port');
     try {
-      const r = port.recheck(base.allowanceId, this.allowanceRef(task, snapshot), { capability: candidate.capability, parameters: candidate.parameters as Readonly<Record<string, unknown>> }, snapshot);
+      const ref = this.allowanceRef(task, snapshot);
+      const cand = { id: candidate.id, capability: candidate.capability, parameters: candidate.parameters as Readonly<Record<string, unknown>> };
+      const r = port.recheck(base.allowanceId, ref, cand, snapshot);
       if (!r.allowed) return refused(`allowance recheck refused: ${r.reason}: ${r.detail}`);
       if (!withinAllowance(candidate, r.capabilities, r.items)) return refused(`${candidate.capability} is outside the rechecked allowance`);
-      return { ok: true, allowanceId: r.allowanceId };
+      // S311 canonical accounting: reserve immediately before the dispatch; it counts BEFORE execution.
+      const reserved = port.reserve(r.allowanceId, ref, cand, snapshot);
+      if (!reserved.allowed) return refused(`allowance reserve refused: ${reserved.reason}: ${reserved.detail}`);
+      if (!withinAllowance(candidate, reserved.capabilities, reserved.items)) return refused(`${candidate.capability} is outside the reserved allowance`);
+      return { ok: true, allowanceId: reserved.allowanceId };
     } catch (error) {
       return refused(`allowance recheck failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  /** Executes under an allowance, counting the dispatch in `finally` (cancellation/exception still consume it). */
+  /** Executes under a RESERVED allowance; `consumed` in `finally` is the idempotent outcome note (cancellation/exception included). */
   private async dispatchCounted(task: AdmittedTask, candidate: ActionCandidate, allowanceId: string | undefined, run: () => Promise<SkillOutcome>): Promise<SkillOutcome> {
     if (!allowanceId) return run();
     let status = 'dispatch_interrupted';

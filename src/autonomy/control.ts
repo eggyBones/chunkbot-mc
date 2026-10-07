@@ -43,6 +43,8 @@ export class AutonomyControl {
   private writeFailed: string | undefined;
   private durability: LatchDurability = 'none';
   private closed = false;
+  /** Persist operations whose durability bookkeeping has not settled yet. */
+  private readonly inflight = new Set<Promise<boolean>>();
 
   constructor(options: AutonomyControlOptions) {
     this.options = options;
@@ -157,7 +159,7 @@ export class AutonomyControl {
     }
     body.updatedAtMs = this.options.clock.now();
     const snapshot = structuredClone(body);
-    return store.write(snapshot).then(
+    const op = store.write(snapshot).then(
       (revision) => {
         this.writeFailed = undefined;
         if (this.body && this.body.latch.paused === snapshot.latch.paused) this.durability = 'written';
@@ -171,10 +173,15 @@ export class AutonomyControl {
         return false;
       },
     );
+    this.inflight.add(op);
+    void op.finally(() => this.inflight.delete(op));
+    return op;
   }
 
+  /** Waits for every queued write AND its durability bookkeeping. */
   async flush(): Promise<void> {
     await this.store?.flush();
+    await Promise.all([...this.inflight]);
   }
 
   async close(): Promise<void> {

@@ -130,8 +130,12 @@ export function cellKey(p: V3): string {
 export interface VoxelTruth {
   /** Registry key (e.g. minecraft:oak_planks) or undefined when not decidable. */
   key?: string;
-  /** server_own_change: this connection's skill-confirmed server change; visible: line-of-sight chunk data without pending prediction. */
-  evidence: 'server_own_change' | 'visible' | 'unknown';
+  /**
+   * server_own_change: this connection's skill-confirmed server change;
+   * visible: line-of-sight chunk data without pending prediction;
+   * seen_this_connection: observed earlier on this connection, still loaded and unchanged.
+   */
+  evidence: 'server_own_change' | 'visible' | 'seen_this_connection' | 'unknown';
   detail?: string;
 }
 

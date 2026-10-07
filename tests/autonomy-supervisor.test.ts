@@ -313,3 +313,92 @@ describe('A9 survival support through the same engine', () => {
     assert.equal(h.planner.requests[0]!.autonomy?.source.kind, 'support');
   });
 });
+
+describe('MB-FLOW-003-C4 retained interrupted intent vs live owner intake', () => {
+  it('after a restart, survival\'s DURABLE interrupted directive holds progression; necessary support still runs; a new owner instruction supersedes it', async () => {
+    const survival = new FakeSurvival();
+    survival.durableInterrupted = [{ goalId: 'goal-old1', instruction: 'collect 10 logs', reason: 'death', interruptedAtMs: 1, durable: true }];
+    const h = autonomyHarness((r) => (r.autonomy?.source.kind === 'progression' ? { kind: 'reply', proposal: progressionPlan() } : { kind: 'reply', proposal: followPlan() }), { survival });
+    await h.supervisor.assessNow();
+    assert.equal(h.automaticRequests().length, 0, 'no automatic progression may ignore the durable unresolved intent');
+    const st = h.supervisor.status();
+    assert.equal(st.mode, 'owner_unresolved');
+    assert.equal(st.ownerIntent?.goalId, 'goal-old1');
+    const input = survival.assessed.at(-1)!;
+    assert.equal(input.ownerIntentInterrupted, true, 'retained interrupted directive is passed as interrupted');
+    assert.equal(input.ownerIntakePending, false, 'it is NOT live owner intake');
+    // Necessary support (eat) serving the owner intent is admitted while the intent stays held.
+    survival.next = [
+      {
+        kind: 'propose',
+        proposal: {
+          proposalId: 'prop-eat',
+          routine: 'eat',
+          priority: 'safety',
+          reason: 'health low; eat before anything else',
+          signature: 's-eat',
+          serves: 'owner_intent',
+          execution: { kind: 'code_task', spec: { objective: 'eat safe food', decisionInstruction: 'eat', allowedCapabilities: ['use_held_item'], targetSelectors: [], parameters: {} }, completion: { predicate: 'inventory_amount', selector: 'minecraft:bread', atLeast: 1, mode: 'possess' }, mode: 'complete', objective: 'eat safe food' },
+          ceilings: { plannerTurns: 0, tasks: 1, replans: 0, deadlineMs: 30_000 },
+          expiresAtMs: h.clock.now() + 60_000,
+        },
+      },
+    ];
+    h.tasks.behaviors.set('eat safe food', runFor(5));
+    await h.supervisor.assessNow();
+    await until(() => h.engine.status().goal?.terminal !== undefined);
+    assert.equal(h.engine.status().goal?.source?.kind, 'support');
+    await settle();
+    // Resume never clears it.
+    h.engine.resume('chat');
+    await settle();
+    assert.equal(h.supervisor.status().ownerIntent?.goalId, 'goal-old1');
+    // A new explicit owner instruction supersedes it.
+    h.tasks.behaviors.set('stay near the owner', holdUntilRevoked);
+    await h.engine.submit('follow me', OWNER);
+    await until(() => h.tasks.runs.some((r) => r.task.spec.objective === 'stay near the owner'));
+    assert.equal(survival.ownerInstructions.length, 1);
+    assert.equal(survival.interruptedOwnerIntent().length, 0);
+  });
+
+  it('a live pending owner instruction is intake (survival yields); an owner question is intake too', async () => {
+    const survival = new FakeSurvival();
+    const h = autonomyHarness((r) => (r.instruction === 'which one?' ? { kind: 'hang', cleanupMs: 5 } : { kind: 'reply', proposal: followPlan() }), { survival });
+    h.tasks.behaviors.set('stay near the owner', holdUntilRevoked);
+    await h.engine.submit('follow me', OWNER);
+    await until(() => h.tasks.runs.length === 1);
+    assert.equal((await h.engine.submit('which one?', OWNER)).status, 'preparing');
+    await h.supervisor.guardNow();
+    assert.equal(survival.assessed.at(-1)?.ownerIntakePending, true);
+    assert.equal(survival.assessed.at(-1)?.ownerIntentInterrupted, false);
+  });
+});
+
+describe('code-task support budget truthfulness', () => {
+  const eat = (h: ReturnType<typeof autonomyHarness>): SurvivalProposal => ({
+    proposalId: 'prop-e2',
+    routine: 'eat',
+    priority: 'support',
+    reason: 'food low',
+    signature: 's',
+    serves: 'progression',
+    execution: { kind: 'code_task', spec: { objective: 'eat safe food', decisionInstruction: 'eat', allowedCapabilities: ['use_held_item'], targetSelectors: [], parameters: {} }, completion: { predicate: 'inventory_amount', selector: 'minecraft:bread', atLeast: 1, mode: 'possess' }, mode: 'complete', objective: 'eat safe food' },
+    ceilings: { plannerTurns: 0, tasks: 1, replans: 0, deadlineMs: 30_000 },
+    expiresAtMs: h.clock.now() + 60_000,
+  });
+
+  it('a code task needs no planner but DOES need Jev (spend cap / Jev not ready blocks it without calls)', async () => {
+    const survival = new FakeSurvival();
+    let decisionReady = false;
+    const h = autonomyHarness(() => ({ kind: 'reply', proposal: progressionPlan() }), { survival, providers: () => ({ ready: false, decisionReady, code: decisionReady ? 'planner_not_ready' : 'spend_cap', detail: 'test providers' }) });
+    survival.decision = { kind: 'propose', proposal: eat(h) };
+    await h.supervisor.assessNow();
+    assert.equal(h.tasks.runs.length, 0, 'Jev unavailable (spend cap): the code task is not admitted');
+    assert.equal(h.supervisor.status().mode, 'provider_blocked');
+    decisionReady = true;
+    h.tasks.behaviors.set('eat safe food', runFor(5));
+    await h.supervisor.assessNow();
+    await until(() => h.tasks.runs.length === 1);
+    assert.equal(h.planner.count, 0, 'planner unavailable is fine for a code task');
+  });
+});

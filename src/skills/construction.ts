@@ -39,6 +39,8 @@ const INTERACTIVE_SUPPORT = /(chest|barrel|crafting_table|furnace|smoker|_door|_
 
 const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 const at3 = (p: V3) => `${p.x},${p.y},${p.z}`;
+/** The authoritative world view (perception's sessionWorld; prediction-marked voxels are unconfirmed). */
+const worldOf = (session: GameSession, services: SkillServices) => services.perception.world() ?? sessionWorld(session);
 /** Plain JSON copy of a position (candidate parameters/evidence). */
 const pj = (p: V3): { x: number; y: number; z: number } => ({ x: p.x, y: p.y, z: p.z });
 
@@ -53,15 +55,19 @@ interface Seen {
   seq: number;
   connectionEpoch: number;
   generation: number;
+  dimension: string;
 }
 
 /**
- * Fresh shelter inspection from server evidence. A cell is decided by (1) the
- * latest server statement for a position this connection's skills changed,
- * (2) loaded chunk data for a position in line of sight now (no pending client
- * prediction), or (3) an earlier line-of-sight observation on THIS connection
- * and lifecycle generation that no later server statement for that voxel has
- * superseded. Anything else is unknown (never assumed).
+ * Fresh shelter inspection from server evidence (MB-FLOW-001-C3). Order:
+ * (0) a pending client prediction or an unloaded chunk is UNKNOWN before any
+ * server fact or cached observation is consulted; (1) the latest server
+ * statement for a voxel this connection's skills changed or that is in line of
+ * sight now (it must agree with the loaded chunk data); (2) loaded chunk data
+ * in line of sight now; (3) an earlier line-of-sight observation on THIS
+ * connection, lifecycle generation and dimension, still loaded, unchanged in
+ * the current chunk data and not superseded by a later server statement —
+ * labeled `seen_this_connection`. Anything else is unknown (never assumed).
  */
 export class ShelterInspector {
   private readonly cache = new Map<string, Seen>();
@@ -83,29 +89,41 @@ export class ShelterInspector {
     const s = this.session();
     if (!s) return { evidence: 'unknown', detail: 'not connected' };
     const bot = s.bot;
+    const k = at3(p);
+    const dimension = String(bot.game.dimension);
     const ev = s.evidence as Partial<Pick<GameSession['evidence'], 'serverBlock' | 'predictionPending'>> & { seq: number };
+    // (0) Opaque first: a pending prediction is not a fact, and an unloaded chunk certifies nothing.
+    const pending = typeof ev.predictionPending === 'function' ? ev.predictionPending(p.x, p.y, p.z) : true;
+    if (pending) {
+      this.cache.delete(k);
+      return { evidence: 'unknown', detail: 'pending client prediction (opaque until the server states it)' };
+    }
+    const loaded = this.services.perception.world()?.blockAt(p.x, p.y, p.z);
+    if (!loaded || loaded.name === 'unconfirmed_prediction') {
+      this.cache.delete(k);
+      return { evidence: 'unknown', detail: 'chunk not loaded or voxel unconfirmed' };
+    }
+    const current = mk(loaded.name);
     const fact = typeof ev.serverBlock === 'function' ? ev.serverBlock(p.x, p.y, p.z) : undefined;
     const own = this.services.ledger.ownBlockChange(p.x, p.y, p.z, 0);
     const visible = this.services.perception.blockVisibleNow(p.x, p.y, p.z);
-    const k = at3(p);
+    const remember = (key: string, seq: number) => this.cache.set(k, { key, seq, connectionEpoch: s.connectionEpoch, generation: this.generation(), dimension });
     if (fact && (visible || own)) {
-      const name = stateName(bot, fact.stateId);
-      const key = mk(name);
-      this.cache.set(k, { key, seq: fact.seq, connectionEpoch: s.connectionEpoch, generation: this.generation() });
+      const key = mk(stateName(bot, fact.stateId));
+      if (key !== current) return { evidence: 'unknown', detail: `server statement (${key}) disagrees with the loaded chunk data (${current})` };
+      remember(key, fact.seq);
       return { key, evidence: own && !visible ? 'server_own_change' : 'visible' };
     }
-    const pending = typeof ev.predictionPending === 'function' ? ev.predictionPending(p.x, p.y, p.z) : true;
-    if (!pending && visible) {
-      const b = this.services.perception.world()?.blockAt(p.x, p.y, p.z);
-      if (b) {
-        const key = mk(b.name);
-        this.cache.set(k, { key, seq: ev.seq, connectionEpoch: s.connectionEpoch, generation: this.generation() });
-        return { key, evidence: 'visible' };
-      }
+    if (visible) {
+      remember(current, ev.seq);
+      return { key: current, evidence: 'visible' };
     }
     const seen = this.cache.get(k);
-    if (seen && seen.connectionEpoch === s.connectionEpoch && seen.generation === this.generation() && !(fact && fact.seq > seen.seq) && !pending) return { key: seen.key, evidence: 'visible', detail: 'earlier line-of-sight observation on this connection, not superseded by a server change' };
-    return { evidence: 'unknown', detail: pending ? 'pending client prediction' : 'not in line of sight now' };
+    if (seen && seen.connectionEpoch === s.connectionEpoch && seen.generation === this.generation() && seen.dimension === dimension && !(fact && fact.seq > seen.seq) && seen.key === current) {
+      return { key: seen.key, evidence: 'seen_this_connection', detail: 'observed earlier on this connection; still loaded, unchanged and not superseded by a server statement' };
+    }
+    if (seen) this.cache.delete(k);
+    return { evidence: 'unknown', detail: 'not in line of sight now and not observed unchanged on this connection' };
   }
 
   inspect(project: HomeProject): { verdicts: CellVerdict[]; verdict: ShelterVerdict } {
@@ -138,7 +156,7 @@ export function evaluateStructure(home: HomeProjectService, inspector: ShelterIn
 // ---------------------------------------------------------------- site probe
 
 function siteProbe(session: GameSession, services: SkillServices): SiteProbe {
-  const world = sessionWorld(session);
+  const world = worldOf(session, services);
   return {
     blockAt: (p) => {
       const b = world.blockAt(p.x, p.y, p.z);
@@ -225,7 +243,9 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
       item: z.string().regex(/^[a-z0-9_.-]+:[a-z0-9_./-]+$/).optional(),
       support: z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).strict().optional(),
       face: z.enum(['up', 'down', 'north', 'south', 'west', 'east']).optional(),
-      to: z.enum(['stand_on_aid', 'step_off_aid', 'stand_under_hole', 'inside', 'outside', 'near_missing']).optional(),
+      to: z.enum(['stand_on_aid', 'step_off_aid', 'stand_under_hole', 'inside', 'outside', 'near_cell']).optional(),
+      /** near_cell: a code-chosen, observed safe standing block within reach of the specific missing `cell`. */
+      stand: z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).strict().optional(),
       /** Planner-admitted only: preferred building material (key or tag). */
       material: z.string().regex(/^#?[a-z0-9_.-]+:[a-z0-9_./-]+$/).optional(),
     })
@@ -237,13 +257,46 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
     const counts = clientCounts(bot);
     const keys = [...counts.keys()].filter((k) => (counts.get(k) ?? 0) > 0 && accepts(cell, k, inspector.inTag));
     if (!material) return keys;
-    const pref = keys.filter((k) => (material.startsWith('#') ? inspector.inTag(material, k) : material === k));
-    return pref.length ? pref : keys;
+    // An admitted (requested) material is binding: never substitute another one.
+    return keys.filter((k) => (material.startsWith('#') ? inspector.inTag(material, k) : material === k));
+  };
+
+  /**
+   * C4: an observed, safe standing block (feet and head air/replaceable,
+   * solid natural or placed ground below, not a blueprint position, not the
+   * bot's current block) whose eye position is within reach of `cell`, inside
+   * travel bounds. Never digging, towering or standing on the cell itself.
+   */
+  const standPointFor = (session: GameSession, services: SkillServices, project: HomeProject, cell: BlueprintCell): V3 | undefined => {
+    const bot = session.bot;
+    const world = worldOf(session, services);
+    const blueprint = new Set(project.cells.filter((c) => c.role !== 'aid').map((c) => at3(c.at)));
+    const here = { x: Math.floor(bot.entity.position.x), y: Math.floor(bot.entity.position.y), z: Math.floor(bot.entity.position.z) };
+    const out: Array<{ p: V3; d: number }> = [];
+    for (let dx = -3; dx <= 3; dx += 1) {
+      for (let dz = -3; dz <= 3; dz += 1) {
+        for (const dy of [0, -1, 1]) {
+          const p = { x: cell.at.x + dx, y: project.origin.y + dy, z: cell.at.z + dz };
+          if (p.x === here.x && p.y === here.y && p.z === here.z) continue;
+          if (blueprint.has(at3(p)) || blueprint.has(at3({ ...p, y: p.y + 1 }))) continue;
+          const feet = world.blockAt(p.x, p.y, p.z);
+          const head = world.blockAt(p.x, p.y + 1, p.z);
+          const ground = world.blockAt(p.x, p.y - 1, p.z);
+          if (!feet || !head || !ground || !REPLACEABLE.test(feet.name) || !REPLACEABLE.test(head.name) || ground.shapes.length === 0 || REPLACEABLE.test(ground.name) || /lava|fire|magma|cactus|powder_snow/.test(ground.name)) continue;
+          const eye = { x: p.x + 0.5, y: p.y + 1.62, z: p.z + 0.5 };
+          const reach = Math.hypot(cell.at.x + 0.5 - eye.x, cell.at.y + 0.5 - eye.y, cell.at.z + 0.5 - eye.z);
+          if (reach > BLOCK_REACH - 0.8) continue;
+          if (!services.perception.withinTravel(p)) continue;
+          out.push({ p, d: Math.hypot(p.x + 0.5 - bot.entity.position.x, p.z + 0.5 - bot.entity.position.z) });
+        }
+      }
+    }
+    return out.sort((a, b) => a.d - b.d)[0]?.p;
   };
 
   /** Support blocks with a visible face whose placement lands exactly on `dest`. */
-  const supportsFor = (bot: Bot, session: GameSession, dest: V3): Array<{ support: V3; face: FaceName; distance: number }> => {
-    const world = sessionWorld(session);
+  const supportsFor = (bot: Bot, session: GameSession, services: SkillServices, dest: V3): Array<{ support: V3; face: FaceName; distance: number }> => {
+    const world = worldOf(session, services);
     const eye = eyeOf(bot);
     const out: Array<{ support: V3; face: FaceName; distance: number }> = [];
     for (const face of ['up', 'down', 'north', 'south', 'west', 'east'] as FaceName[]) {
@@ -304,10 +357,10 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
         if (occupyingEntity(bot as never, dest.x, dest.y, dest.z)) continue;
         const items = itemsFor(v.cell, bot, material);
         if (items.length === 0) continue;
-        const sup = supportsFor(bot, session, dest)[0];
+        const sup = supportsFor(bot, session, services, dest)[0];
         if (!sup) continue;
         drafts.push({
-          parameters: { action: 'place', cell: v.index, item: items[0] as string, support: pj(sup.support), face: sup.face },
+          parameters: { action: 'place', cell: v.index, item: items[0] as string, support: pj(sup.support), face: sup.face, ...(material ? { material } : {}) },
           description: `${label}: place ${items[0]} at ${at3(dest)} (on the ${sup.face} face of ${at3(sup.support)})`,
           score: 20 - sup.distance,
         });
@@ -317,10 +370,22 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
       const missingItems = cells.filter((v) => itemsFor(v.cell, bot, material).length === 0);
       if (missingItems.length > 0) {
         const accept = [...new Set(missingItems.flatMap((v) => v.cell.accept))];
-        unavailable.push({ reason: 'missing_building_material', detail: `${missingItems.length} ${missingItems[0]?.cell.role} cell(s) need one of ${accept.join(', ')} in the inventory`, evidence: { cells: missingItems.length, accept } });
+        if (material) unavailable.push({ reason: 'requested_material_missing', detail: `the requested material ${material} is not in the inventory (or not accepted) for ${missingItems.length} ${missingItems[0]?.cell.role} cell(s); no other material is substituted`, evidence: { material, cells: missingItems.length } });
+        else unavailable.push({ reason: 'missing_building_material', detail: `${missingItems.length} ${missingItems[0]?.cell.role} cell(s) need one of ${accept.join(', ')} in the inventory`, evidence: { cells: missingItems.length, accept } });
       }
     };
-    const reposition = (to: NonNullable<BuildP['to']>, why: string) => drafts.push({ parameters: { action: 'reposition', to }, description: `move ${to.replace(/_/g, ' ')} (${why})`, score: 1 });
+    const mat = material ? { material } : {};
+    const reposition = (to: NonNullable<BuildP['to']>, why: string) => drafts.push({ parameters: { action: 'reposition', to, ...mat }, description: `move ${to.replace(/_/g, ' ')} (${why})`, score: 1 });
+    const repositionNear = (cells: CellVerdict[], why: string): boolean => {
+      for (const v of cells.slice(0, 4)) {
+        if (itemsFor(v.cell, bot, material).length === 0) continue;
+        const stand = standPointFor(session, services, project, v.cell);
+        if (!stand) continue;
+        drafts.push({ parameters: { action: 'reposition', to: 'near_cell', cell: v.index, stand: pj(stand), ...mat }, description: `move to ${at3(stand)} to reach the missing ${v.cell.role} at ${at3(v.cell.at)} (${why})`, score: 2 });
+        return true;
+      }
+      return false;
+    };
 
     const w1 = status('wall', 1);
     const w2 = status('wall', 2);
@@ -348,7 +413,8 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
         const cells = missingOf(stage === 'wall1' ? w1 : w2);
         placeDrafts(cells, stage === 'wall1' ? 'wall layer 1' : 'wall layer 2');
         needItems(cells);
-        if (drafts.length === 0) reposition(insideFootprint(bot, project) ? 'outside' : 'near_missing', 'no missing wall cell has a visible support within reach here');
+        const placeable = cells.some((v) => itemsFor(v.cell, bot, material).length > 0);
+        if (drafts.length === 0 && placeable && !repositionNear(cells, 'no missing wall cell has a visible support within reach here')) reposition(insideFootprint(bot, project) ? 'outside' : 'inside', 'no safe stand point next to a missing wall cell was observed; look from the other side');
         break;
       }
       case 'roof': {
@@ -387,7 +453,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
           break;
         }
         const d = eyeDistanceToBlock(bot, aid.at.x, aid.at.y, aid.at.z);
-        if (d > BLOCK_REACH - 0.3 || visibleFaces(sessionWorld(session), eyeOf(bot), aid.at.x, aid.at.y, aid.at.z).length === 0) {
+        if (d > BLOCK_REACH - 0.3 || visibleFaces(worldOf(session, services), eyeOf(bot), aid.at.x, aid.at.y, aid.at.z).length === 0) {
           reposition('inside', 'the construction aid is not visible within reach');
           break;
         }
@@ -412,7 +478,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
         const cells = missingOf(furnish);
         placeDrafts(cells, 'furnishing');
         needItems(cells);
-        if (drafts.length === 0) reposition('inside', 'no furnishing cell is placeable from this spot');
+        if (drafts.length === 0) repositionNear(cells, 'no furnishing cell is placeable from this spot');
         break;
       }
       case 'inspect':
@@ -438,11 +504,9 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
         return block(entranceInterior(project));
       case 'outside':
         return block(entranceOutside(project));
-      case 'near_missing': {
+      case 'near_cell':
         void verdict;
-        const ctr = { x: project.origin.x + Math.floor(project.size.outerX / 2), y: project.origin.y, z: project.origin.z + Math.floor(project.size.outerZ / 2) };
-        return { goal: new goals.GoalNear(ctr.x, ctr.y, ctr.z, project.size.outerX), at: ctr, arrived: () => Math.hypot(bot.entity.position.x - ctr.x, bot.entity.position.z - ctr.z) <= project.size.outerX };
-      }
+        return undefined; // resolved by the executor from the validated stand point
     }
   };
 
@@ -481,7 +545,24 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
       if (String(bot.game.dimension) !== project.dimension) return precondition('wrong_dimension', `the home is in ${project.dimension}`);
       if (bot.currentWindow) return precondition('interface_open', 'another interface is open');
       if (params.action === 'reposition' && params.to) {
-        const target = repositionGoal(project, params.to, bot);
+        let target = repositionGoal(project, params.to, bot);
+        if (params.to === 'near_cell') {
+          const cell = params.cell !== undefined ? project.cells[params.cell] : undefined;
+          if (!cell || !params.stand) return precondition('no_reposition_target', 'near_cell needs a blueprint cell and a stand point');
+          // Re-validate the stand point FRESH (still safe, still within reach of that cell).
+          const fresh = standPointFor(session, services, project, cell);
+          const s = params.stand;
+          const world = worldOf(session, services);
+          const ok = (p: V3) => {
+            const f = world.blockAt(p.x, p.y, p.z);
+            const hd = world.blockAt(p.x, p.y + 1, p.z);
+            const g = world.blockAt(p.x, p.y - 1, p.z);
+            return Boolean(f && hd && g && REPLACEABLE.test(f.name) && REPLACEABLE.test(hd.name) && g.shapes.length > 0 && !REPLACEABLE.test(g.name) && Math.hypot(cell.at.x - p.x, cell.at.y - (p.y + 1.12), cell.at.z - p.z) <= BLOCK_REACH - 0.3 && services.perception.withinTravel(p));
+          };
+          if (!ok(s)) return precondition('stand_point_invalid', `stand point ${at3(s)} is no longer safe or within reach of ${at3(cell.at)}${fresh ? `; ${at3(fresh)} is` : ''}`);
+          target = { goal: new goals.GoalBlock(s.x, s.y, s.z), at: s, arrived: () => Math.floor(bot.entity.position.x) === s.x && Math.floor(bot.entity.position.z) === s.z && Math.abs(bot.entity.position.y - s.y) < 0.6 };
+          if (target.arrived()) return precondition('already_there', 'the bot already stands on this stand point (no movement offered)');
+        }
         if (!target) return precondition('no_reposition_target', 'no standing position for this step');
         const bounds = services.perception.travelBounds();
         const nav = await navigate(act, {
@@ -505,7 +586,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
         if (inColumn(bot, cell.at)) return precondition('standing_on_aid', 'step off the aid first');
         const live = bot.blockAt(new Vec3(cell.at.x, cell.at.y, cell.at.z));
         if (!live || mk(live.name) !== id.key) return precondition('aid_changed', `the aid position holds ${live?.name ?? 'unloaded'}`);
-        const faces = visibleFaces(sessionWorld(session), eyeOf(bot), cell.at.x, cell.at.y, cell.at.z);
+        const faces = visibleFaces(worldOf(session, services), eyeOf(bot), cell.at.x, cell.at.y, cell.at.z);
         if (faces.length === 0 || eyeDistanceToBlock(bot, cell.at.x, cell.at.y, cell.at.z) > BLOCK_REACH) return precondition('not_visible', 'the aid is not visible within reach');
         const n = faceNormal(faces[0] as FaceName);
         await act.lookAt({ x: cell.at.x + 0.5 + n.x * 0.5, y: cell.at.y + 0.5 + n.y * 0.5, z: cell.at.z + 0.5 + n.z * 0.5 });
@@ -530,7 +611,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
       const n = faceNormal(params.face);
       const dest = { x: params.support.x + n.x, y: params.support.y + n.y, z: params.support.z + n.z };
       if (dest.x !== cell.at.x || dest.y !== cell.at.y || dest.z !== cell.at.z) return precondition('not_a_blueprint_position', 'the placement would not land on the blueprint cell');
-      const world = sessionWorld(session);
+      const world = worldOf(session, services);
       const destBlock = world.blockAt(dest.x, dest.y, dest.z);
       if (!destBlock || !REPLACEABLE.test(destBlock.name)) return precondition('destination_occupied', `${at3(dest)} holds ${destBlock?.name ?? 'unloaded'}`);
       if (intersectsBot(bot.entity.position, dest)) return precondition('destination_occupied_by_bot', 'the bot stands in the destination');

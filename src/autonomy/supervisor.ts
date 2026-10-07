@@ -69,7 +69,10 @@ const realTimers: TimerApi = {
 };
 
 export interface ProviderState {
+  /** Planner AND Jev usable (planner goals). */
   ready: boolean;
+  /** Jev usable within the run SpendLedger (code tasks: no planner turn, but every decision is a real Jev call). */
+  decisionReady?: boolean;
   /** e.g. planner_not_ready, decision_not_ready, spend_cap */
   code?: string;
   detail: string;
@@ -486,10 +489,28 @@ export class AutonomySupervisor {
     return { kind: 'progression', ...base };
   }
 
-  private ownerIntentPending(engine: FullEngineStatus): boolean {
+  /** MB-FLOW-003-C4: LIVE owner intake only (a new instruction being prepared, or an owner question awaiting an answer). */
+  private ownerIntakePending(engine: FullEngineStatus): boolean {
     if (engine.pending) return true;
-    if (engine.goal && !engine.goal.terminal && engine.goal.state === 'awaiting_owner') return true;
-    return Boolean(this.ownerIntent && this.ownerIntent.state !== 'active');
+    return Boolean(engine.goal && !engine.goal.terminal && engine.goal.state === 'awaiting_owner');
+  }
+
+  /**
+   * The unresolved owner intent holding unrelated progression: the in-process
+   * record, else survival's DURABLE interrupted directive (survives restart).
+   * Only a new explicit owner instruction (or an explicit dismissal) clears it.
+   */
+  private heldIntent(): OwnerIntentRecord | null {
+    if (this.ownerIntent && this.ownerIntent.state !== 'active') return this.ownerIntent;
+    const s = this.deps.survival;
+    if (!s?.enabled) return null;
+    try {
+      const d = s.interruptedOwnerIntent()[0];
+      if (!d) return null;
+      return { goalId: d.goalId, instruction: clip(d.instruction, 400), state: 'interrupted', reason: d.reason, detail: `interrupted (${d.reason})${d.durable ? '; durable record' : ''}`, sinceMs: d.interruptedAtMs, requiresOwnerDecision: true };
+    } catch {
+      return null;
+    }
   }
 
   /** One fresh survival evaluation (code only). */
@@ -506,8 +527,8 @@ export class AutonomySupervisor {
         snapshot,
         autonomyAllowed: !engine.latch.paused && this.mayRun(),
         active: this.activeFacts(engine),
-        ownerIntentPending: this.ownerIntentPending(engine),
-        ownerIntentInterrupted: this.ownerIntent?.state === 'interrupted',
+        ownerIntakePending: this.ownerIntakePending(engine),
+        ownerIntentInterrupted: this.heldIntent()?.state === 'interrupted',
         goalLimits: { ...this.deps.goalLimits, plannerTurns: Math.min(this.deps.goalLimits.plannerTurns, this.plannerTurnsLeft()) },
       });
     } catch (error) {
@@ -567,7 +588,9 @@ export class AutonomySupervisor {
     const providers = this.deps.providers();
     if (decision?.kind === 'propose') {
       const needsPlanner = decision.proposal.execution.kind === 'planner_goal';
-      if (needsPlanner && !providers.ready) {
+      // A code task makes no planner turn, but its decisions are real Jev calls counted in the run SpendLedger.
+      const usable = needsPlanner ? providers.ready : (providers.decisionReady ?? providers.ready);
+      if (!usable) {
         this.blocker = { code: providers.code ?? 'provider_not_ready', detail: providers.detail };
         this.setPhase('provider_blocked', `support routine ${decision.proposal.routine} waits: ${providers.detail}`);
         return;
@@ -584,9 +607,9 @@ export class AutonomySupervisor {
       this.setPhase('provider_blocked', `automatic work waits: ${providers.detail} (no polling, no fallback)`);
       return;
     }
-    // 2. Unresolved owner intent holds unrelated progression (C1; no automatic continuation).
-    const intent = this.ownerIntent;
-    if (intent && intent.state !== 'active') {
+    // 2. Unresolved owner intent holds unrelated progression (C1; no automatic continuation), including survival's durable record after a restart.
+    const intent = this.heldIntent();
+    if (intent) {
       this.setPhase('idle', `holding automatic progression for your ${intent.state} instruction "${clip(intent.instruction, 80)}" (${intent.reason}); a new instruction releases it`);
       return;
     }
@@ -617,7 +640,8 @@ export class AutonomySupervisor {
       .sort((a, b) => b.lastAtMs - a.lastAtMs)
       .slice(0, 6)
       .map((f) => ({ interpretation: f.interpretation, reason: f.reason, times: f.times }));
-    const intent = this.ownerIntent && this.ownerIntent.state !== 'active' ? { instruction: clip(this.ownerIntent.instruction, 200), state: this.ownerIntent.state, detail: clip(`${this.ownerIntent.reason}: ${this.ownerIntent.detail}`, 200) } : null;
+    const held = this.heldIntent();
+    const intent = held ? { instruction: clip(held.instruction, 200), state: held.state, detail: clip(`${held.reason}: ${held.detail}`, 200) } : null;
     return {
       source,
       reason: clip(reason, 200),
@@ -756,7 +780,7 @@ export class AutonomySupervisor {
     const active = this.deps.engine.activeSource;
     const goal = engine.goal;
     const activeGoal = active && goal && !goal.terminal ? { goalId: goal.id, source: active, priority: priorityOfSource(active) } : null;
-    let intent = this.ownerIntent;
+    let intent = this.ownerIntent && this.ownerIntent.state === 'active' ? this.ownerIntent : (this.heldIntent() ?? this.ownerIntent);
     if (intent && intent.state === 'active' && goal && goal.id === intent.goalId && goal.state === 'awaiting_owner') intent = { ...intent, state: 'awaiting_answer', detail: goal.pendingClarification ? `question ${goal.pendingClarification.ref}: ${goal.pendingClarification.question}` : intent.detail };
     let mode: AutonomyMode;
     let detail: string;
