@@ -47,6 +47,23 @@ describe('survival upkeep', () => {
     assert.notEqual(propose(h)?.routine, 'eat');
   });
 
+  it('a completed eat cooldown never suppresses a later NECESSARY low-health eat (C6)', () => {
+    const h = harness();
+    h.packets.inventory({ 36: slot('bread', 6) });
+    h.packets.health(20, 10);
+    const p = propose(h) as SurvivalProposal;
+    assert.equal(p.routine, 'eat');
+    const a = admit(h, p);
+    h.packets.health(20, 18);
+    endSupport(h, a, p, 'outcome_verified');
+    h.packets.health(20, 12);
+    assert.notEqual(propose(h)?.routine, 'eat', 'ordinary eat waits out its cooldown');
+    h.packets.health(6, 12);
+    const necessary = propose(h);
+    assert.equal(necessary?.routine, 'eat');
+    assert.equal(necessary?.priority, 'safety');
+  });
+
   it('risky or precious food only: honest no_safe_food block, unchanged signature is not re-proposed', () => {
     const h = harness();
     h.packets.inventory({ 37: slot('rotten_flesh', 5), 38: slot('golden_apple', 1) });

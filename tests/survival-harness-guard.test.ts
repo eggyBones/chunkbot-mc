@@ -32,6 +32,22 @@ describe('survival gate harness guard', () => {
     assert.ok(source.indexOf('this.password = readRconPassword()') > source.indexOf('class Gate'));
   });
 
+  it('C6 footprint: every entity removal is scoped to the owned volume; no spawnpoint change; restoration gates the report', () => {
+    const code = source.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    const kills = [...code.matchAll(/kill @e\[([^\]]*)\]/g)].map((m) => m[1] as string);
+    assert.ok(kills.length > 0);
+    for (const k of kills) assert.match(k, /\$\{ITEM_AREA\}/, `unscoped entity removal: kill @e[${k}]`);
+    assert.ok(!/spawnpoint /.test(code), 'no spawnpoint command');
+    assert.ok(!/y=-64/.test(code) && !/dy=40/.test(code), 'no selector beyond the declared y range');
+    assert.match(code, /const ITEM_AREA = `x=\$\{AREA\.x1\},y=\$\{SCENE_Y\.y1\}/);
+    assert.match(code, /const FOREIGN_TAG = `cbsurv_/, 'unique per-run foreign tag');
+    assert.ok(!/chunkbot_foreign/.test(code), 'no shared global foreign tag');
+    assert.match(code, /id: 'RESTORE'/, 'restoration is a report result');
+    assert.match(code, /restoreChecks\.every\(\(c\) => c\.ok\)/, 'any failed restoration fails the report');
+    assert.match(code, /backup volume .* is not verified empty/, 'refuses to use a non-empty backup volume');
+    assert.match(code, /addedForceload\.push/, 'only trial-added forceload chunks are tracked for removal');
+  });
+
   for (const args of [[], ['--fixture-lease'], ['--fixture-lease', '../x;rm'], ['--with-settings'], ['--fixture', '26.2']]) {
     it(`refuses without a valid lease: ${JSON.stringify(args)}`, () => {
       const before = listLive();
