@@ -1,6 +1,6 @@
 # Companion upgrades — feature roadmap and implementation boundaries
 
-Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Owner: Codex. Status: **MB-FLOW-002, MB-MEM-001 and MB-UI-001 implemented and accepted in batch001; other proposals unassigned.** The [independent batch review](reviews/mb-batch001-coordinator-review.md) records measured outcomes and retained navigation quality limits.
+Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Owner: Codex. Status: **Batch001 accepted; MB-FLOW-001, MB-FLOW-003 and MB-LOC-001 authorized in [batch002](feature-batch-002-plan.md). MB-OPS-001/002 remain unassigned.** The [independent batch review](reviews/mb-batch001-coordinator-review.md) records measured outcomes and retained navigation quality limits.
 Read [workflow](../agent-workflow.md), [repository instructions](../AGENTS.md), [current architecture](v1-architecture-plan.md), [contracts](v1-contracts.md), and [supervision](agent-supervision.md).
 
 ## Product outcome

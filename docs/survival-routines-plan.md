@@ -1,6 +1,6 @@
 # MB-FLOW-003 — Survival routines and death recovery
 
-Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Status: **Proposed; unassigned.**
+Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Status: **Authorized for native implementation in [batch002](feature-batch-002-plan.md); launch in preparation.**
 Subplan of [MB-FLOW-001 default progression](autonomous-progression-plan.md). Integrates [handoff](smooth-handoff-plan.md), [gameplay memory](gameplay-memory-plan.md) and [dashboard](chunkbot-dashboard-plan.md).
 
 ## Outcome and happy path
@@ -113,4 +113,4 @@ Required checks when implemented: affected AGENTS.md typecheck/build/test and bo
 
 ## Remaining delivery
 
-All automatic policies, durable incident capture, safe recovery, new metadata/primitives, continuation semantics and end-to-end evidence remain unimplemented/unverified. Assign staged briefs after MB-FLOW-001/002 and MB-MEM-001 integration seams are settled; no workers or runtime setup are authorized by this proposal. Review target: docs/reviews/mb-flow-003-survival-routines.md.
+All automatic policies, durable incident capture, safe recovery, new metadata/primitives, continuation semantics and end-to-end evidence remain unimplemented/unverified. Jake authorized core implementation in batch002; Codex owns the shared ports and fixture leases. The existing snapshot/death memory seam is delivered by batch001, while automatic recovery policies and evidence remain to be implemented. Review target: docs/reviews/mb-flow-003-survival-routines.md.

@@ -1,6 +1,6 @@
 # MB-FLOW-001 — Default survival progression and a home
 
-Reported: 2026-10-06. Status: **Proposed; unassigned.**
+Reported: 2026-10-06. Status: **Authorized for native implementation in [batch002](feature-batch-002-plan.md); launch in preparation.**
 Parent: [companion upgrades](companion-upgrades-plan.md). Foundations: [handoff](smooth-handoff-plan.md), [memory](gameplay-memory-plan.md).
 Subplan: [MB-FLOW-003 survival routines and death recovery](survival-routines-plan.md).
 
@@ -84,4 +84,4 @@ Required checks: affected AGENTS.md typecheck/build/test, both doctors, connecti
 
 ## Remaining delivery
 
-Supervisor, pause/resume preference, bounded milestone selection, house capabilities/verification, survival-routine integration, real multi-milestone trials and delivery evidence remain unverified. MB-FLOW-003 remains a separately assignable child proposal. Review target: docs/reviews/mb-flow-001-progression.md.
+Supervisor, pause/resume preference, bounded milestone selection, house capabilities/verification, survival-routine integration, real multi-milestone trials and delivery evidence remain unverified. MB-FLOW-003 core recovery/upkeep is assigned concurrently in batch002; later mechanics remain separately gated. Review target: docs/reviews/mb-flow-001-progression.md.

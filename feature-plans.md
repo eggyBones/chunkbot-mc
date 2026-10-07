@@ -27,16 +27,20 @@ One Java Edition companion accepts open-ended instructions from Jake. The gamepl
 
 Jake requested three parallel native Opus5.5/full-permission DSH features after the initial public push. [Batch001](docs/feature-batch-001-plan.md) selects **MB-UI-001 dashboard**, **MB-FLOW-002 smooth handoff** and **MB-MEM-001 persistent memory**. The initial push is verified; all three native implementations are integrated from distinct branches/worktrees. All three selected features are accepted; see [independent review](docs/reviews/mb-batch001-coordinator-review.md) for measured outcomes, audited-publication evidence and retained navigation limitations. Other feature statuses remain unchanged.
 
+## Authorized feature batch002
+
+Jake selected **MB-FLOW-001 progression**, **MB-FLOW-003 survival/death recovery** and **MB-LOC-001 locator following** on 2026-10-06. [Batch002](docs/feature-batch-002-plan.md) defines disjoint native Opus 5.5 worktrees, one shared scheduler writer and exclusive fixture leases. Implementation and feature fixture checks are authorized now; **MB-V1-05 and live gameplay acceptance wait for Jake tonight**. No live reconnect is authorized by this assignment.
+
 ## Companion feature plans
 
 Jake's requested upgrades are broken down in [the companion roadmap](docs/companion-upgrades-plan.md). These are proposed feature assignments; existing V1 behavior remains the baseline until each is implemented and accepted.
 
 | ID | Feature plan | Status |
 | --- | --- | --- |
-| MB-FLOW-001 | [Default progression, upgrades and home building](docs/autonomous-progression-plan.md) | Proposed; unassigned |
+| MB-FLOW-001 | [Default progression, upgrades and home building](docs/autonomous-progression-plan.md) | Authorized in batch002; native launch in preparation |
 | MB-FLOW-002 | [Continue current work while the next directive loads](docs/smooth-handoff-plan.md) | Implemented/integrated; accepted in batch001 |
-| MB-FLOW-003 | [Survival routines and death recovery — progression subplan](docs/survival-routines-plan.md) | Proposed; unassigned |
-| MB-LOC-001 | [Locator-assisted following and bounded travel](docs/locator-follow-plan.md) | Proposed; unassigned |
+| MB-FLOW-003 | [Survival routines and death recovery — progression subplan](docs/survival-routines-plan.md) | Authorized in batch002; native launch in preparation |
+| MB-LOC-001 | [Locator-assisted following and bounded travel](docs/locator-follow-plan.md) | Authorized in batch002; native launch in preparation |
 | MB-MEM-001 | [Persistent gameplay memory and known locations](docs/gameplay-memory-plan.md) | Implemented/integrated; accepted in batch001 |
 | MB-UI-001 | [Local dashboard, token usage, OpenRouter spend and optional Codex allowance](docs/chunkbot-dashboard-plan.md) | Implemented/integrated; accepted in batch001 |
 | MB-OPS-001 | [Verified live updates with a brief automatic reconnect](docs/live-update-plan.md) | Proposed; unassigned |

@@ -1,0 +1,63 @@
+# Feature batch002 — Progression, survival and locator following
+
+Authorized: 2026-10-06. Owner/coordinator: Codex. Status: **authorized implementation; native worker launch being prepared**. Parent: [companion roadmap](companion-upgrades-plan.md). Base delivery: [accepted batch001](reviews/mb-batch001-coordinator-review.md).
+
+Jake selected the next three suggested features and will join tonight for final V1 gameplay acceptance. This batch implements and verifies those features against the separate loopback fixtures. **MB-V1-05 and live gameplay acceptance are deferred until Jake's evening session.** Do not connect the live bot, inspect/change the live server, or touch Jake's client/world for this batch.
+
+## Assigned outcomes
+
+- **MB-FLOW-001:** [progression](autonomous-progression-plan.md), A1–A9. Normal gameplay can choose useful bounded milestones without owner micromanagement, improve supplies/tools, complete a small code-verified shelter and retain verified project progress. Owner instructions take priority; stop is durable and resume reassesses freshly. Integrate accepted core survival routines before claiming a self-sufficient loop.
+- **MB-FLOW-003:** [survival and death recovery](survival-routines-plan.md), first delivery R1–R7 and R9–R10, plus supported home/spawn work from R8 after its mechanics gate. Record own death/loss evidence, recover accessible belongings with bounded attempts, eat/rest through a narrowly verified health admission, maintain equipment and use approved storage/resupply. Lighting, replanting and unsupported emergency/combat mechanics remain separately gated later slices.
+- **MB-LOC-001:** [locator following](locator-follow-plan.md), L1–L7. Decode real owner waypoint broadcasts into coarse fresh hints, seek/reacquire the owner after losing sight and traverse beyond the original 128-block bound through declared finite route legs. No exact hidden-owner coordinate, global player scan, navigation digging/towering or fabricated arrival.
+
+Full feature outcomes are required. Contract milestones, module tests and research alone are not completion. Genuine unsupported mechanics must have exact evidence and an honest blocker; continue independent assigned work.
+
+## Ownership and parallel integration
+
+Three native Claude Code Opus 5.5 workers use local DSH, high effort and verified full access, each in a separate branch/worktree with independent node_modules, dist and var. Codex controls interfaces, queues, reviews, integration, fixture leases and final acceptance. Native workers cannot launch Agent/Task/background reviewers or coordinate other workers.
+
+| Worker | Owned implementation paths | Shared integration |
+| --- | --- | --- |
+| Progression | New `src/autonomy/`, `src/contracts/autonomy.ts`, general construction/project capabilities, `tests/autonomy-*`, `tests/construction-*`, `scripts/autonomy-live-check.ts`, `docs/reviews/mb-flow-001-progression.md` | **Designated writer for existing shared files:** contracts/index and existing schemas, app/CLI/config, goals/planner/task/execution/perception/game/knowledge/skills integration, existing tests/harness opt-outs and package scripts. Changes require coordinator design review and must remain within the assigned three features. |
+| Survival | New `src/survival/`, `src/contracts/survival.ts`, `src/skills/survival.ts`, `tests/survival-*`, `scripts/survival-live-check.ts`, `docs/reviews/mb-flow-003-survival-routines.md` | Propose existing lifecycle, memory, metadata, low-health executor and status hooks to Codex; progression applies the approved shared changes. |
+| Locator | New `src/locator/`, `src/contracts/locator.ts`, `src/skills/locator.ts`, `tests/locator-*`, `scripts/locator-live-check.ts`, `docs/reviews/mb-loc-001-locator.md` | Propose packet, observation, follow/travel-policy, predicate, wire and status hooks to Codex; progression applies approved shared changes. No compatibility/dependency mutation without review. |
+| Codex | Roadmap, feature plans, supervision, briefs, runtime operations and independent review | Approves companion contracts and exact dependency merges, retains one shared writer, serializes world drivers and runs capped real-provider acceptance. |
+
+Worker branches: `chunkbot/mb-flow-001`, `chunkbot/mb-flow-003`, `chunkbot/mb-loc-001`; checkouts under `/Users/jakewilcox/code/worktrees/chunkbot-mc/` with matching issue names. Exact base/session/workspace/configuration and source/build state are recorded in [supervision](agent-supervision.md). The root integration checkout remains separate.
+
+## Initial shared decisions
+
+These coordinator assumptions refine the linked plans and can be adjusted from evidence without broadening scope:
+
+1. **One supervisor, one admission path.** The progression-owned application supervisor selects the next policy priority and submits catalog-backed work through GoalEngine. No separate direct Mineflayer controller, autonomous planner slot, resource intent enum or hardcoded wood-to-stone-to-iron ladder. Source/priority distinguish owner, progression and support/recovery; they do not change the generic task language.
+2. **Priority and owner intent.** Stop/logout/lifecycle revocation wins, then immediate verified safety, then owner intent, then necessary supporting recovery/upkeep, then unrelated progression. An unsafe action is revoked immediately. Safe handoff may keep the current task running during preparation. A blocked or unanswered owner instruction remains visible and is never silently discarded. An automatic support interruption retains original outcome/baseline semantics; unsupported continuation is explicitly interrupted and asks for a fresh owner decision rather than replaying actions.
+3. **Shared module ports first.** Survival exposes a bounded fresh-state policy/recovery/status interface; locator exposes owner-verified coarse hints and code-owned route authorization. The progression writer consumes those ports without editing companion modules. Workers send concrete signatures/contract commits early to Codex, then continue their independent implementation. Do not merge another branch without an exact coordinator-approved commit.
+4. **Code-owned route legs.** Preserve the admission anchor and original goal counters. A separate declared route policy admits bounded local legs from fresh safe geometry for the authorized owner/own historical death destination. Code enforces total distance/time/leg/replan ceilings. The planner cannot change limits, silently re-anchor, expose hidden terrain or reset budgets. Unknown/stale/withdrawn hints cannot advance travel.
+5. **Explicit durable scope.** Pause/project/recovery preferences are scoped to an operator-named world profile/revision and bot identity, using installed memory scope where available. Do not derive world identity from endpoint alone. Missing/conflicted durable scope blocks automatic persistence-dependent work clearly; manual goals stay usable. Required scope/config examples and actual normal-run behavior must be delivered, not left as operator guesswork.
+6. **Finite work and honest waiting.** Keep the single per-run SpendLedger and configured cap. Add documented session attempt/preparation/cooldown ceilings and recovery episode counters across admissions; death, retry and a new automatic milestone cannot replenish allowances. No inference on physics ticks, repeated unchanged blockers, clarification waits or while paused. Disabled/inference-free profiles and diagnostics make no new calls. Existing harnesses explicitly opt out of automatic scheduling so their scenarios remain isolated.
+7. **Core survival admission.** Keep the low-health guard. Any food/rest/escape exception is typed, code-owned, prerequisite-verified, narrowly scoped and executed through the same fenced runtime. No broad health-threshold reduction or unguarded actuation. Equipment/food/storage facts must be server-backed and unknown metadata stays unknown.
+8. **Small practical home.** Choose a vacant observed site and bounded approved footprint. Verify confirmed roof/enclosure, usable entrance, workstation/storage and material prerequisites in code. Do not demolish structures, silently scaffold during navigation, or promote a remembered site into a finished home. Resume partial construction only after fresh inspection; repair only proven bot-built/approved blocks.
+9. **Read-only display remains read-only.** Extend terminal/dashboard projections for mode, source, current routine, recovery incident, route leg and blocker through whitelisted contracts. No browser control console, account refresh or model calls from rendering.
+
+## Runtime boundaries and evidence
+
+- Existing fixture 26.1.2: 127.0.0.1:25566/RCON25576; existing 26.2: 127.0.0.1:25567/RCON25577. Preserve their servers; start/stop only through the installed fixture command when explicitly coordinated.
+- **No initial worker fixture lease.** All three may install, inspect codecs/source, implement and run offline checks. Request a lease before any join, RCON write/reset, difficulty change or live harness. Worktrees do not isolate the shared worlds. Codex records leases and grants one driver per world; no old batch001 lease carries over.
+- Independent var/data roots prevent the batch001 shared dashboard-history collision. Fixture stores may be linked only under a recorded lease; never share node_modules/dist or auth/provider caches. Do not import executable harnesses for inspection; import guards and pre-operation lease checks are mandatory on new harnesses.
+- Workers never read/request vault or Microsoft/OpenRouter/Codex/GitHub credentials and never run real provider checks. Keys are injected by Codex into child environments only. Source, prompts, logs, reviews and handoffs contain no secret values or raw private reasoning. RCON passwords are read only by the fixture harness and never printed.
+- Use `/opt/homebrew/Cellar/node@24/24.21.0/bin` first in PATH. Preserve the pinned dependencies and compatibility provenance. New dependencies, official version data or vendor patches require coordinator review and their existing integrity gates.
+- Inherited MB-NAME-001-C1 J1 and batch001 R1/R2 navigation/controller observations remain visible. Record any reproducible defect before assigning its scoped correction. Do not relabel them passed or expand this into unrelated whole-V1 acceptance before tonight.
+
+## Delivery and independent acceptance
+
+1. Verify the loaded SDK's exact Opus 5.5 resolution, Claude subscription route, high effort, native bypassPermissions and workspace membership. Record prompt receipts and actual running turns; queue acceptance alone is insufficient.
+2. Review companion ports and shared scheduler/route/low-health/semantic-continuation proposals before dependent implementation. Integrate exact contract commits and keep ready companion work moving.
+3. Run affected AGENTS.md typecheck/build/tests and read-only doctor commands with direct exit codes. New automatic/recovery/locator tests must exercise actual behavior and negative ownership/lifecycle/freshness/budget cases rather than merely mirror implementation.
+4. Freeze each live build; grant exclusive fixture leases. Prove supported waypoint packet variants/hiding/withdrawal on 26.2, retain 26.1.2 ordinary-follow behavior, exercise real seed/death/respawn/food/inventory/building packets and verify all scene setup/interventions. Use faults locally; never damage the live world.
+5. Codex independently reviews source, integrated entry points and truthful read-only status, and runs the relevant capped real-provider feature fixture scenarios after integration. Do not call scripted/fault runs autonomous model acceptance or count assisted runs as successes.
+6. Record each issue and correction with a stable feature suffix before native fixes. Reconcile actual capabilities/gaps, docs, installed commands, worker heads/dirty state and source-versus-built-versus-running evidence. Preserve worktrees through review.
+7. Final MB-V1-05 varied gameplay acceptance with Jake is **tonight**, after this batch's feature checks. Do not mark it delivered from these modules or silently launch the live bot. Publish accepted code only through a fresh full-history/archive secret audit and owner/main verification.
+
+## Current evidence
+
+Initial root is clean at accepted public `d348d58f8d74799dd05aa0dcac9dfedbb241c973`. Both fixture status commands confirm existing servers running with zero players. Prior workers are idle; fresh model/permissions/session registration and assignments are the next launch gates. No new feature is implemented or accepted yet.

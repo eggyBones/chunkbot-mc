@@ -1,3 +1,11 @@
+# Current assignment — batch002
+
+Updated: 2026-10-06. Jake authorized progression, survival/death recovery and locator-assisted following now. [Batch002](feature-batch-002-plan.md) fixes ownership, shared interfaces, runtime boundaries and acceptance. Three new local native Opus 5.5 sessions/worktrees are being prepared, with high effort and full access. Final MB-V1-05 gameplay acceptance is deferred until Jake is online tonight; live eggyBot69 remains stopped.
+
+Root intake is clean at public `d348d58f8d74799dd05aa0dcac9dfedbb241c973`. Both fixture status commands exit 0: existing PIDs 31385/15009, zero players. All prior native sessions are idle; no old fixture lease carries over. Fresh loaded-SDK verification is underway before any new prompt. Progression is the single existing-file integration writer; survival and locator own new modules and propose shared changes through Codex. No new worker has a fixture lease yet.
+
+Exact native sessions, workspace membership, common base, source/build evidence, queues and granted leases will be recorded here immediately as launch is verified. Private briefs/receipts and operational evidence live in ignored var/batch002; no credentials will enter the new worktrees or handoffs. Historical batch001 evidence below remains valid for its phase.
+
 # Coordinator supervision checkpoint
 
 Updated: 2026-10-06 09:55 UTC. Coordinator: Codex. This checkpoint supersedes historical launch/continuation instructions below.
