@@ -8,7 +8,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { PROJECT_ROOT } from '../src/app/fixture-layout.ts';
-import { parseForceloadQuery } from '../scripts/autonomy-live-check.ts';
+import { parseForceloadQuery, playerCleanupLabel } from '../scripts/autonomy-live-check.ts';
 
 const SCRIPT = join(PROJECT_ROOT, 'scripts', 'autonomy-live-check.ts');
 const source = readFileSync(SCRIPT, 'utf8');
@@ -54,6 +54,18 @@ describe('autonomy live harness guard', () => {
     assert.deepEqual([...parseForceloadQuery('2 force loaded chunks were found in minecraft:overworld at: [12, 11], [-3, 14]')!].sort(), ['-3,14', '12,11']);
     assert.equal(parseForceloadQuery('Unknown or incomplete command'), null);
     assert.equal(parseForceloadQuery(''), null);
+  });
+
+  it('labels clear/effect replies truthfully: an absent player is never reported as verified empty', () => {
+    assert.equal(playerCleanupLabel('No player was found').label, 'player_absent');
+    assert.match(playerCleanupLabel('No player was found').detail, /NOT verified/);
+    assert.equal(playerCleanupLabel('Removed 73 item(s) from player Chunkbot').label, 'verified_removed');
+    assert.equal(playerCleanupLabel('No items were found on player FixtureOwner').label, 'verified_none');
+    assert.equal(playerCleanupLabel('Removed every effect from Chunkbot').label, 'verified_removed');
+    assert.equal(playerCleanupLabel('Target has no effects to remove').label, 'verified_none');
+    const odd = playerCleanupLabel('Unknown or incomplete command');
+    assert.equal(odd.label, 'unrecognized');
+    assert.equal(odd.ok, false, 'an unrecognized reply is unreconciled');
   });
 
   for (const args of [[], ['--fixture-lease'], ['--fixture-lease', '../x;rm'], ['--fixture', '26.2']]) {

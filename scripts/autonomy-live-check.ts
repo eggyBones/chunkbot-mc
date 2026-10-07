@@ -109,6 +109,19 @@ const AREA_CHUNKS: string[] = (() => {
   return out;
 })();
 
+/**
+ * Truthful label for a `clear` / `effect clear` reply. Only a reply that states the outcome for
+ * the named player is verification; "no player found" means the player was absent (e.g. logged
+ * out), which proves nothing about the inventory/effects (the next standard setup resets them).
+ */
+export function playerCleanupLabel(reply: string): { ok: boolean; label: 'verified_removed' | 'verified_none' | 'player_absent' | 'unrecognized'; detail: string } {
+  const r = reply.trim();
+  if (/^No (player|entity) was found/i.test(r)) return { ok: true, label: 'player_absent', detail: `player absent (not online): NOT verified — ${r.slice(0, 80)}` };
+  if (/^Removed \d+ item/i.test(r) || /^Removed every effect/i.test(r) || /^Removed effect/i.test(r)) return { ok: true, label: 'verified_removed', detail: `verified by the server reply — ${r.slice(0, 80)}` };
+  if (/^No items were found/i.test(r) || /no effects to remove/i.test(r)) return { ok: true, label: 'verified_none', detail: `verified nothing to remove — ${r.slice(0, 80)}` };
+  return { ok: false, label: 'unrecognized', detail: `unrecognized reply (unreconciled) — ${r.slice(0, 80)}` };
+}
+
 /** Parses `forceload query` (all chunks in the executing dimension); null when unrecognized. */
 export function parseForceloadQuery(reply: string): Set<string> | null {
   const pairs = [...reply.matchAll(/\[(-?\d+), (-?\d+)\]/g)].map((m) => `${m[1]},${m[2]}`);
@@ -728,9 +741,13 @@ async function run(outDir: string): Promise<Json> {
       });
     }
     await step('items', async () => `kill items in the entity box: ${(await h.setup(`kill @e[type=item,${ITEM_AREA}]`)).slice(0, 80)}`);
-    await step('bot-inventory', async () => `clear ${BOT}: ${(await h.setup(`clear ${BOT}`)).slice(0, 80)}`);
-    await step('owner-inventory', async () => `clear ${OWNER}: ${(await h.setup(`clear ${OWNER}`)).slice(0, 80)}`);
-    await step('bot-effects', async () => `effect clear ${BOT}: ${(await h.setup(`effect clear ${BOT}`)).slice(0, 80)}`);
+    // P-C8: a reply for an absent player is labelled as such, never as a verified empty inventory.
+    for (const [name, command] of [['bot-inventory', `clear ${BOT}`], ['owner-inventory', `clear ${OWNER}`], ['bot-effects', `effect clear ${BOT}`]] as const) {
+      await step(name, async () => {
+        const l = playerCleanupLabel(await h.setup(command));
+        h.note(name, l.ok, `${command}: ${l.label}: ${l.detail}`);
+      });
+    }
     await step('forceload-restore', async () => {
       await h.restoreForceload(); // records its own forceload entry
     });
