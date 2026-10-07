@@ -58,6 +58,19 @@ describe('survival gate harness guard', () => {
     assert.match(source, /factDurability\?: \(id: string\) => unknown/, 'prefers the integrated canonical durability string');
   });
 
+  it('C8: settings use the 26.1.2/26.2 command names (official reports), record query replies, compare dimensions canonically', () => {
+    const code = source.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    assert.match(code, /const RULE_KEEP = 'keep_inventory';/);
+    assert.match(code, /const RULE_REGEN = 'natural_health_regeneration';/);
+    assert.match(code, /const TIME_QUERY = 'time query time';/);
+    for (const legacy of [/gamerule keepInventory/, /gamerule naturalRegeneration/, /time query daytime/]) assert.ok(!legacy.test(code), `legacy command in use: ${legacy}`);
+    for (const cmd of [...code.matchAll(/gamerule \$\{(\w+)\}/g)].map((m) => m[1])) assert.ok(cmd === 'RULE_KEEP' || cmd === 'RULE_REGEN', `unexpected gamerule ${cmd}`);
+    const q = code.slice(code.indexOf('async function query('), code.indexOf('async function timeOfDay('));
+    assert.match(q, /g\.rcon\(cmd\)/, 'query replies are recorded');
+    assert.match(code, /% DAY_TICKS/, 'day/night checks use the time of day, not the absolute clock');
+    assert.match(code, /sameDimension\(dim, d\.site\.dimension\)/, 'G1 compares RCON and capture dimensions canonically (C7)');
+  });
+
   for (const args of [[], ['--fixture-lease'], ['--fixture-lease', '../x;rm'], ['--with-settings'], ['--fixture', '26.2']]) {
     it(`refuses without a valid lease: ${JSON.stringify(args)}`, () => {
       const before = listLive();

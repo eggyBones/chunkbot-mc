@@ -22,7 +22,7 @@ import {
 import { visibleThreat } from './allowance.ts';
 import { siteIsHazard } from './death-cause.ts';
 import { countedAttempts, distance, materiallyImproved, preparationSignature, repeatedFatalHazard, safeFoodCount } from './episodes.ts';
-import { isArmor, isTool, isValuable, nearlyWorn, remainingUses, safeFoods, STORAGE_SLOTS, strip, toolKind, toolTier, type SurvivalItemRegistry } from './items.ts';
+import { isArmor, isTool, sameDimension, isValuable, nearlyWorn, remainingUses, safeFoods, STORAGE_SLOTS, strip, toolKind, toolTier, type SurvivalItemRegistry } from './items.ts';
 
 export interface DesignatedStorage {
   factId: string;
@@ -221,7 +221,7 @@ export function evalRecovery(ctx: PolicyContext): RoutineEval {
   if (!site.at || !site.dimension) return conclude('blocked', 'site_unknown', 'the death location is unknown');
   if (siteIsHazard(e.cause.hazard) && used > 0) return conclude(e.regained.length ? 'partially_recovered' : 'blocked', 'site_fatal_hazard', `the site is a ${e.cause.hazard} hazard and an attempt already ran`);
   const self = ctx.snapshot?.self.at;
-  if (site.dimension !== ctx.connection.dimension) return blocked('death_recovery', sig(`dim:${ctx.connection.dimension}`), 'cross_dimension', `the death site is in ${site.dimension}; cross-dimension recovery is not supported`);
+  if (!sameDimension(site.dimension, ctx.connection.dimension)) return blocked('death_recovery', sig(`dim:${ctx.connection.dimension}`), 'cross_dimension', `the death site is in ${site.dimension}; cross-dimension recovery is not supported`);
   if (!self) return blocked('death_recovery', sig('noself'), 'observation_unavailable', 'no fresh observation', true);
   const d = Math.round(distance(self, site.at));
   let routePolicy = 'local';
@@ -404,7 +404,7 @@ export function evalInventoryRoom(ctx: PolicyContext): RoutineEval {
   if (free > ctx.cfg.inventory.minFreeSlots) return notNeeded('inventory_room', `${free} free slots`);
   const sur = surplus(ctx.inv, ctx);
   const here = ctx.snapshot?.self.at;
-  const storage = ctx.storage.filter((s) => s.dimension === ctx.connection.dimension && (!here || distance(here, s.at) <= ctx.travelRadius - 2));
+  const storage = ctx.storage.filter((s) => sameDimension(s.dimension, ctx.connection.dimension) && (!here || distance(here, s.at) <= ctx.travelRadius - 2));
   const signature = `inv:${free}:${storage.map((s) => s.factId).join(',')}:${sur.length}`;
   if (storage.length === 0) return blocked('inventory_room', signature, 'no_designated_storage', `${free} free slots; no owner-designated storage is remembered within reach (arbitrary chests are never used; nothing is thrown away)`);
   if (sur.length === 0) return blocked('inventory_room', signature, 'no_surplus', `${free} free slots but every stack is a tool, armor, food, reserve or valuable`);

@@ -24,6 +24,18 @@ export const strip = (key: string): string => key.replace(/^minecraft:/, '');
 export const mk = (name: string): string => (name.includes(':') ? name : `minecraft:${name}`);
 
 /**
+ * MB-FLOW-003-C7: the application's canonical dimension name is the SESSION
+ * form (mineflayer `bot.game.dimension`, which strips the `minecraft:`
+ * namespace: `overworld`). Packet GlobalPos values (`respawn`/`login`
+ * `worldState.death.dimensionName`) are namespaced (`minecraft:overworld`).
+ * Every server-stated dimension is converted at capture, and every comparison
+ * uses `sameDimension`, so the two spellings of one dimension never differ.
+ * Other namespaces (datapack dimensions) stay as stated, as in mineflayer.
+ */
+export const sessionDimension = (name: string): string => name.replace(/^minecraft:/, '');
+export const sameDimension = (a: string | undefined, b: string | undefined): boolean => a !== undefined && b !== undefined && sessionDimension(a) === sessionDimension(b);
+
+/**
  * Foods never eaten automatically: harmful/random effects (rotten flesh,
  * spider eye, pufferfish, poisonous potato, raw chicken, suspicious stew),
  * teleporting chorus fruit, and honey/milk-style special consumables are not

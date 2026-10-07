@@ -21,7 +21,7 @@
 // The tracker only listens; it never sends packets, clicks or resyncs.
 import type { DeathCause, DeathSite, DropStackFacts, InventoryFacts, LastAlive, TrackedStack, Vitals } from '../contracts/survival.ts';
 import { classifyDeathMessage } from './death-cause.ts';
-import { inventoryIndexToWindowSlot, parseSlot, type RawSlot, type SurvivalItemRegistry } from './items.ts';
+import { inventoryIndexToWindowSlot, parseSlot, sameDimension, sessionDimension, type RawSlot, type SurvivalItemRegistry } from './items.ts';
 
 /** EventEmitter-like raw packet source (the protocol client). */
 export interface PacketSource {
@@ -344,7 +344,7 @@ export class SurvivalTracker {
       captureId: `dcap-${this.opts.connectionEpoch}-${captureCounter}`,
       connectionEpoch: this.opts.connectionEpoch,
       occurredAtMs: f.atMs,
-      site: pos ? { source: 'client_position_at_death_event', dimension: pos.dimension, at: { ...pos.at }, observedAtMs: now } : { source: 'unknown' },
+      site: pos ? { source: 'client_position_at_death_event', dimension: sessionDimension(pos.dimension), at: { ...pos.at }, observedAtMs: now } : { source: 'unknown' },
       cause: f.cause,
       lastAlive: {
         source: f.source,
@@ -407,8 +407,8 @@ export class SurvivalTracker {
     if (death && d && typeof d.dimensionName === 'string' && d.location && Number.isFinite(d.location.x + d.location.y + d.location.z)) {
       const at = { x: d.location.x + 0.5, y: d.location.y, z: d.location.z + 0.5 };
       const prev = death.site;
-      const off = prev.at && prev.dimension === d.dimensionName ? Math.round(Math.hypot(prev.at.x - at.x, prev.at.y - at.y, prev.at.z - at.z) * 10) / 10 : undefined;
-      death.site = { source: 'server_death_location', dimension: d.dimensionName, at, observedAtMs: this.now(), ...(off !== undefined ? { clientEstimateOffBy: off } : {}) };
+      const off = prev.at && sameDimension(prev.dimension, d.dimensionName) ? Math.round(Math.hypot(prev.at.x - at.x, prev.at.y - at.y, prev.at.z - at.z) * 10) / 10 : undefined;
+      death.site = { source: 'server_death_location', dimension: sessionDimension(d.dimensionName), at, observedAtMs: this.now(), ...(off !== undefined ? { clientEstimateOffBy: off } : {}) };
       this.emit({ type: 'death_location_refined', captureId: death.captureId, site: { ...death.site } });
     }
     this.state = 'respawned_awaiting_sync';
@@ -428,7 +428,7 @@ export class SurvivalTracker {
   loginDeathLocation(): { dimension: string; at: { x: number; y: number; z: number } } | undefined {
     const d = this.loginDeath;
     if (!d || typeof d.dimensionName !== 'string' || !d.location) return undefined;
-    return { dimension: d.dimensionName, at: { x: d.location.x + 0.5, y: d.location.y, z: d.location.z + 0.5 } };
+    return { dimension: sessionDimension(d.dimensionName), at: { x: d.location.x + 0.5, y: d.location.y, z: d.location.z + 0.5 } };
   }
 
   /**

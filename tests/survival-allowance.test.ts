@@ -129,7 +129,9 @@ describe('own-death destination (canonical RouteDestinationProvider)', () => {
     const dest = provider.current({ connectionEpoch: 1, dimension: OW, goalEpoch: 5 });
     assert.ok(dest);
     assert.equal(dest.provenance, 'own_incident');
-    assert.match(dest.destinationId, /^own_death:rep-[a-z0-9]+:mf-0001:minecraft:overworld:30\.5,64,10\.5:server_death_location$/);
+    // C7: the destination carries the SESSION dimension spelling the locator and snapshots use.
+    assert.equal(dest.dimension, 'overworld');
+    assert.match(dest.destinationId, /^own_death:rep-[a-z0-9]+:mf-0001:overworld:30\.5,64,10\.5:server_death_location$/);
     assert.match(dest.label, /server_death_location/);
     assert.equal(provider.current({ connectionEpoch: 1, dimension: OW, goalEpoch: 6 }), undefined);
     assert.equal(provider.current({ connectionEpoch: 2, dimension: OW, goalEpoch: 5 }), undefined);

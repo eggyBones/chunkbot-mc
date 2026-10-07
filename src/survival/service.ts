@@ -50,7 +50,7 @@ import {
 } from '../contracts/survival.ts';
 import { AllowanceBook } from './allowance.ts';
 import { EpisodeBook, countedAttempts, distance, isOpen, preparationSignature, UNCOUNTED_OUTCOMES } from './episodes.ts';
-import { safeFoods, type SurvivalItemRegistry } from './items.ts';
+import { safeFoods, sameDimension, sessionDimension, type SurvivalItemRegistry } from './items.ts';
 import { ROUTINE_ORDER, evalEat, evalInventoryRoom, evalRecovery, evalResupply, evalRest, evalToolUpkeep, freeSlots, reserveCount, wornTools, type DesignatedStorage, type PolicyContext, type RoutineEval } from './policy.ts';
 import { SurvivalFileStore, survivalScopeDirectory } from './store.ts';
 import { SurvivalTracker, type CapturedDeathRecord, type TrackerEvent } from './tracker.ts';
@@ -850,7 +850,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     const a = this.active;
     const snap = this.options.latestSnapshot?.();
     const cfg = this.cfg;
-    if (!a || !snap || !cfg || !a.arrivedAtMs || !e.site.at || snap.dimension !== e.site.dimension || snap.connectionEpoch !== a.connectionEpoch || snap.goalEpoch !== a.goalEpoch) return false;
+    if (!a || !snap || !cfg || !a.arrivedAtMs || !e.site.at || !sameDimension(snap.dimension, e.site.dimension) || snap.connectionEpoch !== a.connectionEpoch || snap.goalEpoch !== a.goalEpoch) return false;
     if (snap.takenAtMs < a.arrivedAtMs) return false;
     if (distance(snap.self.at, e.site.at) > cfg.recovery.arrivalWithin + 1.5) return false;
     return !snap.drops.some((d) => sought.has(d.key) && distance(d.at, e.site.at as { x: number; y: number; z: number }) <= cfg.recovery.searchRadius);
@@ -906,8 +906,8 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (mem !== 'durable') return { error: mem === 'pending' ? 'incident_write_pending' : mem === 'failed' ? 'incident_write_failed' : mem === 'seam_missing' ? 'incident_durability_unknown' : 'incident_not_durable', detail: `the memory death fact ${e.incidentFactId} is not confirmed durable (${mem})` };
     const f = a.frozen;
     if (!f || !sameIncident(f, e)) return { error: 'destination_changed', detail: 'the own-incident identity frozen at admission (episode, fact, dimension, coordinates, source) changed; the old target is not used' };
-    if (f.dimension !== fence.dimension) return { error: 'dimension_mismatch', detail: `the death site is in ${f.dimension}` };
-    return { episodeId: f.episodeId, factId: f.factId, goalId: a.goalId, site: { dimension: f.dimension, at: { ...f.at } }, source: f.source, recordedAtMs: f.recordedAtMs, sought: this.book?.sought(e) ?? new Map(), searchRadius: cfg.recovery.searchRadius, arrivalWithin: cfg.recovery.arrivalWithin };
+    if (!sameDimension(f.dimension, fence.dimension)) return { error: 'dimension_mismatch', detail: `the death site is in ${f.dimension}` };
+    return { episodeId: f.episodeId, factId: f.factId, goalId: a.goalId, site: { dimension: sessionDimension(f.dimension), at: { ...f.at } }, source: f.source, recordedAtMs: f.recordedAtMs, sought: this.book?.sought(e) ?? new Map(), searchRadius: cfg.recovery.searchRadius, arrivalWithin: cfg.recovery.arrivalWithin };
   }
 
   /** Server-stated stack facts of a dropped item entity on this connection (C3; never a display label). */

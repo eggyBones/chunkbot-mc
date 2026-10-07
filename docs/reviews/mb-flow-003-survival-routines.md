@@ -2,7 +2,7 @@
 
 Worker: native Claude Code (Opus 5.5) in DSH session `mb-flow-003-ea`, worktree `/Users/jakewilcox/code/worktrees/chunkbot-mc/mb-flow-003`, branch `chunkbot/mb-flow-003`, base `f05628f8d92499a7a8ea847992a8960e51d9300f`. Plan: [survival-routines-plan.md](../survival-routines-plan.md). Batch: [feature-batch-002-plan.md](../feature-batch-002-plan.md).
 
-Delivery state: **implemented and verified offline only** (survival-owned modules, contract, skills, tests and the gate harness). It has **not** been integrated into the shared app/task/predicate/memory files, which progression writes. It has **not** been fixture-verified, because no lease is granted, and it is **not** feature-accepted. No model inference, provider call, fixture join, RCON or settings change was performed.
+Delivery state: **implemented and verified offline; first leased 26.1.2 trial FAILED (exit 1)** with two defects, MB-FLOW-003-C7 and -C8. Both are corrected offline in this worktree and wait for a fresh lease (see [Leased trial 1](#leased-trial-1-batch002-survival-261-gates-01)). It has **not** been integrated into the shared app/task/predicate/memory files, which progression writes, and it is **not** feature-accepted. No model inference or provider call was performed. The only fixture join, RCON use and settings read were inside that lease.
 
 ## Commits
 
@@ -12,6 +12,11 @@ Delivery state: **implemented and verified offline only** (survival-owned module
 | `978f927dba2c6d36696bbcfdae954a0cdf97b7cf` | Contract revised per coordinator C1 (integrated by Codex as a dependency milestone) |
 | `5e39cb5368595d0bff52e206d1f536e8b7502865` | Tracker, store, episodes, policy, service, skills, first offline tests |
 | `c04b10a7a431fabf92a5023ea76f6e6061b06ff7` | Wiring helpers, lease-guarded gate harness, skill/wiring/guard tests |
+| `1481b64490a40f9442ffc2fcec3758d24d535987`, `7a222398d0e7ddd8f6f30fd20655f4d490c67658` | Review/handoff; R8 G4/G4n observations in the harness |
+| `8c650d5d088f245015afea013a536625c0b103f3`, `ee4ef1dfb7465ca1117134b1958fe0925e69d717` | Authorized cherry-picks of the locator contracts (b894867, b323883), unchanged |
+| `311b8db0533a010e8c291d1efc4775b8197e4979` | Canonical own-incident `RouteDestinationProvider`; C2 per-dispatch allowance |
+| `a660d21df52dea07d66e52708e4b5a812406ffd7` … `07853e24676f832f5f4f612fd6a831b5ac4ad1fe` | C3, C4, C5, C6, C1, C6 follow-ups (the source frozen for leased trial 1) |
+| (this commit) | C7 dimension identity; C8 26.x settings command names |
 
 Owned paths only:
 - `src/contracts/survival.ts`
@@ -27,9 +32,9 @@ No existing file was edited.
 
 - `npm run typecheck`: 0
 - `npm run build`: 0
-- `npm test`: 0, 590/590 passing. That includes 107 survival tests across 12 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring and harness guard.
+- `npm test`: 0, 595/595 passing. That includes 112 survival tests across 13 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring, harness guard and dimension (C7).
 - The harness guard spawns `scripts/survival-live-check.ts` with a missing or invalid lease. Each run exits 2 before any password read, RCON command, join or output directory.
-- Not run (they need a lease or provider): the fixture gates, live-check, skills-live-check, planner and Jev checks, doctor.
+- Fixture gate: leased trial 1 (26.1.2), exit 1; see below. Not run (they need a lease or a provider): a re-run with C7/C8, the 26.2 gate, live-check, skills-live-check, planner and Jev checks, doctor.
 
 ## Mechanism summary
 
@@ -143,9 +148,9 @@ No existing file was edited.
   - forceload: each scene chunk is queried, and only chunks this trial added are removed;
   - foreign test piles use a unique per-run tag `cbsurv_<time>_<pid>`, always further scoped to the owned volume.
 - **Bot state changes (fixture bot only):** `clear`, `effect clear`, `tp` inside the scene (no `spawnpoint` command), `give` (a damaged iron pickaxe, bread, cobblestone, an enchanted diamond sword), `kill Chunkbot`, `damage Chunkbot`, hunger effects. G4 and G4n may set the bot's respawn point to the trial bed; the before and after values are recorded. That bed is removed by the scene restore.
-- **Settings, only with `--with-settings`:** difficulty → easy, `keepInventory` → true for G1k only, `naturalRegeneration` → true then false (each verified by query before the assertion that depends on it), and time of day → 1000 (day, G4) and 13000 (night, G4n).
+- **Settings, only with `--with-settings`:** difficulty → easy, gamerule `keep_inventory` → true for G1k only, `natural_health_regeneration` → true then false (each verified by query before the assertion that depends on it), and time of day → 1000 (day, G4) and 13000 (night, G4n).
 - **Restoration (all verified, ANY failure fails the report through a `RESTORE` result):**
-  - original difficulty, `keepInventory`, `naturalRegeneration` and daytime (±100 ticks) restored and re-queried;
+  - original difficulty, `keep_inventory`, `natural_health_regeneration` and `time query time` (±100 ticks) restored and re-queried;
   - tagged piles removed and verified gone;
   - scene item/xp entities removed;
   - scene cloned back from the backup and verified with `execute if blocks … all`;
@@ -162,9 +167,34 @@ No existing file was edited.
 - **Join:** the offline `Chunkbot` from the inference-free example configs. No model calls.
 - **Report:** `var/live-check/<stamp>[-26.2]-survival/report.json`, including footprint, restoration checks, every RCON command and reply, packet order and survival events.
 
+## Leased trial 1 (batch002-survival-261-gates-01)
+
+- **Run:** exact command `node scripts/survival-live-check.ts --fixture-lease batch002-survival-261-gates-01 --with-settings`, from the acceptance checkout `/Users/jakewilcox/code/reviews/chunkbot-mc/batch002-674dab6c` (674dab6c, source frozen at `07853e24`). It ran 2026-10-07 02:56:19–02:56:28 UTC on the existing 26.1.2 fixture world. Exit **1**.
+- **Report:** `var/live-check/2026-10-07T02-56-19-968Z-survival/report.json` in that checkout.
+- **Results:**
+
+  | Gate | Result | Evidence |
+  | --- | --- | --- |
+  | G1 | PASS | Death order on the wire: `death_combat_event > set_slot ×4 (clearing) > update_health health=0 > respawn > window_items > update_health 20`. Frozen at `combat_kill_packet` with 4 clearing packets after the freeze. The kit had server digests, including the damaged pickaxe at 200/250. Cause: `death.attack.genericKill`. The server GlobalPos 212.5,−60,205.5 `minecraft:overworld` equals RCON `LastDeathLocation`. Memory fact `mf-0001` was linked by exact capture id. Manifest: 4 missing items, 4 item entities in the scene. `clientEstimateOffBy` was `n/a`, a symptom of C7. |
+  | G2 | **FAIL** | Survival durability was `durable`, but the decision was `propose resupply`. `death_recovery` was blocked `cross_dimension`: "the death site is in minecraft:overworld". |
+  | G2b | **FAIL** | Dependent on G2 (no recovery goal admitted). |
+  | SETUP (settings) | **FAIL** | "could not read original settings (difficulty=peaceful keepInventory=undefined naturalRegeneration=undefined daytime=undefined); nothing changed". G1k, G3, G4 and G4n did not run, and no setting was changed. |
+  | RESTORE | PASS | Every step verified. Foreign piles removed; bot state cleared; scene entities removed; the scene was restored from the backup and verified with `execute if blocks … all`; the backup was cleared and verified empty. `addedForceload` was `[]`. |
+
+- **After the run:** 0 players online. The acceptance checkout was clean at 674dab6c, and its dist was unchanged. No source was edited during the trial, and the lease was not used for anything else.
+- **MB-FLOW-003-C7: dimension identity.**
+  - **Cause:** mineflayer stores `bot.game.dimension` without the namespace (`overworld`; `lib/plugins/game.js` strips `minecraft:`). Lifecycle events, snapshots, perception and memory all use that session form. The server GlobalPos is `minecraft:overworld`, so the policy saw two dimensions. The offline tests used `minecraft:overworld` on both sides, which masked it.
+  - **Fix:** `sessionDimension`/`sameDimension` in `src/survival/items.ts`. Every server-stated dimension is stored in the session form at capture (tracker site, respawn refinement, login last-death). Every comparison is canonical: policy cross-dimension and storage checks, recovery target fence, arrival check, same-hazard radius, repeated-hazard and preparation start. The destination and recovery target report the session form.
+  - **Tests:** the helpers now use the real split (session `overworld`, wire `minecraft:overworld`). New `tests/survival-dimension.test.ts` reproduces G2: it proposes `death_recovery`, the target resolves under either spelling, and the client estimate offset is now computed. A genuine nether site is still blocked `cross_dimension`, and datapack namespaces are kept distinct. Two of its tests fail without the fix and pass with it. The harness's G1 RCON comparison is now canonical too.
+- **MB-FLOW-003-C8: 26.x settings commands.**
+  - **Cause:** the official 26.1.2 and 26.2 server command reports (generated `commands.json`) show that gamerules are snake_case, `keep_inventory` and `natural_health_regeneration`. `keepInventory` and `naturalRegeneration` no longer exist. `time query daytime` was replaced by `time query time` (world clocks); `time set <time>` still exists. The harness queried the removed names, and its query helper did not record replies.
+  - **Fix:** constants `RULE_KEEP`, `RULE_REGEN` and `TIME_QUERY`. Every settings query is recorded in the setup log, and a failed read quotes the last replies. Day/night checks use the time of day (clock modulo 24,000), and restore re-sets and re-verifies the exact original clock value.
+  - **Guard test:** asserts the new names, that no legacy command remains, recorded queries and the canonical G1 comparison.
+  - **Not yet proven:** the exact reply text of `time query time`. The harness expects `The time is N` (`commands.time.query`). If it differs, the read fails closed before any change, and the recorded reply shows why.
+
 ## Known gaps and honest limits
 
-- Every gate result is pending until a lease is granted. Packet ordering, component metadata provenance and the server death location are unconfirmed on real servers.
+- G1 is confirmed on 26.1.2. G2/G2b (recovery, pickup scope, identity) and the settings gates G1k, G3, G4 and G4n still need a fresh lease with the C7/C8 source, and 26.2 needs its own lease.
 - The shared integration listed above is not done. Until it is, the routines are not active in `run`.
 - Real planner/Jev recovery and upkeep trials are Codex acceptance after integration.
 - Not delivered: R8 bed/spawn, lighting, replanting, emergency escape and combat (gated).

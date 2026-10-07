@@ -11,7 +11,10 @@ import { SurvivalConfigSchema, type RecoveryEpisode, type SurvivalConfigInput } 
 import type { SurvivalItemRegistry } from '../src/survival/items.ts';
 import { SurvivalService, type SurvivalServiceOptions } from '../src/survival/service.ts';
 
+/** Wire (packet GlobalPos / worldState) spelling: namespaced. */
 export const OW = 'minecraft:overworld';
+/** C7: the SESSION spelling the real app uses (mineflayer `bot.game.dimension`, snapshots, lifecycle). */
+export const SESSION_OW = 'overworld';
 export const NETHER = 'minecraft:the_nether';
 export const NOW0 = 1_700_000_000_000;
 
@@ -91,7 +94,7 @@ export function snapshot(over: Partial<ObservationSnapshot> & { at?: { x: number
     connectionEpoch: 1,
     goalEpoch: 1,
     takenAtMs: NOW0,
-    dimension: OW,
+    dimension: SESSION_OW,
     self: { at: at ?? { x: 0, y: 64, z: 0 }, health: 20, food: 20 },
     inventory: [],
     equipment: {},
@@ -173,9 +176,9 @@ export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; 
   });
   service.open();
   const packets = new Packets();
-  const pos = { dimension: OW, at: { x: 0, y: 64, z: 0 } };
+  const pos = { dimension: SESSION_OW, at: { x: 0, y: 64, z: 0 } };
   service.attachConnection(packets.client, { connectionEpoch: opts.connectionEpoch ?? 1, selfPosition: () => ({ dimension: pos.dimension, at: { ...pos.at } }) });
-  service.onLifecycle({ type: 'ready', connectionEpoch: opts.connectionEpoch ?? 1, info: { serverVersion: '26.1.2', protocolVersion: 775, dimension: OW, position: pos.at, gameMode: 'survival', serverOnlineMode: false } });
+  service.onLifecycle({ type: 'ready', connectionEpoch: opts.connectionEpoch ?? 1, info: { serverVersion: '26.1.2', protocolVersion: 775, dimension: SESSION_OW, position: pos.at, gameMode: 'survival', serverOnlineMode: false } });
   packets.login();
   return { service, packets, clock, root, memory, events, pos, snap };
 }
@@ -183,7 +186,7 @@ export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; 
 export function assessInput(h: Harness, over: Partial<Parameters<SurvivalService['assess']>[0]> = {}): Parameters<SurvivalService['assess']>[0] {
   return {
     nowMs: h.clock.now(),
-    connection: { ready: true, connectionEpoch: 1, dimension: OW },
+    connection: { ready: true, connectionEpoch: 1, dimension: SESSION_OW },
     snapshot: h.snap.value ?? snapshot({ at: h.pos.at }),
     autonomyAllowed: true,
     active: { kind: 'none' },
@@ -204,7 +207,7 @@ export function dieWithItems(h: Harness, stacks: Record<number, Slot>, translate
 
 export function respawnFresh(h: Harness, stacks: Record<number, Slot> = {}, death?: { dimensionName: string; location: { x: number; y: number; z: number } }): void {
   h.packets.respawn(death);
-  h.service.onLifecycle({ type: 'respawn', connectionEpoch: 1, dimension: OW });
+  h.service.onLifecycle({ type: 'respawn', connectionEpoch: 1, dimension: SESSION_OW });
   h.packets.inventory(stacks);
   h.packets.health(20, 20);
 }
