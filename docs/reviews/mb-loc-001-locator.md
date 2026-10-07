@@ -1,6 +1,6 @@
 # MB-LOC-001 — Locator-assisted following: worker handoff evidence
 
-Worker: native Claude Opus 5.5 (local DSH), branch `chunkbot/mb-loc-001`, base `f05628f`. Status: **new modules, contracts, tests and gate harness implemented and verified offline. Pre-integration module gates G1/G2/G3/G5 passed 19/19 on 26.2 (`batch002-locator-262-gates-01`) and 26.1.2 (`batch002-locator-261-gates-01`); the C5 observed-geometry label fix (`2fb02f6`) awaits a focused G5 rerun.** Shared-hook integration (H1–H6), ordinary-follow regression, root gates and real Codex/Jev L7 are pending. No provider call has been made. Not accepted.
+Worker: native Claude Opus 5.5 (local DSH), branch `chunkbot/mb-loc-001`, base `f05628f`. Status: **new modules, contracts, tests and gate harness implemented and verified offline. Pre-integration module gates G1/G2/G3/G5 passed 19/19 on 26.2 (`batch002-locator-262-gates-01`) and 26.1.2 (`batch002-locator-261-gates-01`); production source equals the gated `7b28c90` (the offline observed-label change `2fb02f6` was reverted per coordinator decision).** Shared-hook integration (H1–H6), ordinary-follow regression, root gates and real Codex/Jev L7 are pending. No provider call has been made. Not accepted.
 
 ## Commits
 
@@ -264,24 +264,33 @@ This is broadcast and module evidence only. The **ordinary-follow regression** (
 | `var/live-check/2026-10-07T02-19-17-753Z-26.2-locator` | 26.2 | `7b28c90` | 0 (19/19) | Module gates passed. |
 | `var/live-check/2026-10-07T02-22-35-525Z-locator` | 26.1.2 | `7b28c90` | 0 (19/19) | Module gates passed. |
 
-## MB-LOC-001-C5: observed-geometry blocker labels (`2fb02f6`, offline only)
+## MB-LOC-001-C5: wall label decision (`2fb02f6` reverted by `96ed4ad`)
 
-**Problem.**
-- Before this fix, `classifyBlocker` named walls and drops from loaded collision geometry along the bearing, which may include terrain the bot never saw.
-- Run 1's wall case was mislabelled `no_safe_frontier`. That run is invalid because the bot was inside the wall.
+- **Change:** `2fb02f6` derived wall/drop labels only from observed voxels, offline.
+- **Coordinator decision:** the original run-1 wall finding is recorded as INVALID geometry, so no production wall-label correction is needed, and the scope must not be broadened.
+- **Result:** the change was reverted with `git revert` (`96ed4ad`), and production/test sources are again byte-identical to the gated `7b28c90`.
+- **Evidence still holds:** the valid corrected wall scenes passed on 26.2 (`02-19-17-753Z`) and 26.1.2 (`02-22-35-525Z`) with the specific `wall` label.
 
-**Fix.**
-- Every label is derived from voxels in the current line-of-sight observation only:
-  - **wall:** an observed solid voxel at feet and head height;
-  - **cliff_drop:** past the last observed walkable floor, the next observed floor is more than 3 below walk level;
-  - **hazard / water:** observed voxels.
-- The world view is read only for chunk loadedness. A content-read spy test proves no block name or shape is read from it.
-- Columns with nothing observed are labelled `unobserved_terrain`; nothing is invented.
-- The scripted runner sim now records visible faces.
+## LOC-C3/H2 test adaptation (`tests/locator-skills.test.ts`)
 
-**Checks:** typecheck, build and test all exit 0 (569/569, including 6 new `locator-terrain` tests).
+**Why it changed.** The combined build `0b48e4c` installs the REAL `PerceptionService.admissionBounds()` (P `c704ad4`). The old pre-H2 test assumed no accessor existed.
 
-**Not yet live-gated.** The 26.2 lease is released, and the 26.1.2 run above used the earlier classifier (`7b28c90`), which already labelled the fixture wall `wall`. A focused G5 rerun of `2fb02f6`, with the same declared footprint and restoration, needs a new lease.
+**Pre-H2 fallback test.**
+- Uses a documented stub perception without the accessor.
+- `travelBounds` counts as a proof only when the anchor is goal-owned AND equal to the frozen route authorization anchor and radius.
+- A moved anchor, a different radius, another epoch or a diagnostic anchor gives no proof.
+
+**H2 test.**
+- Uses the real accessor when present, else a test-local stub of its documented contract.
+- Proofs are scoped exactly to goal epoch, connection and dimension.
+- A simulated leg in `travelBounds` never becomes the proof.
+- A live leg applies only to the matching proof (`route_leg`).
+- A moved anchor in the same epoch is reported by the accessor, but gets `proof_mismatch`, so there is no leg authority.
+- A diagnostic anchor gives no proof.
+
+**Verification.**
+- **Own checkout:** typecheck, build and test exit 0.
+- **Combined build:** the same test file was also run read-only against an exported snapshot of `0b48e4c` with the real accessor present. `locator-skills` passed 10/10 and all locator test files passed 67/67. The scratch export was removed afterwards.
 
 ## Ordinary-follow seam recommendations (for the progression writer; no shared file edited)
 

@@ -189,30 +189,78 @@ describe('MB-LOC-001 route_travel provenance in resolver AND executor', () => {
 });
 
 describe('MB-LOC-001-C3 admission proof for the production RouteEnv', () => {
-  const ctxFor = (w: ReturnType<typeof world>, goalEpoch = 1) =>
-    ({ act: {}, session: w.session, services: w.services, candidate: { goalEpoch }, owner: { kind: 'goal', goalEpoch, goalId: 'goal-0001', taskId: 'task-0001' }, progress: () => undefined }) as unknown as ExecuteContext;
+  type Proof = { goalEpoch: number; connectionEpoch: number; dimension: string; anchor: { x: number; y: number; z: number }; radius: number };
+  const ctxFor = (w: ReturnType<typeof world>, over: { goalEpoch?: number; session?: unknown; perception?: unknown } = {}) => {
+    const goalEpoch = over.goalEpoch ?? 1;
+    return {
+      act: {},
+      session: over.session ?? w.session,
+      services: over.perception ? { ...w.services, perception: over.perception } : w.services,
+      candidate: { goalEpoch },
+      owner: { kind: 'goal', goalEpoch, goalId: 'goal-0001', taskId: 'task-0001' },
+      progress: () => undefined,
+    } as unknown as ExecuteContext;
+  };
+  const C = { goalEpoch: 1, connectionEpoch: 1, dimension: 'overworld' };
 
-  it('pre-H2: travelBounds is accepted only when goal-owned AND equal to the route authorization admission anchor', () => {
+  it('pre-H2 fallback (documented stub: a perception WITHOUT the dedicated accessor): travelBounds is a proof only when goal-owned AND equal to the frozen route authorization', () => {
     const w = world();
     try {
-      const proof = admissionProof(ctxFor(w), w.routes)!;
-      assert.deepEqual({ goalEpoch: proof.goalEpoch, anchor: proof.anchor, radius: proof.radius }, { goalEpoch: 1, anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 128 });
-      assert.equal(admissionProof(ctxFor(w, 2), w.routes), undefined, 'another goal epoch has no proof');
-      w.perception.admitTravelAnchor(1, { x: 120, y: 0, z: 0.5 }); // e.g. a leg-expanded/moved anchor
-      assert.equal(admissionProof(ctxFor(w), w.routes), undefined, 'a bound that differs from the frozen authorization is never a proof');
+      // Test-local model of a perception service before shared H2: only the
+      // goal-anchor epoch and the anchor bound exist (no admissionBounds()).
+      const state = { epoch: 1 as number | undefined, bounds: { anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 128 } };
+      const preH2 = { travelAnchorGoalEpoch: () => state.epoch, travelBounds: () => state.bounds };
+      const proof = admissionProof(ctxFor(w, { perception: preH2 }), w.routes)!;
+      assert.deepEqual(proof, { goalEpoch: 1, connectionEpoch: 1, dimension: 'overworld', anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 128 });
+      assert.equal(admissionProof(ctxFor(w, { goalEpoch: 2, perception: preH2 }), w.routes), undefined, 'another goal epoch has no proof');
+      state.bounds = { anchor: { x: 120, y: 0, z: 0.5 }, radius: 128 }; // e.g. a leg-expanded/moved bound
+      assert.equal(admissionProof(ctxFor(w, { perception: preH2 }), w.routes), undefined, 'a bound that differs from the frozen authorization anchor is never a proof');
+      state.bounds = { anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 256 };
+      assert.equal(admissionProof(ctxFor(w, { perception: preH2 }), w.routes), undefined, 'a different radius is never a proof');
+      state.bounds = { anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 128 };
+      state.epoch = undefined; // diagnostic (untagged) anchor
+      assert.equal(admissionProof(ctxFor(w, { perception: preH2 }), w.routes), undefined, 'a diagnostic anchor is never a goal proof');
     } finally {
       w.evidence.detach();
     }
   });
 
-  it('H2: the dedicated admissionBounds() accessor is used (never travelBounds), scoped to the exact epoch/connection/dimension', () => {
+  it('H2 installed: the dedicated accessor (real PerceptionService.admissionBounds when present, else a documented stub of its contract) is the only proof source, scoped exactly; route authority still requires the frozen authorization match', () => {
     const w = world();
     try {
-      const perception = w.perception as unknown as { admissionBounds?: () => unknown; travelBounds: () => unknown };
-      perception.admissionBounds = () => ({ goalEpoch: 1, connectionEpoch: 1, dimension: 'overworld', anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 128 });
-      perception.travelBounds = () => ({ anchor: { x: 999, y: 0, z: 0 }, radius: 96 }); // an effective leg after H2
-      assert.deepEqual(admissionProof(ctxFor(w), w.routes)?.anchor, { x: 0.5, y: 0, z: 0.5 });
-      perception.admissionBounds = () => ({ goalEpoch: 1, connectionEpoch: 7, dimension: 'overworld', anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 128 });
+      const perception = w.perception as unknown as { admissionBounds?: () => Proof | undefined; travelBounds: () => { anchor: { x: number; y: number; z: number }; radius: number } | undefined; travelAnchorGoalEpoch: () => number | undefined };
+      const anchorBound = perception.travelBounds.bind(perception);
+      if (typeof perception.admissionBounds !== 'function') {
+        // Contract of the shared accessor (P H2): the goal-owned admission anchor of the
+        // current connection/dimension, never a route leg; undefined for a diagnostic anchor.
+        perception.admissionBounds = () => {
+          const e = perception.travelAnchorGoalEpoch();
+          const b = anchorBound();
+          return e === undefined || !b ? undefined : { goalEpoch: e, connectionEpoch: w.session.connectionEpoch, dimension: String(w.session.bot.game.dimension), anchor: { ...b.anchor }, radius: b.radius };
+        };
+      }
+      // An effective route leg in travelBounds (after H2 wiring) must never become the proof.
+      perception.travelBounds = () => ({ anchor: { x: 999, y: 0, z: 0 }, radius: 96 });
+      const proof = admissionProof(ctxFor(w), w.routes)!;
+      assert.deepEqual(proof, { goalEpoch: 1, connectionEpoch: 1, dimension: 'overworld', anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 128 }, 'the immutable admission anchor, not the leg');
+      // Exact scoping: goal epoch, connection epoch and dimension of the executing context.
+      assert.equal(admissionProof(ctxFor(w, { goalEpoch: 2 }), w.routes), undefined, 'another goal epoch');
+      assert.equal(admissionProof(ctxFor(w, { session: { ...w.session, connectionEpoch: 7 } }), w.routes), undefined, 'another connection');
+      const otherDim = { ...w.session, bot: { ...w.session.bot, game: { ...w.session.bot.game, dimension: 'the_nether' } } };
+      assert.equal(admissionProof(ctxFor(w, { session: otherDim }), w.routes), undefined, 'another dimension');
+      // Route authority: a live leg applies only to the matching proof.
+      assert.equal(w.routes.beginLeg({ ...C, at: { x: 100, y: 0, z: 0.5 }, destination: 'owner', bearingRad: 0 }).ok, true);
+      assert.equal(w.routes.effectiveTravel(proof).kind, 'route_leg');
+      // A moved anchor in the same epoch is reported by the accessor, but gets NO leg authority.
+      w.perception.admitTravelAnchor(1, { x: 120, y: 0, z: 0.5 });
+      const moved = admissionProof(ctxFor(w), w.routes);
+      assert.ok(moved, 'the accessor reports the goal-owned anchor');
+      assert.deepEqual(moved.anchor, { x: 120, y: 0, z: 0.5 });
+      const t = w.routes.effectiveTravel(moved);
+      assert.equal(t.kind, 'admission');
+      assert.equal((t as { reason: string }).reason, 'proof_mismatch', 'the frozen route authorization never adopts a different admission anchor');
+      // A diagnostic (untagged) anchor yields no goal proof at all.
+      w.perception.setTravelAnchor(undefined);
       assert.equal(admissionProof(ctxFor(w), w.routes), undefined);
     } finally {
       w.evidence.detach();
