@@ -126,6 +126,15 @@ export class EvidenceLedger {
     return this.entries.some((e) => e.kind === 'block_changed' && e.x === x && e.y === y && e.z === z && e.atMs >= sinceMs && e.connectionEpoch === this.epoch() && e.generation === this.generation);
   }
 
+  /** The latest skill-confirmed block change at this position on this connection/generation (MB-FLOW-001 own-aid identity). */
+  latestOwnChange(x: number, y: number, z: number): { from: string; to: string; atMs: number; actionId: string } | undefined {
+    for (let i = this.entries.length - 1; i >= 0; i -= 1) {
+      const e = this.entries[i] as LedgerEntry & { connectionEpoch?: number; generation?: number };
+      if (e.kind === 'block_changed' && e.x === x && e.y === y && e.z === z && e.connectionEpoch === this.epoch() && e.generation === this.generation) return { from: e.from, to: e.to, atMs: e.atMs, actionId: e.actionId };
+    }
+    return undefined;
+  }
+
   latestContainer(dimension: string, x: number, y: number, z: number): Extract<LedgerEntry, { kind: 'container' }> | undefined {
     for (let i = this.entries.length - 1; i >= 0; i -= 1) {
       const e = this.entries[i] as LedgerEntry & { connectionEpoch?: number; generation?: number };
