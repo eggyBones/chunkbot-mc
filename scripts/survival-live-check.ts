@@ -152,7 +152,8 @@ class Gate {
       // `durable` only when memory's last COMPLETE on-disk revision contains it (read-only inspection).
       memory: {
         facts: () => this.memory.facts(),
-        updateDeathRecovery: (factId, update, evidence) => this.memory.updateDeathRecovery(factId, update, evidence),
+        // C1: `retained` passes through unchanged (integrated memory, P c704, accepts it; an older memory ignores it and G1k then fails honestly).
+        updateDeathRecovery: (factId, update, evidence) => (this.memory.updateDeathRecovery as (f: string, u: typeof update, e: typeof evidence) => Promise<{ ok: boolean; detail: string }>)(factId, update, evidence),
         factDurability: (factId) => {
           const onDisk = inspectMemory(join(outDir, 'memory'), memoryConfig, systemClock, { includeInactive: true, limit: 1_000 }).facts.some((f) => f.id === factId);
           if (onDisk) return 'durable';
@@ -543,6 +544,14 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         ev.push(`incident ${factId}: ${inc?.status} missing=${JSON.stringify(inc?.missing)}`);
         await g.rcon(`gamerule keepInventory ${keep}`);
         check(inc?.status === 'no_loss', 'retained inventory: no_loss, no trip');
+        // C1 truthfulness on the ACTUAL memory fact: retained, not regained/recovered.
+        await g.durable();
+        const fact = g.memory.facts().find((f) => f.id === factId);
+        const rec = fact?.death?.recovery as { status?: string; regained?: unknown[]; retained?: Array<{ key: string; count: number }> } | undefined;
+        ev.push(`memory death fact ${factId}: recovery ${JSON.stringify(rec).slice(0, 300)}`);
+        check(rec && (rec.regained?.length ?? 0) === 0, 'memory reports nothing regained');
+        check(rec && (rec.retained?.reduce((n, r) => n + r.count, 0) ?? 0) >= 3, 'memory reports the kit as retained through respawn (requires the integrated memory retained/no_loss API)');
+        check(rec?.status === 'no_loss', 'memory recovery status is no_loss, not recovered');
       });
 
       await g.gate('G3', 'Easy: eat to the admitted threshold; necessary low-health eat; verified regeneration on/off', async (ev) => {

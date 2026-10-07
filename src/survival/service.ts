@@ -66,7 +66,11 @@ export interface SurvivalMemoryPort {
    * (`incident_durability_unknown`) — an in-process fact is not authority.
    */
   factDurability?(factId: string): FactDurability;
-  updateDeathRecovery(factId: string, update: { regained?: Array<{ key: string; count: number }>; status?: 'abandoned'; detail?: string }, evidence: { detail: string; actionId?: string; capability?: string }): Promise<{ ok: boolean; detail: string }>;
+  /**
+   * C1 truthfulness (P c704): `regained` = server-confirmed pickups by recovery;
+   * `retained` = kept through respawn (never dropped, never "recovered").
+   */
+  updateDeathRecovery(factId: string, update: { regained?: Array<{ key: string; count: number }>; retained?: Array<{ key: string; count: number }>; status?: 'abandoned'; detail?: string }, evidence: { detail: string; actionId?: string; capability?: string }): Promise<{ ok: boolean; detail: string }>;
 }
 
 export interface SurvivalServiceOptions {
@@ -375,8 +379,16 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       if (open && (open.phase === 'awaiting_respawn' || open.phase === 'assessing')) {
         const manifest = this.book?.assess(open, e.inventory, this.options.registry, this.cfg, now);
         this.record({ type: 'survival_loss_assessed', episodeId: open.episodeId, status: open.status, missing: manifest?.missing.length ?? 0, retained: manifest?.retained.length ?? 0, partial: manifest?.partial ?? true });
-        if (open.status === 'no_loss' && open.incidentFactId) this.memoryUpdate(open.incidentFactId, { regained: manifest?.retained ?? [], detail: 'retained through respawn (not dropped); no recovery trip' }, 'fresh respawn inventory retained everything');
-        else if ((open.phase as RecoveryEpisode['phase']) === 'concluded' && open.incidentFactId) this.memoryUpdate(open.incidentFactId, { status: 'abandoned', detail: open.blocker?.detail ?? open.status }, `recovery not attempted: ${open.blocker?.reason ?? open.status}`);
+        // C1: items kept through respawn are `retained`, never reported as regained/recovered.
+        const retained = manifest?.retained ?? [];
+        const concludedNoTrip = (open.phase as RecoveryEpisode['phase']) === 'concluded' && open.status !== 'no_loss';
+        if (open.incidentFactId && (retained.length > 0 || concludedNoTrip)) {
+          this.memoryUpdate(
+            open.incidentFactId,
+            { ...(retained.length ? { retained } : {}), ...(concludedNoTrip ? { status: 'abandoned' as const } : {}), detail: open.status === 'no_loss' ? 'retained through respawn (not dropped); no recovery trip' : concludedNoTrip ? (open.blocker?.detail ?? open.status) : 'partly retained through respawn' },
+            open.status === 'no_loss' ? 'fresh respawn inventory retained everything' : concludedNoTrip ? `recovery not attempted: ${open.blocker?.reason ?? open.status}` : 'fresh respawn inventory retained part of the last-alive inventory',
+          );
+        }
         this.persistSoon();
       }
     }
@@ -429,7 +441,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     this.persistSoon();
   }
 
-  private memoryUpdate(factId: string, update: { regained?: Array<{ key: string; count: number }>; status?: 'abandoned'; detail?: string }, detail: string, actionId?: string): void {
+  private memoryUpdate(factId: string, update: { regained?: Array<{ key: string; count: number }>; retained?: Array<{ key: string; count: number }>; status?: 'abandoned'; detail?: string }, detail: string, actionId?: string): void {
     const m = this.options.memory;
     if (!m) return;
     void m

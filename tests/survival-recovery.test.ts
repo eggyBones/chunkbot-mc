@@ -83,6 +83,35 @@ describe('survival death recovery', () => {
     assert.ok(d.kind !== 'propose' || d.proposal.routine !== 'death_recovery');
   });
 
+  it('C1 truthfulness: retained items reach memory as `retained`, never as `regained`', async () => {
+    const h = harness();
+    await deathAndRespawn(h, { respawnInv: KIT });
+    await settle(h);
+    const ups = h.memory.updates.filter((u) => u.factId === 'mf-0001');
+    assert.equal(ups.length, 1);
+    const u = ups[0]!.update as { regained?: unknown[]; retained?: Array<{ key: string; count: number }>; status?: string };
+    assert.equal(u.regained, undefined, 'nothing is reported as regained');
+    assert.equal(u.status, undefined, 'no_loss is derived by memory from retained, not forced as abandoned');
+    const retained = new Map((u.retained ?? []).map((r) => [r.key, r.count]));
+    assert.equal(retained.get('minecraft:iron_pickaxe'), 1);
+    assert.equal(retained.get('minecraft:bread'), 4);
+    assert.equal(retained.get('minecraft:cobblestone'), 20);
+    // Partial retention: kept bread is retained; a later server-confirmed pickup is the only `regained`.
+    const p2 = harness();
+    await deathAndRespawn(p2, { respawnInv: { 37: slot('bread', 4) } });
+    await settle(p2);
+    const part = p2.memory.updates.find((x) => x.factId === 'mf-0001')?.update as { regained?: unknown[]; retained?: Array<{ key: string; count: number }> };
+    assert.equal(part.regained, undefined);
+    assert.deepEqual(part.retained, [{ key: 'minecraft:bread', count: 4 }]);
+    const pr = propose(p2);
+    const a = await admit(p2, pr);
+    assert.equal(p2.service.recordRegain({ goalId: a.goalId, goalEpoch: 5, connectionEpoch: 1 }, 'minecraft:cobblestone', 20, 'act-9'), 20);
+    await settle(p2);
+    const regainUpdates = p2.memory.updates.filter((x) => (x.update as { regained?: unknown[] }).regained);
+    assert.equal(regainUpdates.length, 1);
+    assert.deepEqual((regainUpdates[0]!.update as { regained: unknown[] }).regained, [{ key: 'minecraft:cobblestone', count: 20 }]);
+  });
+
   it('lava and void deaths are never known_destroyed by cause alone', async () => {
     for (const [key, reason] of [['death.attack.lava', 'site_fatal_hazard'], ['death.attack.outOfWorld', 'likely_destroyed_void']] as const) {
       const h = harness();
