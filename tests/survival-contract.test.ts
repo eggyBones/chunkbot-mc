@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   GATED_LATER_SLICES,
+  InterruptedDirectiveSchema,
   RecoveryEpisodeSchema,
   SURVIVAL_BOUNDS,
   SURVIVAL_ROUTINES,
@@ -79,6 +80,17 @@ describe('survival contract', () => {
     assert.ok(SurvivalStatePredicateSchema.safeParse({ predicate: 'survival_state', routine: 'death_recovery', expect: 'concluded' }).success);
     assert.equal(SurvivalStatePredicateSchema.safeParse({ predicate: 'survival_state', routine: 'collect_logs', expect: 'concluded' }).success, false);
     assert.equal(SurvivalStatePredicateSchema.safeParse({ predicate: 'survival_state', routine: 'eat', expect: 'concluded', extra: 1 }).success, false);
+  });
+
+  it('survival_state separates recovered from merely concluded', () => {
+    assert.ok(SurvivalStatePredicateSchema.safeParse({ predicate: 'survival_state', routine: 'death_recovery', expect: 'recovered' }).success);
+  });
+
+  it('interrupted owner intent always requires an owner decision (C1: no shape-based compatibility)', () => {
+    const d = { goalId: 'goal-abcd', instruction: 'collect 10 logs', outcomeKind: 'finite', confirmedProgress: '', interruptedAtMs: NOW, reason: 'death', continuationDetail: 'x', stateAtMs: NOW };
+    assert.ok(InterruptedDirectiveSchema.safeParse({ ...d, continuation: 'requires_owner_decision', state: 'awaiting_owner' }).success);
+    assert.equal(InterruptedDirectiveSchema.safeParse({ ...d, continuation: 'compatible_original_baseline', state: 'awaiting_owner' }).success, false);
+    assert.equal(InterruptedDirectiveSchema.safeParse({ ...d, continuation: 'requires_owner_decision', state: 'continued' }).success, false);
   });
 
   it('routines are scheduling policies; gated slices are not routines', () => {
