@@ -93,7 +93,7 @@ Static evidence does not prove runtime broadcasts. Gates L-G1/L-G2 remain requir
 
 ## Checks (direct exits, worktree `mb-loc-001`, Node 24.21.0)
 
-- `npm run typecheck`: 0. `npm run build`: 0. `npm test`: 0, **557/557**. This includes 80 locator tests across 6 files:
+- `npm run typecheck`: 0. `npm run build`: 0. `npm test`: 0, **557/557**. This includes 74 locator tests across 6 files:
   - `locator-codec`: pinned serializer/deserializer round trips for 26.1.2/26.2 and the fail-closed gate;
   - `locator-service`: attribution, variants, hiding, expiry, lifecycle, connection scoping, no-coordinate telemetry;
   - `locator-routes`: C1/C2/C3 ceilings, sampling, freezing, scope;
