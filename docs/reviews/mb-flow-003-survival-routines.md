@@ -27,7 +27,7 @@ No existing file was edited.
 
 - `npm run typecheck`: 0
 - `npm run build`: 0
-- `npm test`: 0, 588/588 passing. That includes 105 survival tests across 12 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring and harness guard.
+- `npm test`: 0, 589/589 passing. That includes 106 survival tests across 12 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring and harness guard.
 - The harness guard spawns `scripts/survival-live-check.ts` with a missing or invalid lease. Each run exits 2 before any password read, RCON command, join or output directory.
 - Not run (they need a lease or provider): the fixture gates, live-check, skills-live-check, planner and Jev checks, doctor.
 
@@ -45,6 +45,7 @@ No existing file was edited.
 - **Loss assessment (R1, R3).** Last-alive minus the fresh respawn inventory gives missing and retained items. A retained inventory gives `no_loss` (no trip).
   - Lava and void causes mark items `likely_destroyed` and the episode `blocked`. They are never `known_destroyed`, which is reserved for real evidence this release does not have.
   - A missing last-alive record is blocked as `loss_manifest_unknown`. Partial manifests are labeled.
+  - C1 truthfulness: items kept through respawn reach memory as `retained` (P `c704ad4` API; memory derives `no_loss`), never as `regained`. Only server-confirmed recovery pickups are `regained`. Partial retention sends both separately, at different times.
 - **Recovery policy (R2–R5).** It proposes a planner goal, with code-written bounded context of at most 2,000 characters, and serves `owner_intent` when an owner goal was interrupted. Limits:
   - at most two counted attempts per incident; owner stop, replacement, shutdown and provider-not-ready don't count
   - a second attempt only with material improvement (armor +2 or more, fire protection for fire or lava, a different route policy, or a different start after a non-fatal end)
@@ -121,13 +122,14 @@ No existing file was edited.
 8. **Skills.** Register `survivalSkills(service)`, which is empty when disabled.
 9. **Status and dashboard.** Use `survival.statusLines(now)` and `survival.status(now)`, at most 4,000 characters, read-only.
 10. **Routing.** Pass `farRoute` and the own-death provider to locator's RoutePort when the corrected routing is integrated. `SurvivalService` implements the canonical `RouteDestinationProvider` (locator `b323883`, cherry-picked unchanged): `current(ctx)` returns `provenance: 'own_incident'` only for the bound recovery goal epoch, connection and dimension, with an exact capture → memory fact → episode link, and only while the whole incident identity frozen at admission (episode, fact, dimension, coordinates, source) is unchanged. The `destinationId` encodes that whole identity; a changed coordinate gives no destination (`destination_changed`). Far recovery stays blocked until then.
-11. **Memory durability seam (C5, required for recovery; the progression/memory writer owns it).** Add `MemoryService.factDurability(factId: string): 'durable' | 'pending' | 'failed' | 'unknown'`, passed through `SurvivalMemoryPort.factDurability`:
+11. **Memory retained/no_loss (C1, delivered by P `c704ad4`).** `SurvivalMemoryPort.updateDeathRecovery` accepts `retained`. The G1k memory assertion (retained count, nothing regained, status `no_loss`) needs this integrated memory; against the older branch memory it fails honestly.
+12. **Memory durability seam (C5, required for recovery; the progression/memory writer owns it).** Add `MemoryService.factDurability(factId: string): 'durable' | 'pending' | 'failed' | 'unknown'`, passed through `SurvivalMemoryPort.factDurability`:
     - `durable`: the last complete durable revision contains the fact at its current fact revision (the existing private `durable` map holds a value at least `fact.revision`);
     - `pending`: the fact exists in the book but isn't durable yet;
     - `failed`: its write failed or was rolled back;
     - `unknown`: no such fact in this scope.
     Without the seam, recovery is blocked as `incident_durability_unknown`. The synchronous `onLifecycle` fact return stays the exact CAPTURE association; durability is a separate, later check made before planning or action, never on the revocation path. The gate harness uses a labeled stand-in that reads memory's last complete on-disk revision (`inspectMemory`).
-12. **Optional memory extension.** `updateDeathRecovery({retained})` so a respawn-retained inventory isn't recorded as "regained". The current use is labeled in the detail text.
+13. **(superseded by item 11)** `updateDeathRecovery({retained})` so a respawn-retained inventory isn't recorded as "regained". The current use is labeled in the detail text.
 
 ## Lease request (R-G1/R-G2/R-G3 gate; corrected for MB-FLOW-003-C6)
 
