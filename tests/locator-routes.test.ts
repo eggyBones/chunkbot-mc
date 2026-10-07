@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { describe, it } from 'node:test';
 import { RoutePolicySchema, RouteStatusSchema, type RouteAdmission, type RouteDestinationProvider, type RoutePolicy } from '../src/contracts/locator.ts';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import type { GameSession } from '../src/game/connection.ts';
 import { RouteController } from '../src/locator/routes.ts';
 
@@ -161,22 +163,6 @@ describe('MB-LOC-001 exact-match scope and revocation (L6)', () => {
     assert.equal(routes.admit(admission()), undefined);
   });
 
-  it('attachMovement samples bot moves and server corrections of the session; detach stops it', () => {
-    const { routes } = controller();
-    routes.admit(admission());
-    routes.beginLeg({ ...CTX, at: { x: 100, y: 64, z: 0 }, destination: 'owner', bearingRad: 0 });
-    const bot = Object.assign(new EventEmitter(), { entity: { position: { x: 100, y: 64, z: 0 } }, game: { dimension: 'minecraft:overworld' } });
-    const records = new Set<(e: { kind: string; x?: number; y?: number; z?: number }) => void>();
-    const session = { bot, connectionEpoch: 1, evidence: { onRecord: (l: never) => (records.add(l), () => records.delete(l)) } } as unknown as GameSession;
-    const detach = routes.attachMovement(session, () => 3);
-    bot.entity.position = { x: 105, y: 64, z: 0 };
-    bot.emit('move');
-    for (const l of records) l({ kind: 'position_correction', x: 103, y: 64, z: 0 });
-    detach();
-    bot.entity.position = { x: 150, y: 64, z: 0 };
-    bot.emit('move');
-    assert.deepEqual(routes.status(3)!.distanceSources, { clientPhysics: 5, serverCorrections: 2, correctionCount: 1 });
-  });
 });
 
 describe('MB-LOC-001 destination provenance', () => {
@@ -207,12 +193,169 @@ describe('MB-LOC-001 destination provenance', () => {
     assert.equal(routes.proposalContext(CTX).ownDeathAvailable, true);
     const ok = routes.verifyDestination(CTX, 'own_death');
     assert.equal(ok.ok, true);
-    if (ok.ok && ok.kind === 'own_death') assert.equal(routes.bindOwnDeath(CTX, ok.destinationId), true);
+    if (ok.ok && ok.kind === 'own_death') assert.equal(routes.bindOwnDeath(CTX, ok.identity), true);
     current = { ...current!, destinationId: 'death-2', at: { x: -300, y: 60, z: 0 } };
     const changed = routes.verifyDestination(CTX, 'own_death');
     assert.equal(changed.ok, false);
     if (!changed.ok) assert.equal(changed.blocker, 'destination_changed');
     current = undefined;
     assert.equal(routes.verifyDestination(CTX, 'own_death').ok, false);
+  });
+});
+
+describe('MB-LOC-001-C2 withdrawn authority on exhausted/blocked/expired routes', () => {
+  const proof = { goalEpoch: 3, connectionEpoch: 1, dimension: 'minecraft:overworld', anchor: { x: 0.5, y: 64, z: 0.5 }, radius: 128 };
+
+  it('C2 reproduction: a 0->16->0->16->0 loop consumes max 64; legBounds and effectiveTravel withdraw the expanded leg', () => {
+    const { routes } = controller({ maxTotalDistance: 64 });
+    routes.admit(admission());
+    assert.equal(routes.beginLeg({ ...CTX, at: { x: 0, y: 64, z: 0 }, destination: 'owner', bearingRad: 0 }).ok, true);
+    assert.equal(routes.effectiveTravel(proof).kind, 'route_leg');
+    for (const x of [16, 0, 16, 0]) routes.sample(CTX, { x, y: 64, z: 0 });
+    const st = routes.status(3)!;
+    assert.equal(st.distanceUsed, 64);
+    assert.equal(st.state, 'exhausted');
+    assert.equal(routes.legBounds(CTX), undefined, 'no stale expanded authority');
+    const t = routes.effectiveTravel(proof);
+    assert.deepEqual(t, { kind: 'admission', anchor: proof.anchor, radius: 128, reason: 'route_exhausted' }, 'the original admission bound applies');
+  });
+
+  it('time expiry withdraws the leg even before any new leg is requested', () => {
+    const { routes, clock } = controller({ maxRouteMs: 60_000 });
+    routes.admit(admission());
+    routes.beginLeg({ ...CTX, at: { x: 120, y: 64, z: 0 }, destination: 'owner', bearingRad: 0 });
+    clock.t += 59_000;
+    assert.equal(routes.effectiveTravel(proof).kind, 'route_leg');
+    clock.t += 1_000;
+    assert.equal(routes.legBounds(CTX), undefined);
+    assert.equal((routes.effectiveTravel(proof) as { reason: string }).reason, 'route_expired');
+    assert.equal(routes.budget(CTX).ok, false);
+  });
+
+  it('blocked (stalled) and revoked routes withdraw the leg', () => {
+    const { routes } = controller({ maxStalledLegs: 1 });
+    routes.admit(admission());
+    routes.beginLeg({ ...CTX, at: { x: 0, y: 64, z: 0 }, destination: 'owner', bearingRad: 0 });
+    assert.equal(routes.beginLeg({ ...CTX, at: { x: 1, y: 64, z: 0 }, destination: 'owner', bearingRad: 0 }).ok, false);
+    assert.equal(routes.status(3)!.state, 'blocked');
+    assert.equal(routes.legBounds(CTX), undefined);
+    const r2 = controller();
+    r2.routes.admit(admission());
+    r2.routes.beginLeg({ ...CTX, at: { x: 120, y: 64, z: 0 }, destination: 'owner', bearingRad: 0 });
+    r2.routes.revoke('owner_stop');
+    assert.equal((r2.routes.effectiveTravel(proof) as { reason: string }).reason, 'no_route');
+  });
+
+  it('a leg never applies to a different admission proof (anchor, radius, epoch, connection or dimension)', () => {
+    const { routes } = controller();
+    routes.admit(admission());
+    routes.beginLeg({ ...CTX, at: { x: 120, y: 64, z: 0 }, destination: 'owner', bearingRad: 0 });
+    assert.equal(routes.effectiveTravel(proof).kind, 'route_leg');
+    assert.equal((routes.effectiveTravel({ ...proof, anchor: { x: 120, y: 64, z: 0 } }) as { reason: string }).reason, 'proof_mismatch', 'a leg-expanded bound is not an admission proof');
+    assert.equal((routes.effectiveTravel({ ...proof, radius: 256 }) as { reason: string }).reason, 'proof_mismatch');
+    for (const other of [{ goalEpoch: 4 }, { connectionEpoch: 2 }, { dimension: 'minecraft:the_nether' }]) assert.equal(routes.effectiveTravel({ ...proof, ...other }).kind, 'admission');
+  });
+});
+
+describe('MB-LOC-001-C2 own-movement sampling from the RESOLVED own position (pinned Mineflayer semantics)', () => {
+  it('pinned physics applies position packets per relative axis, then emits move and forcedMove synchronously (source check)', () => {
+    const req = createRequire(import.meta.url);
+    const src = readFileSync(req.resolve('mineflayer/lib/plugins/physics.js'), 'utf8');
+    const handler = src.slice(src.indexOf("bot._client.on('position'"), src.indexOf('bot.waitForTicks'));
+    assert.match(handler, /packet\.flags\.x \? \(pos\.x \+ packet\.x\) : packet\.x/, 'relative x resolved by flag');
+    const send = handler.lastIndexOf('sendPacketPositionAndLook(pos');
+    const forced = handler.lastIndexOf("bot.emit('forcedMove')");
+    assert.ok(send > 0 && forced > send, 'move (inside sendPacketPositionAndLook) precedes forcedMove in the same handler');
+    assert.match(src, /function sendPacketPositionAndLook[\s\S]*?bot\.emit\('move', oldPos\)/);
+  });
+
+  /** A bot double that reproduces the pinned handler: resolve flags, then move, then forcedMove (synchronously). */
+  function botDouble() {
+    const bot = Object.assign(new EventEmitter(), { entity: { position: { x: 100, y: 64, z: 0 } }, game: { dimension: 'minecraft:overworld' } });
+    const walk = (x: number, z: number) => {
+      bot.entity.position = { x, y: 64, z };
+      bot.emit('move');
+    };
+    const positionPacket = (p: { x: number; y: number; z: number; flags: { x: boolean; y: boolean; z: boolean } }) => {
+      const pos = bot.entity.position;
+      bot.entity.position = { x: p.flags.x ? pos.x + p.x : p.x, y: p.flags.y ? pos.y + p.y : p.y, z: p.flags.z ? pos.z + p.z : p.z };
+      bot.emit('move');
+      bot.emit('forcedMove');
+    };
+    const session = { bot, connectionEpoch: 1, evidence: { onRecord: () => () => undefined } } as unknown as GameSession;
+    return { bot, walk, positionPacket, session };
+  }
+
+  it('regular movement, zero-relative and mixed-axis corrections, true corrections and detours each count exactly once', async () => {
+    const { routes } = controller();
+    routes.admit(admission());
+    routes.beginLeg({ ...CTX, at: { x: 100, y: 64, z: 0 }, destination: 'owner', bearingRad: 0 });
+    const d = botDouble();
+    const detach = routes.attachMovement(d.session, () => 3);
+    for (let x = 101; x <= 110; x += 1) d.walk(x, 0); // regular: 10
+    await Promise.resolve();
+    d.positionPacket({ x: 0, y: 0, z: 0, flags: { x: true, y: true, z: true } }); // zero-relative: 0
+    await Promise.resolve();
+    d.positionPacket({ x: 3, y: 0, z: 0, flags: { x: true, y: true, z: false } }); // mixed: x +3 relative, z absolute 0 -> 3
+    await Promise.resolve();
+    d.positionPacket({ x: 160, y: 64, z: 0, flags: { x: false, y: false, z: false } }); // true absolute correction: 47
+    await Promise.resolve();
+    for (let z = 1; z <= 5; z += 1) d.walk(160, z); // detour out 5
+    for (let z = 4; z >= 0; z -= 1) d.walk(160, z); // and back 5
+    await Promise.resolve();
+    routes.sample(CTX, { x: 160, y: 64, z: 0 }); // the runner sampling the same resolved position adds nothing
+    const st = routes.status(3)!;
+    assert.deepEqual(st.distanceSources, { clientPhysics: 20, serverCorrections: 50, correctionCount: 2 });
+    assert.equal(st.distanceUsed, 70);
+    detach();
+    d.walk(500, 0);
+    assert.equal(routes.status(3)!.distanceUsed, 70, 'detached');
+  });
+
+  it('a forcedMove that is not synchronously preceded by a move never relabels an earlier regular move', async () => {
+    const { routes } = controller();
+    routes.admit(admission());
+    routes.beginLeg({ ...CTX, at: { x: 100, y: 64, z: 0 }, destination: 'owner', bearingRad: 0 });
+    const d = botDouble();
+    routes.attachMovement(d.session, () => 3);
+    d.walk(110, 0);
+    await Promise.resolve();
+    d.bot.emit('forcedMove');
+    assert.deepEqual(routes.status(3)!.distanceSources, { clientPhysics: 10, serverCorrections: 0, correctionCount: 0 });
+  });
+
+  it('samples for another goal epoch, connection or dimension are ignored', async () => {
+    const { routes } = controller();
+    routes.admit(admission());
+    routes.beginLeg({ ...CTX, at: { x: 100, y: 64, z: 0 }, destination: 'owner', bearingRad: 0 });
+    const d = botDouble();
+    routes.attachMovement(d.session, () => 9);
+    d.walk(150, 0);
+    assert.equal(routes.status(3)!.distanceUsed, 0);
+  });
+});
+
+describe('MB-LOC-001-C3 frozen own-incident identity', () => {
+  it('C3 reproduction: same id with a moved position (or other recorded identity) is refused after first use; absence stops', () => {
+    let current: ReturnType<RouteDestinationProvider['current']> = { destinationId: 'mf-0001', dimension: 'minecraft:overworld', at: { x: 20, y: 60, z: 0 }, recordedAtMs: 7, label: 'own death location', provenance: 'own_incident' };
+    const { routes } = controller({ destinations: ['owner', 'own_death'] }, { kind: 'own_death', current: () => current });
+    routes.admit(admission());
+    const first = routes.verifyDestination(CTX, 'own_death');
+    assert.ok(first.ok && first.kind === 'own_death');
+    if (first.ok && first.kind === 'own_death') assert.equal(routes.bindOwnDeath(CTX, first.identity), true);
+    assert.ok(Object.isFrozen(routes.frozenOwnDeath(CTX)));
+    current = { ...current!, at: { x: 40, y: 60, z: 0 } };
+    const moved = routes.verifyDestination(CTX, 'own_death');
+    assert.equal(moved.ok, false);
+    if (!moved.ok) assert.equal(moved.blocker, 'destination_changed');
+    assert.equal(routes.bindOwnDeath(CTX, { destinationId: 'mf-0001', dimension: 'minecraft:overworld', at: { x: 40, y: 60, z: 0 }, recordedAtMs: 7 }), false);
+    current = { ...current, at: { x: 20, y: 60, z: 0 }, recordedAtMs: 8 };
+    assert.equal(routes.verifyDestination(CTX, 'own_death').ok, false, 'a different recorded identity is a different incident');
+    current = { ...current, recordedAtMs: 7 };
+    assert.equal(routes.verifyDestination(CTX, 'own_death').ok, true, 'the identical incident still verifies');
+    current = undefined;
+    const gone = routes.verifyDestination(CTX, 'own_death');
+    assert.equal(gone.ok, false);
+    if (!gone.ok) assert.equal(gone.blocker, 'destination_unverified');
   });
 });

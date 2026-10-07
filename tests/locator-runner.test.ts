@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { describe, it } from 'node:test';
-import { DEFAULT_LOCATOR_CONFIG, RoutePolicySchema, type RoutePolicy } from '../src/contracts/locator.ts';
+import { DEFAULT_LOCATOR_CONFIG, RoutePolicySchema, type RouteAdmissionProof, type RouteDestinationProvider, type RoutePolicy } from '../src/contracts/locator.ts';
 import type { GameSession } from '../src/game/connection.ts';
 import { offlinePlayerUuid } from '../src/game/identity.ts';
 import { isStandable } from '../src/perception/frontiers.ts';
@@ -54,9 +54,10 @@ interface Sim {
   steps: Vec[];
   serverEmit(): void;
   sleeps: { count: number; revokeAfter?: number };
+  proofOverride: { value: RouteAdmissionProof | undefined };
 }
 
-function sim(options: { ownerAt: Vec; policy?: Partial<RoutePolicy>; routes?: boolean; viewDistanceChunks?: number; obstacles?: (w: ProcWorld) => void; ownerCoordinates?: Vec[] } ): Sim {
+function sim(options: { ownerAt: Vec; policy?: Partial<RoutePolicy>; routes?: boolean; viewDistanceChunks?: number; obstacles?: (w: ProcWorld) => void; ownerCoordinates?: Vec[]; ownDeath?: RouteDestinationProvider } ): Sim {
   const world = new ProcWorld();
   options.obstacles?.(world);
   const self: Vec = { x: 0.5, y: 64, z: 0.5 };
@@ -68,7 +69,7 @@ function sim(options: { ownerAt: Vec; policy?: Partial<RoutePolicy>; routes?: bo
   const locator = new LocatorService({ config: DEFAULT_LOCATOR_CONFIG, version: '26.2', ownerPolicy: { mode: 'offline_name', ownerName: OWNER }, admission: () => ({ serverOnlineMode: false }), session: () => session, clock });
   locator.attach(client, 1);
   client.emit('login', {});
-  const routes = new RouteController({ policy: RoutePolicySchema.parse(options.policy ?? {}), clock });
+  const routes = new RouteController({ policy: RoutePolicySchema.parse(options.policy ?? {}), clock, ...(options.ownDeath ? { ownDeath: options.ownDeath } : {}) });
   if (options.routes !== false) {
     routes.admit({ goalId: 'goal-0001', goalEpoch: 1, admittedAtMs: clock.t, source: 'owner', goalDeadlineMs: clock.t + 3_600_000, connectionEpoch: 1, dimension: DIM, admissionAnchor: { ...self }, admissionRadius: 128, ownerCoordinates: (options.ownerCoordinates ?? []).map((c) => ({ ...c, source: 'instruction' as const })) });
   }
@@ -93,6 +94,7 @@ function sim(options: { ownerAt: Vec; policy?: Partial<RoutePolicy>; routes?: bo
     client.emit('tracked_waypoint', { operation: last === '' || last === 'untrack' ? 'track' : 'update', waypoint: { hasUUID: true, uuid: OWNER_UUID, icon: { style: 'minecraft:default' }, ...w } });
     last = key;
   };
+  const proofOverride: { value: RouteAdmissionProof | undefined } = { value: undefined };
   const state = { moves: 0, steps: [] as Vec[], sleeps: { count: 0 } as { count: number; revokeAfter?: number } };
   const seen = (): Map<string, RayHit> => {
     const out = new Map<string, RayHit>();
@@ -123,7 +125,7 @@ function sim(options: { ownerAt: Vec; policy?: Partial<RoutePolicy>; routes?: bo
     visited: () => state.steps.slice(-64),
     recordVisited: () => state.steps.push({ ...self }),
     ownerVisible: () => (!owner.hidden && Math.hypot(owner.at.x - self.x, owner.at.z - self.z) <= 24 ? { ...owner.at } : undefined),
-    admissionBounds: () => ({ anchor: { x: 0.5, y: 64, z: 0.5 }, radius: 128 }),
+    admissionBounds: () => (proofOverride.value ?? { goalEpoch: 1, connectionEpoch: 1, dimension: DIM, anchor: { x: 0.5, y: 64, z: 0.5 }, radius: 128 }),
     move: async (target: Vec, within: number, bounds, opts: MoveOptions): Promise<MoveResult> => {
       state.moves += 1;
       let goal = target;
@@ -161,7 +163,7 @@ function sim(options: { ownerAt: Vec; policy?: Partial<RoutePolicy>; routes?: bo
     ownerLossMs: 10_000,
   };
   serverEmit();
-  return Object.defineProperties({ env, routes, locator, world, self, owner, clock, serverEmit, sleeps: state.sleeps } as unknown as Sim, {
+  return Object.defineProperties({ env, routes, locator, world, self, owner, clock, serverEmit, sleeps: state.sleeps, proofOverride } as unknown as Sim, {
     moves: { get: () => state.moves },
     steps: { get: () => state.steps },
   });
@@ -203,7 +205,18 @@ describe('MB-LOC-001 L3 locator-assisted reunion beyond the 128-block admission 
   it('a fixed owner-typed destination beyond the radius is reached through legs (arrival = own position)', async () => {
     const s = sim({ ownerAt: { x: 0, y: 64, z: -900 }, ownerCoordinates: [{ x: 300, y: 64, z: 200 }] });
     s.owner.hidden = true;
-    const results = await runWindows(s, { kind: 'fixed', destination: 'owner_destination', dimension: DIM, at: { x: 300, y: 64, z: 200 }, label: 'owner-supplied destination 300,64,200' });
+    const C = { goalEpoch: 1, connectionEpoch: 1, dimension: DIM };
+    const results = await runWindows(s, {
+      kind: 'fixed',
+      destination: 'owner_destination',
+      dimension: DIM,
+      at: { x: 300, y: 64, z: 200 },
+      label: 'owner-supplied destination 300,64,200',
+      recheck: () => {
+        const v = s.routes.verifyDestination(C, 'owner_destination', { x: 300, y: 64, z: 200 }, DIM);
+        return v.ok ? { ok: true } : { ok: false, reason: `route_${v.blocker}`, detail: v.detail };
+      },
+    });
     const last = results.at(-1)!;
     assert.equal(last.status, 'succeeded', JSON.stringify(results.map((r) => [r.status, r.reason, r.effect])));
     assert.equal(last.reason, 'arrived');
@@ -290,14 +303,22 @@ describe('MB-LOC-001 ceilings and ownership in the runner (L6/C1)', () => {
     assert.ok(Math.hypot(s.self.x - 0.5, s.self.z - 0.5) <= 128);
   });
 
-  it('the leg ceiling ends the route; the bot never leaves the last authorized leg', async () => {
+  it('the leg ceiling ends the route; the expanded leg is withdrawn and the bot never left the last authorized leg', async () => {
     const s = sim({ ownerAt: { x: 900, y: 64, z: 0 }, policy: { maxLegs: 2 } });
+    let lastLeg: { anchor: Vec; radius: number } | undefined;
+    const original = s.env.move;
+    s.env.move = async (t, w, b, o) => {
+      const leg = s.routes.legBounds({ goalEpoch: 1, connectionEpoch: 1, dimension: DIM });
+      if (leg) lastLeg = { anchor: leg.anchor, radius: leg.radius };
+      return original(t, w, b, o);
+    };
     const results = await runWindows(s);
     const last = results.at(-1)!;
     assert.equal(last.reason, 'route_leg_limit', last.effect);
-    const leg = s.routes.legBounds({ goalEpoch: 1, connectionEpoch: 1, dimension: DIM })!;
-    assert.equal(leg.legIndex, 2);
-    assert.ok(Math.hypot(s.self.x - leg.anchor.x, s.self.z - leg.anchor.z) <= leg.radius + 1e-6);
+    assert.equal(s.routes.legBounds({ goalEpoch: 1, connectionEpoch: 1, dimension: DIM }), undefined, 'C2: no stale expanded authority');
+    assert.equal((s.routes.effectiveTravel(s.env.admissionBounds()!) as { reason?: string }).reason, 'route_exhausted');
+    assert.equal(s.routes.status(1)!.legsUsed, 2);
+    assert.ok(lastLeg && Math.hypot(s.self.x - lastLeg.anchor.x, s.self.z - lastLeg.anchor.z) <= lastLeg.radius + 1e-6);
   });
 
   it('the cumulative distance ceiling stops route movement mid-leg', async () => {
@@ -327,5 +348,48 @@ describe('MB-LOC-001 ceilings and ownership in the runner (L6/C1)', () => {
     const results = await runWindows(s);
     assert.ok(results.every((r) => r.status !== 'succeeded'));
     assert.equal(s.routes.legBounds({ goalEpoch: 1, connectionEpoch: 1, dimension: DIM }), undefined);
+  });
+});
+
+describe('MB-LOC-001-C3 provenance in the runner', () => {
+  it('a frozen own-incident destination that changes or disappears mid-route stops movement at the next poll', async () => {
+    let current: ReturnType<RouteDestinationProvider['current']> = { destinationId: 'mf-0001', dimension: DIM, at: { x: 400, y: 64, z: 0 }, recordedAtMs: 5, label: 'own death location', provenance: 'own_incident' };
+    for (const change of ['moved', 'missing'] as const) {
+      current = { destinationId: 'mf-0001', dimension: DIM, at: { x: 400, y: 64, z: 0 }, recordedAtMs: 5, label: 'own death location', provenance: 'own_incident' };
+      const s = sim({ ownerAt: { x: 0, y: 64, z: -900 }, policy: { destinations: ['owner', 'own_death'] }, ownDeath: { kind: 'own_death', current: () => current } });
+      s.owner.hidden = true;
+      const C = { goalEpoch: 1, connectionEpoch: 1, dimension: DIM };
+      const v = s.routes.verifyDestination(C, 'own_death');
+      assert.ok(v.ok && v.kind === 'own_death');
+      if (v.ok && v.kind === 'own_death') assert.ok(s.routes.bindOwnDeath(C, v.identity));
+      const original = s.env.move;
+      let changedAt: Vec | undefined;
+      s.env.move = async (t, w, b, o) => {
+        if (s.self.x > 60 && !changedAt) {
+          changedAt = { ...s.self };
+          current = change === 'moved' ? { ...current!, at: { x: 420, y: 64, z: 0 } } : undefined;
+        }
+        return original(t, w, b, o);
+      };
+      const r = await runRoute(s.env, { kind: 'fixed', destination: 'own_death', dimension: DIM, at: { x: 400, y: 64, z: 0 }, label: 'own death location', recheck: () => {
+        const c = s.routes.verifyDestination(C, 'own_death');
+        return c.ok ? { ok: true } : { ok: false, reason: `route_${c.blocker}`, detail: c.detail };
+      } }, { within: 3, durationMs: 120_000 }, { routes: s.routes, locator: s.locator });
+      assert.equal(r.status, 'failed');
+      assert.equal(r.reason, change === 'moved' ? 'route_destination_changed' : 'route_destination_unverified', r.effect);
+      assert.ok(changedAt, 'the incident changed mid-route');
+      assert.deepEqual(s.self, changedAt, 'stopped at the first movement poll after the change (no further step)');
+    }
+  });
+
+  it('a leg whose admission anchor differs from the goal-owned proof is never applied (no relaxed fallback)', async () => {
+    const s = sim({ ownerAt: { x: 600, y: 64, z: 0 } });
+    // The proof claims a different admission anchor than the route authorization (e.g. a leg-expanded travelBounds misused as proof).
+    s.proofOverride.value = { goalEpoch: 1, connectionEpoch: 1, dimension: DIM, anchor: { x: 10.5, y: 64, z: 0.5 }, radius: 128 };
+    await runWindows(s);
+    assert.ok(Math.hypot(s.self.x - 10.5, s.self.z - 0.5) <= 128 + 1e-6, `stayed inside the proven admission bound (x=${s.self.x})`);
+    s.proofOverride.value = { goalEpoch: 2, connectionEpoch: 1, dimension: DIM, anchor: { x: 0.5, y: 64, z: 0.5 }, radius: 128 };
+    const r = await runRoute(s.env, { kind: 'owner' }, { within: 3, durationMs: 30_000 }, { routes: s.routes, locator: s.locator });
+    assert.equal(r.reason, 'travel_anchor_not_admitted', 'a proof for another goal epoch moves nothing');
   });
 });

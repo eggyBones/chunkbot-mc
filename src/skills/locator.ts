@@ -20,6 +20,7 @@
 // towering, parkour or doors.
 import { z } from 'zod';
 import { DimensionSchema, type JsonValue, type Vec3 } from '../contracts/index.ts';
+import type { RouteAdmissionProof } from '../contracts/locator.ts';
 import type { LocatorService } from '../locator/service.ts';
 import type { RouteController } from '../locator/routes.ts';
 import { runRoute, type RouteEnv, type RouteTarget } from '../locator/route-runner.ts';
@@ -40,8 +41,34 @@ function goalEpochOf(ctx: ExecuteContext): number {
   return ctx.owner.kind === 'goal' ? ctx.owner.goalEpoch : ctx.candidate.goalEpoch;
 }
 
+/**
+ * The goal-owned ORIGINAL admission proof (C3). Uses the proposed dedicated
+ * accessor `PerceptionService.admissionBounds()` when the shared writer has
+ * installed it (it never returns a route leg). Before that (no route override
+ * exists in perception yet), travelBounds() is the admission bound, accepted
+ * only when (a) the anchor is owned by this goal epoch and (b) it equals the
+ * route authorization's frozen admission anchor/radius when one exists, so a
+ * leg-expanded bound can never serve as proof. Otherwise: no proof, no movement.
+ */
+export function admissionProof(ctx: ExecuteContext, routes: RouteController): RouteAdmissionProof | undefined {
+  const perception = ctx.services.perception as typeof ctx.services.perception & { admissionBounds?: () => RouteAdmissionProof | undefined };
+  const goalEpoch = goalEpochOf(ctx);
+  const connectionEpoch = ctx.session.connectionEpoch;
+  const dimension = String(ctx.session.bot.game.dimension);
+  if (typeof perception.admissionBounds === 'function') {
+    const p = perception.admissionBounds();
+    return p && p.goalEpoch === goalEpoch && p.connectionEpoch === connectionEpoch && p.dimension === dimension ? p : undefined;
+  }
+  if (perception.travelAnchorGoalEpoch() !== goalEpoch) return undefined;
+  const b = perception.travelBounds();
+  if (!b) return undefined;
+  const auth = routes.authorization({ goalEpoch, connectionEpoch, dimension });
+  if (auth && (auth.admissionAnchor.x !== b.anchor.x || auth.admissionAnchor.y !== b.anchor.y || auth.admissionAnchor.z !== b.anchor.z || auth.admissionRadius !== b.radius)) return undefined;
+  return { goalEpoch, connectionEpoch, dimension, anchor: { x: b.anchor.x, y: b.anchor.y, z: b.anchor.z }, radius: b.radius };
+}
+
 /** Production RouteEnv over the fenced actuator, perception and the skill services. */
-export function routeEnv(ctx: ExecuteContext): RouteEnv {
+export function routeEnv(ctx: ExecuteContext, routes: RouteController): RouteEnv {
   const { services, session, act } = ctx;
   const bot = session.bot;
   const perception = services.perception;
@@ -69,7 +96,7 @@ export function routeEnv(ctx: ExecuteContext): RouteEnv {
     visited: () => perception.visitedLocations().filter((v) => v.dimension === String(bot.game.dimension)).map((v) => v.at),
     recordVisited: () => perception.recordVisited(),
     ownerVisible,
-    admissionBounds: () => perception.travelBounds?.(),
+    admissionBounds: () => admissionProof(ctx, routes),
     move: async (target, within, bounds, options) => {
       let goalAt = target;
       const r = await navigate(act, {
@@ -178,7 +205,7 @@ export function seekOwnerSkill(deps: LocatorSkillDeps): SkillDefinition<{ within
       return { drafts, unavailable };
     },
     async execute(ctx, p) {
-      const env = routeEnv(ctx);
+      const env = routeEnv(ctx, deps.routes);
       const result = await runRoute(env, { kind: 'owner' }, p, { routes: deps.routes, ...(deps.locator ? { locator: deps.locator } : {}) });
       return toSkillResult(result);
     },
@@ -278,14 +305,37 @@ export function routeTravelSkill(deps: LocatorSkillDeps): SkillDefinition<RouteT
       if (p.target) {
         const verified = deps.routes.verifyDestination(rc, 'owner_destination', { x: p.target.x, y: p.target.y, z: p.target.z }, p.target.dimension);
         if (!verified.ok) return precondition(`route_${verified.blocker}`, verified.detail);
-        target = { kind: 'fixed', destination: 'owner_destination', dimension, at: verified.at, label: verified.label };
+        const at = verified.at;
+        const td = p.target.dimension;
+        target = {
+          kind: 'fixed',
+          destination: 'owner_destination',
+          dimension,
+          at,
+          label: verified.label,
+          recheck: () => {
+            const v = deps.routes.verifyDestination(rc, 'owner_destination', at, td);
+            return v.ok ? { ok: true } : { ok: false, reason: `route_${v.blocker}`, detail: v.detail };
+          },
+        };
       } else {
         const verified = deps.routes.verifyDestination(rc, 'own_death');
         if (!verified.ok || verified.kind !== 'own_death') return precondition(`route_${verified.ok ? 'destination_unverified' : verified.blocker}`, verified.ok ? 'unexpected destination kind' : verified.detail);
-        if (!deps.routes.bindOwnDeath(rc, verified.destinationId)) return precondition('route_destination_changed', 'the recorded own death location changed after this route began');
-        target = { kind: 'fixed', destination: 'own_death', dimension, at: verified.at, label: verified.label };
+        // C3: freeze the WHOLE own-incident identity at first use; re-verified before every step and poll.
+        if (!deps.routes.bindOwnDeath(rc, verified.identity)) return precondition('route_destination_changed', 'the recorded own death location changed after this route began');
+        target = {
+          kind: 'fixed',
+          destination: 'own_death',
+          dimension,
+          at: verified.at,
+          label: verified.label,
+          recheck: () => {
+            const v = deps.routes.verifyDestination(rc, 'own_death');
+            return v.ok ? { ok: true } : { ok: false, reason: `route_${v.blocker}`, detail: v.detail };
+          },
+        };
       }
-      const result = await runRoute(routeEnv(ctx), target, p, { routes: deps.routes, ...(deps.locator ? { locator: deps.locator } : {}) });
+      const result = await runRoute(routeEnv(ctx, deps.routes), target, p, { routes: deps.routes, ...(deps.locator ? { locator: deps.locator } : {}) });
       const out = toSkillResult(result);
       if (target.kind === 'fixed') out.evidence = { ...(out.evidence ?? {}), destination: target.destination === 'owner_destination' ? pos3(target.at) : 'own_death', position: pos3(bot.entity.position) } as Record<string, JsonValue>;
       return out;
