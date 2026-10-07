@@ -1,0 +1,405 @@
+// Per-connection SERVER packet tracker for survival: the bot's own inventory
+// with component metadata, vitals, and own-death capture with a frozen
+// last-alive snapshot.
+//
+// Why a separate tracker: the death-time inventory clearing reaches the client
+// as ordinary slot updates, which (by the vanilla tick order this is gated on,
+// R-G1) can arrive BEFORE the zero-health packet that makes the library emit
+// `death`. Reading "the latest inventory" at the death event can therefore
+// record an empty or stale inventory. The tracker freezes the last-alive copy
+// at the earliest own-death signal the server sends:
+//   1. the own combat-kill packet (`death_combat_event`, playerId = self),
+//   2. else the first zero-health `update_health`,
+//   3. else the application's death lifecycle event,
+// and labels which signal froze it and how many inventory packets followed.
+//
+// After respawn, "fresh state" requires the respawn packet AND a following
+// full window-0 sync AND a positive-health update on the same connection.
+// The respawn packet's SpawnInfo carries the server's own last-death GlobalPos
+// (both 26.1 and 26.2 codecs), which refines the client death estimate.
+//
+// The tracker only listens; it never sends packets, clicks or resyncs.
+import type { DeathCause, DeathSite, InventoryFacts, LastAlive, TrackedStack, Vitals } from '../contracts/survival.ts';
+import { classifyDeathMessage } from './death-cause.ts';
+import { inventoryIndexToWindowSlot, parseSlot, type RawSlot, type SurvivalItemRegistry } from './items.ts';
+
+/** EventEmitter-like raw packet source (the protocol client). */
+export interface PacketSource {
+  on(event: string, listener: (...args: any[]) => void): unknown;
+  off?(event: string, listener: (...args: any[]) => void): unknown;
+  removeListener?(event: string, listener: (...args: any[]) => void): unknown;
+}
+
+export interface TrackerAttachOptions {
+  connectionEpoch: number;
+  registry: SurvivalItemRegistry;
+  now: () => number;
+  /** Client physics position/dimension (approved session read) for the death estimate. */
+  selfPosition: () => { dimension: string; at: { x: number; y: number; z: number } } | undefined;
+  /** Own entity id when known before the login packet was seen (e.g. attached after login). */
+  selfEntityId?: () => number | undefined;
+  /** Library-model seed at ready (server-fed, labeled `ready_seed`) when attached after the initial sync. */
+  seed?: { stacks: TrackedStack[]; heldHotbar?: number; vitals?: { health: number; food: number; saturation: number } };
+  /** Open container window layout (static geometry), to map container slot packets onto the player region. */
+  containerLayout?: () => { id: number; inventoryStart: number } | undefined;
+}
+
+export type LifeState = 'alive' | 'dying' | 'dead' | 'respawned_awaiting_sync';
+
+export interface CapturedDeathRecord {
+  captureId: string;
+  connectionEpoch: number;
+  occurredAtMs: number;
+  site: DeathSite;
+  cause: DeathCause;
+  lastAlive: LastAlive;
+}
+
+export type TrackerEvent =
+  | { type: 'death_captured'; death: CapturedDeathRecord }
+  | { type: 'death_location_refined'; captureId: string; site: DeathSite }
+  | { type: 'respawn_ready'; connectionEpoch: number; inventory: InventoryFacts; vitals: Vitals | null }
+  | { type: 'inventory_changed' }
+  | { type: 'vitals_changed'; vitals: Vitals };
+
+interface RawGlobalPos {
+  dimensionName?: string;
+  location?: { x: number; y: number; z: number };
+}
+
+const clone = (stacks: Map<number, TrackedStack>): TrackedStack[] => [...stacks.values()].sort((a, b) => a.slot - b.slot).map((s) => ({ ...s, meta: { ...s.meta } }));
+
+let captureCounter = 0;
+
+export class SurvivalTracker {
+  private source: PacketSource | undefined;
+  private opts: TrackerAttachOptions | undefined;
+  private readonly listeners: Array<[string, (...args: any[]) => void]> = [];
+  private readonly subscribers = new Set<(e: TrackerEvent) => void>();
+  private slots = new Map<number, TrackedStack>();
+  private invSource: InventoryFacts['source'] = 'unavailable';
+  private invAtMs = 0;
+  private fullSync = false;
+  private heldHotbar: number | undefined;
+  private vitalsValue: Vitals | null = null;
+  private selfId: number | undefined;
+  private state: LifeState = 'alive';
+  /** Frozen last-alive copy while dying (before the death record is finalized). */
+  private frozen: { stacks: TrackedStack[]; source: InventoryFacts['source']; atMs: number; invAtMs: number; frozenAt: LastAlive['frozenAt']; cause: DeathCause; clearing: number } | undefined;
+  private latestDeath: CapturedDeathRecord | undefined;
+  private readonly unconsumed: CapturedDeathRecord[] = [];
+  private loginDeath: RawGlobalPos | undefined;
+  private respawnSeen = false;
+  private openWindowId: number | undefined;
+
+  /** Subscribes to tracker events (synchronous, in packet order). */
+  subscribe(listener: (e: TrackerEvent) => void): () => void {
+    this.subscribers.add(listener);
+    return () => this.subscribers.delete(listener);
+  }
+
+  private emit(e: TrackerEvent): void {
+    for (const l of [...this.subscribers]) {
+      try {
+        l(e);
+      } catch {
+        // a subscriber failure never breaks packet tracking
+      }
+    }
+  }
+
+  get connectionEpoch(): number | undefined {
+    return this.opts?.connectionEpoch;
+  }
+
+  get life(): LifeState {
+    return this.state;
+  }
+
+  /** Attaches to one connection's packet source (call before login when possible). Detaches any previous one. */
+  attach(source: PacketSource, opts: TrackerAttachOptions): void {
+    this.detach();
+    this.source = source;
+    this.opts = opts;
+    this.slots = new Map();
+    this.invSource = 'unavailable';
+    this.fullSync = false;
+    this.vitalsValue = null;
+    this.selfId = undefined;
+    this.state = 'alive';
+    this.frozen = undefined;
+    this.respawnSeen = false;
+    this.loginDeath = undefined;
+    this.openWindowId = undefined;
+    if (opts.seed) {
+      for (const s of opts.seed.stacks) this.slots.set(s.slot, { ...s, meta: { ...s.meta } });
+      this.invSource = 'ready_seed';
+      this.invAtMs = opts.now();
+      this.fullSync = true;
+      if (opts.seed.heldHotbar !== undefined) this.heldHotbar = opts.seed.heldHotbar;
+      if (opts.seed.vitals) this.vitalsValue = { health: opts.seed.vitals.health, food: Math.round(opts.seed.vitals.food), saturation: opts.seed.vitals.saturation, atMs: opts.now(), connectionEpoch: opts.connectionEpoch };
+    }
+    const on = <P>(name: string, handler: (p: P) => void) => {
+      const fn = handler as (...args: any[]) => void;
+      source.on(name, fn);
+      this.listeners.push([name, fn]);
+    };
+    on('login', (p: { entityId?: number; worldState?: { death?: RawGlobalPos } }) => {
+      if (typeof p.entityId === 'number') this.selfId = p.entityId;
+      if (p.worldState?.death) this.loginDeath = p.worldState.death;
+    });
+    on('window_items', (p: { windowId: number; items?: RawSlot[] }) => this.onWindowItems(p));
+    on('set_slot', (p: { windowId: number; slot: number; item?: RawSlot }) => this.onSetSlot(p));
+    on('set_player_inventory', (p: { slotId: number; contents?: RawSlot }) => {
+      const w = inventoryIndexToWindowSlot(p.slotId);
+      if (w !== undefined) this.setSlot(w, p.contents);
+    });
+    on('held_item_slot', (p: { slot: number }) => {
+      if (Number.isInteger(p.slot) && p.slot >= 0 && p.slot <= 8) this.heldHotbar = p.slot;
+    });
+    on('open_window', (p: { windowId: number }) => {
+      this.openWindowId = p.windowId;
+    });
+    on('close_window', (p: { windowId: number }) => {
+      if (this.openWindowId === p.windowId) this.openWindowId = undefined;
+    });
+    on('update_health', (p: { health: number; food: number; foodSaturation: number }) => this.onHealth(p));
+    on('death_combat_event', (p: { playerId: number; message?: unknown }) => this.onCombatKill(p));
+    on('respawn', (p: { worldState?: { death?: RawGlobalPos; name?: string } }) => this.onRespawn(p));
+  }
+
+  detach(): void {
+    const src = this.source;
+    if (src) {
+      for (const [name, fn] of this.listeners.splice(0)) {
+        if (src.off) src.off(name, fn);
+        else src.removeListener?.(name, fn);
+      }
+    }
+    this.source = undefined;
+  }
+
+  private now(): number {
+    return this.opts?.now() ?? Date.now();
+  }
+
+  private self(): number | undefined {
+    return this.selfId ?? this.opts?.selfEntityId?.();
+  }
+
+  // ------------------------------------------------------------ inventory
+
+  private setSlot(slot: number, raw: RawSlot | null | undefined): void {
+    if (!this.opts || slot < 0 || slot > 45) return;
+    const parsed = parseSlot(raw, this.opts.registry);
+    if (parsed) this.slots.set(slot, { slot, ...parsed });
+    else this.slots.delete(slot);
+    this.touchInventory();
+  }
+
+  private touchInventory(): void {
+    if (this.invSource === 'unavailable') this.invSource = 'server_packets';
+    this.invAtMs = this.now();
+    if (this.frozen) this.frozen.clearing += 1;
+    this.emit({ type: 'inventory_changed' });
+  }
+
+  private onWindowItems(p: { windowId: number; items?: RawSlot[] }): void {
+    if (!this.opts) return;
+    const items = Array.isArray(p.items) ? p.items : [];
+    if (p.windowId === 0) {
+      const next = new Map<number, TrackedStack>();
+      items.forEach((raw, slot) => {
+        const parsed = parseSlot(raw, this.opts!.registry);
+        if (parsed && slot <= 45) next.set(slot, { slot, ...parsed });
+      });
+      this.slots = next;
+      this.invSource = 'server_packets';
+      this.fullSync = true;
+      this.invAtMs = this.now();
+      if (this.frozen) this.frozen.clearing += 1;
+      this.emit({ type: 'inventory_changed' });
+      this.maybeRespawnReady();
+      return;
+    }
+    const layout = this.opts.containerLayout?.();
+    if (!layout || layout.id !== p.windowId) return;
+    for (let s = 9; s <= 44; s += 1) this.slots.delete(s);
+    items.forEach((raw, i) => {
+      if (i < layout.inventoryStart || i >= layout.inventoryStart + 36) return;
+      const parsed = parseSlot(raw, this.opts!.registry);
+      const slot = 9 + (i - layout.inventoryStart);
+      if (parsed) this.slots.set(slot, { slot, ...parsed });
+    });
+    this.touchInventory();
+  }
+
+  private onSetSlot(p: { windowId: number; slot: number; item?: RawSlot }): void {
+    if (!this.opts) return;
+    if (p.windowId === 0) return this.setSlot(p.slot, p.item);
+    if (p.windowId === -2) {
+      const w = inventoryIndexToWindowSlot(p.slot);
+      if (w !== undefined) this.setSlot(w, p.item);
+      return;
+    }
+    const layout = this.opts.containerLayout?.();
+    if (!layout || layout.id !== p.windowId) return;
+    if (p.slot >= layout.inventoryStart && p.slot < layout.inventoryStart + 36) this.setSlot(9 + (p.slot - layout.inventoryStart), p.item);
+  }
+
+  /** Current server-backed inventory of this connection (null before any data). */
+  inventory(): InventoryFacts | null {
+    if (!this.opts || this.invSource === 'unavailable') return null;
+    return {
+      source: this.invSource,
+      connectionEpoch: this.opts.connectionEpoch,
+      atMs: this.invAtMs,
+      stacks: clone(this.slots),
+      fullSync: this.fullSync && this.state === 'alive',
+      ...(this.heldHotbar !== undefined ? { heldHotbar: this.heldHotbar } : {}),
+    };
+  }
+
+  vitals(): Vitals | null {
+    return this.vitalsValue ? { ...this.vitalsValue } : null;
+  }
+
+  // ------------------------------------------------------------ vitals / death
+
+  private onHealth(p: { health: number; food: number; foodSaturation: number }): void {
+    if (!this.opts) return;
+    this.vitalsValue = {
+      health: Math.max(0, Math.min(1_024, Number(p.health) || 0)),
+      food: Math.max(0, Math.min(20, Math.round(Number(p.food) || 0))),
+      saturation: Math.max(0, Math.min(20, Number(p.foodSaturation) || 0)),
+      atMs: this.now(),
+      connectionEpoch: this.opts.connectionEpoch,
+    };
+    this.emit({ type: 'vitals_changed', vitals: { ...this.vitalsValue } });
+    if (this.vitalsValue.health <= 0) {
+      if (this.state === 'alive') this.freeze('zero_health_packet', { kind: 'unknown', hazard: 'unknown' });
+      if (this.state === 'dying') this.finalizeDeath();
+      return;
+    }
+    this.maybeRespawnReady();
+  }
+
+  private onCombatKill(p: { playerId: number; message?: unknown }): void {
+    const self = this.self();
+    if (self === undefined || p.playerId !== self) return;
+    const cause = classifyDeathMessage(p.message);
+    if (this.state === 'alive') this.freeze('combat_kill_packet', cause);
+    else if (this.frozen && this.frozen.cause.kind === 'unknown') this.frozen.cause = cause;
+    else if (this.latestDeath && this.latestDeath.cause.kind === 'unknown' && this.state === 'dead') this.latestDeath.cause = cause;
+  }
+
+  private freeze(frozenAt: LastAlive['frozenAt'], cause: DeathCause): void {
+    this.state = 'dying';
+    this.frozen = { stacks: clone(this.slots), source: this.invSource, atMs: this.now(), invAtMs: this.invAtMs, frozenAt, cause, clearing: 0 };
+  }
+
+  private finalizeDeath(): void {
+    const f = this.frozen;
+    if (!f || !this.opts) return;
+    this.frozen = undefined;
+    this.state = 'dead';
+    this.respawnSeen = false;
+    const now = this.now();
+    const pos = this.opts.selfPosition();
+    captureCounter += 1;
+    const death: CapturedDeathRecord = {
+      captureId: `dcap-${this.opts.connectionEpoch}-${captureCounter}`,
+      connectionEpoch: this.opts.connectionEpoch,
+      occurredAtMs: f.atMs,
+      site: pos ? { source: 'client_position_at_death_event', dimension: pos.dimension, at: { ...pos.at }, observedAtMs: now } : { source: 'unknown' },
+      cause: f.cause,
+      lastAlive: {
+        source: f.source,
+        frozenAt: f.frozenAt,
+        ...(f.source !== 'unavailable' ? { capturedAtMs: f.invAtMs, ageMsAtDeath: Math.max(0, f.atMs - f.invAtMs) } : {}),
+        stacks: f.stacks,
+        clearingPacketsAfterFreeze: f.clearing,
+      },
+    };
+    this.latestDeath = death;
+    this.unconsumed.push(death);
+    if (this.unconsumed.length > 4) this.unconsumed.shift();
+    this.emit({ type: 'death_captured', death });
+  }
+
+  /**
+   * Application death lifecycle event: guarantees a capture even when the
+   * library emitted `death` before this tracker saw the zero-health packet
+   * (listener order). Idempotent per death.
+   */
+  ensureDeathCaptured(): CapturedDeathRecord | undefined {
+    if (this.state === 'alive') this.freeze('death_event', { kind: 'unknown', hazard: 'unknown' });
+    if (this.state === 'dying') this.finalizeDeath();
+    return this.latestDeath;
+  }
+
+  /** Most recent captured own death of this connection (not consumed). */
+  latest(): CapturedDeathRecord | undefined {
+    return this.latestDeath;
+  }
+
+  /** Takes captured deaths not yet consumed by the service (oldest first). */
+  takeDeaths(): CapturedDeathRecord[] {
+    return this.unconsumed.splice(0);
+  }
+
+  private onRespawn(p: { worldState?: { death?: RawGlobalPos; name?: string } }): void {
+    if (this.state === 'alive' && !this.latestDeath) {
+      // A respawn without a death (dimension travel) is not a death; inventory continues.
+      return;
+    }
+    if (this.state === 'dying') this.finalizeDeath();
+    if (this.state !== 'dead') return;
+    const d = p.worldState?.death;
+    const death = this.latestDeath;
+    if (death && d && typeof d.dimensionName === 'string' && d.location && Number.isFinite(d.location.x + d.location.y + d.location.z)) {
+      const at = { x: d.location.x + 0.5, y: d.location.y, z: d.location.z + 0.5 };
+      const prev = death.site;
+      const off = prev.at && prev.dimension === d.dimensionName ? Math.round(Math.hypot(prev.at.x - at.x, prev.at.y - at.y, prev.at.z - at.z) * 10) / 10 : undefined;
+      death.site = { source: 'server_death_location', dimension: d.dimensionName, at, observedAtMs: this.now(), ...(off !== undefined ? { clientEstimateOffBy: off } : {}) };
+      this.emit({ type: 'death_location_refined', captureId: death.captureId, site: { ...death.site } });
+    }
+    this.state = 'respawned_awaiting_sync';
+    this.respawnSeen = true;
+    this.fullSync = false;
+  }
+
+  private maybeRespawnReady(): void {
+    if (this.state !== 'respawned_awaiting_sync' || !this.respawnSeen || !this.fullSync || !this.opts) return;
+    if (!this.vitalsValue || this.vitalsValue.health <= 0) return;
+    this.state = 'alive';
+    const inv = this.inventory();
+    if (inv) this.emit({ type: 'respawn_ready', connectionEpoch: this.opts.connectionEpoch, inventory: inv, vitals: this.vitals() });
+  }
+
+  /** The login packet's last-death GlobalPos (historical; may predate this run). */
+  loginDeathLocation(): { dimension: string; at: { x: number; y: number; z: number } } | undefined {
+    const d = this.loginDeath;
+    if (!d || typeof d.dimensionName !== 'string' || !d.location) return undefined;
+    return { dimension: d.dimensionName, at: { x: d.location.x + 0.5, y: d.location.y, z: d.location.z + 0.5 } };
+  }
+
+  /**
+   * MB-MEM-001 DeathContext shape (memory/world.ts) from the frozen
+   * last-alive record. Call synchronously at the death lifecycle event.
+   */
+  deathContext(): { dimension?: string; position?: { x: number; y: number; z: number }; accuracy: 'client_position_at_death_event' | 'last_observation' | 'unknown'; positionAgeMs?: number; inventory: { source: 'server_sync' | 'client_model' | 'unavailable'; capturedAtMs?: number; items: Array<{ key: string; count: number }> } } {
+    const d = this.ensureDeathCaptured();
+    if (!d) return { accuracy: 'unknown', inventory: { source: 'unavailable', items: [] } };
+    const totals = new Map<string, number>();
+    for (const s of d.lastAlive.stacks) totals.set(s.key, (totals.get(s.key) ?? 0) + s.count);
+    const items = [...totals.entries()].slice(0, 41).map(([key, count]) => ({ key, count }));
+    // Memory's vocabulary: `server_sync` = server-stated contents; a ready seed is the library model.
+    const source = d.lastAlive.source === 'server_packets' ? 'server_sync' : d.lastAlive.source === 'ready_seed' ? 'client_model' : 'unavailable';
+    return {
+      ...(d.site.dimension && d.site.at ? { dimension: d.site.dimension, position: { ...d.site.at } } : {}),
+      accuracy: d.site.at ? 'client_position_at_death_event' : 'unknown',
+      inventory: { source, ...(d.lastAlive.capturedAtMs !== undefined ? { capturedAtMs: d.lastAlive.capturedAtMs } : {}), items },
+    };
+  }
+}
