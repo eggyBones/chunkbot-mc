@@ -11,6 +11,7 @@ import type { RequestId } from './ids.ts';
 import type { LookaheadContext, PlanningSubject, PreparationContext } from './handoff.ts';
 import type { MemoryView } from './memory.ts';
 import type { AutonomyPlannerContext } from './autonomy.ts';
+import type { LocatorHint, RouteProposalContext, RouteStatus } from './locator.ts';
 import type { ObservationSnapshot } from './observation.ts';
 import type { TaskFeedback } from './task.ts';
 
@@ -162,6 +163,14 @@ export interface PlannerRequest {
    * allowance left and the home project. Data, not instructions.
    */
   autonomy?: AutonomyPlannerContext;
+  /**
+   * MB-LOC-001: the goal epoch's code-owned route authorization (no
+   * coordinates), its progress and the ORIGINAL admission anchor/radius. A
+   * proposal naming an unauthorized/unavailable route destination is rejected.
+   */
+  route?: RouteProposalContext & { status: RouteStatus | null; admission: { anchor: { x: number; y: number; z: number }; radius: number } | null };
+  /** MB-LOC-001: coarse owner locator hint (direction/band/elevation only; never coordinates). */
+  locator?: LocatorHint;
 }
 
 /**

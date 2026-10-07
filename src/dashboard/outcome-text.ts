@@ -75,6 +75,10 @@ export function describePredicate(p: OutcomePredicate): string {
       if (p.expect === 'noted') return `has saved ${label} in its memory as an unverified note`;
       return `no longer has an active memory of ${label}`;
     }
+    case 'structure_state':
+      return p.expect === 'site_approved' ? 'has an approved site for its home (not built yet)' : p.expect === 'enclosed' ? 'has a home with walls, roof and entrance confirmed' : 'has a finished home: walls, roof, entrance, crafting table, furnace and chest confirmed';
+    case 'survival_state':
+      return `${p.expect === 'concluded' ? 'has concluded' : 'has satisfied'} its ${p.routine.replace(/_/g, ' ')} routine`;
     case 'all':
       return join(p.of, 'and');
     case 'any':

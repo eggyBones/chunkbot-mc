@@ -69,6 +69,8 @@ export const GoalSourceSchema = z.discriminatedUnion('kind', [
       episodeId: EpisodeIdSchema.optional(),
       /** planner_goal: planned by the gameplay planner; code_task: a preapproved code-built task (no planner turn). */
       execution: z.enum(['planner_goal', 'code_task']),
+      /** What the routine serves (survival proposal `serves`). */
+      serves: z.enum(['owner_intent', 'progression', 'none']),
       /** Bounded, code-generated reason shown to the owner/status. */
       reason: z.string().min(1).max(BOUNDS.shortText),
       /** 1-based admission number of support goals in this application run. */

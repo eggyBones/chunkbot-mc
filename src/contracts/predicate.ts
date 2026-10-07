@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { BOUNDS, RegistryKeySchema } from './common.ts';
 import { TargetSelectorSchema } from './selector.ts';
 import { MemoryStatePredicateSchema } from './memory.ts';
+import { SurvivalStatePredicateSchema } from './survival.ts';
 
 const count = z.number().int().min(1).max(10_000);
 const distance = z.number().positive().max(1_024);
@@ -68,6 +69,16 @@ export const AtomicPredicateSchema = z.discriminatedUnion('predicate', [
     .strict(),
   /** MB-MEM-001: a durable LOCAL memory write (not a world effect), evaluated by the memory store. */
   MemoryStatePredicateSchema,
+  /**
+   * MB-FLOW-001: the scope's home shelter, verified by code from server block
+   * evidence at every blueprint cell (`site_approved`: a durable approved
+   * footprint exists — not a home; `enclosed`: walls/roof/entrance verified;
+   * `complete`: also workstation/furnace/storage present and the temporary
+   * construction aid removed). Unknown cells make it unknown, never satisfied.
+   */
+  z.object({ predicate: z.literal('structure_state'), structure: z.literal('home'), expect: z.enum(['site_approved', 'enclosed', 'complete']) }).strict(),
+  /** MB-FLOW-003: a survival routine condition evaluated by code from fresh server evidence and the durable episode. */
+  SurvivalStatePredicateSchema,
 ]);
 export type AtomicPredicate = z.infer<typeof AtomicPredicateSchema>;
 export type PredicateKind = AtomicPredicate['predicate'];
