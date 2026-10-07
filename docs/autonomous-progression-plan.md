@@ -85,3 +85,11 @@ Required checks: affected AGENTS.md typecheck/build/test, both doctors, connecti
 ## Remaining delivery
 
 Supervisor, pause/resume preference, bounded milestone selection, house capabilities/verification, survival-routine integration, real multi-milestone trials and delivery evidence remain unverified. MB-FLOW-003 core recovery/upkeep is assigned concurrently in batch002; later mechanics remain separately gated. Review target: docs/reviews/mb-flow-001-progression.md.
+
+## Batch002 shared-port review
+
+Native milestone `ce214b08090821b2f65b0c0f604d1494f92ab859` proposes goal source, control/project schemas and consumer ports. Companion survival `545da3a37cb4449f5b1bf10a670bf7ed1cd564aa` and locator `b894867fdf3155b35570fc4926ca577f00005213` provide their own authoritative ports. Codex chooses **GoalSource from autonomy; SurvivalPolicyPort/LowHealthAllowancePort from survival; LocatorPort/RoutePort from locator**. Remove duplicate/incompatible consumer-side port definitions rather than maintaining independent schedulers or allowances. Only exact reviewed contract commits may be integrated.
+
+**MB-FLOW-001-C1 — Resume preserves unresolved owner intent.** Recorded from the native proposal before behavioral implementation acceptance: P2 says bare resume dismisses unresolved owner intent. Resume clears the automatic pause latch and freshly reassesses; it does not abandon a blocked, unanswered or interrupted owner directive. A new explicit owner instruction may supersede that intent. First release may honestly hold unsupported continuation for the owner; it cannot silently replay original text with a fresh baseline or classify all inventory/current-state outcomes compatible without proving ownership/lifecycle semantics.
+
+A single temporary construction aid block is approved as an explicit bounded building operation inside the observed approved footprint. Placement, standing on it and removal use registered fenced capabilities and server evidence. It is not a pathfinder scaffolding/tower permission. Remove only the project's own unchanged proven aid. Stop immediately revokes building and leaves any unremoved aid as a recorded partial effect; cleanup must not mine/place after ownership is lost. Full shelter verification requires that temporary aid removed and the usable interior/entrance restored.

@@ -70,3 +70,11 @@ Required checks: typecheck/build/test, doctors, connection/identity live checks,
 ## Remaining delivery
 
 Real packet/source gate, typed hints, hiding/freshness semantics, route legs and autonomous reunion evidence remain unverified. Review target: docs/reviews/mb-loc-001-locator.md.
+
+## Batch002 contract review and decisions
+
+Native contract milestone `b894867fdf3155b35570fc4926ca577f00005213` contains coarse owner-only hints, admission-frozen route authorization and companion ports; no shared integration is merged yet. Codex grants read-only immutable copies of both fixtures' official class jars under the locator worktree's ignored `var/source-probes/`, verified byte-identical to their pinned downloaded bundles. Static parsing is authorized without a world lease; passwords/world/runtime files are excluded.
+
+**MB-LOC-001-C1 — Route distance ceiling semantics.** Recorded before implementation acceptance: the contract calls maxTotalDistance the sum of leg displacements. Net displacement can undercount a looping or detouring path. Count cumulative own movement with explicit source/correction handling for the travel ceiling; keep projected/net progress as a separate stalled-leg metric. Deadline is fixed at admission, never first-leg refresh. Tests must exercise an out-and-back path, repeated legs, time/leg exhaustion and stale goal/connection/dimension callbacks. This is a design correction from the source contract, not a claimed runtime reproduction.
+
+Codec equality alone does not prove broadcasts on both versions. Actual packet/hiding/withdrawal gates remain required on 26.2, plus a real short 26.1.2 locator sanity trial and ordinary-follow regression before claiming that profile. Startup client listeners may attach before ready, but hints become actionable only with verified owner/current connection/dimension. Destination/current-leg provenance is checked in resolver, executor and proposal admission; catalog parameter validation alone cannot authorize a route or a historical death target.

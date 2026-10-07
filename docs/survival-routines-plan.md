@@ -114,3 +114,15 @@ Required checks when implemented: affected AGENTS.md typecheck/build/test and bo
 ## Remaining delivery
 
 All automatic policies, durable incident capture, safe recovery, new metadata/primitives, continuation semantics and end-to-end evidence remain unimplemented/unverified. Jake authorized core implementation in batch002; Codex owns the shared ports and fixture leases. The existing snapshot/death memory seam is delivered by batch001, while automatic recovery policies and evidence remain to be implemented. Review target: docs/reviews/mb-flow-003-survival-routines.md.
+
+## Batch002 contract review and decisions
+
+Native contract milestone `545da3a37cb4449f5b1bf10a670bf7ed1cd564aa` proposes the authoritative `SurvivalPolicyPort`, `LowHealthAllowancePort` and episode schemas. The progression worker consumes those ports and owns shared composition; no competing policy or health exception is approved. The original milestone is not feature acceptance.
+
+**MB-FLOW-003-C1 — Support authority and truthful recovery outcomes.** Recorded from contract review before acceptance. Each low-health allowance binds to one admitted task, goal/epoch, connection and dimension, with fixed expiry, capability/item restrictions and consumed-action ceiling. Candidate filtering and a fresh check after the Jev await precede fenced execution. Renewal cannot reset or extend the admission. `concluded` recovery is distinct from all items regained: partial, unknown and blocked outcomes retain their own labels and cannot satisfy a claim that all belongings returned. Cause-based likely destruction does not become proven destruction.
+
+For the first release, unsupported interrupted owner directives remain visible and require an owner decision. Predicate shape alone does not establish compatible continuation. Bare resume clears the stop latch without dismissing or replaying that directive; a new explicit owner instruction may supersede it. Necessary recovery may run while unrelated progression waits.
+
+Lifecycle ordering is synchronous ownership revocation, survival's packet-frozen last-alive capture, memory recording from that same capture, then evidence invalidation/resource teardown. Disk writes cannot delay capture or cancellation. Initial codec listeners attach before ready; packet provenance, ordering and metadata still require actual version-specific fixture evidence.
+
+Small eat/rest tasks use the same GoalEngine admission and TaskRuntime with a support source. Normal autonomous runs compose core survival under the same explicit world/revision/bot scope, respecting an explicit disable and diagnostic/inference-free suppression. Far own-death travel uses the locator's code-owned route port only after integration, bound to the current proven incident and admission; missing authorization remains a blocker.
