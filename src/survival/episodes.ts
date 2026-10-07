@@ -13,7 +13,9 @@ import {
   type DeathCause,
   type HazardRecord,
   type InterruptedDirective,
+  type DropIdentity,
   type InventoryFacts,
+  type ItemMetadata,
   type LossManifest,
   type ManifestItem,
   type PreparationSignature,
@@ -160,7 +162,9 @@ export class EpisodeBook {
         const s = metaByKey.get(key);
         const fireproof = /^netherite_|^ancient_debris$/.test(strip(key));
         const state: ManifestItem['state'] = destroy === 'void' || (destroy === 'burn' && !fireproof) ? 'likely_destroyed' : 'missing';
-        missing.push({ key, count: lost, valuable: isValuable(key, s?.meta, valuableExtra), metadata: s?.meta.metadata ?? 'unknown', state });
+        const valuable = e.lastAlive.stacks.some((x) => x.key === key && isValuable(key, x.meta, valuableExtra));
+        const identities = valuable ? lostIdentities(e.lastAlive.stacks.filter((x) => x.key === key), freshCounts ? (fresh?.stacks ?? []).filter((x) => x.key === key) : []) : undefined;
+        missing.push({ key, count: lost, valuable, metadata: s?.meta.metadata ?? 'unknown', state, ...(identities ? { identities } : {}) });
       }
       const partial = e.lastAlive.source !== 'server_packets' || !freshCounts || !immediateRespawn;
       e.manifest = {
@@ -202,7 +206,18 @@ export class EpisodeBook {
         if (m) {
           m.count += lost;
           m.state = 'missing';
-        } else if (e.manifest.missing.length < SURVIVAL_BOUNDS.manifestItems) e.manifest.missing.push({ key, count: lost, valuable: isValuable(key, undefined, valuableExtra), metadata: 'unknown', state: 'missing' });
+          // Related losses carry their own identities; any unproven stack makes the whole key unproven.
+          const rel = lostIdentities(related.filter((x) => x.key === key), (fresh?.stacks ?? []).filter((x) => x.key === key));
+          if (m.valuable || related.some((x) => x.key === key && isValuable(key, x.meta, valuableExtra))) {
+            m.valuable = true;
+            if (m.identities && rel) m.identities = mergeIdentities(m.identities, rel);
+            else delete m.identities;
+          }
+        } else if (e.manifest.missing.length < SURVIVAL_BOUNDS.manifestItems) {
+          const valuable = related.some((x) => x.key === key && isValuable(key, x.meta, valuableExtra));
+          const identities = valuable ? lostIdentities(related.filter((x) => x.key === key), (fresh?.stacks ?? []).filter((x) => x.key === key)) : undefined;
+          e.manifest.missing.push({ key, count: lost, valuable, metadata: related.find((x) => x.key === key)?.meta.metadata ?? 'unknown', state: 'missing', ...(identities ? { identities } : {}) });
+        }
       }
       if (e.phase !== 'concluded') e.phase = 'ready';
     } else if (e.phase === 'awaiting_respawn' || e.phase === 'assessing') {
@@ -223,10 +238,27 @@ export class EpisodeBook {
   }
 
   /** A server-confirmed pickup of a scoped drop (key must still be sought). Returns the counted amount. */
-  regain(e: RecoveryEpisode, key: string, count: number, nowMs: number): number {
+  /** C3: may a drop with these server facts count as this incident's item? */
+  identityStatus(e: RecoveryEpisode, key: string, meta: ItemMetadata | undefined): DropIdentity {
+    const m = e.manifest?.missing.find((x) => x.key === mk(key) && x.state === 'missing' && x.count > 0);
+    if (!m) return 'mismatch';
+    if (!m.valuable) return 'not_required';
+    if (!m.identities || !meta || meta.metadata !== 'server_slot' || !meta.digest) return 'unproven';
+    return m.identities.some((i) => i.digest === meta.digest && i.count > 0) ? 'match' : 'mismatch';
+  }
+
+  regain(e: RecoveryEpisode, key: string, count: number, nowMs: number, meta?: ItemMetadata): number {
     const m = e.manifest?.missing.find((x) => x.key === mk(key) && x.state === 'missing');
     if (!m || count <= 0) return 0;
-    const counted = Math.min(m.count, count);
+    const identity = this.identityStatus(e, key, meta);
+    if (identity === 'mismatch' || identity === 'unproven') return 0;
+    let counted = Math.min(m.count, count);
+    if (identity === 'match' && m.identities) {
+      const i = m.identities.find((x) => x.digest === meta?.digest && x.count > 0) as { digest: string; count: number };
+      counted = Math.min(counted, i.count);
+      i.count -= counted;
+      m.identities = m.identities.filter((x) => x.count > 0);
+    }
     m.count -= counted;
     if (m.count === 0) m.state = 'regained';
     e.regained.push({ key: m.key, count: counted, atMs: nowMs, provenance: 'scoped_visible_drop' });
@@ -386,10 +418,27 @@ export function repeatedFatalHazard(e: RecoveryEpisode, radius: number): HazardR
   return undefined;
 }
 
+/** Identity digests of the stacks lost (last-alive minus fresh, by digest); undefined when any stack's identity is unknown. */
+export function lostIdentities(before: readonly TrackedStack[], after: readonly TrackedStack[]): Array<{ digest: string; count: number }> | undefined {
+  if (before.some((s) => s.meta.metadata !== 'server_slot' || !s.meta.digest)) return undefined;
+  const left = new Map<string, number>();
+  for (const s of before) left.set(s.meta.digest as string, (left.get(s.meta.digest as string) ?? 0) + s.count);
+  for (const s of after) if (s.meta.digest && left.has(s.meta.digest)) left.set(s.meta.digest, Math.max(0, (left.get(s.meta.digest) ?? 0) - s.count));
+  const out = [...left.entries()].filter(([, n]) => n > 0).map(([digest, count]) => ({ digest, count }));
+  return out.length <= 8 ? out : undefined;
+}
+
+function mergeIdentities(a: Array<{ digest: string; count: number }>, b: Array<{ digest: string; count: number }>): Array<{ digest: string; count: number }> | undefined {
+  const m = new Map(a.map((x) => [x.digest, x.count]));
+  for (const x of b) m.set(x.digest, (m.get(x.digest) ?? 0) + x.count);
+  const out = [...m.entries()].map(([digest, count]) => ({ digest, count }));
+  return out.length <= 8 ? out : undefined;
+}
+
 export function distance(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
   return dist(a, b);
 }
 
 export function safeFoodCount(inv: InventoryFacts | null, registry: SurvivalItemRegistry, avoid: readonly string[]): number {
-  return (inv?.stacks ?? []).filter((s) => isSafeFood(s.key, registry, avoid)).reduce((n, s) => n + s.count, 0);
+  return (inv?.stacks ?? []).filter((s) => isSafeFood(s.key, registry, avoid) && !s.meta.customName && !s.meta.enchanted).reduce((n, s) => n + s.count, 0);
 }

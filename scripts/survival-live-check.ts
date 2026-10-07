@@ -22,9 +22,12 @@
 //       GlobalPos vs RCON LastDeathLocation, memory records the same capture,
 //       fresh respawn assessment (missing manifest), death cause key.
 //   G1k keepInventory=true death: retained inventory, no trip   [--with-settings]
-//   G2  scoped recovery: go_to_death_site + recover_lost_items pick up only
-//       sought keys up to the missing count; an unrelated dirt drop and an
-//       extra bread beyond the count are not counted; recovered vs concluded.
+//   G2  C3 mixed piles: a foreign 64-bread pile (oversized), unrelated dirt and
+//       a diamond sword with a DIFFERENT enchantment are refused BEFORE any
+//       collection (server-stated stacks/identity; RCON confirms none taken)
+//   G2b C3 ordinary recovery after the foreign piles are removed: own drops,
+//       including the enchanted sword (identity match), are collected with
+//       server collect evidence; recovered vs concluded reported honestly
 //   G3  food/health on Easy: hunger -> eat_safe_food raises server food;
 //       low health -> allowance check/recheck + eat; rest regenerates; with
 //       naturalRegeneration=false rest ends no_regeneration   [--with-settings]
@@ -102,6 +105,8 @@ class Gate {
   readonly outcomes: SkillOutcome[] = [];
   epoch = 0;
   goalId = '';
+  /** The recovery proposal admitted in G2 (continued in G2b). */
+  recovery: SurvivalProposal | undefined;
   private readonly password: string;
   private rconQueue: Promise<unknown> = Promise.resolve();
 
@@ -319,7 +324,10 @@ async function killWithKit(g: Gate, ev: string[]): Promise<{ captureId: string |
   await g.rcon(`give ${BOT} minecraft:iron_pickaxe[minecraft:damage=200] 1`);
   await g.rcon(`give ${BOT} minecraft:bread 4`);
   await g.rcon(`give ${BOT} minecraft:cobblestone 20`);
+  // Valuable with identity (C3): an enchanted diamond sword; the reply is recorded (component syntax is version-checked here).
+  await g.rcon(`give ${BOT} minecraft:diamond_sword[minecraft:enchantments={"minecraft:sharpness":3}] 1`);
   await g.waitFor('kit in the tracked inventory', () => (g.survival.inventory(g.game.connectionEpoch)?.stacks.length ?? 0) >= 3);
+  await sleep(500);
   const before = g.survival.inventory(g.game.connectionEpoch);
   ev.push(`tracked before death: ${before?.stacks.map((s) => `${s.key}x${s.count}${s.meta.damage !== undefined ? `(damage ${s.meta.damage}/${s.meta.maxDurability})` : ''}`).join(', ')} source=${before?.source}`);
   const mark = g.packets.length;
@@ -362,20 +370,46 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       ev.push(`item entities near the site (RCON): ${items.slice(0, 120)}`);
     });
 
-    await g.gate('G2', 'scoped recovery: only sought keys up to the missing count; recovered vs concluded', async (ev) => {
-      // Mixed drops near the site: an unrelated dirt stack and an extra bread beyond the missing count.
-      await g.rcon(`summon item ${DEATH_AT.x + 1} ${DEATH_AT.y} ${DEATH_AT.z + 1} {Item:{id:"minecraft:dirt",count:3},PickupDelay:0s}`);
-      await g.rcon(`summon item ${DEATH_AT.x - 1} ${DEATH_AT.y} ${DEATH_AT.z + 1} {Item:{id:"minecraft:bread",count:2},PickupDelay:0s}`);
+    await g.gate('G2', 'C3 mixed piles: oversized pile, unrelated loot and a different-identity valuable are refused before collection', async (ev) => {
+      // Foreign loot near the site, AFTER the death drops landed: a 64-bread pile (oversized vs 4 missing),
+      // unrelated dirt, and a diamond sword with a DIFFERENT enchantment (identity mismatch).
+      await g.rcon(`summon item ${DEATH_AT.x + 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:bread",count:64},PickupDelay:0s,Tags:["chunkbot_foreign"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x - 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:dirt",count:3},PickupDelay:0s,Tags:["chunkbot_foreign"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x} ${DEATH_AT.y} ${DEATH_AT.z - 4} {Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":1}}},PickupDelay:0s,Tags:["chunkbot_foreign"]}`);
+      await sleep(1_500);
       const decision = g.survival.assess(g.assessInput());
       ev.push(`decision: ${decision.kind} ${decision.kind === 'propose' ? decision.proposal.routine : 'reason' in decision ? decision.reason : ''}`);
       check(decision.kind === 'propose' && decision.proposal.routine === 'death_recovery', 'recovery proposed');
+      g.recovery = decision.proposal;
       g.admitProposal(decision.proposal);
       const go = await g.act('go_to_death_site', [], 60_000);
       ev.push(`go_to_death_site: ${go?.status} ${go?.effect.slice(0, 160)}`);
       for (let i = 0; i < 8; i += 1) {
         const o = await g.act('recover_lost_items', [], 30_000);
         if (!o) break;
-        ev.push(`recover_lost_items: ${o.status} ${o.effect.slice(0, 200)}`);
+        ev.push(`recover_lost_items: ${o.status}${o.reason ? ` (${o.reason})` : ''} ${o.effect.slice(0, 220)}`);
+        await sleep(300);
+      }
+      const refusals = g.unavailable('recover_lost_items');
+      ev.push(`resolver refusals now: ${refusals.join(' | ').slice(0, 600)}`);
+      const counts = { bread: await g.count('bread'), dirt: await g.count('dirt'), diamond_sword: await g.count('diamond_sword') };
+      ev.push(`server inventory (RCON clear 0): ${JSON.stringify(counts)}`);
+      const foreign = await g.rcon('execute if entity @e[type=item,tag=chunkbot_foreign]', false);
+      ev.push(`foreign piles still on the ground (RCON): ${foreign.slice(0, 120)}`);
+      check(counts.dirt === 0, 'no unrelated dirt was collected');
+      check(counts.bread <= 4, 'the oversized 64-bread pile was not collected');
+      check(g.outcomes.every((o) => o.capability !== 'recover_lost_items' || o.reason !== 'unscoped_item_collected'), 'no unplanned loot was collected');
+    });
+
+    await g.gate('G2b', 'C3 ordinary unambiguous recovery with server-confirmed collection; recovered vs concluded', async (ev) => {
+      check(g.recovery, 'G2 admitted the recovery goal');
+      // Remove only the foreign piles (tagged); the own death drops stay.
+      await g.rcon('kill @e[type=item,tag=chunkbot_foreign]');
+      await sleep(1_000);
+      for (let i = 0; i < 10; i += 1) {
+        const o = await g.act('recover_lost_items', [], 30_000);
+        if (!o) break;
+        ev.push(`recover_lost_items: ${o.status}${o.reason ? ` (${o.reason})` : ''} ${o.effect.slice(0, 220)}`);
         await sleep(300);
       }
       ev.push(`still unavailable: ${g.unavailable('recover_lost_items').join(' | ').slice(0, 300)}`);
@@ -383,13 +417,15 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       const recovered = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'death_recovery', expect: 'recovered' }, owner);
       const concluded = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'death_recovery', expect: 'concluded' }, owner);
       ev.push(`recovered: ${recovered.status} ${recovered.detail}; concluded: ${concluded.status} ${concluded.detail}`);
-      const counts = { bread: await g.count('bread'), cobblestone: await g.count('cobblestone'), iron_pickaxe: await g.count('iron_pickaxe'), dirt: await g.count('dirt') };
+      const counts = { bread: await g.count('bread'), cobblestone: await g.count('cobblestone'), iron_pickaxe: await g.count('iron_pickaxe'), diamond_sword: await g.count('diamond_sword') };
       ev.push(`server inventory (RCON clear 0): ${JSON.stringify(counts)}`);
-      g.endSupport(decision.proposal, recovered.status === 'satisfied' || concluded.status === 'satisfied' ? 'outcome_verified' : 'no_progress');
+      g.endSupport(g.recovery, recovered.status === 'satisfied' || concluded.status === 'satisfied' ? 'outcome_verified' : 'no_progress');
       const inc = g.survival.status(Date.now()).incidents.at(-1);
-      ev.push(`episode: ${inc?.status} regained=${JSON.stringify(inc?.regained)}`);
-      check(counts.dirt === 0, 'no unrelated loot was collected');
-      check((inc?.regained.find((r) => r.key === 'minecraft:bread')?.count ?? 0) <= 4, 'regained bread never exceeds the missing count');
+      ev.push(`episode: ${inc?.status} regained=${JSON.stringify(inc?.regained)} missing=${JSON.stringify(inc?.missing)}`);
+      const collected = g.outcomes.filter((o) => o.capability === 'recover_lost_items' && (o.status === 'succeeded' || o.status === 'partial'));
+      check(collected.length > 0, 'at least one server-confirmed collection');
+      check(collected.every((o) => o.confirmation === 'server_sync' || o.confirmation === 'server_packet'), 'collections are server-confirmed');
+      check((inc?.regained.reduce((n, r) => n + r.count, 0) ?? 0) > 0, 'regains counted from collect packets');
     });
 
     if (!withSettings) {

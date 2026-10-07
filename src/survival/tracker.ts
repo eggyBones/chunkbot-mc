@@ -19,7 +19,7 @@
 // (both 26.1 and 26.2 codecs), which refines the client death estimate.
 //
 // The tracker only listens; it never sends packets, clicks or resyncs.
-import type { DeathCause, DeathSite, InventoryFacts, LastAlive, TrackedStack, Vitals } from '../contracts/survival.ts';
+import type { DeathCause, DeathSite, DropStackFacts, InventoryFacts, LastAlive, TrackedStack, Vitals } from '../contracts/survival.ts';
 import { classifyDeathMessage } from './death-cause.ts';
 import { inventoryIndexToWindowSlot, parseSlot, type RawSlot, type SurvivalItemRegistry } from './items.ts';
 
@@ -71,6 +71,9 @@ const clone = (stacks: Map<number, TrackedStack>): TrackedStack[] => [...stacks.
 
 let captureCounter = 0;
 
+/** Item entity metadata index of the item stack (same constant as server-evidence ITEM_STACK_METADATA_KEY). */
+const ITEM_STACK_KEY = 8;
+
 export class SurvivalTracker {
   private source: PacketSource | undefined;
   private opts: TrackerAttachOptions | undefined;
@@ -91,6 +94,10 @@ export class SurvivalTracker {
   private loginDeath: RawGlobalPos | undefined;
   private respawnSeen = false;
   private openWindowId: number | undefined;
+  /** Item entities announced by the server (spawn_entity of the item type) on this connection/life. */
+  private readonly itemEntities = new Set<number>();
+  /** Server-stated stack of each item entity (its own metadata packet; C3 authority, never a label). */
+  private readonly drops = new Map<number, DropStackFacts>();
 
   /** Subscribes to tracker events (synchronous, in packet order). */
   subscribe(listener: (e: TrackerEvent) => void): () => void {
@@ -131,6 +138,8 @@ export class SurvivalTracker {
     this.respawnSeen = false;
     this.loginDeath = undefined;
     this.openWindowId = undefined;
+    this.itemEntities.clear();
+    this.drops.clear();
     if (opts.seed) {
       for (const s of opts.seed.stacks) this.slots.set(s.slot, { ...s, meta: { ...s.meta } });
       this.invSource = 'ready_seed';
@@ -144,7 +153,31 @@ export class SurvivalTracker {
       source.on(name, fn);
       this.listeners.push([name, fn]);
     };
+    on('spawn_entity', (p: { entityId: number; type: number }) => {
+      const itemType = this.opts?.registry.itemEntityTypeId;
+      if (itemType === undefined || p.type !== itemType) return;
+      this.itemEntities.add(p.entityId);
+      if (this.itemEntities.size > 4_000) this.itemEntities.delete(this.itemEntities.values().next().value as number);
+    });
+    on('entity_metadata', (p: { entityId: number; metadata?: Array<{ key: number; type: string; value: unknown }> }) => {
+      if (!this.itemEntities.has(p.entityId) || !this.opts) return;
+      for (const m of p.metadata ?? []) {
+        if (m.key !== ITEM_STACK_KEY || m.type !== 'item_stack') continue;
+        const parsed = parseSlot(m.value as RawSlot, this.opts.registry);
+        if (parsed) this.drops.set(p.entityId, { entityId: p.entityId, key: parsed.key, count: parsed.count, meta: parsed.meta, atMs: this.now() });
+        else this.drops.delete(p.entityId);
+        if (this.drops.size > 2_000) this.drops.delete(this.drops.keys().next().value as number);
+      }
+    });
+    on('entity_destroy', (p: { entityIds?: number[] }) => {
+      for (const id of p.entityIds ?? []) {
+        this.itemEntities.delete(id);
+        this.drops.delete(id);
+      }
+    });
     on('login', (p: { entityId?: number; worldState?: { death?: RawGlobalPos } }) => {
+      this.itemEntities.clear();
+      this.drops.clear();
       if (typeof p.entityId === 'number') this.selfId = p.entityId;
       if (p.worldState?.death) this.loginDeath = p.worldState.death;
     });
@@ -338,6 +371,17 @@ export class SurvivalTracker {
     return this.latestDeath;
   }
 
+  /** Server-stated stack of one dropped item entity, or undefined when the server stated none (unknown). */
+  dropStack(entityId: number): DropStackFacts | undefined {
+    const d = this.drops.get(entityId);
+    return d ? { ...d, meta: { ...d.meta } } : undefined;
+  }
+
+  /** Own entity id on this connection (from login). */
+  selfEntityId(): number | undefined {
+    return this.self();
+  }
+
   /** Most recent captured own death of this connection (not consumed). */
   latest(): CapturedDeathRecord | undefined {
     return this.latestDeath;
@@ -349,6 +393,9 @@ export class SurvivalTracker {
   }
 
   private onRespawn(p: { worldState?: { death?: RawGlobalPos; name?: string } }): void {
+    // A respawn (death or dimension travel) restarts the client's entity space.
+    this.itemEntities.clear();
+    this.drops.clear();
     if (this.state === 'alive' && !this.latestDeath) {
       // A respawn without a death (dimension travel) is not a death; inventory continues.
       return;

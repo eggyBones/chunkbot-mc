@@ -18,7 +18,10 @@ import {
   GATED_LATER_SLICES,
   type AllowanceTaskRef,
   type InterruptedDirective,
+  type DropIdentity,
+  type DropStackFacts,
   type InventoryFacts,
+  type ItemMetadata,
   type LowHealthAllowanceGrant,
   type LowHealthAllowancePort,
   type LowHealthCheck,
@@ -802,6 +805,26 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     return { episodeId: f.episodeId, factId: f.factId, goalId: a.goalId, site: { dimension: f.dimension, at: { ...f.at } }, source: f.source, recordedAtMs: f.recordedAtMs, sought: this.book?.sought(e) ?? new Map(), searchRadius: cfg.recovery.searchRadius, arrivalWithin: cfg.recovery.arrivalWithin };
   }
 
+  /** Server-stated stack facts of a dropped item entity on this connection (C3; never a display label). */
+  dropFacts(connectionEpoch: number, entityId: number): DropStackFacts | undefined {
+    if (this.tracker.connectionEpoch !== connectionEpoch) return undefined;
+    return this.tracker.dropStack(entityId);
+  }
+
+  /** Own entity id on this connection (collect-packet attribution). */
+  selfEntityId(connectionEpoch: number): number | undefined {
+    return this.tracker.connectionEpoch === connectionEpoch ? this.tracker.selfEntityId() : undefined;
+  }
+
+  /** C3 identity of a drop for the bound recovery goal (fenced like recoveryTarget). */
+  dropIdentity(fence: { goalEpoch: number; connectionEpoch: number; dimension: string }, key: string, meta: ItemMetadata | undefined): DropIdentity | { error: string; detail: string } {
+    const t = this.recoveryTarget(fence);
+    if ('error' in t) return t;
+    const e = this.book?.get(t.episodeId);
+    if (!e) return { error: 'episode_not_open', detail: 'the recovery episode is not open' };
+    return this.book?.identityStatus(e, key, meta) ?? 'unproven';
+  }
+
   /** go_to_death_site arrived (fenced). */
   markArrived(fence: { goalId: string; goalEpoch: number; connectionEpoch: number }): boolean {
     const a = this.active;
@@ -821,7 +844,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
    * Counts only still-sought keys up to the missing amount (prior possessions,
    * never new acquisition). Stale goals/connections count nothing.
    */
-  recordRegain(fence: { goalId: string; goalEpoch: number; connectionEpoch: number }, key: string, count: number, actionId: string): number {
+  recordRegain(fence: { goalId: string; goalEpoch: number; connectionEpoch: number }, key: string, count: number, actionId: string, meta?: ItemMetadata): number {
     const a = this.active;
     if (!a || a.routine !== 'death_recovery' || a.goalId !== fence.goalId || a.goalEpoch !== fence.goalEpoch || a.connectionEpoch !== fence.connectionEpoch || this.tracker.connectionEpoch !== fence.connectionEpoch) {
       this.record({ type: 'survival_regain_ignored', goalId: fence.goalId, key, reason: 'not the bound recovery goal (stale)' });
@@ -829,7 +852,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     }
     const e = a.episodeId ? this.book?.get(a.episodeId) : undefined;
     if (!e || !this.book) return 0;
-    const counted = this.book.regain(e, key, count, this.options.now());
+    const counted = this.book.regain(e, key, count, this.options.now(), meta);
     if (counted > 0) {
       this.record({ type: 'survival_regained', episodeId: e.episodeId, key, counted, offered: count, status: e.status });
       if (e.incidentFactId) this.memoryUpdate(e.incidentFactId, { regained: [{ key, count: counted }] }, `server-confirmed pickup of ${counted} ${key} near the own death site`, actionId);

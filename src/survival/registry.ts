@@ -7,7 +7,9 @@ export function minecraftDataRegistry(version: string): SurvivalItemRegistry | u
   const md = minecraftData(version);
   if (!md) return undefined;
   const foods = (md as unknown as { foodsByName?: Record<string, { foodPoints: number; saturation: number } | undefined> }).foodsByName ?? {};
+  const itemEntity = (md as unknown as { entitiesByName?: Record<string, { id: number } | undefined> }).entitiesByName?.['item']?.id;
   return {
+    ...(typeof itemEntity === 'number' ? { itemEntityTypeId: itemEntity } : {}),
     nameOf: (id) => md.items[id]?.name,
     maxDurability: (key) => {
       const n = md.itemsByName[strip(key)] as { maxDurability?: number } | undefined;

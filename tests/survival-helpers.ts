@@ -20,7 +20,10 @@ export const ID: Record<string, number> = Object.fromEntries(Object.entries(ITEM
 const DURABILITY: Record<string, number> = { iron_pickaxe: 250, diamond_sword: 1561, iron_helmet: 165, stone_pickaxe: 131 };
 const FOOD: Record<string, { foodPoints: number; saturation: number }> = { bread: { foodPoints: 5, saturation: 6 }, rotten_flesh: { foodPoints: 4, saturation: 0.8 }, golden_apple: { foodPoints: 4, saturation: 9.6 }, cooked_beef: { foodPoints: 8, saturation: 12.8 } };
 
+export const ITEM_ENTITY_TYPE = 71;
+
 export const registry: SurvivalItemRegistry = {
+  itemEntityTypeId: ITEM_ENTITY_TYPE,
   nameOf: (id) => ITEMS[id],
   maxDurability: (key) => DURABILITY[key.replace('minecraft:', '')],
   food: (key) => FOOD[key.replace('minecraft:', '')],
@@ -63,6 +66,18 @@ export class Packets {
   }
   kill(playerId = 42, translate = 'death.attack.lava'): void {
     this.client.emit('death_combat_event', { playerId, message: { type: 'compound', value: { translate: { type: 'string', value: translate }, with: { type: 'list', value: { type: 'string', value: ['bot'] } } } } });
+  }
+  /** A server-announced dropped item entity with its server-stated stack (metadata key 8). */
+  spawnItem(entityId: number, s: Slot, at = { x: 0, y: 64, z: 0 }): void {
+    this.client.emit('spawn_entity', { entityId, type: ITEM_ENTITY_TYPE, x: at.x, y: at.y, z: at.z });
+    this.client.emit('entity_metadata', { entityId, metadata: [{ key: 8, type: 'item_stack', value: s }] });
+  }
+  /** A server-announced item entity whose stack was never stated. */
+  spawnItemWithoutStack(entityId: number, at = { x: 0, y: 64, z: 0 }): void {
+    this.client.emit('spawn_entity', { entityId, type: ITEM_ENTITY_TYPE, x: at.x, y: at.y, z: at.z });
+  }
+  destroy(...entityIds: number[]): void {
+    this.client.emit('entity_destroy', { entityIds });
   }
   respawn(death?: { dimensionName: string; location: { x: number; y: number; z: number } }): void {
     this.client.emit('respawn', { worldState: { name: OW, ...(death ? { death } : {}) }, copyMetadata: 0 });
