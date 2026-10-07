@@ -1,6 +1,6 @@
 # MB-LOC-001 — Locator-assisted following: worker handoff evidence
 
-Worker: native Claude Opus 5.5 (local DSH), branch `chunkbot/mb-loc-001`, base `f05628f`. Status: **new modules, contracts, tests and gate harness implemented and verified offline. Shared-hook integration (designated writer) and all fixture gates are pending.** No fixture lease, RCON, join or provider call has been made. Not accepted.
+Worker: native Claude Opus 5.5 (local DSH), branch `chunkbot/mb-loc-001`, base `f05628f`. Status: **new modules, contracts, tests and gate harness implemented and verified offline. Pre-integration 26.2 module gates G1/G2/G3/G5 passed 19/19 under lease `batch002-locator-262-gates-01`.** Shared-hook integration (H1–H6), 26.1.2 sanity, root gates and real Codex/Jev L7 are pending. No provider call has been made. Not accepted.
 
 ## Commits
 
@@ -147,3 +147,89 @@ What each gate does:
 - **Elevation.** Only above/level are exercised live (below needs a block-changing scene).
 - **Ordinary skills.** They honour route ceilings only once H2 makes perception travel bounds consult `effectiveTravel` on every call; this module cannot change their code.
 - **Distance overshoot.** After distance exhaustion, a bot outside the admission radius is honestly out of bounds for ordinary skills. Cumulative distance can exceed the ceiling by at most the movement between two samples (one physics tick, or one runner poll).
+
+## 26.2 module gate runs (lease `batch002-locator-262-gates-01`; rules `batch002-locator-262-rules-01`; scene `batch002-locator-262-scene-01`)
+
+Run as the same driver with Node 24.21.0:
+
+```
+node scripts/locator-live-check.ts --fixture-lease batch002-locator-262-gates-01 --fixture 26.2 --gates g1,g2,g3,g5 --approve-rules batch002-locator-262-rules-01 --approve-scene batch002-locator-262-scene-01
+```
+
+Run conditions:
+- Each run used a source freeze with clean HEAD, and `npm run typecheck`/`build`/`test` exited 0 at that HEAD before running.
+- The harness runs from `src` (TS); the build matched the same HEAD.
+- Fixture: 26.2 at 127.0.0.1:25567, view-distance 6. Fake players only (Chunkbot, FixtureOwner, FixtureGuest), all disconnected in `finally`.
+
+| Run (report under `var/live-check/`) | Source | Exit | Result |
+| --- | --- | --- | --- |
+| `2026-10-07T02-11-21-880Z-26.2-locator` | `fef8ed3` | 1 | 18/19. G1, G2 and G3 passed. **G5 invalid: MB-LOC-001-C5.** Restorations verified. |
+| `2026-10-07T02-15-17-487Z-26.2-locator` | `bce707f` | 1 | 13/19. G5 valid and passed (contact/damage/death monitored). **G1 oracle unproven: MB-LOC-001-C6.** Restorations verified. |
+| `2026-10-07T02-19-17-753Z-26.2-locator` | `7b28c90` | **0** | **19/19.** `restoreFailures` empty. Bot placement verified on the first attempt. |
+
+**MB-LOC-001-C5** (harness scene geometry):
+- **Cause.** `SCENE_BASE` x 1004.5 put the bot inside the obstacle columns, which start at x 1003. The drop scene also removed bedrock, leaving a void hole.
+- **Consequence.** Run 1's G5-lava and G5-drop passes are invalid evidence, and its G5-wall failure (`no_safe_frontier`) is not a code finding.
+- **Possible death.** The bot may have died in the void. That run did not record lifecycle events, so this is unknown.
+- **Fix (`bce707f`).**
+  - The bot starts at x 1000.5 and the owner at x 1034.5 on intact ground.
+  - The drop is a 5-high stone platform inside the scene box; bedrock is never removed.
+  - Each scene monitors obstacle contact, health and death.
+  - Accepted outcomes: the specific blocker or a safe detour.
+
+**MB-LOC-001-C6** (harness oracle assumption):
+- **Symptom.** Run 2 received azimuth for a 40-block owner offset, and the cue disagreed with the assumed base position. The bot's server position was therefore not at base when the oracle assumed it was. Probable cause: the run-1 void death respawned the bot after its teleport.
+- **Guest attribution.** The guest UUID was registered after the guest's join, so its join-time track packet was misattributed.
+- **Fix (`7b28c90`).**
+  - Wait until the bot is alive.
+  - Verify the bot's server AND client position at base (bounded retries).
+  - Record a lifecycle log.
+  - Compute expected variants and sectors from SERVER positions of both players using the official rule (border cases accept either variant).
+  - Register the guest UUID before its join.
+
+**Final run 19/19 evidence** (from the report: counts, classes and relative offsets only):
+
+- **Variant and cue checks:**
+
+  | Owner position relative to bot | Server statement | Cue |
+  | --- | --- | --- |
+  | 40 east (3 chunks) | `track:vec3i` | east, near, level, block precision |
+  | 200 south (13 chunks > view distance 6) | `track:chunk` | south, far, height unknown, chunk precision |
+  | 400 west (> 332) | `track:azimuth` | west, distance/height unknown, direction only |
+  | north-east 59.4 | `vec3i` | north_east |
+  | 13.8 above | `vec3i` | elevation above |
+
+- **Other G1 checks:**
+  - The guest's waypoint was received and counted as other. The owner cue was unaffected.
+  - Crouch, invisibility and carved pumpkin each produced `untrack` (no direction), and restoring produced `track`.
+  - Logout gave `untrack` (identity no longer listed); rejoin needed a fresh `track`.
+  - Owner moving to the nether roof gave `untrack`. The bot moving to the nether recorded `dimension_change` and voided statements. Returning restored tracking.
+- **Packets:** 43 recorded:
+
+  | Class | Count |
+  | --- | --- |
+  | owner `track` vec3i / chunk / azimuth | 21 / 6 / 1 |
+  | owner `update` vec3i | 1 |
+  | owner `untrack` | 8 |
+  | guest `track` vec3i / chunk | 3 / 1 |
+  | guest `untrack` | 2 |
+
+- **G2:**
+  - `locator_bar` false gave `untrack` (no direction); the original value (`true`) was restored and gave `track`.
+  - Owner `waypoint_transmit_range` 30 at 60 blocks gave `untrack` (range-limited); after reset it gave `track`.
+  - The attribute was reset to its default 6.0E7 in `finally`.
+- **G3:**
+  - The owner was 300 blocks east and 40 south, beyond the 128 admission radius. Run through the real executor, `seek_owner` took window 0 as `route_window_elapsed` (leg 1, 110.9 route blocks), then window 1 `owner_reached` (leg 2/12, 206 of 1024 blocks, 0 corrections).
+  - The server-measured bot–owner distance was 2.2. The admission anchor was unchanged. No in-trial assistance.
+- **G5:**
+  - **Baseline:** the scene equalled the flat baseline and the reference region before any write (probes plus `execute if blocks`).
+  - **Lava:** a safe detour around the band to the owner (`owner_reached`), with no contact, no damage and no death.
+  - **Wall:** the specific `wall` blocker, with the bot not moved.
+  - **Drop (platform):** the specific `cliff_drop` blocker, with the bot not moved.
+  - **Restoration:** after every scene, all layers were rewritten and verified. During the wall scene, 3 grass blocks under the stone turned to dirt; this is vanilla behaviour, and they were restored and verified.
+- **Footprint:** all teleports went through the checked helper inside the declared footprint. Final cleanup restored the scene, the attribute, the gamerule and the owner's effects/head, and disconnected all fake players. No harness process remains.
+
+**Scope of this evidence:**
+- This is pre-integration module evidence. The harness composes the real connection, perception, executor and lease, with the locator attached late (pre-H1).
+- The route runner's explicit bounds prove only its own movement. The production all-skill guard needs H2 `effectiveTravel`.
+- Still open: 26.1.2 broadcast sanity plus an ordinary-follow regression, root gates after H1–H6, and real Codex/Jev L7.
