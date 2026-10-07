@@ -42,9 +42,11 @@ import { memorySummaryFrom, pauseFrom, pendingDirectiveFrom } from './app/status
 import { inspectMemory, renderMemoryReport } from './memory/report.ts';
 import { memoryRoot } from './memory/service.ts';
 import { join } from 'node:path';
-import { AutonomyConfigSchema, type AutonomyScope } from './contracts/autonomy.ts';
+import { AutonomyConfigSchema } from './contracts/autonomy.ts';
 import { AutonomyControl } from './autonomy/control.ts';
 import { AutonomySupervisor } from './autonomy/supervisor.ts';
+import { recoveryAdmissionBarrier } from './autonomy/barrier.ts';
+import { resolveAutonomyScope, type ScopeResolution } from './autonomy/scope.ts';
 import { autonomyStatusChat, autonomyStatusLines } from './autonomy/status-text.ts';
 import { JEV_CONTEXT_TOKENS, PROMPT_USD_PER_TOKEN } from './decision/pricing.ts';
 import { createHash } from 'node:crypto';
@@ -177,19 +179,18 @@ function autonomyEnablement(loaded: LoadedConfig, requested: boolean): { enabled
   return { enabled: true, reason: 'enabled for this run' };
 }
 
-/** Explicit durable scope: autonomy.scope, else the enabled memory profile (never derived from the endpoint). */
-function autonomyScope(loaded: LoadedConfig): AutonomyScope | undefined {
+/** Explicit durable scope (C5): autonomy.scope and an enabled memory profile must agree; never derived from the endpoint. */
+function autonomyScope(loaded: LoadedConfig): ScopeResolution {
   const cfg = AutonomyConfigSchema.parse(loaded.config.autonomy ?? {});
-  if (cfg.scope) return cfg.scope;
-  const m = loaded.config.memory;
-  return m && m.enabled !== false ? { worldProfile: m.worldProfile, worldRevision: m.worldRevision, botProfile: m.botProfile } : undefined;
+  return resolveAutonomyScope(cfg.scope, loaded.config.memory);
 }
 
 function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { autonomy?: boolean } = {}): { app: ChunkbotApp; store: RunStore; game: MineflayerConnection } {
   const { config } = loaded;
   const autonomyConfig = AutonomyConfigSchema.parse(config.autonomy ?? {});
   const autonomy = autonomyEnablement(loaded, options.autonomy === true);
-  const scope = autonomy.enabled ? autonomyScope(loaded) : undefined;
+  const scopeResolution = autonomy.enabled ? autonomyScope(loaded) : undefined;
+  const scope = scopeResolution?.scope;
   const fileStore = new FileRunStore({
     runsDir: loaded.runsDir,
     runId: randomIds.next('run'),
@@ -241,8 +242,9 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     minIntervalMs: config.limits.decisionMinIntervalMs,
     attemptsPerGoal: config.limits.decisionRequestsPerGoal,
   });
-  const control = new AutonomyControl({ scope, rootDir: join(loaded.dataDir, autonomyConfig.dir), endpoint: `${config.minecraft.host}:${config.minecraft.port}`, rebindEndpoint: autonomyConfig.rebindEndpoint, clock: systemClock, record: (e) => store.record(e) });
-  const survivalWanted = autonomy.enabled && config.survival?.enabled !== false;
+  const control = new AutonomyControl({ scope, ...(scopeResolution?.conflict ? { scopeConflict: scopeResolution.conflict } : {}), rootDir: join(loaded.dataDir, autonomyConfig.dir), endpoint: `${config.minecraft.host}:${config.minecraft.port}`, rebindEndpoint: autonomyConfig.rebindEndpoint, clock: systemClock, record: (e) => store.record(e) });
+  // A scope conflict blocks every persistence-dependent automatic feature (survival episodes, home project).
+  const survivalWanted = autonomy.enabled && config.survival?.enabled !== false && !scopeResolution?.conflict;
   const runtime = new SkillRuntime({
     features: {
       ...(config.locator?.enabled === false ? {} : { locator: true }),
@@ -361,6 +363,18 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
       ...(runtime.routes ? { routeView: (goalEpoch: number) => runtime.routeView(goalEpoch) } : {}),
       ...(runtime.locator ? { locatorHint: () => runtime.locator?.ownerHint() } : {}),
       installed: { structures: Boolean(runtime.home), survival: Boolean(runtime.survival) },
+      ...(runtime.survival
+        ? {
+            admissionBarrier: recoveryAdmissionBarrier({
+              survival: runtime.survival,
+              connection: () => {
+                const s = game.session();
+                return s ? { connectionEpoch: s.connectionEpoch, dimension: String(s.bot.game.dimension) } : null;
+              },
+              record: (e) => store.record(e),
+            }),
+          }
+        : {}),
       autonomyStatus: () => {
         if (!supervisor) return undefined;
         const s = supervisor.status();
@@ -413,7 +427,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     ...(runtime.routes ? { route: runtime.routes } : {}),
   });
   supervisor.start();
-  out(`[chunkbot] autonomy: ${autonomy.enabled ? `enabled; scope ${scope ? `${scope.worldProfile}@r${scope.worldRevision}/${scope.botProfile}` : 'MISSING (automatic work blocked; manual goals work)'}; ${control.persistence().state}${control.latch().paused ? '; PAUSED (stop latch restored; say resume)' : ''}` : autonomy.reason}`);
+  out(`[chunkbot] autonomy: ${autonomy.enabled ? `enabled; scope ${scope ? `${scope.worldProfile}@r${scope.worldRevision}/${scope.botProfile}` : scopeResolution?.conflict ? `CONFLICT — ${scopeResolution.conflict}` : 'MISSING (automatic work blocked; manual goals work)'}; ${control.persistence().state}${control.latch().paused ? '; PAUSED (stop latch restored; say resume)' : ''}` : autonomy.reason}`);
   if (runtime.survival) out(`[chunkbot] survival: ${runtime.survival.status(systemClock.now()).store.state}`);
   if (runtime.routes) out(`[chunkbot] locator: ${runtime.locator?.enabled ? 'enabled' : 'codec unavailable/disabled'}; routes ${runtime.routes.policy.enabled ? `enabled for ${runtime.routes.policy.sources.join('/')}` : 'disabled'}`);
   const publisher = dashboard;

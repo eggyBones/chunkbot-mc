@@ -96,6 +96,8 @@ export interface AppExtensions {
   locatorHint?: GoalEngineDeps['locatorHint'];
   /** Optional evaluators installed (proposal validation). */
   installed?: GoalEngineDeps['installed'];
+  /** MB-FLOW-003-C5 owned admission barrier (durable recovery authority before any model call/action). */
+  admissionBarrier?: GoalEngineDeps['admissionBarrier'];
   /** Extra status lines and chat summary for autonomy/survival/route (read-only; no inference). */
   autonomyStatus?(): { lines: string[]; chat: string } | undefined;
   /** Terminal-only operator mechanic diagnostics (`/diag ...`). */
@@ -208,6 +210,7 @@ export class ChunkbotApp implements CommandTarget {
       ...(deps.extensions?.routeView ? { routeView: deps.extensions.routeView } : {}),
       ...(deps.extensions?.locatorHint ? { locatorHint: deps.extensions.locatorHint } : {}),
       ...(deps.extensions?.installed ? { installed: deps.extensions.installed } : {}),
+      ...(deps.extensions?.admissionBarrier ? { admissionBarrier: deps.extensions.admissionBarrier } : {}),
     });
     this.unsubscribe.push(deps.game.onLifecycle((event) => this.onLifecycle(event)));
     this.unsubscribe.push(deps.game.onChat((envelope) => this.onChat(envelope)));
