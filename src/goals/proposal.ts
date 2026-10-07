@@ -224,7 +224,9 @@ class Checker {
   route(t: TaskSpec, where: string): void {
     if (!t.allowedCapabilities.includes('route_travel') || this.ctx.routeDeferred) return;
     const r = this.ctx.route;
-    if (!r || !r.authorized) {
+    // No route view supplied (routes not composed for this caller): the resolver/executor still enforce provenance.
+    if (!r) return;
+    if (!r.authorized) {
       this.add(`${where}: route_travel is not authorized for this goal (no code-owned route authorization; travel stays inside the admission radius)`);
       return;
     }

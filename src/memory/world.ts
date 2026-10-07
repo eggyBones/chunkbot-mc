@@ -30,6 +30,8 @@ export interface DeathContext {
   accuracy: DeathPayload['accuracy'];
   positionAgeMs?: number;
   inventory: { source: 'server_sync' | 'client_model' | 'unavailable'; capturedAtMs?: number; items: Array<{ key: string; count: number }> };
+  /** Server-stated cause (MB-FLOW-003 capture), when known. */
+  cause?: { kind: 'observed'; detail: string };
 }
 
 export interface MemoryWorld {

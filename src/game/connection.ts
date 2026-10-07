@@ -46,6 +46,12 @@ export interface ConnectionOptions {
   ownerName?: string;
   replyMode: 'whisper' | 'public';
   log: (line: string) => void;
+  /**
+   * MB-FLOW-001/003/LOC-001: called synchronously right after the bot is created
+   * (before login) with its connection epoch, so packet trackers see join-time
+   * packets. Must not throw (errors are logged, never fatal).
+   */
+  onBotCreated?: (bot: Bot, connectionEpoch: number) => void;
   /** Test seams. */
   createBot?: (options: mineflayer.BotOptions) => Bot;
   ping?: (options: { host: string; port: number; timeoutMs: number; signal: AbortSignal }) => Promise<PingResult>;
@@ -314,6 +320,11 @@ export class MineflayerConnection implements GamePort {
       if (!this.evidence && typeof bot.once === 'function') bot.once('inject_allowed', installEvidence);
       // Local client-model predictions are marked so the authoritative world view treats them as unknown.
       tapClientPredictions(bot, () => (this.epochValue === epoch ? this.evidence : undefined));
+      try {
+        this.options.onBotCreated?.(bot, epoch);
+      } catch (error) {
+        this.options.log(`onBotCreated hook failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
       // Navigation plugin; its movement policy is configured (no dig/place/scaffold) by the skill layer.
       if (typeof (bot as { loadPlugin?: unknown }).loadPlugin === 'function') bot.loadPlugin(pathfinderPlugin.pathfinder);
       this.attach(bot, epoch, resolveReady, fail, ownsJoin);

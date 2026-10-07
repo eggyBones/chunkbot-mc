@@ -10,7 +10,7 @@
 // older connection or dimension never resolve.
 import blockLoader from 'prismarine-block';
 import { Vec3 } from 'vec3';
-import type { Clock, IdSource, ObservationPort, ObservationSnapshot, Readiness, RouteLegBounds, RouteStatus } from '../contracts/index.ts';
+import type { Clock, EffectiveTravel, IdSource, ObservationPort, ObservationSnapshot, Readiness, RouteAdmissionProof } from '../contracts/index.ts';
 import type { GameSession } from '../game/connection.ts';
 import { isOwnerPlayer, type OwnerPolicy } from '../game/identity.ts';
 import { findFrontiers } from './frontiers.ts';
@@ -65,9 +65,12 @@ export interface PerceptionOptions {
    * leg bound for the SAME goal epoch, connection epoch and dimension as the
    * admitted anchor. The admission anchor itself is never moved.
    */
-  routeLegBounds?: (ctx: { goalEpoch: number; connectionEpoch: number; dimension: string }) => RouteLegBounds | undefined;
-  /** MB-LOC-001-C2 shared guard: the route status of a goal epoch (a leg is honored only while the route is live). */
-  routeStatus?: (goalEpoch: number) => RouteStatus | null;
+  /**
+   * MB-LOC-001-C2/C3 canonical shared travel guard (RoutePort.effectiveTravel):
+   * called on EVERY bounds poll with the goal's ORIGINAL admission proof; returns
+   * the active leg only while the route is live and the proof matches exactly.
+   */
+  effectiveTravel?: (admission: RouteAdmissionProof) => EffectiveTravel;
 }
 
 const WORKSTATIONS = /^(crafting_table|furnace|blast_furnace|smoker|stonecutter|smithing_table|anvil|chipped_anvil|damaged_anvil|grindstone|loom|cartography_table|fletching_table|enchanting_table|brewing_stand|campfire|soul_campfire)$/;
@@ -229,12 +232,8 @@ export class PerceptionService implements ObservationPort {
     return a.goalEpoch;
   }
 
-  /**
-   * The immutable ORIGINAL ADMISSION bound (anchor + configured radius). Never
-   * a route leg: route code and status must use this accessor for the
-   * admission bound, and travelBounds() for the effective one.
-   */
-  admissionBounds(): { anchor: Vec; radius: number } | undefined {
+  /** The anchor bound (goal-owned admission anchor, or the diagnostic default) — never a route leg. */
+  private anchorBounds(): { anchor: Vec; radius: number } | undefined {
     const s = this.options.session();
     if (!s) return undefined;
     if (!this.travelAnchor || this.travelAnchor.connectionEpoch !== s.connectionEpoch || this.travelAnchor.dimension !== String(s.bot.game.dimension)) {
@@ -242,45 +241,50 @@ export class PerceptionService implements ObservationPort {
       // (goal actions require their admitted anchor and are refused otherwise).
       this.setTravelAnchor(undefined);
     }
-    return this.travelAnchor ? { anchor: this.travelAnchor.at, radius: this.options.travelRadius } : undefined;
-  }
-
-  /** The active route leg of the admitted goal epoch (same connection and dimension), if any. */
-  activeLeg(): RouteLegBounds | undefined {
-    const s = this.options.session();
-    const a = this.travelAnchor;
-    const legs = this.options.routeLegBounds;
-    if (!s || !a || a.goalEpoch === undefined || !legs) return undefined;
-    const dimension = String(s.bot.game.dimension);
-    if (a.connectionEpoch !== s.connectionEpoch || a.dimension !== dimension) return undefined;
-    const leg = legs({ goalEpoch: a.goalEpoch, connectionEpoch: s.connectionEpoch, dimension });
-    if (!leg || leg.goalEpoch !== a.goalEpoch || leg.connectionEpoch !== s.connectionEpoch || leg.dimension !== dimension) return undefined;
-    // Full proof: the leg belongs to THIS admission (exact anchor and radius), not merely the same epoch.
-    if (leg.admissionAnchor.x !== a.at.x || leg.admissionAnchor.y !== a.at.y || leg.admissionAnchor.z !== a.at.z || leg.admissionRadius !== this.options.travelRadius) return undefined;
-    // Shared guard (C2): an expanded leg loses authority for EVERY skill once the route is
-    // no longer live (exhausted, blocked, revoked, out of time or distance).
-    const status = this.options.routeStatus?.(a.goalEpoch);
-    if (!status || status.state !== 'leg_active' || status.blocker || status.remainingMs <= 0 || status.distanceUsed >= status.maxTotalDistance) return undefined;
-    return leg;
+    return this.travelAnchor ? { anchor: { ...this.travelAnchor.at }, radius: this.options.travelRadius } : undefined;
   }
 
   /**
-   * Effective local travel bound for skills: the active route leg when one is
-   * authorized for this goal epoch, else the admission bound. A leg never
-   * moves the admission anchor (see admissionBounds).
+   * The immutable ORIGINAL ADMISSION proof of the goal that owns the anchor
+   * (MB-LOC-001 RouteAdmissionProof). Never a route leg; undefined for a
+   * diagnostic (untagged) anchor or without a connection.
    */
-  travelBounds(): { anchor: Vec; radius: number } | undefined {
-    const admission = this.admissionBounds();
-    if (!admission) return undefined;
-    const leg = this.activeLeg();
-    return leg ? { anchor: { ...leg.anchor }, radius: leg.radius } : admission;
+  admissionBounds(): RouteAdmissionProof | undefined {
+    const s = this.options.session();
+    const bounds = this.anchorBounds();
+    const a = this.travelAnchor;
+    if (!s || !bounds || !a || a.goalEpoch === undefined) return undefined;
+    return { goalEpoch: a.goalEpoch, connectionEpoch: s.connectionEpoch, dimension: String(s.bot.game.dimension), anchor: { ...bounds.anchor }, radius: bounds.radius };
   }
 
-  /** Inside the admission bound OR the active authorized leg of the same goal epoch. */
+  /** The canonical effective bound for this poll (route leg only on full proof while live), else undefined. */
+  private activeLeg(): { anchor: Vec; radius: number } | undefined {
+    const proof = this.admissionBounds();
+    const effective = this.options.effectiveTravel;
+    if (!proof || !effective) return undefined;
+    const e = effective(proof);
+    if (e.kind !== 'route_leg') return undefined;
+    // Defense in depth: the leg must belong to THIS admission exactly.
+    if (e.admissionAnchor.x !== proof.anchor.x || e.admissionAnchor.y !== proof.anchor.y || e.admissionAnchor.z !== proof.anchor.z || e.admissionRadius !== proof.radius) return undefined;
+    return { anchor: { ...e.anchor }, radius: e.radius };
+  }
+
+  /**
+   * Effective local travel bound for skills on THIS poll: the live route leg of
+   * the admitted goal (exact proof), else the anchor bound. A leg never moves
+   * the admission anchor (see admissionBounds).
+   */
+  travelBounds(): { anchor: Vec; radius: number } | undefined {
+    const anchor = this.anchorBounds();
+    if (!anchor) return undefined;
+    return this.activeLeg() ?? anchor;
+  }
+
+  /** Inside the admission bound OR the live route leg of the same admission (re-evaluated every call). */
   withinTravel(at: Vec): boolean {
-    const admission = this.admissionBounds();
-    if (!admission) return false;
-    if (Math.hypot(at.x - admission.anchor.x, at.z - admission.anchor.z) <= admission.radius) return true;
+    const anchor = this.anchorBounds();
+    if (!anchor) return false;
+    if (Math.hypot(at.x - anchor.anchor.x, at.z - anchor.anchor.z) <= anchor.radius) return true;
     const leg = this.activeLeg();
     return leg ? Math.hypot(at.x - leg.anchor.x, at.z - leg.anchor.z) <= leg.radius : false;
   }

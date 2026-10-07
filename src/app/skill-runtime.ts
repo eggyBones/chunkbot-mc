@@ -23,6 +23,18 @@ import type { AppAdapters } from './app.ts';
 import { MemoryService, memoryRoot } from '../memory/service.ts';
 import { installedMemoryWorld } from '../memory/world.ts';
 import { memorySkills } from '../skills/memory.ts';
+import type { AutonomyControl } from '../autonomy/control.ts';
+import { HomeProjectService } from '../autonomy/home.ts';
+import { ShelterInspector, constructionSkills, evaluateStructure } from '../skills/construction.ts';
+import type { GoalSource, RouteGoalSource, SurvivalConfigInput } from '../contracts/index.ts';
+import { DEFAULT_LOCATOR_CONFIG, LocatorConfigSchema } from '../contracts/locator.ts';
+import { LocatorService } from '../locator/service.ts';
+import { RouteController } from '../locator/routes.ts';
+import { locatorSkills } from '../skills/locator.ts';
+import type { SurvivalService } from '../survival/service.ts';
+import { createSurvivalService } from '../survival/wiring.ts';
+import { survivalSkills } from '../skills/survival.ts';
+import { verifyShelter } from '../autonomy/blueprint.ts';
 
 export interface SkillRuntimeOptions {
   config: ChunkbotConfig;
@@ -45,6 +57,18 @@ export interface SkillRuntimeOptions {
   emitTask?: (kind: string, data: Record<string, unknown>) => void;
   /** Ignored runtime storage root (LoadedConfig.dataDir); required for MB-MEM-001 memory (absent: memory off). */
   dataDir?: string;
+  /**
+   * Batch002 companion features (absent: none composed — existing harness
+   * compositions are unchanged).
+   * - `locator`: owner locator hints + code-owned route legs (MB-LOC-001).
+   * - `survival`: survival policy/recovery/allowance + skills (MB-FLOW-003), using the explicit scope.
+   * - `home`: home construction skills/predicate on the autonomy durable scope (MB-FLOW-001).
+   */
+  features?: {
+    locator?: boolean;
+    survival?: { config: SurvivalConfigInput | undefined; scope: { worldProfile: string; worldRevision: number; botProfile: string } | undefined };
+    home?: { control: AutonomyControl; interior: 2 | 3; maxSiteDistance: number };
+  };
 }
 
 export class SkillRuntime {
@@ -61,6 +85,15 @@ export class SkillRuntime {
   readonly decision: DecisionPort;
   /** MB-MEM-001 memory; undefined when not configured (or disabled): no memory capability, view or hook. */
   readonly memory: MemoryService | undefined;
+  /** MB-LOC-001 (when composed). */
+  readonly locator: LocatorService | undefined;
+  readonly routes: RouteController | undefined;
+  /** MB-FLOW-003 (when composed). */
+  readonly survival: SurvivalService | undefined;
+  /** MB-FLOW-001 home construction (when composed). */
+  readonly home: HomeProjectService | undefined;
+  readonly inspector: ShelterInspector | undefined;
+  private detachMovement: (() => void) | undefined;
   private readonly options: SkillRuntimeOptions;
 
   constructor(options: SkillRuntimeOptions) {
@@ -70,12 +103,31 @@ export class SkillRuntime {
     this.memory = memoryConfig && options.dataDir
       ? new MemoryService({ config: memoryConfig, rootDir: memoryRoot(options.dataDir, memoryConfig), endpoint: `${config.minecraft.host}:${config.minecraft.port}`, clock, record: (event) => store.record(event) })
       : undefined;
-    this.registry = new SkillRegistry([...allSkills(), ...memorySkills(this.memory)]);
+    const features = options.features ?? {};
+    // MB-LOC-001 route controller first: perception polls its effectiveTravel on every bounds query.
+    const locatorConfig = features.locator ? (config.locator ? LocatorConfigSchema.parse(config.locator) : DEFAULT_LOCATOR_CONFIG) : undefined;
+    let survivalRef: SurvivalService | undefined;
+    this.routes = locatorConfig
+      ? new RouteController({
+          policy: locatorConfig.routes,
+          clock,
+          record: (e) => store.record(e),
+          // Survival's own-incident destination (code-owned; provenance own_incident).
+          ownDeath: {
+            kind: 'own_death',
+            current: (ctx) => {
+              const d = survivalRef?.current(ctx);
+              return d ? { ...d, provenance: 'own_incident' as const } : undefined;
+            },
+          },
+        })
+      : undefined;
     this.knowledge = new VersionKnowledge({
       version: config.minecraft.version,
       catalog: () => this.registry.catalog(),
       execution: { crafting: 'craft_item', cooking: ['furnace_insert', 'furnace_wait', 'furnace_take'] },
     });
+    const routes = this.routes;
     this.perception = new PerceptionService({
       session: options.session,
       clock,
@@ -84,8 +136,28 @@ export class SkillRuntime {
       travelRadius: config.limits.travelRadius,
       ownerPolicy: ownerPolicyFromConfig(config),
       admission: options.admission,
+      ...(routes ? { effectiveTravel: (proof: Parameters<RouteController['effectiveTravel']>[0]) => routes.effectiveTravel(proof) } : {}),
     });
+    this.locator = locatorConfig
+      ? new LocatorService({ config: locatorConfig, version: config.minecraft.version, ownerPolicy: ownerPolicyFromConfig(config), admission: options.admission, session: options.session, clock, record: (e) => store.record(e) })
+      : undefined;
     this.ledger = new EvidenceLedger(clock, options.connectionEpoch);
+    // MB-FLOW-003 survival (explicit scope; same as autonomy/memory scope; never derived from the endpoint).
+    this.survival = features.survival
+      ? createSurvivalService({
+          survival: features.survival.config ?? {},
+          scope: features.survival.scope,
+          dataDir: options.dataDir,
+          minecraftVersion: config.minecraft.version,
+          limits: { lowHealth: config.limits.lowHealth, travelRadius: config.limits.travelRadius },
+          now: () => clock.now(),
+          record: (e) => store.record(e),
+          ...(this.memory ? { memory: this.memory } : {}),
+          latestSnapshot: () => this.perception.latest(),
+          ...(routes ? { farRoute: () => (routes.policy.enabled && (routes.policy.destinations as readonly string[]).includes('own_death') ? 'locator_route_legs' : undefined) } : {}),
+        })
+      : undefined;
+    survivalRef = this.survival;
     this.services = {
       perception: this.perception,
       knowledge: this.knowledge,
@@ -93,6 +165,21 @@ export class SkillRuntime {
       clock,
       limits: { observationRadius: config.limits.observationRadius, travelRadius: config.limits.travelRadius, ownerLossMs: config.limits.ownerLossMs },
     };
+    // MB-FLOW-001 home construction on the autonomy durable scope.
+    if (features.home) {
+      this.home = new HomeProjectService({ control: features.home.control, clock, record: (e) => store.record(e) });
+      this.inspector = new ShelterInspector(options.session, this.services);
+    } else {
+      this.home = undefined;
+      this.inspector = undefined;
+    }
+    this.registry = new SkillRegistry([
+      ...allSkills(),
+      ...memorySkills(this.memory),
+      ...(this.home && this.inspector && features.home ? constructionSkills({ home: this.home, inspector: this.inspector, interior: features.home.interior, maxSiteDistance: features.home.maxSiteDistance }) : []),
+      ...survivalSkills(this.survival),
+      ...(this.routes ? locatorSkills({ ...(this.locator ? { locator: this.locator } : {}), routes: this.routes }) : []),
+    ]);
     this.leases = new ActuatorLeases({
       clock,
       ownerCurrent: (owner: ExecutionOwner) => (owner.kind === 'goal' ? owner.goalEpoch === options.goalEpoch() : options.diagnosticCurrent(owner.diagnosticId)),
@@ -110,7 +197,16 @@ export class SkillRuntime {
       ...(this.memory ? { onOutcome: (outcome) => this.memory?.recordOutcome(outcome) } : {}),
     });
     this.candidates = new TaskCandidateGenerator({ registry: this.registry, services: this.services, session: options.session, ids });
-    this.predicates = new PredicateEngine({ services: this.services, session: options.session, leases: this.leases, ...(this.memory ? { memory: this.memory } : {}) });
+    const home = this.home;
+    const inspector = this.inspector;
+    this.predicates = new PredicateEngine({
+      services: this.services,
+      session: options.session,
+      leases: this.leases,
+      ...(this.memory ? { memory: this.memory } : {}),
+      ...(home && inspector ? { structures: { evaluateStructure: (expect: 'site_approved' | 'enclosed' | 'complete') => evaluateStructure(home, inspector, options.session, expect) } } : {}),
+      ...(this.survival ? { survival: this.survival } : {}),
+    });
     if (this.memory) {
       this.memory.attachWorld(installedMemoryWorld({ session: options.session, perception: this.perception, ledger: this.ledger, clock }));
       this.memory.open();
@@ -136,7 +232,47 @@ export class SkillRuntime {
       ids,
       limits: { maxOptions: limits.decisionMaxOptions, noProgressMs: limits.noProgressMs, perTargetRetries: limits.perTargetRetries, lowHealth: limits.lowHealth },
       ...(options.emitTask ? { emit: options.emitTask } : {}),
+      ...(this.survival ? { lowHealthAllowance: this.survival } : {}),
     });
+  }
+
+  /**
+   * Connection creation hook (before login): the survival packet tracker and
+   * the locator waypoint listener see join-time packets of THIS epoch.
+   */
+  onBotCreated(bot: { _client?: unknown; entity?: { position?: { x: number; y: number; z: number } }; game?: { dimension?: unknown } }, connectionEpoch: number): void {
+    const client = bot._client as (import('node:events').EventEmitter & { on(e: string, l: (p: never) => void): unknown }) | undefined;
+    if (!client || typeof client.on !== 'function') return;
+    if (this.survival) {
+      try {
+        this.survival.attachConnection(client as never, {
+          connectionEpoch,
+          selfPosition: () => {
+            const p = bot.entity?.position;
+            return p && bot.game?.dimension !== undefined ? { dimension: String(bot.game.dimension), at: { x: p.x, y: p.y, z: p.z } } : undefined;
+          },
+        });
+      } catch (error) {
+        this.options.store.record({ type: 'survival_attach_error', message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (this.locator) {
+      try {
+        this.locator.attach(client as never, connectionEpoch);
+      } catch (error) {
+        this.options.store.record({ type: 'locator_attach_error', message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+
+  /** Read-only views for the goal engine (planner request route context / locator hint). */
+  routeView(goalEpoch: number): { authorized: boolean; destinations: readonly ('owner' | 'owner_destination' | 'own_death')[]; ownDeathAvailable: boolean; state: import('../contracts/index.ts').RouteState | null; status: import('../contracts/index.ts').RouteStatus | null; admission: { anchor: { x: number; y: number; z: number }; radius: number } | null } | undefined {
+    const routes = this.routes;
+    const s = this.options.session();
+    if (!routes || !s) return undefined;
+    const ctx = { goalEpoch, connectionEpoch: s.connectionEpoch, dimension: String(s.bot.game.dimension) };
+    const proof = this.perception.admissionBounds();
+    return { ...routes.proposalContext(ctx), status: routes.status(goalEpoch), admission: proof && proof.goalEpoch === goalEpoch ? { anchor: { ...proof.anchor }, radius: proof.radius } : null };
   }
 
   /** Port adapters for ChunkbotApp (task runtime, outcome evaluator, Jev, registry facts, verified prior results). The planner is composed separately (cli.ts). */
@@ -170,7 +306,7 @@ export class SkillRuntime {
    * goal's travel anchor is captured at the bot's position NOW and owned by the
    * goal epoch. Execution never re-anchors; only the next admission replaces it.
    */
-  onGoalAdmitted(admission: { goalId: string; epoch: number; admittedAtMs: number; instruction?: string }): void {
+  onGoalAdmitted(admission: { goalId: string; epoch: number; admittedAtMs: number; instruction?: string; source?: GoalSource; deadlineAtMs?: number; ownerCoordinates?: Array<{ x: number; y: number; z: number; source: 'instruction' | 'answer' }> }): void {
     // MB-MEM-001: keep the owner's words for grounding designations (synchronous, no I/O).
     if (this.memory && admission.instruction !== undefined) {
       try {
@@ -180,12 +316,39 @@ export class SkillRuntime {
       }
     }
     const ok = this.perception.admitTravelAnchor(admission.epoch);
-    const bounds = this.perception.travelBounds();
-    this.options.store.record({ type: 'goal_travel_anchor', goalId: admission.goalId, epoch: admission.epoch, admitted: ok, anchor: bounds ? { x: Math.round(bounds.anchor.x * 10) / 10, y: Math.round(bounds.anchor.y * 10) / 10, z: Math.round(bounds.anchor.z * 10) / 10 } : null, radius: bounds?.radius ?? null });
+    const proof = this.perception.admissionBounds();
+    this.options.store.record({ type: 'goal_travel_anchor', goalId: admission.goalId, epoch: admission.epoch, admitted: ok, anchor: proof ? { x: Math.round(proof.anchor.x * 10) / 10, y: Math.round(proof.anchor.y * 10) / 10, z: Math.round(proof.anchor.z * 10) / 10 } : null, radius: proof?.radius ?? null });
+    // MB-LOC-001: route authorization for THIS goal epoch from operator policy (synchronous; one admission per epoch).
+    if (this.routes && proof && proof.goalEpoch === admission.epoch) {
+      const source: RouteGoalSource = admission.source ? admission.source.kind : 'diagnostic';
+      try {
+        this.routes.admit({
+          goalId: admission.goalId,
+          goalEpoch: admission.epoch,
+          admittedAtMs: admission.admittedAtMs,
+          source,
+          goalDeadlineMs: admission.deadlineAtMs ?? admission.admittedAtMs + this.options.config.limits.goalDeadlineMs,
+          connectionEpoch: proof.connectionEpoch,
+          dimension: proof.dimension,
+          admissionAnchor: { ...proof.anchor },
+          admissionRadius: proof.radius,
+          ownerCoordinates: (admission.ownerCoordinates ?? []).map((c) => ({ x: c.x, y: c.y, z: c.z, source: c.source })),
+        });
+      } catch (error) {
+        this.options.store.record({ type: 'route_admission_error', goalId: admission.goalId, message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+
+  /** Owner coordinates from a correlated clarification answer (same goal epoch; never a regrant). */
+  onOwnerCoordinates(e: { goalEpoch: number; coordinates: Array<{ x: number; y: number; z: number; source: 'instruction' | 'answer' }> }): void {
+    this.routes?.noteOwnerCoordinates(e.goalEpoch, e.coordinates.map((c) => ({ x: c.x, y: c.y, z: c.z, source: c.source })));
   }
 
   /** Goal terminal (MB-MEM-001): verified outcomes become milestones; refs are released. Never throws. */
-  onGoalTerminal(end: { goalId: string; kind: string; reason: string; detail: string; interpretation?: string }): void {
+  onGoalTerminal(end: { goalId: string; epoch?: number; kind: string; reason: string; detail: string; interpretation?: string; source?: GoalSource; state?: string }): void {
+    if (this.routes) this.routes.revoke(`goal_${end.reason}`, end.epoch);
+    this.homeOnTerminal(end);
     if (!this.memory) return;
     try {
       this.memory.onGoalTerminal({ goalId: end.goalId, reason: end.reason, detail: end.detail, kind: end.kind, ...(end.interpretation ? { interpretation: end.interpretation } : {}) });
@@ -194,17 +357,82 @@ export class SkillRuntime {
     }
   }
 
+  /**
+   * Home project bookkeeping after a goal ends: a fresh inspection is stored;
+   * a code-verified complete shelter is recorded in memory; an unfinished
+   * build is marked interrupted with any remaining temporary aid reported as a
+   * partial effect (cleanup never mines/places after ownership is lost).
+   */
+  private homeOnTerminal(end: { goalId: string; reason: string; detail: string }): void {
+    const home = this.home;
+    const inspector = this.inspector;
+    const project = home?.project();
+    const s = this.options.session();
+    if (!home || !inspector || !project || !s || String(s.bot.game.dimension) !== project.dimension) return;
+    try {
+      const { verdicts, verdict } = inspector.inspect(project);
+      void home.verified(verdict).then((p) => {
+        if (verdict.status === 'complete' && p && this.memory) {
+          const outer = project.size.outerX;
+          void this.memory.recordVerifiedHome({ location: { dimension: project.dimension, at: { x: project.origin.x + Math.floor(outer / 2), y: project.origin.y, z: project.origin.z + Math.floor(outer / 2) } }, detail: verdict.detail, goalId: end.goalId });
+          return;
+        }
+        if (verdict.status !== 'complete' && project.checkpoints.length > 0 && end.reason !== 'outcome_verified') {
+          const aid = verdicts.find((v) => v.cell.role === 'aid' && v.status === 'missing');
+          void home.interrupted(`${end.reason}${aid ? `; the temporary construction aid remains at ${aid.cell.at.x},${aid.cell.at.y},${aid.cell.at.z} (partial effect)` : ''}`);
+        }
+      });
+    } catch (error) {
+      this.options.store.record({ type: 'home_hook_error', message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   /** Lifecycle interruptions revoke actuation immediately (handles become stale by epoch). */
+  // Order (C1-approved, after the engine's synchronous revocation prefix):
+  // (1) survival consumes its packet-frozen last-alive capture (no I/O);
+  // (2) memory records EXACTLY that capture and survival links it by captureId ->
+  //     memory fact id (no time matching; a missing link blocks recovery);
+  // (3) route/locator/inspector void connection-scoped state;
+  // (4) lease, ledger, perception and interface invalidation.
   onLifecycle(event: GameLifecycleEvent): void {
-    // MB-MEM-001 FIRST (after the engine's synchronous revocation prefix): a death
-    // snapshot reads the last-alive ledger/perception evidence before they are invalidated.
+    let survivalDeath: ReturnType<SurvivalService['deathContext']> | undefined;
+    if (this.survival) {
+      try {
+        this.survival.onLifecycle(event);
+        if (event.type === 'death') survivalDeath = this.survival.deathContext();
+      } catch (error) {
+        this.options.store.record({ type: 'survival_hook_error', hook: 'onLifecycle', message: error instanceof Error ? error.message : String(error) });
+      }
+    }
     if (this.memory) {
       try {
-        this.memory.onLifecycle(event);
+        const { captureId, ...ctx } = survivalDeath ?? { captureId: undefined };
+        const fact = this.memory.onLifecycle(event, survivalDeath ? (ctx as Parameters<MemoryService['onLifecycle']>[1]) : undefined);
+        if (event.type === 'death' && this.survival && captureId) {
+          if (fact) this.survival.linkIncident(captureId, fact.id);
+          else this.options.store.record({ type: 'survival_incident_unlinked', captureId, reason: 'memory did not record the capture (disabled, read-only or conflicted); recovery stays blocked' });
+        }
       } catch (error) {
         this.options.store.record({ type: 'memory_hook_error', hook: 'onLifecycle', message: error instanceof Error ? error.message : String(error) });
       }
     }
+    if (this.locator) {
+      try {
+        this.locator.onLifecycle(event);
+      } catch (error) {
+        this.options.store.record({ type: 'locator_hook_error', message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (this.routes && (event.type === 'death' || event.type === 'dimension_change' || event.type === 'ended' || event.type === 'respawn')) this.routes.revoke(`lifecycle_${event.type}`);
+    if (event.type === 'ended') {
+      this.detachMovement?.();
+      this.detachMovement = undefined;
+    }
+    if (event.type === 'ready' && this.routes) {
+      const session = this.options.session();
+      if (session) this.detachMovement = this.routes.attachMovement(session, () => this.options.goalEpoch());
+    }
+    if (event.type === 'death' || event.type === 'dimension_change' || event.type === 'ended' || event.type === 'respawn') this.inspector?.reset();
     if (event.type === 'death' || event.type === 'dimension_change' || event.type === 'ended') {
       this.leases.revokeCurrent(`lifecycle_${event.type}`);
       this.ledger.invalidate(`lifecycle_${event.type}`);

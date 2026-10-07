@@ -255,17 +255,20 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
    * ledger/perception (so a death can still read the last-alive evidence),
    * and after the goal engine's synchronous revocation prefix.
    */
-  onLifecycle(event: GameLifecycleEvent): void {
+  onLifecycle(event: GameLifecycleEvent, death?: DeathContext): MemoryFact | undefined {
     if (event.type === 'ready') {
       this.onConnectionReady();
-      return;
+      return undefined;
     }
-    if (event.type === 'death' && this.world) this.captureDeath(this.world.deathContext());
+    // MB-FLOW-003: with a survival capture, memory records EXACTLY that frozen evidence (same capture), never a re-read.
+    let fact: MemoryFact | undefined;
+    if (event.type === 'death') fact = death ? this.captureDeath(death) : this.world ? this.captureDeath(this.world.deathContext()) : undefined;
     if (event.type === 'death' || event.type === 'respawn' || event.type === 'dimension_change' || event.type === 'ended') {
       const n = this.refs.invalidateAll();
       if (n > 0) this.options.record?.({ type: 'memory_refs_invalidated', reason: event.type, refs: n });
     }
     if (event.type === 'ended') void this.flush();
+    return fact;
   }
 
   /** Records an own death incident (sync, no I/O); persistence is queued. */
@@ -283,7 +286,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
         occurredAtMs: now,
         accuracy: ctx.accuracy,
         ...(ctx.positionAgeMs !== undefined ? { positionAgeMs: Math.round(ctx.positionAgeMs) } : {}),
-        cause: { kind: 'unknown', detail: 'no death cause is parsed yet (MB-FLOW-003 seam)' },
+        cause: ctx.cause ? { kind: 'observed', detail: ctx.cause.detail.slice(0, 200) } : { kind: 'unknown', detail: 'no server death message was captured' },
         lastAliveInventory: {
           source: ctx.inventory.source,
           ...(ctx.inventory.capturedAtMs !== undefined ? { capturedAtMs: ctx.inventory.capturedAtMs, ageMsAtDeath: Math.max(0, now - ctx.inventory.capturedAtMs) } : {}),
@@ -299,7 +302,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
   }
 
   /** MB-FLOW-003 seam: verified regained items update an incident's recovery record. */
-  async updateDeathRecovery(factId: string, update: { regained?: Array<{ key: string; count: number }>; status?: 'abandoned'; detail?: string }, evidence: { detail: string; actionId?: string; capability?: string }): Promise<MemoryWriteOutcome> {
+  async updateDeathRecovery(factId: string, update: { regained?: Array<{ key: string; count: number }>; retained?: Array<{ key: string; count: number }>; status?: 'abandoned'; detail?: string }, evidence: { detail: string; actionId?: string; capability?: string }): Promise<MemoryWriteOutcome> {
     if (!this.writable || !this.book) return { ok: false, reason: 'memory_not_writable', detail: this.status().detail };
     const now = this.options.clock.now();
     const fact = this.book.updateDeathRecovery(factId, update, { kind: 'skill_outcome', atMs: now, detail: clip(evidence.detail, 200), ...evidenceIds({ actionId: evidence.actionId, capability: evidence.capability }) }, now);
@@ -562,6 +565,16 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
       nowMs: now,
     });
     return this.persistOutcome(r.fact, r.change, r.affected.map((f) => f.id), r.affected.length ? `supersedes ${r.affected.map((f) => f.id).join(', ')}` : r.change === 'created' ? 'new owner designation' : 'confirmed existing designation', before);
+  }
+
+  /** MB-FLOW-001: records a code-verified complete shelter (never from a planner claim or a site alone). */
+  async recordVerifiedHome(input: { location: MemoryLocation; detail: string; goalId?: string }): Promise<MemoryWriteOutcome> {
+    this.ensureScope();
+    if (!this.writable || !this.book) return { ok: false, reason: 'memory_not_writable', detail: `memory cannot be written: ${this.status().detail}` };
+    const now = this.options.clock.now();
+    const before = this.captureFacts();
+    const r = this.book.recordVerifiedHome({ location: input.location, evidence: { kind: 'skill_outcome', atMs: now, detail: clip(input.detail, 200), confirmation: 'server_packet', capability: 'build_home', ...evidenceIds({ goalId: input.goalId }) }, nowMs: now });
+    return this.persistOutcome(r.fact, r.change, r.affected.map((f) => f.id), 'verified shelter recorded', before);
   }
 
   /** Planner/decision note: always UNVERIFIED (never trusted, never a target). */
