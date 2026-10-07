@@ -95,6 +95,24 @@ Key rules:
 
 ## Running
 
+### Local Mac shortcuts
+
+On Jake's configured Mac, double-click these files in Finder or run them from this repository:
+
+```sh
+./play.command       # start Chunkbot and open the dashboard; reuse an existing session
+./dashboard.command  # open the dashboard without logging the bot in
+./logout.command     # log the bot out; keep the dashboard open
+```
+
+The dashboard for this installation is <http://127.0.0.1:7382/>. Chunkbot runs in the background, so closing the launch terminal leaves him online. Give him goals in Minecraft with `!chunkbot ...`; `!chunkbot stop` stops gameplay while `logout.command` disconnects him.
+
+The shortcuts use the registered accepted release, your private world config and saved bot login. The ignored `var/live-chunkbot/operator-profile.json` is already installed on this Mac; another machine needs its own registration described in [the local controls review](docs/reviews/mb-ops-002-local-controls.md). Credentials come from the environment or the local vault helper. Starting an existing session preserves its process and spending budget; starting after logout creates a fresh run. These shortcuts do not install updates or reconnect automatically.
+
+Read-only status: `python3 -B scripts/play-controls.py status`. Add `--no-open` to a shortcut to skip opening a browser.
+
+### Application CLI
+
 ```sh
 npm run chunkbot -- connect-check --config <file>   # join, report version/dimension, leave, exit
 npm run chunkbot -- run --config <file>             # join and accept owner commands

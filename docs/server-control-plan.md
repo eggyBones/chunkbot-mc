@@ -1,6 +1,6 @@
 # MB-OPS-002 — Vanilla slash commands to bring Chunkbot online or log him out
 
-Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Status: **Proposed; unassigned.**
+Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Status: **Local controls MB-OPS-002-L1 accepted; vanilla slash-command bridge proposed and unassigned.**
 Parent: [companion upgrades](companion-upgrades-plan.md). Shared runtime: [verified updates](live-update-plan.md).
 
 ## Outcome and confirmed decisions
@@ -75,3 +75,9 @@ Inspect src/cli.ts, src/app/app.ts, src/game/connection.ts, src/game/auth.ts, sr
 Run actual affected AGENTS.md typecheck/build/test, doctor and connection/identity/lifecycle live checks; add a dedicated command-bridge harness since existing scripts do not cover offline trigger control. Controller/planner/skill changes require their existing checks. Coordinator validates any real-provider cancellation within the existing cap. Keep all fault injection and datapack experiments in separate loopback fixtures; no live-world reset or server modification is performed for this proposal.
 
 Remaining delivery: shared manager, private bridge, fixture-proved vanilla control/identity protocol, feedback, installer, runtime evidence and operator procedure. No worker or server setup is assigned by this document.
+
+## Accepted local slice MB-OPS-002-L1
+
+On 2026-10-07 Jake requested local scripts to start Chunkbot and the dashboard, and log the bot out from this Mac. `play.command`, `dashboard.command` and `logout.command` are implemented and independently accepted; [operator behavior, registration and evidence](reviews/mb-ops-002-local-controls.md). They use the registered accepted artifact and existing private login/config, serialize starts, preserve an existing session, and leave the read-only viewer open after logout. The coordinator verified 31 credential-free tests, actual fixture startup/duplicate/logout/TCP closure and live reuse without interruption. Native Claude drafted the implementation; Jake explicitly authorized Codex completion after Claude reached its subscription limit.
+
+This local slice does not install the proposed vanilla command bridge or automatic live updates. Their remaining delivery above is unchanged.

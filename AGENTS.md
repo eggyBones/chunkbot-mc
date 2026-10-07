@@ -83,6 +83,7 @@ Record current task and runtime evidence in [docs/agent-supervision.md](docs/age
 
 ## Runtime constraints
 
+- `play.command`, `dashboard.command` and `logout.command` call the Python3 stdlib controller `scripts/play-controls.py`. The coordinator-prepared ignored `var/live-chunkbot/operator-profile.json` pins the accepted artifact's dist digest, Node/config/data paths and dashboard port. Controls serialize local mutations, prove process birth and the registered command before signalling, reuse the running bot/viewer, and never build/install/sign in/reconnect automatically. Workers must use credential-free test profiles, never the real live controls or vault helper.
 - Use `/opt/homebrew/Cellar/node@24/24.21.0/bin` first in `PATH`; the generic Homebrew `node` currently fails to load a dylib.
 - Runtime data lives in git-ignored `var/`: `var/runs/` evidence, `var/auth/microsoft/` bot token cache, `var/fixture/` (JRE, server, world, RCON password), and `var/live-check/` reports.
 - Installed skill-layer pins: mineflayer-pathfinder 2.4.5, prismarine-block 1.23.0, prismarine-item 1.18.0 (loaded through `createRequire`), and vec3 0.1.10.
@@ -101,6 +102,7 @@ Run these from the repository root with the Node 24 `PATH` above. Capture exit c
 
 | Change touches | Command |
 | --- | --- |
+| Local controls (`scripts/play-controls.py`, `.command` launchers) | `python3 -B tests/play_controls_test.py` (fake artifact, dummy credentials, process/socket and ownership cases); `zsh -n play.command`, `zsh -n dashboard.command`, `zsh -n logout.command`; coordinator-owned start/duplicate/logout/dashboard trial on an exclusively leased loopback fixture with independent config/data, followed by read-only live status/reuse. Never test logout on Jake's active live session. |
 | Any TypeScript (src, tests, scripts) | `npm run typecheck` |
 | Application source | `npm run build`, then `npm test` |
 | Diagnostics/config | `npm run doctor -- --config config/examples/fixture.json` (read-only; exit 0 expected) |

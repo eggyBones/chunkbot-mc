@@ -1,3 +1,9 @@
+# Local controls accepted — 2026-10-07 UTC
+
+Jake's latest request authorized rejoining the live world and simple local start/dashboard/logout controls. Cached eggyBot69 is online using the isolated accepted d348d58 application artifact; its dashboard is port7382. The new shortcuts and [independent review](reviews/mb-ops-002-local-controls.md) are accepted: 31 credential-free tests, a coordinator-only loopback startup/logout trial with TCP/publisher evidence, and reuse of the actual live process without restarting it. Credentials/profile/config remain ignored and external to source. Native Claude reached its subscription limit; Jake explicitly authorized Codex to finish this local slice. Vanilla server triggers and automatic live updates remain unimplemented. Separate gameplay feature development is not included in this controls publication.
+
+Historical batch001 evidence follows.
+
 # Coordinator supervision checkpoint
 
 Updated: 2026-10-06 09:55 UTC. Coordinator: Codex. This checkpoint supersedes historical launch/continuation instructions below.
