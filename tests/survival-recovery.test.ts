@@ -270,7 +270,7 @@ describe('survival death recovery', () => {
     deathAndRespawn(h);
     assert.equal(h.service.assess(assessInput(h, { autonomyAllowed: false })).kind, 'none');
     assert.equal(h.service.assess(assessInput(h, { active: { kind: 'owner_goal', goalId: 'goal-own1', goalEpoch: 3 } })).kind, 'none');
-    assert.equal(h.service.assess(assessInput(h, { ownerIntentPending: true })).kind, 'none');
+    assert.equal(h.service.assess(assessInput(h, { ownerIntakePending: true })).kind, 'none');
   });
 
   it('interrupted owner intent stays visible until a NEW owner instruction; never resubmitted', () => {

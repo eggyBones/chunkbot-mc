@@ -27,7 +27,7 @@ No existing file was edited.
 
 - `npm run typecheck`: 0
 - `npm run build`: 0
-- `npm test`: 0, 571/571 passing. That includes 88 survival tests across 10 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), store, skills, wiring and harness guard.
+- `npm test`: 0, 576/576 passing. That includes 93 survival tests across 11 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), store, skills, wiring and harness guard.
 - The harness guard spawns `scripts/survival-live-check.ts` with a missing or invalid lease. Each run exits 2 before any password read, RCON command, join or output directory.
 - Not run (they need a lease or provider): the fixture gates, live-check, skills-live-check, planner and Jev checks, doctor.
 
@@ -73,6 +73,11 @@ No existing file was edited.
   - Inventory room: owner-designated storage only (memory `container` facts with source `owner_statement`), and nothing is ever dropped. Tools, armor, food, reserves and valuables are never deposited.
   - Resupply: a low/high reserve (default safe food 2/6) with a 15-minute cooldown.
   - Global caps: 12 automatic admissions per hour. An unchanged blocked signature is never re-proposed.
+- **Interrupted owner intent (C4).** `SurvivalAssessmentInput` splits the old ambiguous flag:
+  - `ownerIntakePending`: LIVE intake only, i.e. a preparing or handing-off instruction, or an owner question awaiting an answer. Survival yields to it.
+  - `ownerIntentInterrupted`: a retained interrupted directive. Survival then proposes only necessary support (`eat`, `rest`, `death_recovery`) serving `owner_intent`; other upkeep and unrelated progression wait.
+  - Survival also ORs in its own durable record, so a restart, or a supervisor that lost its in-process state, still sees the directive. `interruptedOwnerIntent()` lists durable unresolved directives so the supervisor can keep progression blocked.
+  - Only `onOwnerInstruction` (a new explicit instruction) or `dismissInterrupted` clears it, and both persist. Pause and resume don't clear it, and nothing is replayed or resubmitted with a new baseline.
 - **Priority and continuation (R5, R9).**
   - Lifecycle, then `revoke_unsafe` (low health, once per goal epoch, keeping owner intent), then owner work or a pending owner instruction, then support, then progression.
   - Pause blocks every proposal.
@@ -101,15 +106,16 @@ No existing file was edited.
 3. **Lifecycle order.** Engine revocation, then `survival.onLifecycle(e)`, then memory captures with `survival.deathContext()` and returns the captured `MemoryFact` (approved), then `survival.linkIncident(ctx.captureId, fact.id)`, then ledger, perception and interface invalidation. `memory.close()` and `survival.close()` run after owned cleanup.
 4. **TaskRuntime (MB-FLOW-003-C2, progression owns the fix).** Add `lowHealthAllowance?: LowHealthAllowancePort`. At the guard, `check`, then `allowedUnderAllowance(candidates, check)`. Immediately before EVERY dispatch under an allowance — the Jev-chosen action after its fresh revalidation AND every sustained local continuation — call `reserve(allowanceId, task, candidate, freshSnapshot)`; a refusal dispatches nothing. `reserve` counts before execution, so an abort or exception still consumed the action, and the same action id is never counted twice. `consumed(...)` after the outcome is an idempotent note; an unreserved dispatch is still counted conservatively.
 5. **Predicate.** Add `SurvivalStatePredicateSchema` to the atomic union, evaluated through `survival.evaluateSurvivalState(p, owner)`, and expose it in the planner wire schema.
-6. **Supervisor.**
+6. **Supervisor (C4: progression owns the shared flags and persistence).** Pass `ownerIntakePending` only for a live preparing or handing-off instruction or an unanswered owner question, and `ownerIntentInterrupted` for a retained interrupted directive. Block unrelated progression while either `ownerIntentInterrupted` or `survival.interruptedOwnerIntent().length > 0`, including after restart. Bare `resume` must not clear it; a new explicit owner instruction calls `onOwnerInstruction`.
+7. **Supervisor (ports).**
    - `assess` gets `ownerIntentInterrupted` from `survival.hasInterruptedOwnerIntent()` or the supervisor's own owner-intent state.
    - Proposals become `supportGoalSource(p, n)`: `planner_goal` uses its instruction, with `context` in the autonomy planner context; `code_task` goes through `supportTaskSpec(p)` and the same-admission support-task seam.
    - Report back with `onSupportAdmitted` (attaching the returned grant to that task), `onSupportTerminal(counters)`, `onOwnerGoalEnd`, `onOwnerInstruction`, `dismissInterrupted` and `abandonRecovery`.
    - Handle `revoke_unsafe` by revoking the running goal with owner intent retained.
-7. **Skills.** Register `survivalSkills(service)`, which is empty when disabled.
-8. **Status and dashboard.** Use `survival.statusLines(now)` and `survival.status(now)`, at most 4,000 characters, read-only.
-9. **Routing.** Pass `farRoute` and the own-death provider to locator's RoutePort when the corrected routing is integrated. `SurvivalService` implements the canonical `RouteDestinationProvider` (locator `b323883`, cherry-picked unchanged): `current(ctx)` returns `provenance: 'own_incident'` only for the bound recovery goal epoch, connection and dimension, with an exact capture → memory fact → episode link, and only while the whole incident identity frozen at admission (episode, fact, dimension, coordinates, source) is unchanged. The `destinationId` encodes that whole identity; a changed coordinate gives no destination (`destination_changed`). Far recovery stays blocked until then.
-10. **Optional memory extension.** `updateDeathRecovery({retained})` so a respawn-retained inventory isn't recorded as "regained". The current use is labeled in the detail text.
+8. **Skills.** Register `survivalSkills(service)`, which is empty when disabled.
+9. **Status and dashboard.** Use `survival.statusLines(now)` and `survival.status(now)`, at most 4,000 characters, read-only.
+10. **Routing.** Pass `farRoute` and the own-death provider to locator's RoutePort when the corrected routing is integrated. `SurvivalService` implements the canonical `RouteDestinationProvider` (locator `b323883`, cherry-picked unchanged): `current(ctx)` returns `provenance: 'own_incident'` only for the bound recovery goal epoch, connection and dimension, with an exact capture → memory fact → episode link, and only while the whole incident identity frozen at admission (episode, fact, dimension, coordinates, source) is unchanged. The `destinationId` encodes that whole identity; a changed coordinate gives no destination (`destination_changed`). Far recovery stays blocked until then.
+11. **Optional memory extension.** `updateDeathRecovery({retained})` so a respawn-retained inventory isn't recorded as "regained". The current use is labeled in the detail text.
 
 ## Lease request (R-G1/R-G2/R-G3 gate)
 
