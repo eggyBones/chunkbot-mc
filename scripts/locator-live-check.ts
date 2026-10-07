@@ -278,6 +278,22 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   };
 
   const restores: Array<{ label: string; fn: () => Promise<unknown> }> = [];
+  const startedAt = Date.now();
+  const lifecycleLog: Array<{ dtMs: number; type: string }> = [];
+  /**
+   * Official-rule oracle from SERVER positions of both players (C6): expected
+   * variant (azimuth > 332; chunk when the owner's chunk is clearly outside the
+   * view distance; block when clearly inside; either near the border) and the
+   * true relative sector. Positions stay in the harness; only offsets are reported.
+   */
+  const oracle = async () => {
+    const b = await serverPos(BOT);
+    const o = await serverPos(OWNER);
+    const d = Math.hypot(o.x - b.x, o.y - b.y, o.z - b.z);
+    const chunks = Math.hypot(Math.floor(o.x / 16) - Math.floor(b.x / 16), Math.floor(o.z / 16) - Math.floor(b.z / 16));
+    const variants = d > 332 ? ['azimuth'] : chunks <= viewDistance - 1 ? ['vec3i'] : chunks >= viewDistance + 2 ? ['chunk'] : ['vec3i', 'chunk'];
+    return { variants, sector: sectorOf(o.x - b.x, o.z - b.z), dy: o.y - b.y, text: `server offset owner-bot (${(o.x - b.x).toFixed(1)}, ${(o.y - b.y).toFixed(1)}, ${(o.z - b.z).toFixed(1)}), distance ${d.toFixed(1)}, chunk distance ${chunks.toFixed(1)}` };
+  };
   const restoreFailures: string[] = [];
   let owner: Awaited<ReturnType<typeof fixturePlayer>> | undefined;
   let guest: Awaited<ReturnType<typeof fixturePlayer>> | undefined;
@@ -328,7 +344,22 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     locator.attach(client, session.connectionEpoch, true);
     tapPackets(client);
     routes.attachMovement(session, () => epoch);
-    await tp(BOT, 'base', ' -90 0');
+    // MB-LOC-001-C6: settle (alive, no pending respawn) and PROVE the bot's server
+    // position before any oracle; never assume where the server has it.
+    game.onLifecycle((e) => lifecycleLog.push({ dtMs: Date.now() - startedAt, type: e.type }));
+    const settle = Date.now() + 15_000;
+    while (Date.now() < settle && !((game.session()?.bot.health ?? 0) > 0)) await sleep(250);
+    await sleep(2_000);
+    let placed = false;
+    for (let attempt = 0; attempt < 3 && !placed; attempt += 1) {
+      await tp(BOT, 'base', ' -90 0');
+      await sleep(1_500);
+      const sp = await serverPos(BOT);
+      const cp = game.session()?.bot.entity.position;
+      placed = Math.hypot(sp.x - BASE.x, sp.z - BASE.z) < 1.5 && !!cp && Math.hypot(cp.x - sp.x, cp.z - sp.z) < 1.5;
+      lifecycleLog.push({ dtMs: Date.now() - startedAt, type: `bot_placement_attempt_${attempt + 1}:${placed ? 'verified' : 'mismatch'}` });
+    }
+    assert(placed, 'the bot could not be verified at the base position (server and client)');
     owner = await fixturePlayer(OWNER);
     restores.push({ label: 'owner effects/head/sneak cleared', fn: async () => { owner?.setControlState('sneak', false); await rcon(`effect clear ${OWNER}`); await rcon(`item replace entity ${OWNER} armor.head with air`); } });
     await sleep(1_500);
@@ -351,17 +382,19 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         ['west 400 (beyond 332)', 'ownerWest400', 'azimuth'],
         ['north_east 60', 'ownerNorthEast60', 'vec3i'],
       ] as const) {
-        const dx = TELEPORTS[key]!.x - BASE.x;
-        const dz = TELEPORTS[key]!.z - BASE.z;
         await check(`G1-${label.split(' ')[0]}-${expect}`, `variant and coarse cue for owner offset ${label}`, async (ev) => {
           const t0 = Date.now();
           await ownerAt(key);
+          await sleep(500);
+          const or = await oracle();
+          ev.push(`oracle: ${or.text}; official rule expects ${or.variants.join(' or ')}; planned ${expect}`);
+          assert(or.variants.includes(expect), `the setup produced the planned geometry for ${expect}`);
           const p = await waitOwner(t0, (x) => x.variant === expect);
           ev.push(`owner statements since move: ${sinceOwner(t0).map((x) => `${x.op}:${x.variant}`).join(', ') || 'none'}`);
           assert(p, `a ${expect} statement for the owner`);
           await sleep(300);
           const h = hint();
-          const want = sectorOf(dx, dz);
+          const want = (await oracle()).sector;
           ev.push(`cue ${h.direction} ${h.distanceBand} ${h.elevation} (${h.precision}); expected sector ${want}`);
           assert(h.actionable && h.direction === want, 'cue sector matches the true relative direction');
           if (expect === 'azimuth') assert(h.distanceBand === 'unknown' && h.elevation === 'unknown', 'azimuth: no distance/height');
@@ -375,22 +408,26 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         await ownerAt('ownerAbove');
         await waitOwner(t0, (x) => x.variant === 'vec3i');
         await sleep(300);
+        const or = await oracle();
         const h = hint();
-        ev.push(`cue ${h.direction} ${h.elevation}`);
+        ev.push(`oracle: ${or.text}; cue ${h.direction} ${h.elevation}`);
+        assert(or.dy > 3, 'the owner is actually more than 3 blocks above (server positions)');
         assert(h.elevation === 'above', 'above');
         await rcon(`effect clear ${OWNER}`);
         await ownerAt('ownerLevel30');
       });
 
       await check('G1-guest', 'a second player is tracked but never the owner', async (ev) => {
+        guestUuid = offlinePlayerUuid('FixtureGuest'); // before the join: its join-time track packet is attributed (C6)
         guest = await fixturePlayer('FixtureGuest');
-        guestUuid = offlinePlayerUuid('FixtureGuest');
         await tp('FixtureGuest', 'guestWest30');
         await sleep(1_500);
         const st = locator.status();
         ev.push(`others tracked ${st.counters.otherTracked}; guest statements ${packets.filter((p) => p.who === 'guest').length}`);
         assert(packets.some((p) => p.who === 'guest'), 'guest waypoint received');
-        assert(hint().direction === 'east', 'owner cue unaffected by the guest (west)');
+        const or = await oracle();
+        ev.push(`oracle: ${or.text}; cue ${hint().direction}`);
+        assert(hint().direction === or.sector, 'owner cue unaffected by the guest (west of the bot)');
       });
 
       for (const [id, title, hide, show] of [
@@ -647,7 +684,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   const locatorEvents = store.events.filter((e) => String(e.type).startsWith('locator_') || String(e.type).startsWith('route_')).slice(-200);
   writeFileSync(
     join(outDir, 'report.json'),
-    `${JSON.stringify({ check: 'MB-LOC-001 locator live gates (pre-integration harness)', fixture: PINS.profile, lease, approvals: { rules: approveRules ?? null, scene: approveScene ?? null }, footprint: LOCATOR_FOOTPRINT, teleports: TELEPORTS, flatBaseline: FLAT_BASELINE, viewDistance, pass, restoreFailures, results, setup: setupLog, packetEvidence: { count: packets.length, sample: packets.slice(0, 400).map((p) => ({ dtMs: p.t - (packets[0]?.t ?? p.t), op: p.op, variant: p.variant, who: p.who })) }, locatorEvents }, null, 2)}\n`,
+    `${JSON.stringify({ check: 'MB-LOC-001 locator live gates (pre-integration harness)', fixture: PINS.profile, lease, approvals: { rules: approveRules ?? null, scene: approveScene ?? null }, footprint: LOCATOR_FOOTPRINT, teleports: TELEPORTS, flatBaseline: FLAT_BASELINE, viewDistance, pass, restoreFailures, lifecycle: lifecycleLog, results, setup: setupLog, packetEvidence: { count: packets.length, sample: packets.slice(0, 400).map((p) => ({ dtMs: p.t - (packets[0]?.t ?? p.t), op: p.op, variant: p.variant, who: p.who })) }, locatorEvents }, null, 2)}\n`,
   );
   process.stdout.write(`${pass ? 'PASS' : 'FAIL'} locator live check: ${counted.filter((r) => r.pass === true).length}/${counted.length} (${results.length - counted.length} skipped) — ${outDir}\n`);
   return pass ? 0 : 1;
