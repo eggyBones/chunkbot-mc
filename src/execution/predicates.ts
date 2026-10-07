@@ -17,6 +17,7 @@ import type {
   InventoryBaseline,
   MemoryPredicatePort,
   MemoryRefResolver,
+  SurvivalPredicatePort,
   OutcomePredicate,
   PredicateOwner,
   PredicateEvaluation,
@@ -52,6 +53,10 @@ export interface PredicateDeps {
   leases: ActuatorLeases;
   /** MB-MEM-001 (optional): memory_ref targets and memory_state evaluation; absent => unknown. */
   memory?: MemoryRefResolver & MemoryPredicatePort;
+  /** MB-FLOW-001 (optional): home shelter verification; absent => unknown. */
+  structures?: { evaluateStructure(expect: 'site_approved' | 'enclosed' | 'complete'): PredicateEvaluation };
+  /** MB-FLOW-003 (optional): survival routine conditions; absent => unknown. */
+  survival?: SurvivalPredicatePort;
 }
 
 /** Baseline key of the memory write sequence captured when a memory_state predicate is bound. */
@@ -326,6 +331,17 @@ export class PredicateEngine implements PredicateEvaluator {
         if (died) return result('satisfied', 'server reported the entity death status', { entityId: id });
         const gone = !s.bot.entities[id];
         return result(gone ? 'unknown' : 'unsatisfied', gone ? 'entity is gone but no death status was observed; not counted as defeated' : 'entity still present', { entityId: id, gone });
+      }
+      case 'structure_state': {
+        const structures = this.deps.structures;
+        if (!structures) return result('unknown', 'home construction is not installed in this run (autonomy home disabled or no durable scope)');
+        return structures.evaluateStructure(p.expect);
+      }
+      case 'survival_state': {
+        const survival = this.deps.survival;
+        if (!survival) return result('unknown', 'the survival policy is not installed in this run');
+        const e = survival.evaluateSurvivalState(p, bound.owner);
+        return { status: e.status, predicate: 'survival_state', detail: e.detail, evidence: e.evidence };
       }
       case 'memory_state': {
         const memory = this.deps.memory;
