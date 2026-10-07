@@ -8,6 +8,9 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { PROJECT_ROOT } from '../src/app/fixture-layout.ts';
+// Import safety is itself under test: importing the harness runs nothing (no output dir is created).
+const before = existsSync(join(PROJECT_ROOT, 'var', 'live-check')) ? readdirSync(join(PROJECT_ROOT, 'var', 'live-check')).sort() : [];
+const harness = await import('../scripts/locator-live-check.ts');
 
 const SCRIPT = join(PROJECT_ROOT, 'scripts', 'locator-live-check.ts');
 const source = readFileSync(SCRIPT, 'utf8');
@@ -36,6 +39,10 @@ describe('MB-LOC-001 locator harness guard', () => {
     assert.ok(/finally \{[\s\S]*restores\.reverse\(\)/.test(runBody), 'restorations run in finally');
   });
 
+  it('importing the harness module creates no output and starts nothing', () => {
+    assert.deepEqual(listLive(), before);
+  });
+
   for (const args of [[], ['--fixture', '26.2'], ['--fixture-lease'], ['--fixture-lease', '--fixture', '26.2'], ['--fixture-lease', '../x;rm'], ['--gates', 'g1,g2', '--approve-rules', 'x1']]) {
     it(`refuses without a valid lease: ${JSON.stringify(args)}`, () => {
       const before = listLive();
@@ -46,4 +53,67 @@ describe('MB-LOC-001 locator harness guard', () => {
       assert.deepEqual(listLive(), before, 'no live-check output directory created');
     });
   }
+});
+
+describe('MB-LOC-001-C4 declared footprint, flat baseline and restoration', () => {
+  const F = harness.LOCATOR_FOOTPRINT;
+  it('EVERY teleport destination is inside the declared footprint (west 400, south 200, north-east, elevated, nether roof)', () => {
+    for (const [name, at] of Object.entries(harness.TELEPORTS)) assert.ok(harness.insideBox(F.overworldTeleports, at), `${name} ${JSON.stringify(at)}`);
+    const t = harness.TELEPORTS;
+    assert.equal(t['ownerWest400']!.x, 600.5);
+    assert.equal(t['ownerSouth200']!.z, 1200.5);
+    assert.equal(t['ownerNorthEast60']!.z, 958.5);
+    assert.equal(t['ownerAbove']!.y, -46);
+    assert.ok(harness.insideBox(F.netherTeleports, harness.NETHER_ROOF));
+    assert.equal(harness.NETHER_ROOF.y, 128, 'on top of the nether bedrock roof, never inside unknown rock');
+    for (const k of ['base', 'ownerG3'] as const) assert.ok(harness.insideBox(F.g3BotEnvelope, t[k]!), `${k} inside the G3 envelope`);
+  });
+
+  it('the harness teleports ONLY through the checked helper, with declared keys', () => {
+    const code = source.split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    assert.equal((code.match(/run tp \$\{/g) ?? []).length, 2, 'exactly the two helper teleports (overworld, nether roof)');
+    assert.ok(!/rcon\(`tp /.test(code), 'no raw tp');
+    const keys = [...code.matchAll(/(?:ownerAt\(|tp\([^,]+,)\s*'([A-Za-z0-9]+)'/g)].map((m) => m[1]!);
+    assert.ok(keys.length >= 15);
+    for (const k of keys) assert.ok(k === 'netherRoof' || k in harness.TELEPORTS, `undeclared teleport key ${k}`);
+    const ownerOffsets = [...code.matchAll(/'(owner[A-Za-z0-9]+)'/g)].map((m) => m[1]!);
+    for (const k of ownerOffsets) assert.ok(k in harness.TELEPORTS, `undeclared ${k}`);
+  });
+
+  it('the flat baseline is the dedicated fixture default (scripts/fixture.ts flat, no generator settings) and restoration rewrites EVERY scene layer once', () => {
+    const fixtureSrc = readFileSync(join(PROJECT_ROOT, 'scripts', 'fixture.ts'), 'utf8');
+    assert.match(fixtureSrc, /'level-type=minecraft\\\\:flat'/);
+    assert.ok(!/generator-settings/.test(fixtureSrc), 'default flat layers (no custom generator settings)');
+    assert.deepEqual(harness.FLAT_BASELINE.map((l: { y: number; block: string }) => `${l.y}:${l.block}`), ['-64:bedrock', '-63:dirt', '-62:dirt', '-61:grass_block']);
+    const sc = F.scene;
+    const covered = new Map<number, string>();
+    for (const cmd of harness.baselineRestoreCommands(sc)) {
+      const m = /^fill (-?\d+) (-?\d+) (-?\d+) (-?\d+) (-?\d+) (-?\d+) ([a-z_]+)$/.exec(cmd);
+      assert.ok(m, cmd);
+      const [x1, y1, z1, x2, y2, z2] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number];
+      assert.deepEqual([x1, z1, x2, z2], [sc.x1, sc.z1, sc.x2, sc.z2]);
+      assert.ok((x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1) <= 32_768, 'within the fill volume limit');
+      for (let y = y1; y <= y2; y += 1) {
+        assert.ok(!covered.has(y), `layer ${y} written twice`);
+        covered.set(y, m[7]!);
+      }
+    }
+    for (let y = sc.y1; y <= sc.y2; y += 1) assert.ok(covered.has(y), `layer ${y} restored (bedrock/dirt/grass/air)`);
+    assert.equal(covered.get(-64), 'bedrock');
+    assert.equal(covered.get(-63), 'dirt');
+    assert.equal(covered.get(-61), 'grass_block');
+    assert.equal(covered.get(-60), 'air');
+  });
+
+  it('the scene and its read-only reference region are disjoint, equally sized and comparable in one execute-if-blocks', () => {
+    const a = F.scene;
+    const b = F.sceneReference;
+    assert.ok(a.x2 < b.x1, 'disjoint');
+    assert.deepEqual([a.x2 - a.x1, a.y1, a.y2, a.z1, a.z2], [b.x2 - b.x1, b.y1, b.y2, b.z1, b.z2]);
+    assert.ok((a.x2 - a.x1 + 1) * (a.y2 - a.y1 + 1) * (a.z2 - a.z1 + 1) <= 32_768);
+    const runBody = source.slice(source.indexOf('async function run('), source.indexOf('async function main('));
+    assert.ok(/G5-baseline/.test(runBody) && runBody.indexOf('G5-baseline') < runBody.indexOf("scenario('G5-lava'"), 'baseline proven before any scene write');
+    assert.ok(/restoreFailures\.length === 0/.test(runBody), 'a failed restoration fails the whole report');
+    assert.ok(/throw new Error\(`scene restoration not verified/.test(runBody), 'restoration is re-verified, not assumed');
+  });
 });
