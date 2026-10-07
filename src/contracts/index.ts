@@ -1,6 +1,7 @@
 // Single source of truth for shared application contracts. Dependent modules
 // import from here; Codex reconciles material changes.
 export * from './action.ts';
+export * from './autonomy.ts';
 export * from './capability.ts';
 export * from './clarification.ts';
 export * from './common.ts';
