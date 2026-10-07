@@ -95,6 +95,11 @@ export class FakeSurvival implements SurvivalPolicyPort {
     this.ownerInstructions.push(atMs);
   }
   abandonRecovery(): void {}
+  readonly dismissed: string[] = [];
+  dismissInterrupted(goalId: string): boolean {
+    this.dismissed.push(goalId);
+    return true;
+  }
   status(): SurvivalStatus {
     return { enabled: true, store: { state: 'ready', detail: 'fake' }, incidents: [], interrupted: [], blocked: [], cooldowns: [], admissionsLastHour: this.admitted.length, gated: [] };
   }
@@ -143,6 +148,7 @@ export function autonomyHarness(script: (request: PlannerRequest, index: number)
       onLatchChanged: (latch, cause) => supervisor.onLatchChanged(latch, cause),
       onGoalAdmitted: (a) => supervisor.onGoalAdmitted(a),
       onGoalTerminal: (e) => supervisor.onGoalTerminal(e),
+      onPreparationDiscarded: (p) => supervisor.onPreparationDiscarded(p),
     },
     log,
   );

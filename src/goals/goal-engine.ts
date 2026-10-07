@@ -59,6 +59,7 @@ import {
   type PreparationDiscardReason,
   type PriorResultRef,
   type RegistryFacts,
+  type RouteProposalContext,
   type EvidenceEvent,
   type WindowGap,
   isActiveGoalState,
@@ -163,13 +164,23 @@ export interface GoalEngineDeps {
    * Must not throw; failures are recorded.
    */
   onLatchChanged?: (latch: ControlLatch, cause: 'owner_stop' | 'resume') => void;
+  /** MB-LOC-001: the goal epoch's route view for planner requests and proposal validation (code-owned; no coordinates). */
+  routeView?: (goalEpoch: number) => PlannerRequest['route'] | undefined;
+  /** MB-LOC-001: coarse owner locator hint for planner requests. */
+  locatorHint?: () => PlannerRequest['locator'] | undefined;
+  /** Optional evaluators installed in this run (proposal validation of structure_state / survival_state). */
+  installed?: { structures: boolean; survival: boolean };
+  /** MB-LOC-001: owner coordinates newly code-parsed from a correlated clarification answer (same goal epoch; no regrant). */
+  onOwnerCoordinates?: (e: { goalId: string; goalEpoch: number; coordinates: OwnerCoordinate[] }) => void;
+  /** MB-FLOW-001: a pending owner instruction ended without admission (synchronous; must not throw). */
+  onPreparationDiscarded?: (p: { intentId: string; instruction: string; reason: PreparationDiscardReason; detail: string }) => void;
   /**
    * Admission ownership hook: called synchronously once a valid instruction has
    * replaced any old goal and the new goal epoch is current, BEFORE planning.
    * Execution adapters capture admission-bound state here (e.g. the goal's
    * travel anchor). Must not throw; failures are recorded, not fatal.
    */
-  onGoalAdmitted?: (admission: { goalId: string; epoch: number; admittedAtMs: number; instruction: string; kind: GoalKind; source?: GoalSource }) => void;
+  onGoalAdmitted?: (admission: { goalId: string; epoch: number; admittedAtMs: number; instruction: string; kind: GoalKind; source?: GoalSource; deadlineAtMs: number; ownerCoordinates: OwnerCoordinate[] }) => void;
   /** Called once when a goal reaches a terminal state (after cleanup). Must not throw; failures are recorded. */
   onGoalTerminal?: (end: GoalTerminalEvent) => void;
   /** MB-MEM-001 planner seam (bounded view per request, shown refs, prepared-ref re-grounding). */
@@ -894,6 +905,11 @@ export class GoalEngine {
     this.totals.discardedTurns += p.counters.plannerTurns;
     this.deps.store.record({ type: 'preparation_discarded', intentId: p.intentId, generation: p.generation, reason, detail: truncate(detail, BOUNDS.text), plannerTurns: p.counters.plannerTurns, discardedTurns: this.totals.discardedTurns, allowance: this.totals.discardedTurnAllowance, activeGoalId: this.active?.record.id ?? null });
     this.deps.journal?.record({ type: 'preparation_discarded', intentId: p.intentId, reason, detail: truncate(detail, BOUNDS.text), plannerTurns: p.counters.plannerTurns });
+    try {
+      this.deps.onPreparationDiscarded?.({ intentId: p.intentId, instruction: p.instruction, reason, detail: truncate(detail, BOUNDS.text) });
+    } catch (error) {
+      this.deps.store.record({ type: 'preparation_hook_error', intentId: p.intentId, message: error instanceof Error ? error.message : String(error) });
+    }
     if (notify) {
       const continuing = this.active ? ` Continuing goal ${this.active.record.id}.` : '';
       const text =
@@ -1015,6 +1031,7 @@ export class GoalEngine {
             ownerCoordinates: request.ownerCoordinates ?? [],
             priorResults: new Set(),
             ...(this.deps.memory ? { memory: { refs: this.deps.memory.shownPreparedRefs({ intentId: p.intentId, generation: p.generation }), kind: 'prepared' as const } } : {}),
+            ...this.proposalExtras(undefined),
           },
         );
         if (!check.ok) {
@@ -1284,7 +1301,7 @@ export class GoalEngine {
     this.currentTask = undefined;
     this.lastTask = undefined;
     try {
-      this.deps.onGoalAdmitted?.({ goalId: record.id, epoch: record.epoch, admittedAtMs: now, instruction: text, kind, ...(extras.source ? { source: extras.source } : {}) });
+      this.deps.onGoalAdmitted?.({ goalId: record.id, epoch: record.epoch, admittedAtMs: now, instruction: text, kind, ...(extras.source ? { source: extras.source } : {}), deadlineAtMs, ownerCoordinates: extras.source?.kind === 'owner' ? ownerCoordinates(text, active.clarifications) : [] });
     } catch (error) {
       this.deps.store.record({ type: 'goal_admission_hook_error', goalId: record.id, message: error instanceof Error ? error.message : String(error) });
     }
@@ -1444,8 +1461,19 @@ export class GoalEngine {
     if (text.length === 0) return rejectAnswer('empty', `answer is empty; reply with "answer ${pending.ref} <reply>"`);
     if (text.length > this.deps.limits.maxInstructionChars) return rejectAnswer('too_long', 'answer is too long');
 
+    const before = ownerCoordinates(active.record.instruction, active.clarifications).length;
     active.clarifications.push({ ref: pending.ref, question: pending.question, answer: text });
     delete active.record.pendingClarification;
+    if (active.source?.kind === 'owner') {
+      const coords = ownerCoordinates(active.record.instruction, active.clarifications).slice(before);
+      if (coords.length > 0) {
+        try {
+          this.deps.onOwnerCoordinates?.({ goalId: active.record.id, goalEpoch: active.epoch, coordinates: coords });
+        } catch (error) {
+          this.deps.store.record({ type: 'owner_coordinates_hook_error', goalId: active.record.id, message: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    }
     active.nextTurnKind = 'clarification';
     this.deps.journal?.record({ type: 'goal_answer', goalId: active.record.id, ref: pending.ref, question: pending.question, answer: truncate(text, BOUNDS.text) });
     this.setState(active, 'planning');
@@ -1647,6 +1675,30 @@ export class GoalEngine {
     return `planner turns ${c.plannerTurns} (knowledge ${c.knowledgeRounds}, repairs ${c.repairs}, retries ${c.retries}, clarifications ${c.clarifications}, replans ${c.replans}${c.preparationTurns ? `, preparation ${c.preparationTurns}` : ''}${c.lookaheads ? `, lookahead ${c.lookaheads}` : ''}), windows ${c.windows}, tasks ${c.tasksAdmitted}${active.outcomeStatus ? `; outcome ${active.outcomeStatus.status}: ${truncate(active.outcomeStatus.detail, 160)}` : ''}`;
   }
 
+  private routeFields(goalEpoch: number): Pick<PlannerRequest, 'route' | 'locator'> {
+    const out: Pick<PlannerRequest, 'route' | 'locator'> = {};
+    try {
+      const route = this.deps.routeView?.(goalEpoch);
+      if (route) out.route = route;
+      const hint = this.deps.locatorHint?.();
+      if (hint) out.locator = hint;
+    } catch (error) {
+      this.deps.store.record({ type: 'route_view_error', message: error instanceof Error ? error.message : String(error) });
+    }
+    return out;
+  }
+
+  /** Optional-evaluator and route facts for proposal validation of THIS goal epoch. */
+  private proposalExtras(goalEpoch: number | undefined): { structures?: boolean; survival?: boolean; route?: RouteProposalContext; routeDeferred?: boolean } {
+    const route = goalEpoch !== undefined ? this.routeFields(goalEpoch).route : undefined;
+    return {
+      ...(this.deps.installed?.structures ? { structures: true } : {}),
+      ...(this.deps.installed?.survival ? { survival: true } : {}),
+      ...(route ? { route: { authorized: route.authorized, destinations: route.destinations, ownDeathAvailable: route.ownDeathAvailable, state: route.state } } : {}),
+      ...(goalEpoch === undefined ? { routeDeferred: true } : {}),
+    };
+  }
+
   /** Captures the goal's server-confirmed ALL-item inventory before the first planner turn. */
   private async captureBaseline(active: ActiveGoal): Promise<void> {
     const capture = this.deps.outcomes?.captureBaseline?.bind(this.deps.outcomes);
@@ -1716,6 +1768,7 @@ export class GoalEngine {
       limits: { travelRadius: limits.travelRadius ?? 128, observationRadius: limits.observationRadius ?? 32, planWindowSteps: limits.planWindowSteps },
       ...this.memoryField({ kind: 'goal', goalId: active.record.id, goalEpoch: active.epoch }, requestId, active.record.instruction, active.clarifications, snapshot),
       ...(active.autonomy ? { autonomy: active.autonomy } : {}),
+      ...this.routeFields(active.epoch),
       ...extra,
     };
   }
@@ -1973,6 +2026,7 @@ export class GoalEngine {
             ownerCoordinates: ownerCoordinateList,
             priorResults: new Set(active.priorResults.keys()),
             ...(this.deps.memory ? { memory: { refs: this.deps.memory.shownRefs({ goalId: active.record.id, goalEpoch: active.epoch }), kind: 'executable' as const } } : {}),
+            ...this.proposalExtras(active.epoch),
           },
         );
         if (!check.ok) {
