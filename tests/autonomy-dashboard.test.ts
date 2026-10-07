@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import { AutonomySectionSchema, DirectiveSectionSchema } from '../src/contracts/dashboard.ts';
 import type { AutonomyStatus } from '../src/contracts/autonomy.ts';
 import { projectAutonomy, projectDirective } from '../src/dashboard/directive.ts';
+import { APP_JS } from '../src/dashboard/assets/page.ts';
 import { autonomyHarness } from './autonomy-fakes.ts';
 import { cobble, finitePlan, holdUntilRevoked, task } from './handoff-fakes.ts';
 import { until } from './helpers.ts';
@@ -51,5 +52,12 @@ describe('dashboard autonomy section', () => {
     assert.equal(d.mode, 'automatic_progression');
     assert.equal(DirectiveSectionSchema.safeParse(d).success, true);
     await h.engine.stop('owner_stop', 'chat');
+  });
+});
+
+describe('dashboard survival wording (P-C7)', () => {
+  it('the survival callout makes no claim that an owner directive is queued (held/absent intent is shown by the canonical owner-intent line)', () => {
+    assert.ok(!/stays queued/.test(APP_JS));
+    assert.match(APP_JS, /'Survival routine — ' \+ d\.survival \}/);
   });
 });
