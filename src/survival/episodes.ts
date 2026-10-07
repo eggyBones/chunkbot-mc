@@ -27,7 +27,7 @@ import {
   type TrackedStack,
 } from '../contracts/survival.ts';
 import { destroysDrops } from './death-cause.ts';
-import { armorPoints, counts, isValuable, mk, strip, type SurvivalItemRegistry, isSafeFood } from './items.ts';
+import { armorPoints, counts, isValuable, mk, sameDimension, strip, type SurvivalItemRegistry, isSafeFood } from './items.ts';
 import type { CapturedDeathRecord } from './tracker.ts';
 
 export const OPEN_STATUSES: ReadonlySet<RecoveryStatus> = new Set(['pending', 'partially_recovered']);
@@ -94,7 +94,7 @@ export class EpisodeBook {
         running.outcome = 'death';
       }
       // A related death's losses near the original site lie in the same search area.
-      const near = open.site.at && death.site.at && open.site.dimension === death.site.dimension && dist(open.site.at, death.site.at) <= cfg.recovery.sameHazardRadius;
+      const near = open.site.at && death.site.at && sameDimension(open.site.dimension, death.site.dimension) && dist(open.site.at, death.site.at) <= cfg.recovery.sameHazardRadius;
       open.detail = clip(`related death ${incidentFactId ?? '(unrecorded)'} (${death.cause.translationKey ?? 'cause unknown'})${near ? ' near the original site' : ' away from the original site (its losses are recorded on its own incident, not targeted)'}`);
       if (near) this.relatedLoss.set(open.episodeId, structuredClone(death.lastAlive.stacks));
       open.phase = 'awaiting_respawn';
@@ -398,7 +398,8 @@ export function materiallyImproved(prev: PreparationSignature, now: PreparationS
   const fatal = prevOutcome === 'death';
   if (!fatal) {
     const moved = prev.startAt && now.startAt ? Math.hypot(prev.startAt.x - now.startAt.x, prev.startAt.z - now.startAt.z) : 0;
-    if (prev.startDimension !== now.startDimension || moved > 16) return { improved: true, why: `different start (${Math.round(moved)} blocks away)` };
+    const otherDimension = (prev.startDimension !== undefined || now.startDimension !== undefined) && !sameDimension(prev.startDimension, now.startDimension);
+    if (otherDimension || moved > 16) return { improved: true, why: `different start (${Math.round(moved)} blocks away)` };
     if (prevOutcome === 'restart_interrupted' || prevOutcome === 'limit_exhausted' || prevOutcome === 'planner_error' || prevOutcome === 'decision_error' || prevOutcome === 'runtime_error') {
       if (now.health >= prev.health) return { improved: true, why: `previous attempt ended by ${prevOutcome}, not by the route` };
     }
@@ -411,7 +412,7 @@ export function repeatedFatalHazard(e: RecoveryEpisode, radius: number): HazardR
   if (!e.site.at || e.hazards.length < 2) return undefined;
   const first = e.hazards[0] as HazardRecord;
   for (const h of e.hazards.slice(1)) {
-    if (!h.at || h.dimension !== e.site.dimension) continue;
+    if (!h.at || !sameDimension(h.dimension, e.site.dimension)) continue;
     if (dist(h.at, e.site.at) > radius) continue;
     if (h.hazard === first.hazard || h.hazard === 'unknown') return h;
   }

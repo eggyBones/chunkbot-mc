@@ -28,11 +28,11 @@
 //       including the enchanted sword (identity match), are collected with
 //       server collect evidence; recovered vs concluded reported honestly
 //   [--with-settings only]
-//   G1k keepInventory=true death: retained inventory, no trip
+//   G1k keep_inventory=true death: retained inventory, no trip
 //   G3  Easy difficulty: eating completes ONLY at the admitted threshold
 //       (survival_state eat satisfied, food >= eatUntil); a necessary low-health
 //       eat runs through the allowance (check, reserve-before-dispatch); with
-//       naturalRegeneration verified TRUE rest must raise server health by >= 1;
+//       natural_health_regeneration verified TRUE rest must raise server health by >= 1;
 //       with it verified FALSE rest must end `no_regeneration` (bounded)
 //   G4  R8 OBSERVATION (no routine, no R8 claim): daytime set explicitly, bed
 //       use via interact_block; server respawn data recorded
@@ -51,8 +51,8 @@
 //   forceload: only chunks this trial added are removed again
 //   bot: inventory/effects/position/health/food of the fixture bot only; G4/G4n
 //        may set its respawn point to the trial bed (recorded before/after)
-//   settings [--with-settings]: difficulty, gamerules keepInventory and
-//        naturalRegeneration, time of day — read first, restored in `finally`
+//   settings [--with-settings]: difficulty, gamerules keep_inventory and
+//        natural_health_regeneration, time of day — read first, restored in `finally`
 //        and re-verified; ANY failed restoration or verification fails the report
 //
 // Report: var/live-check/<stamp>[-26.2]-survival/report.json
@@ -79,6 +79,7 @@ import { allSkills } from '../src/skills/index.ts';
 import { survivalSkills } from '../src/skills/survival.ts';
 import type { SurvivalService } from '../src/survival/service.ts';
 import { createSurvivalService } from '../src/survival/wiring.ts';
+import { sameDimension } from '../src/survival/items.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { rconCommand } from './lib/rcon.ts';
 
@@ -101,6 +102,17 @@ const ITEM_AREA = `x=${AREA.x1},y=${SCENE_Y.y1},z=${AREA.z1},dx=${AREA.x2 - AREA
 const SCENE_BOX = `${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} ${AREA.x2} ${SCENE_Y.y2} ${AREA.z2}`;
 const BACKUP_BOX = `${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2}`;
 /** Unique per-run tag for foreign test piles (never matches another run's or harness's entities). */
+// MB-FLOW-003-C8: settings command names for 26.1.2 AND 26.2, checked against
+// the official server command reports (generated commands.json): gamerules are
+// snake_case (`keepInventory`/`naturalRegeneration` no longer exist; the
+// leased trial's SETUP read failed on them) and `time query daytime` was
+// replaced by `time query time` (world clocks). Query replies are recorded.
+const RULE_KEEP = 'keep_inventory';
+const RULE_REGEN = 'natural_health_regeneration';
+const TIME_QUERY = 'time query time';
+const RULE_REPLY = /currently set to: (\w+)/;
+const TIME_REPLY = /The time is (\d+)/;
+const DAY_TICKS = 24_000;
 const FOREIGN_TAG = `cbsurv_${Date.now().toString(36)}_${process.pid.toString(36)}`;
 const BED = { foot: { x: 208, y: -60, z: 208 }, head: { x: 208, y: -60, z: 209 } };
 
@@ -417,8 +429,15 @@ function sceneChunks(): Array<{ cx: number; cz: number }> {
   return out;
 }
 
+/** A read-only settings query; the reply is RECORDED (C8) so a failed parse is diagnosable. */
 async function query(g: Gate, cmd: string, re: RegExp): Promise<string | undefined> {
-  return re.exec(await g.rcon(cmd, false))?.[1];
+  return re.exec(await g.rcon(cmd))?.[1];
+}
+
+/** Time of day from the default clock's `time query time` (modulo one day, whatever the clock's absolute count). */
+async function timeOfDay(g: Gate): Promise<number | undefined> {
+  const t = await query(g, TIME_QUERY, TIME_REPLY);
+  return t === undefined ? undefined : Number(t) % DAY_TICKS;
 }
 
 async function run(outDir: string, withSettings: boolean): Promise<Json> {
@@ -466,7 +485,8 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       check(d.site.source === 'server_death_location' && d.site.at, 'the server stated the own death location');
       check(pos && dim, `RCON LastDeathLocation is readable (${ldl.slice(0, 120)})`);
       const block = { x: Math.floor(d.site.at.x), y: Math.floor(d.site.at.y), z: Math.floor(d.site.at.z) };
-      check(dim === d.site.dimension && block.x === Number(pos[1]) && block.y === Number(pos[2]) && block.z === Number(pos[3]), `captured GlobalPos ${d.site.dimension} ${block.x},${block.y},${block.z} equals RCON LastDeathLocation ${dim} ${pos[1]},${pos[2]},${pos[3]}`);
+      // C7: RCON states the namespaced id, the capture holds the session spelling; identity is compared canonically.
+      check(sameDimension(dim, d.site.dimension) && block.x === Number(pos[1]) && block.y === Number(pos[2]) && block.z === Number(pos[3]), `captured GlobalPos ${d.site.dimension} ${block.x},${block.y},${block.z} equals RCON LastDeathLocation ${dim} ${pos[1]},${pos[2]},${pos[3]}`);
       check(factId && /^mf-/.test(factId), 'memory recorded the SAME capture and it was linked exactly');
       const inc = g.survival.status(Date.now()).incidents.at(-1);
       ev.push(`incident: ${JSON.stringify(inc)}`.slice(0, 900));
@@ -553,28 +573,28 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
     });
 
     if (!withSettings) {
-      for (const [id, title] of [['G1k', 'keepInventory death'], ['G3', 'food/health on Easy'], ['G4', 'R8 day bed observation'], ['G4n', 'R8 night bed observation']] as const) g.skip(id, title, 'requires --with-settings (difficulty, gamerules, time of day)');
+      for (const [id, title] of [['G1k', 'keep_inventory death'], ['G3', 'food/health on Easy'], ['G4', 'R8 day bed observation'], ['G4n', 'R8 night bed observation']] as const) g.skip(id, title, 'requires --with-settings (difficulty, gamerules, time of day)');
     } else {
       const difficulty = (await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase();
-      const keep = await query(g, 'gamerule keepInventory', /currently set to: (\w+)/);
-      const regen = await query(g, 'gamerule naturalRegeneration', /currently set to: (\w+)/);
-      const day = await query(g, 'time query daytime', /The time is (\d+)/);
-      check(difficulty && keep && regen && day, `could not read original settings (difficulty=${difficulty} keepInventory=${keep} naturalRegeneration=${regen} daytime=${day}); nothing changed`);
+      const keep = await query(g, `gamerule ${RULE_KEEP}`, RULE_REPLY);
+      const regen = await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY);
+      const day = await query(g, TIME_QUERY, TIME_REPLY);
+      check(difficulty && keep && regen && day, `could not read original settings (difficulty=${difficulty} ${RULE_KEEP}=${keep} ${RULE_REGEN}=${regen} time=${day}); nothing changed; replies: ${JSON.stringify(g.setup.slice(-4).map((r) => `${r.command} -> ${r.reply.slice(0, 120)}`))}`);
       restore.push(
         { what: 'difficulty', command: `difficulty ${difficulty}`, verify: async () => (await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase() === difficulty },
-        { what: 'keepInventory', command: `gamerule keepInventory ${keep}`, verify: async () => (await query(g, 'gamerule keepInventory', /currently set to: (\w+)/)) === keep },
-        { what: 'naturalRegeneration', command: `gamerule naturalRegeneration ${regen}`, verify: async () => (await query(g, 'gamerule naturalRegeneration', /currently set to: (\w+)/)) === regen },
-        { what: 'daytime', command: `time set ${day}`, verify: async () => Math.abs(Number(await query(g, 'time query daytime', /The time is (\d+)/)) - Number(day)) <= 100 },
+        { what: RULE_KEEP, command: `gamerule ${RULE_KEEP} ${keep}`, verify: async () => (await query(g, `gamerule ${RULE_KEEP}`, RULE_REPLY)) === keep },
+        { what: RULE_REGEN, command: `gamerule ${RULE_REGEN} ${regen}`, verify: async () => (await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY)) === regen },
+        { what: 'time', command: `time set ${day}`, verify: async () => Math.abs(Number(await query(g, TIME_QUERY, TIME_REPLY)) - Number(day)) <= 100 },
       );
 
-      await g.gate('G1k', 'keepInventory death retains inventory (no trip)', async (ev) => {
+      await g.gate('G1k', 'keep_inventory death retains inventory (no trip)', async (ev) => {
         await g.scene();
-        await g.rcon('gamerule keepInventory true');
-        check((await query(g, 'gamerule keepInventory', /currently set to: (\w+)/)) === 'true', 'keepInventory verified true for the trial');
+        await g.rcon(`gamerule ${RULE_KEEP} true`);
+        check((await query(g, `gamerule ${RULE_KEEP}`, RULE_REPLY)) === 'true', `${RULE_KEEP} verified true for the trial`);
         const { factId } = await killWithKit(g, ev);
         const inc = g.survival.status(Date.now()).incidents.at(-1);
         ev.push(`incident ${factId}: ${inc?.status} missing=${JSON.stringify(inc?.missing)}`);
-        await g.rcon(`gamerule keepInventory ${keep}`);
+        await g.rcon(`gamerule ${RULE_KEEP} ${keep}`);
         check(inc?.status === 'no_loss', 'retained inventory: no_loss, no trip');
         // C1 truthfulness on the ACTUAL memory fact: retained, not regained/recovered.
         await g.durable();
@@ -590,8 +610,8 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         await g.scene();
         await g.rcon('difficulty easy');
         check((await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase() === 'easy', 'difficulty verified easy');
-        await g.rcon('gamerule naturalRegeneration true');
-        check((await query(g, 'gamerule naturalRegeneration', /currently set to: (\w+)/)) === 'true', 'naturalRegeneration verified true');
+        await g.rcon(`gamerule ${RULE_REGEN} true`);
+        check((await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY)) === 'true', `${RULE_REGEN} verified true`);
         await g.rcon(`give ${BOT} minecraft:bread 12`);
         await g.rcon(`effect give ${BOT} minecraft:hunger 30 120 true`);
         await g.waitFor('food at or below 10', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) <= 10, 40_000);
@@ -657,8 +677,8 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         check(restOn?.status === 'succeeded' && h1 - h0 >= 1, 'meaningful server-confirmed health gain (>= 1) while resting');
         // (d) regeneration OFF (verified): bounded honest failure, no gain.
         await g.rcon(`damage ${BOT} 4 minecraft:generic`);
-        await g.rcon('gamerule naturalRegeneration false');
-        check((await query(g, 'gamerule naturalRegeneration', /currently set to: (\w+)/)) === 'false', 'naturalRegeneration verified false');
+        await g.rcon(`gamerule ${RULE_REGEN} false`);
+        check((await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY)) === 'false', `${RULE_REGEN} verified false`);
         await sleep(500);
         const h2 = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
         const t0 = Date.now();
@@ -666,7 +686,7 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         const restOff = await g.act('rest_in_place', [], 20_000);
         const h3 = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
         ev.push(`rest (regen verified off): ${restOff?.status} ${restOff?.reason ?? ''} after ${Date.now() - t0}ms; server health ${h2} -> ${h3}`);
-        await g.rcon(`gamerule naturalRegeneration ${regen}`);
+        await g.rcon(`gamerule ${RULE_REGEN} ${regen}`);
         check(restOff?.status === 'failed' && restOff.reason === 'no_regeneration' && h3 <= h2 && Date.now() - t0 < 20_000, 'no regeneration ends honestly within the bounded window');
       });
 
@@ -674,8 +694,8 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         await g.scene();
         await g.rcon(`difficulty ${difficulty}`);
         await g.rcon('time set 1000');
-        const t = Number(await query(g, 'time query daytime', /The time is (\d+)/));
-        check(t >= 0 && t < 12_000, `day established at trial start (daytime ${t})`);
+        const t = await timeOfDay(g);
+        check(t !== undefined && t >= 0 && t < 12_000, `day established at trial start (time of day ${t})`);
         await g.rcon(`setblock ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[facing=south,part=foot]`);
         await g.rcon(`setblock ${BED.head.x} ${BED.head.y} ${BED.head.z} red_bed[facing=south,part=head]`);
         await g.rcon(`tp ${BOT} 208.5 -60 206.5 0 40`);
@@ -697,8 +717,8 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         await g.rcon(`setblock ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[facing=south,part=foot]`);
         await g.rcon(`setblock ${BED.head.x} ${BED.head.y} ${BED.head.z} red_bed[facing=south,part=head]`);
         await g.rcon('time set 13000');
-        const t = Number(await query(g, 'time query daytime', /The time is (\d+)/));
-        check(t >= 12_542 && t < 23_460, `night established at trial start (daytime ${t})`);
+        const t = await timeOfDay(g);
+        check(t !== undefined && t >= 12_542 && t < 23_460, `night established at trial start (time of day ${t})`);
         await g.rcon(`tp ${BOT} 208.5 -60 206.5 0 40`);
         await sleep(1_500);
         g.admit(randomIds.next('goal'));
@@ -709,7 +729,7 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         const occupied = /passed/i.test(await g.rcon(`execute if block ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[occupied=true]`, false));
         ev.push(`OBSERVED: server sleeping_pos: ${sleeping.slice(0, 160)}; bed occupied=${occupied}`);
         await sleep(6_000);
-        ev.push(`OBSERVED: daytime after ~7 s: ${(await g.rcon('time query daytime', false)).slice(0, 80)}; players online: ${(await g.rcon('list', false)).slice(0, 120)}`);
+        ev.push(`OBSERVED: time after ~7 s: ${(await g.rcon(TIME_QUERY, false)).slice(0, 80)}; players online: ${(await g.rcon('list', false)).slice(0, 120)}`);
         ev.push('R8 sleep/spawn remains gated: these are sole-player observations, not a supported routine');
         check(used, 'a bed candidate existed at night');
       });
