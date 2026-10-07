@@ -28,6 +28,7 @@ import {
   type TaskSpec,
 } from '../contracts/index.ts';
 import { scanForbidden } from '../goals/forbidden.ts';
+import { SURVIVAL_CAPABILITIES, SURVIVAL_ROUTINES } from '../contracts/survival.ts';
 
 export const DISPOSITIONS = ['plan', 'needs_information', 'needs_clarification', 'cannot_execute'] as const;
 
@@ -45,13 +46,19 @@ export const PREDICATE_FIELDS = {
   entity_outcome: ['target', 'outcome'],
   /** MB-MEM-001 (offered only when memory capabilities are installed). */
   memory_state: ['label', 'expect'],
+  /** MB-FLOW-001 (offered only when home construction capabilities are installed). */
+  structure_state: ['structure', 'expect'],
+  /** MB-FLOW-003 (offered only when survival capabilities are installed). */
+  survival_state: ['routine', 'expect'],
   all: ['of'],
   any: ['of'],
   not: ['of'],
 } as const satisfies Record<string, readonly string[]>;
 type PredicateKindWire = keyof typeof PREDICATE_FIELDS;
 const PREDICATE_KINDS = Object.keys(PREDICATE_FIELDS) as PredicateKindWire[];
-const ALL_PREDICATE_FIELDS = ['selector', 'atLeast', 'mode', 'mayBeConsumedLater', 'slot', 'target', 'within', 'expect', 'output', 'outcome', 'of', 'label'] as const;
+const ALL_PREDICATE_FIELDS = ['selector', 'atLeast', 'mode', 'mayBeConsumedLater', 'slot', 'target', 'within', 'expect', 'output', 'outcome', 'of', 'label', 'structure', 'routine'] as const;
+/** Predicate kinds whose `expect` is an enum word, never a registry key (no namespace normalization). */
+const ENUM_EXPECT = new Set<string>(['memory_state', 'structure_state', 'survival_state']);
 
 /** Wire fields each selector kind uses (mirrors the contract's TargetSelectorSchema). */
 export const SELECTOR_FIELDS = {
@@ -72,6 +79,16 @@ const ALL_SELECTOR_FIELDS = ['key', 'snapshotId', 'handle', 'anchorId', 'dimensi
 export const MEMORY_CAPABILITIES = ['remember_location', 'forget_memory', 'note_memory', 'go_to_memory'] as const;
 export function catalogHasMemory(catalog: CapabilityCatalog): boolean {
   return catalog.capabilities.some((c) => (MEMORY_CAPABILITIES as readonly string[]).includes(c.id));
+}
+/** MB-FLOW-001 home construction capabilities (structure_state is offered only with them). */
+export const CONSTRUCTION_CAPABILITIES = ['select_home_site', 'build_home'] as const;
+export function catalogHasConstruction(catalog: CapabilityCatalog): boolean {
+  return catalog.capabilities.some((c) => (CONSTRUCTION_CAPABILITIES as readonly string[]).includes(c.id));
+}
+/** MB-FLOW-003 survival capabilities (survival_state is offered only with them). */
+export function catalogHasSurvival(catalog: CapabilityCatalog): boolean {
+  const ids = Object.values(SURVIVAL_CAPABILITIES) as readonly string[];
+  return catalog.capabilities.some((c) => ids.includes(c.id));
 }
 
 /** Knowledge query kinds and the contract field the wire `key` maps to. */
@@ -102,6 +119,8 @@ const obj = (properties: Record<string, unknown>) => ({ type: 'object', addition
 export function plannerOutputSchema(catalog: CapabilityCatalog): Record<string, unknown> {
   const capabilityIds = catalog.capabilities.map((c) => c.id);
   const memory = catalogHasMemory(catalog);
+  const construction = catalogHasConstruction(catalog);
+  const survival = catalogHasSurvival(catalog);
   const one = (v: string) => ({ type: 'string', enum: [v] });
   const vec = obj({ x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } });
   const key = { type: 'string', description: 'namespaced registry key such as minecraft:oak_log or tag such as #minecraft:logs' };
@@ -129,6 +148,8 @@ export function plannerOutputSchema(catalog: CapabilityCatalog): Record<string, 
       obj({ predicate: { type: 'string', enum: ['crafting_result', 'smelting_result'] }, output: key, atLeast: count }),
       obj({ predicate: one('entity_outcome'), target: targetRef, outcome: { type: 'string', enum: ['observed_defeated', 'observed_present'] } }),
       ...(memory ? [obj({ predicate: one('memory_state'), label: str, expect: { type: 'string', enum: ['recorded', 'noted', 'forgotten'] } })] : []),
+      ...(construction ? [obj({ predicate: one('structure_state'), structure: one('home'), expect: { type: 'string', enum: ['site_approved', 'enclosed', 'complete'] } })] : []),
+      ...(survival ? [obj({ predicate: one('survival_state'), routine: { type: 'string', enum: [...SURVIVAL_ROUTINES] }, expect: { type: 'string', enum: ['recovered', 'concluded', 'satisfied'] } })] : []),
       obj({ predicate: { type: 'string', enum: ['all', 'any', 'not'] }, of: { type: 'array', items: { $ref: '#/$defs/predicate' } } }),
     ],
   };
@@ -252,7 +273,7 @@ function predicateFromWire(raw: unknown, where: string, problems: string[], dept
       const sel = selectorFromWire(raw[f], `${where}.target`, problems);
       if (!sel) return undefined;
       out[f] = sel;
-    } else out[f] = KEY_FIELDS.has(f) && kind !== 'memory_state' ? normalizeKey(raw[f]) : raw[f];
+    } else out[f] = KEY_FIELDS.has(f) && !ENUM_EXPECT.has(kind) ? normalizeKey(raw[f]) : raw[f];
   }
   return out as unknown as OutcomePredicate;
 }

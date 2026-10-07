@@ -14,7 +14,7 @@
 import type { CapabilityCatalog, MemoryView, ObservationSnapshot, PlannerRequest, TaskFeedback } from '../contracts/index.ts';
 import { MEMORY_PLANNER_INSTRUCTIONS, renderMemoryView } from '../memory/render.ts';
 
-export const PLANNER_INSTRUCTIONS_VERSION = 'gameplay-planner-v3';
+export const PLANNER_INSTRUCTIONS_VERSION = 'gameplay-planner-v4';
 
 export const PLANNER_INSTRUCTIONS = `You are the gameplay planner for "Chunkbot", a companion player in Minecraft Java Edition. You turn the owner's open-ended instruction into a verifiable outcome and a short window of executable steps. You do not play directly.
 
@@ -55,6 +55,12 @@ Evidence and revisions
 - goal.status "preparing": the owner sent a NEW instruction while Chunkbot is still doing earlier work (preparation.continuingTask). It is not admitted yet. Plan it exactly like a first turn; code revalidates your plan when the new instruction takes over (fresh observation, server-confirmed admission inventory, re-grounded handles) and asks you again if it went stale. The inventory you see is provisional (it may change before the switch); state quantities relative to the admission inventory as usual.
 - turnKind "lookahead": the current window's last task (lookahead.runningTask) is still running. Plan the NEXT window assuming that task succeeds; code discards your plan if it fails or the outcome is already met, and revalidates it against fresh state before use. Repeat acceptedOutcome exactly.
 - Keep interpretation short (one or two sentences) and state assumptions the owner should know (quantity, which item, possession versus new acquisition).
+
+Automatic goals, homes, survival and routes
+- goal.origin "automatic_progression" / "automatic_support": nobody typed this goal; goal.automaticInstruction is code-written and the autonomy block says why it exists (recent verified milestones, outcomes to avoid, the allowance left, the home project, survival facts). Follow autonomy.rules. Outcomes must be finite; you cannot ask questions (needs_clarification ends the goal blocked), so choose a reasonable attainable milestone or answer cannot_execute with the exact missing prerequisite.
+- structure_state {structure:"home", expect: site_approved | enclosed | complete} is checked by code by inspecting every blueprint block of the scope's ONE home project. Only select_home_site and build_home create or continue it; a chosen site, a remembered place or a stored record is never a built home.
+- survival_state {routine, expect: recovered | concluded | satisfied} is checked by code for a survival routine (e.g. death_recovery recovered = the lost items are back in the inventory by server evidence).
+- route (when present) is the code-owned travel authorization of this goal: its destination kinds, legs and distance used. Only authorized destinations work; you cannot grant, extend or reset it. locator (when present) is a coarse direction/distance band toward the owner, never coordinates and never proof of visibility.
 
 ${MEMORY_PLANNER_INSTRUCTIONS}
 - While preparing (goal.status "preparing"), memory facts carry prepRef (mprep-...) instead of ref; use {"kind":"memory_ref","refId":"mprep-N"} in that draft. Code re-grounds it to the same remembered fact when the instruction takes over, or asks you again.`;
@@ -133,6 +139,52 @@ function renderMemory(view: MemoryView): unknown {
   return doc;
 }
 
+/** MB-FLOW-001 automatic-goal context (bounded; data, not instructions). */
+function renderAutonomy(a: NonNullable<PlannerRequest['autonomy']>): unknown {
+  const src = a.source;
+  return {
+    source: src.kind === 'support' ? { kind: 'support', routine: src.routine, priority: src.priority, serves: src.serves, reason: clip(src.reason, 300) } : src.kind === 'progression' ? { kind: 'progression', sessionAttempt: src.sessionAttempt } : { kind: src.kind },
+    reason: clip(a.reason, 300),
+    owner: { unresolvedIntent: a.owner.unresolvedIntent ? { instruction: clip(a.owner.unresolvedIntent.instruction, 300), state: a.owner.unresolvedIntent.state, detail: clip(a.owner.unresolvedIntent.detail, 300) } : null },
+    recentMilestones: a.recentMilestones.slice(0, 6).map((m) => clip(m.interpretation, 200)),
+    avoid: a.avoid.slice(0, 6).map((x) => ({ interpretation: clip(x.interpretation, 200), reason: clip(x.reason, 120), times: x.times })),
+    session: a.session,
+    home: a.home
+      ? {
+          state: a.home.state,
+          detail: clip(a.home.detail, 200),
+          dimension: a.home.dimension,
+          origin: a.home.origin,
+          outer: a.home.outer,
+          entranceFacing: a.home.entranceFacing,
+          progress: { cells: a.home.progress.cells, ownConfirmed: a.home.progress.ownConfirmed },
+          materialsStillNeeded: a.home.materials.slice(0, 8).map((m) => ({ role: m.role, count: m.count, accept: m.accept.slice(0, 8) })),
+          lastVerification: a.home.verified ? { status: a.home.verified.status, satisfied: a.home.verified.satisfied, total: a.home.verified.total, detail: clip(a.home.verified.detail, 300) } : null,
+        }
+      : null,
+    ...(a.support ? { support: { routine: a.support.routine, facts: a.support.facts.slice(0, 12).map((f) => clip(f, 200)), suggestedCapabilities: a.support.suggestedCapabilities.slice(0, 12), rules: a.support.rules.slice(0, 12).map((r) => clip(r, 240)) } } : {}),
+    rules: a.rules.slice(0, 12).map((r) => clip(r, 300)),
+  };
+}
+
+/** MB-LOC-001 route authorization (code-owned; no destination coordinates). */
+function renderRoute(r: NonNullable<PlannerRequest['route']>): unknown {
+  const st = r.status;
+  return {
+    authorized: r.authorized,
+    destinations: [...r.destinations],
+    ownDeathAvailable: r.ownDeathAvailable,
+    state: r.state,
+    progress: st ? { legsUsed: st.legsUsed, maxLegs: st.maxLegs, distanceUsed: r1(st.distanceUsed), maxTotalDistance: st.maxTotalDistance, remainingSeconds: Math.round(st.remainingMs / 1000), stalledLegs: st.stalledLegs, blocker: st.blocker ? { reason: st.blocker.reason, detail: clip(st.blocker.detail, 200) } : null } : null,
+    admission: r.admission ? { anchor: pos(r.admission.anchor), radius: r.admission.radius } : null,
+  };
+}
+
+/** MB-LOC-001 coarse owner hint (never coordinates). */
+function renderLocator(h: NonNullable<PlannerRequest['locator']>): unknown {
+  return { target: h.target, actionable: h.actionable, reason: h.reason, direction: h.direction, distanceBand: h.distanceBand, elevation: h.elevation, ageSeconds: h.ageMs === null ? null : Math.round(h.ageMs / 1000), note: clip(h.note, 200) };
+}
+
 const MAX_PROMPT_CHARS = 120_000;
 
 /** The bounded JSON document for one planner turn. */
@@ -147,7 +199,9 @@ export function renderRequest(request: PlannerRequest, windowSteps: number): str
         ...(request.subject.kind === 'goal'
           ? { goalId: request.subject.goalId, status: 'admitted' }
           : { intentId: request.subject.intentId, status: 'preparing', activeGoalId: request.subject.activeGoalId }),
-        ownerInstruction: clip(request.instruction, 2_000),
+        ...(request.autonomy
+          ? { origin: request.autonomy.source.kind === 'support' ? 'automatic_support' : 'automatic_progression', automaticInstruction: clip(request.instruction, 2_000) }
+          : { origin: 'owner', ownerInstruction: clip(request.instruction, 2_000) }),
         clarifications: request.clarifications.map((c) => ({ ref: c.ref, question: clip(c.question, 500), ownerAnswer: clip(c.answer, 1_000) })),
         ownerCoordinates: request.ownerCoordinates ?? [],
         turn: request.turn,
@@ -167,6 +221,9 @@ export function renderRequest(request: PlannerRequest, windowSteps: number): str
       knowledge,
       observation: renderObservation(request.observation, maxBlocks),
       ...(request.memory ? { memory: renderMemory(request.memory) } : {}),
+      ...(request.autonomy ? { autonomy: renderAutonomy(request.autonomy) } : {}),
+      ...(request.route ? { route: renderRoute(request.route) } : {}),
+      ...(request.locator ? { locator: renderLocator(request.locator) } : {}),
       mechanicsVersion: request.mechanicsVersion ?? null,
       catalog: renderCatalog(request.catalog),
     };
