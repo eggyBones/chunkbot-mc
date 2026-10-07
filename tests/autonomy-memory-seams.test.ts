@@ -22,9 +22,9 @@ describe('memory death capture and durability seams', () => {
     assert.ok(fact, 'the capture is recorded synchronously');
     assert.equal(fact!.death?.cause.kind, 'observed');
     assert.deepEqual(fact!.death?.lastAliveInventory.items.map((i) => i.key), ['minecraft:iron_pickaxe', 'minecraft:bread']);
-    assert.notEqual(h.memory.factDurability(fact!.id).state, 'durable', 'a synchronous return is not durable authority');
+    assert.notEqual(h.memory.factDurability(fact!.id), 'durable', 'a synchronous return is not durable authority');
     assert.equal(await h.memory.whenFactDurable(fact!.id, 2_000), 'durable');
-    assert.equal(h.memory.factDurability(fact!.id).state, 'durable');
+    assert.equal(h.memory.factDurability(fact!.id), 'durable');
   });
 
   it('a failed durable write is reported failed (never durable)', async () => {
@@ -34,8 +34,8 @@ describe('memory death capture and durability seams', () => {
     const fact = h.memory.onLifecycle({ type: 'death', connectionEpoch: 1 }, ctx)!;
     const r = await h.memory.whenFactDurable(fact.id, 2_000);
     assert.equal(r, 'failed');
-    assert.equal(h.memory.factDurability(fact.id).state, 'failed');
-    assert.equal(h.memory.factDurability('mf-nope').state, 'unknown');
+    assert.equal(h.memory.factDurability(fact.id), 'failed');
+    assert.equal(h.memory.factDurability('mf-nope'), 'unknown');
   });
 
   it('retained possessions reduce what is missing but are not regained evidence (no_loss)', async () => {

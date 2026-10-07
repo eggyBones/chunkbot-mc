@@ -172,6 +172,13 @@ export interface GoalEngineDeps {
   installed?: { structures: boolean; survival: boolean };
   /** MB-LOC-001: owner coordinates newly code-parsed from a correlated clarification answer (same goal epoch; no regrant). */
   onOwnerCoordinates?: (e: { goalId: string; goalEpoch: number; coordinates: OwnerCoordinate[] }) => void;
+  /**
+   * MB-FLOW-001/003-C5 owned admission barrier: awaited (abortable, bounded by
+   * the caller) AFTER admission and the baseline, BEFORE the first planner turn
+   * or support task of the goal. `ok: false` ends the goal without any model
+   * call or action. Never awaited on capture/revocation; stop aborts it at once.
+   */
+  admissionBarrier?: (admission: { goalId: string; epoch: number; source: GoalSource | undefined }, signal: AbortSignal) => Promise<{ ok: true } | { ok: false; reason: TerminalReasonCode; detail: string }>;
   /** MB-FLOW-001: a pending owner instruction ended without admission (synchronous; must not throw). */
   onPreparationDiscarded?: (p: { intentId: string; instruction: string; reason: PreparationDiscardReason; detail: string }) => void;
   /**
@@ -689,6 +696,7 @@ export class GoalEngine {
   private async runSupportTask(active: ActiveGoal, spec: TaskSpec, mode: TaskMode): Promise<void> {
     try {
       await this.captureBaseline(active);
+      if (!(await this.passBarrier(active))) return;
       const result = await this.runTask(active, spec, mode);
       if (!result || result.status === 'cancelled' || this.active !== active) return;
       const reason = terminalForTask(result);
@@ -1699,6 +1707,18 @@ export class GoalEngine {
     };
   }
 
+  /** The owned admission barrier (C5); false when the goal ended because it did not pass. */
+  private async passBarrier(active: ActiveGoal): Promise<boolean> {
+    const barrier = this.deps.admissionBarrier;
+    if (!barrier) return true;
+    const r = await raceAbort(barrier({ goalId: active.record.id, epoch: active.epoch, source: active.source }, active.abort.signal), active.abort.signal);
+    this.assertCurrent(active);
+    if (r.ok) return true;
+    this.deps.store.record({ type: 'admission_barrier_refused', goalId: active.record.id, reason: r.reason, detail: truncate(r.detail, 300) });
+    await this.finishIfCurrent(active, r.reason, `${r.detail}; no model call or action was started`);
+    return false;
+  }
+
   /** Captures the goal's server-confirmed ALL-item inventory before the first planner turn. */
   private async captureBaseline(active: ActiveGoal): Promise<void> {
     const capture = this.deps.outcomes?.captureBaseline?.bind(this.deps.outcomes);
@@ -1921,6 +1941,7 @@ export class GoalEngine {
       }
       // Admission-bound baseline BEFORE the first planner turn or draft revalidation (kept across every later turn).
       await this.captureBaseline(active);
+      if (!(await this.passBarrier(active))) return;
       while (true) {
         this.assertCurrent(active);
         await this.parkWhilePending(active);

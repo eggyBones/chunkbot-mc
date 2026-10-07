@@ -648,7 +648,12 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
    * write failed and the fact is not durable; `unknown` for an unknown fact or
    * unusable memory. A synchronously returned capture is NOT durable authority.
    */
-  factDurability(factId: string): { state: 'durable' | 'pending' | 'failed' | 'unknown'; factRevision: number | null; storeRevision: number } {
+  factDurability(factId: string): 'durable' | 'pending' | 'failed' | 'unknown' {
+    return this.factDurabilityDetail(factId).state;
+  }
+
+  /** Same decision with its evidence (current fact revision and the last complete store revision). */
+  factDurabilityDetail(factId: string): { state: 'durable' | 'pending' | 'failed' | 'unknown'; factRevision: number | null; storeRevision: number } {
     const storeRevision = this.store?.revision ?? 0;
     const fact = this.book?.get(factId);
     if (!fact || !this.readable) return { state: 'unknown', factRevision: null, storeRevision };
@@ -664,7 +669,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
    */
   async whenFactDurable(factId: string, timeoutMs = 5_000): Promise<'durable' | 'failed' | 'timeout' | 'unknown'> {
     const initial = this.factDurability(factId);
-    if (initial.state === 'durable' || initial.state === 'unknown') return initial.state;
+    if (initial === 'durable' || initial === 'unknown') return initial;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<'timeout'>((resolve) => {
       timer = setTimeout(() => resolve('timeout'), timeoutMs);
@@ -672,7 +677,7 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     });
     const settled = (async (): Promise<'durable' | 'failed' | 'unknown'> => {
       await this.persist('durability_barrier');
-      const s = this.factDurability(factId).state;
+      const s = this.factDurability(factId);
       return s === 'pending' ? 'failed' : s;
     })();
     try {

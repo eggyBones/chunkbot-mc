@@ -120,6 +120,8 @@ export interface AutonomyHarnessOptions {
   providers?: () => ProviderState;
   fingerprint?: () => string;
   limits?: Partial<GoalEngineLimits>;
+  /** Engine admission barrier (MB-FLOW-003-C5). */
+  barrier?: import('../src/goals/goal-engine.ts').GoalEngineDeps['admissionBarrier'];
 }
 
 export function autonomyHarness(script: (request: PlannerRequest, index: number) => PlannerScript, opts: AutonomyHarnessOptions = {}) {
@@ -155,6 +157,7 @@ export function autonomyHarness(script: (request: PlannerRequest, index: number)
       onGoalAdmitted: (a) => supervisor.onGoalAdmitted(a),
       onGoalTerminal: (e) => supervisor.onGoalTerminal(e),
       onPreparationDiscarded: (p) => supervisor.onPreparationDiscarded(p),
+      ...(opts.barrier ? { admissionBarrier: opts.barrier } : {}),
     },
     log,
   );

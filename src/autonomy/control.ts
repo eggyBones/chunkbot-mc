@@ -23,6 +23,8 @@ export interface AutonomyControlOptions {
   /** host:port (connection metadata, never identity proof). */
   endpoint: string;
   rebindEndpoint: boolean;
+  /** MB-FLOW-001-C5: autonomy.scope vs memory profile mismatch (automatic work blocked, visibly). */
+  scopeConflict?: string;
   clock: Clock;
   record?: (event: EvidenceEvent) => void;
   /** Store test seams. */
@@ -79,6 +81,7 @@ export class AutonomyControl {
   persistence(): { state: PersistenceState; detail: string; revision: number; lastWriteAtMs?: number } {
     const revision = this.store?.revision ?? 0;
     const at = this.store?.lastWriteAtMs !== undefined ? { lastWriteAtMs: this.store.lastWriteAtMs } : {};
+    if (this.options.scopeConflict) return { state: 'conflict', detail: this.options.scopeConflict, revision, ...at };
     if (!this.scope) return { state: 'missing_scope', detail: 'no durable scope: configure memory (worldProfile, worldRevision, botProfile) or autonomy.scope; automatic work stays off, manual goals work', revision, ...at };
     if (!this.load) return { state: 'read_only', detail: 'autonomy state not opened', revision, ...at };
     if (this.conflict) return { state: 'conflict', detail: this.conflict, revision, ...at };
