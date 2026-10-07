@@ -391,10 +391,13 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     providers: () => {
       const planner = app.engine.status().readiness.planner;
       const jev = decision.readiness();
-      if (!planner.ready) return { ready: false, code: 'planner_not_ready', detail: `planner: ${planner.detail}` };
-      if (!jev.ready) return { ready: false, code: 'decision_not_ready', detail: `Jev: ${jev.detail}` };
-      if (spend.remainingUsd() < reservationUsd) return { ready: false, code: 'spend_cap', detail: `the per-run OpenRouter cap cannot cover another Jev reservation (USD ${spend.remainingUsd().toFixed(6)} left)` };
-      return { ready: true, detail: 'planner and Jev ready' };
+      // Jev decisions (code tasks included) all reserve in the SAME per-run SpendLedger.
+      const spendOk = spend.remainingUsd() >= reservationUsd;
+      const decisionReady = jev.ready && spendOk;
+      if (!jev.ready) return { ready: false, decisionReady: false, code: 'decision_not_ready', detail: `Jev: ${jev.detail}` };
+      if (!spendOk) return { ready: false, decisionReady: false, code: 'spend_cap', detail: `the per-run OpenRouter cap cannot cover another Jev reservation (USD ${spend.remainingUsd().toFixed(6)} left)` };
+      if (!planner.ready) return { ready: false, decisionReady, code: 'planner_not_ready', detail: `planner: ${planner.detail} (code-built support tasks may still use Jev)` };
+      return { ready: true, decisionReady, detail: 'planner and Jev ready' };
     },
     stateFingerprint: () => {
       const s = game.session();

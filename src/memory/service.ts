@@ -639,6 +639,49 @@ export class MemoryService implements MemoryPlannerPort, MemoryRefResolver, Memo
     return { ok: true, fact: structuredClone(fact), change, trusted: isTrusted(fact), storeRevision: revision, affected, detail };
   }
 
+  // ------------------------------------------------------------ durability (MB-FLOW-003-C5 seam)
+
+  /**
+   * Typed durability of ONE fact (synchronous, no I/O): `durable` only when the
+   * last COMPLETE store revision contains this fact at its current revision;
+   * `pending` while a write is queued or in flight; `failed` when the last
+   * write failed and the fact is not durable; `unknown` for an unknown fact or
+   * unusable memory. A synchronously returned capture is NOT durable authority.
+   */
+  factDurability(factId: string): { state: 'durable' | 'pending' | 'failed' | 'unknown'; factRevision: number | null; storeRevision: number } {
+    const storeRevision = this.store?.revision ?? 0;
+    const fact = this.book?.get(factId);
+    if (!fact || !this.readable) return { state: 'unknown', factRevision: null, storeRevision };
+    if ((this.durable.get(factId) ?? 0) >= fact.revision) return { state: 'durable', factRevision: fact.revision, storeRevision };
+    if (this.lastWriteError && (this.store?.pending ?? 0) === 0 && !this.persistTimer) return { state: 'failed', factRevision: fact.revision, storeRevision };
+    return { state: 'pending', factRevision: fact.revision, storeRevision };
+  }
+
+  /**
+   * Waits (bounded) until a fact is durable or its write failed. Never called
+   * on the lifecycle/revocation path; recovery authority awaits it before any
+   * planning/action instead.
+   */
+  async whenFactDurable(factId: string, timeoutMs = 5_000): Promise<'durable' | 'failed' | 'timeout' | 'unknown'> {
+    const initial = this.factDurability(factId);
+    if (initial.state === 'durable' || initial.state === 'unknown') return initial.state;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs);
+      timer.unref?.();
+    });
+    const settled = (async (): Promise<'durable' | 'failed' | 'unknown'> => {
+      await this.persist('durability_barrier');
+      const s = this.factDurability(factId).state;
+      return s === 'pending' ? 'failed' : s;
+    })();
+    try {
+      return await Promise.race([settled, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   // ------------------------------------------------------------ refs / predicates
 
   /** Resolves an executable ref under the mandatory ownership fence (goal epoch [+ id], connection, dimension). */

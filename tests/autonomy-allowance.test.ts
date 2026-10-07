@@ -25,6 +25,9 @@ class FakeAllowance implements LowHealthAllowancePort {
   readonly rechecks: Array<{ capability: string; snapshotId: string }> = [];
   readonly consumedLog: Array<{ actionId: string; status: string }> = [];
   refuseRecheck = false;
+  refuseReserve = false;
+  readonly reserved = new Set<string>();
+  readonly reserves: string[] = [];
   readonly max: number;
   readonly expiresAt: number;
   readonly now: () => number;
@@ -50,8 +53,19 @@ class FakeAllowance implements LowHealthAllowancePort {
     if (this.refuseRecheck) return { allowed: false, reason: 'threat', detail: 'a hostile is visible now' };
     return this.state(task);
   }
-  consumed(_id: string, outcome: { actionId: string; status: string }): void {
+  /** Counts BEFORE execution (S311). */
+  reserve(_id: string, task: AllowanceTaskRef, candidate: { id: string }): LowHealthCheck {
+    this.reserves.push(candidate.id);
+    if (this.refuseReserve) return { allowed: false, reason: 'reserve_refused', detail: 'no actions left' };
+    const s = this.state(task);
+    if (!s.allowed) return s;
     this.used += 1;
+    this.reserved.add(candidate.id);
+    return { ...s, remainingActions: this.max - this.used };
+  }
+  /** Idempotent outcome note: a reserved action is never counted twice. */
+  consumed(_id: string, outcome: { actionId: string; status: string }): void {
+    if (!this.reserved.has(outcome.actionId)) this.used += 1;
     this.consumedLog.push(outcome);
   }
 }
@@ -201,5 +215,37 @@ describe('MB-FLOW-003-C2 allowance on every dispatch', () => {
     await rt.run(h2.task());
     assert.equal(a.checks.length + a.rechecks.length, 0, 'healthy: the allowance is never consulted');
     assert.equal(a.used, 0);
+  });
+});
+
+describe('S311 reserve before every dispatch', () => {
+  it('reserve precedes BOTH the Jev dispatch and the local continuation; the outcome note never double counts', async () => {
+    const h = new H();
+    const a = new FakeAllowance(2, h.t + 60_000, () => h.t);
+    const r = await new TaskRuntime(h.deps(a)).run(h.task());
+    assert.equal(a.reserves.length, 2, 'one reserve per dispatch (Jev + local)');
+    assert.deepEqual(a.reserves, h.executed.map((c) => c.id), 'reserved exactly the dispatched candidates, in order');
+    assert.equal(a.used, 2, 'counted at reserve; consumed() notes did not add more');
+    assert.equal(a.consumedLog.length, 2);
+    assert.equal(r.reason, 'low_health');
+  });
+
+  it('a reserve refusal executes nothing', async () => {
+    const h = new H();
+    const a = new FakeAllowance(2, h.t + 60_000, () => h.t);
+    a.refuseReserve = true;
+    const r = await new TaskRuntime(h.deps(a)).run(h.task());
+    assert.match(r.detail, /reserve refused/);
+    assert.equal(h.executed.length, 0);
+    assert.equal(a.used, 0);
+  });
+
+  it('an action that throws after reserve stays counted (counted before execution)', async () => {
+    const h = new H();
+    h.throwOnExecute = true;
+    const a = new FakeAllowance(1, h.t + 60_000, () => h.t);
+    await new TaskRuntime(h.deps(a)).run(h.task());
+    assert.equal(a.used, 1);
+    assert.equal(a.consumedLog[0]?.status, 'dispatch_interrupted');
   });
 });

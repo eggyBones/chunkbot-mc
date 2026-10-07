@@ -93,8 +93,14 @@ export class FakeSurvival implements SurvivalPolicyPort {
   }
   onOwnerInstruction(atMs: number): void {
     this.ownerInstructions.push(atMs);
+    this.durableInterrupted = [];
   }
   abandonRecovery(): void {}
+  /** Durable interrupted owner directives (as survival would reload them after a restart). */
+  durableInterrupted: Array<{ goalId: string; instruction: string; reason: string; interruptedAtMs: number; durable: boolean }> = [];
+  interruptedOwnerIntent() {
+    return this.durableInterrupted;
+  }
   readonly dismissed: string[] = [];
   dismissInterrupted(goalId: string): boolean {
     this.dismissed.push(goalId);
