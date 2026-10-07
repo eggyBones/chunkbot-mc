@@ -19,16 +19,27 @@
 // and every await is followed by a fenced sleep/ownership check. It performs
 // no inference and never reads hidden entity positions.
 import type { JsonValue, Vec3 } from '../contracts/index.ts';
-import type { RouteBlocker, RouteDestinationKind, RouteLegBounds, RouteStatus } from '../contracts/locator.ts';
+import type { RouteAdmissionProof, RouteBlocker, RouteDestinationKind, RouteStatus } from '../contracts/locator.ts';
 import type { RayHit, Vec, WorldView } from '../perception/visibility.ts';
 import type { LocatorService, LocatorSteering } from './service.ts';
 import type { RouteController } from './routes.ts';
 import { angleBetween } from './geometry.ts';
 import { boundLimited, classifyBlocker, frontierKey, frontiersToward, type Bounds, type FrontierChoice } from './terrain.ts';
 
+/** Result of re-verifying a code-owned destination's provenance (C3). */
+export type DestinationRecheck = { ok: true } | { ok: false; reason: string; detail: string };
+
 export type RouteTarget =
   | { kind: 'owner' }
-  | { kind: 'fixed'; destination: Exclude<RouteDestinationKind, 'owner'>; dimension: string; at: Vec3; label: string };
+  | {
+      kind: 'fixed';
+      destination: Exclude<RouteDestinationKind, 'owner'>;
+      dimension: string;
+      at: Vec3;
+      label: string;
+      /** Re-verifies provenance (authorization, owner-typed coordinates, frozen own-incident identity) before every step and on every movement poll. */
+      recheck: () => DestinationRecheck;
+    };
 
 export interface MoveResult {
   status: 'arrived' | 'no_path' | 'timeout' | 'stuck' | 'out_of_bounds';
@@ -60,8 +71,11 @@ export interface RouteEnv {
   recordVisited(): void;
   /** The owner's position ONLY when the owner is visible now (identity-verified entity). */
   ownerVisible(): Vec3 | undefined;
-  /** The admission travel bound of this goal epoch. */
-  admissionBounds(): Bounds | undefined;
+  /**
+   * The goal-owned ORIGINAL admission proof of this goal epoch (never a route
+   * leg; C3). Undefined when no admission is proven: nothing moves.
+   */
+  admissionBounds(): RouteAdmissionProof | undefined;
   move(target: Vec3, within: number, bounds: Bounds, options: MoveOptions): Promise<MoveResult>;
   progress(evidence: Record<string, JsonValue>): void;
   observationRadius: number;
@@ -114,9 +128,14 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
   let bestProgress = 0;
   let initialBearing: number | undefined;
 
+  // The active bound: the live route leg only when it belongs to exactly this
+  // goal's admission proof (same epochs, dimension, anchor, radius); else the
+  // unchanged admission bound. An unproven admission moves nothing.
   const bounds = (): Bounds | undefined => {
-    const leg: RouteLegBounds | undefined = deps.routes.legBounds(ctx());
-    return leg ? { anchor: leg.anchor, radius: leg.radius } : env.admissionBounds();
+    const proof = env.admissionBounds();
+    if (!proof || proof.goalEpoch !== env.goalEpoch || proof.connectionEpoch !== env.connectionEpoch() || proof.dimension !== env.dimension()) return undefined;
+    const t = deps.routes.effectiveTravel(proof);
+    return { anchor: t.anchor, radius: t.radius };
   };
   const routeStatus = (): RouteStatus | null => {
     deps.routes.sample(ctx(), env.self());
@@ -149,6 +168,8 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
   // Every movement poll samples the bot's own position into the route's
   // cumulative distance (C1) and stops as soon as a route budget is spent.
   let budgetStop: { blocker: RouteBlocker; detail: string } | undefined;
+  let destinationStop: { reason: string; detail: string } | undefined;
+  const destinationFail = (d: { reason: string; detail: string }) => fail(d.reason, `route movement stopped: ${d.detail}`);
   const move = (to: Vec3, within: number, bb: Bounds, options: MoveOptions): Promise<MoveResult> =>
     env.move(to, within, bb, {
       ...options,
@@ -158,6 +179,13 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
         if (!budget.ok) {
           budgetStop = budget;
           return 'route_budget';
+        }
+        if (target.kind === 'fixed') {
+          const check = target.recheck();
+          if (!check.ok) {
+            destinationStop = check;
+            return 'destination_invalid';
+          }
         }
         return options.abortIf?.();
       },
@@ -170,6 +198,10 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
     deps.routes.sample(ctx(), env.self());
     const budget = deps.routes.budget(ctx());
     if (!budget.ok) return budgetFail(budget);
+    if (target.kind === 'fixed') {
+      const check = target.recheck();
+      if (!check.ok) return destinationFail(check);
+    }
     const self = env.self();
     const b = bounds();
     if (!b) return fail('travel_anchor_not_admitted', 'no travel bound for this goal; nothing was moved');
@@ -211,6 +243,7 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
         });
         env.recordVisited();
         if (res.aborted === 'route_budget' && budgetStop) return budgetFail(budgetStop);
+        if (res.aborted === 'destination_invalid' && destinationStop) return destinationFail(destinationStop);
         if (res.status === 'arrived') continue; // re-verified at the top of the next step
         if (res.aborted === 'owner_lost') continue; // fall back to the locator cue (if any)
         if (res.status === 'out_of_bounds') continue; // the next step may begin a leg
@@ -246,6 +279,7 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
         const res = await move(target.at, params.within, b, { timeoutMs: Math.max(5_000, params.durationMs - (env.now() - started)) });
         env.recordVisited();
         if (res.aborted === 'route_budget' && budgetStop) return budgetFail(budgetStop);
+        if (res.aborted === 'destination_invalid' && destinationStop) return destinationFail(destinationStop);
         if (res.status === 'arrived') continue;
         failedFrontiers.add(frontierKey(target.at));
         moveFailures += 1;
@@ -310,6 +344,7 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
     bestProgress = Math.max(bestProgress, progressNow);
     env.progress({ routeSteps: steps, movedBlocks: r1(horizontal(start, env.self())), legsUsed: st?.legsUsed ?? 0, distanceUsed: st?.distanceUsed ?? 0 });
     if (res.aborted === 'route_budget' && budgetStop) return budgetFail(budgetStop);
+    if (res.aborted === 'destination_invalid' && destinationStop) return destinationFail(destinationStop);
     if (res.aborted === 'owner_visible' || res.aborted === 'hint_changed') continue;
     if (res.aborted === 'hint_withdrawn') continue; // re-evaluated at step 2 (stops advancing there)
     if (res.status === 'arrived') {

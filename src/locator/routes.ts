@@ -30,6 +30,9 @@ import {
   type RouteBlocker,
   type RouteDestinationKind,
   type RouteDestinationProvider,
+  type EffectiveTravel,
+  type FrozenOwnIncident,
+  type RouteAdmissionProof,
   type RouteDistanceAccount,
   type RouteLegBounds,
   type RouteOwnerCoordinate,
@@ -73,8 +76,8 @@ interface RouteRecord {
   ownerCoordinates: RouteOwnerCoordinate[];
   distance: RouteDistanceAccount;
   lastSample: Vec3 | null;
-  /** First own_death destination id this route used (a change is refused). */
-  boundOwnDeath: string | null;
+  /** The WHOLE own-incident identity frozen at first use (C3); any later difference is refused. */
+  boundOwnDeath: FrozenOwnIncident | null;
 }
 
 export type BeginLegResult = { ok: true; leg: RouteLegBounds; status: RouteStatus } | { ok: false; blocker: RouteBlocker; detail: string; status: RouteStatus | null };
@@ -97,13 +100,14 @@ export interface BeginLegRequest extends RouteCtx {
 
 export type DestinationCheck =
   | { ok: true; kind: 'owner_destination'; at: Vec3; label: string }
-  | { ok: true; kind: 'own_death'; at: Vec3; label: string; destinationId: string }
+  | { ok: true; kind: 'own_death'; at: Vec3; label: string; identity: FrozenOwnIncident }
   | { ok: false; blocker: RouteBlocker; detail: string };
 
 const horizontal = (a: Vec3, b: Vec3) => Math.hypot(a.x - b.x, a.z - b.z);
 const r1 = (n: number) => Math.round(n * 10) / 10;
 const freezeVec = (v: Vec3): Vec3 => Object.freeze({ x: v.x, y: v.y, z: v.z });
 const sameVec = (a: Vec3, b: Vec3) => a.x === b.x && a.y === b.y && a.z === b.z;
+const sameIncident = (a: FrozenOwnIncident, b: FrozenOwnIncident) => a.destinationId === b.destinationId && a.dimension === b.dimension && sameVec(a.at, b.at) && a.recordedAtMs === b.recordedAtMs;
 
 /** Owner-typed coordinate match (block centring tolerated), same rule as goals/owner-coordinates.ts. */
 export function matchesRouteOwnerCoordinate(at: Vec3, coords: readonly RouteOwnerCoordinate[]): boolean {
@@ -197,10 +201,20 @@ export class RouteController implements RoutePort {
     return a;
   }
 
+  /** Whether the route's leg authority is live: leg_active, before the fixed deadline, under the distance ceiling. */
+  private legLive(r: RouteRecord): 'live' | 'route_not_active' | 'route_exhausted' | 'route_expired' {
+    if (r.state !== 'leg_active' || r.legs.length === 0) return r.state === 'exhausted' || r.state === 'blocked' ? 'route_exhausted' : 'route_not_active';
+    if (r.distance.total >= r.auth.ceilings.maxTotalDistance) return 'route_exhausted';
+    if (this.options.clock.now() >= r.auth.ceilings.routeDeadlineMs) return 'route_expired';
+    return 'live';
+  }
+
   legBounds(ctx: RouteCtx): RouteLegBounds | undefined {
     const auth = this.authorization(ctx);
     const r = this.current;
     if (!auth || !r) return undefined;
+    // MB-LOC-001-C2: exhausted/blocked/expired routes withdraw their expanded authority.
+    if (this.legLive(r) !== 'live') return undefined;
     const leg = r.legs.at(-1);
     if (!leg) return undefined;
     return { routeId: auth.routeId, goalEpoch: auth.goalEpoch, connectionEpoch: auth.connectionEpoch, dimension: auth.dimension, legIndex: leg.index, anchor: { ...leg.anchor }, radius: leg.radius, admissionAnchor: { ...auth.admissionAnchor }, admissionRadius: auth.admissionRadius };
@@ -214,6 +228,23 @@ export class RouteController implements RoutePort {
   static applies(leg: RouteLegBounds | undefined, anchor: { goalEpoch: number | undefined; connectionEpoch: number; dimension: string; at: Vec3 } | undefined): leg is RouteLegBounds {
     if (!leg || !anchor || anchor.goalEpoch === undefined) return false;
     return leg.goalEpoch === anchor.goalEpoch && leg.connectionEpoch === anchor.connectionEpoch && leg.dimension === anchor.dimension && sameVec(leg.admissionAnchor, anchor.at);
+  }
+
+  /**
+   * The canonical travel bound for every movement poll (shared travel guard,
+   * all skills/navigation): the live leg only when it belongs to exactly this
+   * goal-owned admission proof; otherwise the unchanged admission bound.
+   */
+  effectiveTravel(admission: RouteAdmissionProof): EffectiveTravel {
+    const base = { anchor: { ...admission.anchor }, radius: admission.radius };
+    const auth = this.authorization(admission);
+    const r = this.current;
+    if (!auth || !r) return { kind: 'admission', ...base, reason: 'no_route' };
+    if (!sameVec(auth.admissionAnchor, admission.anchor) || auth.admissionRadius !== admission.radius) return { kind: 'admission', ...base, reason: 'proof_mismatch' };
+    const live = this.legLive(r);
+    if (live !== 'live') return { kind: 'admission', ...base, reason: live };
+    const leg = r.legs.at(-1) as LegRecord;
+    return { kind: 'route_leg', anchor: { ...leg.anchor }, radius: leg.radius, routeId: auth.routeId, legIndex: leg.index, admissionAnchor: { ...auth.admissionAnchor }, admissionRadius: auth.admissionRadius };
   }
 
   proposalContext(ctx: RouteCtx): RouteProposalContext {
@@ -245,17 +276,28 @@ export class RouteController implements RoutePort {
     const dest = this.options.ownDeath?.current(ctx);
     if (!dest || dest.provenance !== 'own_incident') return { ok: false, blocker: 'destination_unverified', detail: 'no recorded own death location from the installed provider' };
     if (dest.dimension !== ctx.dimension) return { ok: false, blocker: 'dimension_mismatch', detail: `the recorded own death location is in ${dest.dimension}` };
-    if (r.boundOwnDeath !== null && r.boundOwnDeath !== dest.destinationId) return { ok: false, blocker: 'destination_changed', detail: 'the recorded own death location changed after this route began; a fresh owner decision is needed' };
-    return { ok: true, kind, at: { ...dest.at }, label: dest.label.slice(0, 80), destinationId: dest.destinationId };
+    const identity: FrozenOwnIncident = { destinationId: dest.destinationId, dimension: dest.dimension, at: { x: dest.at.x, y: dest.at.y, z: dest.at.z }, recordedAtMs: dest.recordedAtMs };
+    if (r.boundOwnDeath !== null && !sameIncident(r.boundOwnDeath, identity)) return { ok: false, blocker: 'destination_changed', detail: 'the recorded own death location changed after this route began; a fresh owner decision is needed' };
+    return { ok: true, kind, at: { ...identity.at }, label: dest.label.slice(0, 80), identity };
   }
 
-  /** Binds the own_death destination id at first use by this route. */
-  bindOwnDeath(ctx: RouteCtx, destinationId: string): boolean {
+  /**
+   * Freezes the WHOLE own-incident identity at first use (C3). Later calls
+   * succeed only for an identical identity (same id, dimension, position and
+   * recorded time); the same id with a different position is refused.
+   */
+  bindOwnDeath(ctx: RouteCtx, identity: FrozenOwnIncident): boolean {
     const r = this.current;
     if (!r || !this.authorization(ctx)) return false;
-    if (r.boundOwnDeath !== null) return r.boundOwnDeath === destinationId;
-    r.boundOwnDeath = destinationId;
+    if (r.boundOwnDeath !== null) return sameIncident(r.boundOwnDeath, identity);
+    r.boundOwnDeath = Object.freeze({ ...identity, at: Object.freeze({ ...identity.at }) });
     return true;
+  }
+
+  /** The frozen own-incident identity of the route (null before first use). */
+  frozenOwnDeath(ctx: RouteCtx): FrozenOwnIncident | null {
+    const r = this.current;
+    return r && this.authorization(ctx) ? r.boundOwnDeath : null;
   }
 
   /**
@@ -264,11 +306,13 @@ export class RouteController implements RoutePort {
    * corrections are counted and labelled. Exceeding the ceiling exhausts the
    * route (no new legs; route skills stop).
    */
-  sample(ctx: RouteCtx, at: Vec3, source: 'client_physics' | 'server_correction' = 'client_physics'): void {
+  sample(ctx: RouteCtx, at: Vec3, source: 'client_physics' | 'server_correction' = 'client_physics'): number {
     const r = this.current;
-    if (!r || !this.authorization(ctx) || r.legs.length === 0) return;
+    if (!r || !this.authorization(ctx) || r.legs.length === 0) return 0;
+    let counted = 0;
     if (r.lastSample) {
       const d = horizontal(r.lastSample, at);
+      counted = d;
       if (d > 0) {
         r.distance.total += d;
         if (source === 'server_correction') {
@@ -289,25 +333,46 @@ export class RouteController implements RoutePort {
       r.blocker = { reason: 'distance_limit', detail: `${Math.round(r.distance.total)} of ${r.auth.ceilings.maxTotalDistance} route blocks of own movement are used` };
       this.options.record?.({ type: 'route_exhausted', routeId: r.auth.routeId, goalEpoch: r.auth.goalEpoch, blocker: 'distance_limit', distanceUsed: r1(r.distance.total) });
     }
+    return counted;
   }
 
   /**
-   * Samples every own position change of one connection (bot `move`) and every
-   * server position correction (evidence journal). Called by composition when a
-   * connection becomes ready; replaced on the next connection.
+   * Samples the bot's OWN RESOLVED position on every Mineflayer `move` of one
+   * connection (C2). A server position packet is applied by the pinned
+   * physics plugin (relative flags resolved per axis) which then emits `move`
+   * and, synchronously after it, `forcedMove`; that last move's delta is
+   * relabelled as a server correction. Raw journal coordinates are never used,
+   * so zero-relative or mixed-axis corrections cannot create fictitious
+   * distance, and nothing is counted twice (each sample extends one chain).
    */
   attachMovement(session: GameSession, goalEpoch: () => number): () => void {
     this.detachMovement?.();
     const bot = session.bot as unknown as EventEmitter & { entity: { position: Vec3 }; game: { dimension: unknown } };
     const ctx = (): RouteCtx => ({ goalEpoch: goalEpoch(), connectionEpoch: session.connectionEpoch, dimension: String(bot.game.dimension) });
-    const onMove = () => this.sample(ctx(), bot.entity.position, 'client_physics');
+    let lastMove: { delta: number; route: RouteRecord } | undefined;
+    const onMove = () => {
+      const p = bot.entity.position;
+      const delta = this.sample(ctx(), { x: p.x, y: p.y, z: p.z }, 'client_physics');
+      const r = this.current;
+      lastMove = delta > 0 && r ? { delta, route: r } : undefined;
+      // Only a forcedMove emitted synchronously after THIS move may relabel it.
+      queueMicrotask(() => {
+        lastMove = undefined;
+      });
+    };
+    const onForcedMove = () => {
+      const m = lastMove;
+      lastMove = undefined;
+      if (!m || m.route !== this.current) return;
+      m.route.distance.clientPhysics = Math.max(0, m.route.distance.clientPhysics - m.delta);
+      m.route.distance.serverCorrections += m.delta;
+      m.route.distance.correctionCount += 1;
+    };
     bot.on('move', onMove);
-    const offRecord = session.evidence.onRecord((e) => {
-      if (e.kind === 'position_correction') this.sample(ctx(), { x: e.x, y: e.y, z: e.z }, 'server_correction');
-    });
+    bot.on('forcedMove', onForcedMove);
     const detach = () => {
       bot.off('move', onMove);
-      offRecord();
+      bot.off('forcedMove', onForcedMove);
       if (this.detachMovement === detach) this.detachMovement = undefined;
     };
     this.detachMovement = detach;

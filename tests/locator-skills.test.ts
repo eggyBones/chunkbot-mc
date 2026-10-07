@@ -22,7 +22,7 @@ import { PerceptionService } from '../src/perception/perception.ts';
 import { plannerOutputSchema } from '../src/planner/wire.ts';
 import type { ExecuteContext } from '../src/skills/definition.ts';
 import { allSkills } from '../src/skills/index.ts';
-import { locatorSkills, routeTravelSkill } from '../src/skills/locator.ts';
+import { admissionProof, locatorSkills, routeTravelSkill } from '../src/skills/locator.ts';
 import { evidenceFor, fakeClient, fakeMineflayerBot } from './skill-fakes.ts';
 
 const OWNER = 'OwnerPlayer';
@@ -182,6 +182,38 @@ describe('MB-LOC-001 route_travel provenance in resolver AND executor', () => {
       const stale = await skill.execute(wrongEpoch, { target: { kind: 'destination', dimension: 'overworld', x: 400, y: 0, z: 0 }, within: 3, durationMs: 5_000 });
       assert.equal(stale.reason, 'route_not_authorized');
       assert.equal(commands, 0, 'nothing was issued');
+    } finally {
+      w.evidence.detach();
+    }
+  });
+});
+
+describe('MB-LOC-001-C3 admission proof for the production RouteEnv', () => {
+  const ctxFor = (w: ReturnType<typeof world>, goalEpoch = 1) =>
+    ({ act: {}, session: w.session, services: w.services, candidate: { goalEpoch }, owner: { kind: 'goal', goalEpoch, goalId: 'goal-0001', taskId: 'task-0001' }, progress: () => undefined }) as unknown as ExecuteContext;
+
+  it('pre-H2: travelBounds is accepted only when goal-owned AND equal to the route authorization admission anchor', () => {
+    const w = world();
+    try {
+      const proof = admissionProof(ctxFor(w), w.routes)!;
+      assert.deepEqual({ goalEpoch: proof.goalEpoch, anchor: proof.anchor, radius: proof.radius }, { goalEpoch: 1, anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 128 });
+      assert.equal(admissionProof(ctxFor(w, 2), w.routes), undefined, 'another goal epoch has no proof');
+      w.perception.admitTravelAnchor(1, { x: 120, y: 0, z: 0.5 }); // e.g. a leg-expanded/moved anchor
+      assert.equal(admissionProof(ctxFor(w), w.routes), undefined, 'a bound that differs from the frozen authorization is never a proof');
+    } finally {
+      w.evidence.detach();
+    }
+  });
+
+  it('H2: the dedicated admissionBounds() accessor is used (never travelBounds), scoped to the exact epoch/connection/dimension', () => {
+    const w = world();
+    try {
+      const perception = w.perception as unknown as { admissionBounds?: () => unknown; travelBounds: () => unknown };
+      perception.admissionBounds = () => ({ goalEpoch: 1, connectionEpoch: 1, dimension: 'overworld', anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 128 });
+      perception.travelBounds = () => ({ anchor: { x: 999, y: 0, z: 0 }, radius: 96 }); // an effective leg after H2
+      assert.deepEqual(admissionProof(ctxFor(w), w.routes)?.anchor, { x: 0.5, y: 0, z: 0.5 });
+      perception.admissionBounds = () => ({ goalEpoch: 1, connectionEpoch: 7, dimension: 'overworld', anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 128 });
+      assert.equal(admissionProof(ctxFor(w), w.routes), undefined);
     } finally {
       w.evidence.detach();
     }
