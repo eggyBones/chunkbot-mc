@@ -305,7 +305,7 @@ async function main(): Promise<void> {
     assert(catalog.capabilities.length >= 20, 'catalog size');
   });
 
-  chunkbot = new CliProcess('run-skills', ['run', '--config', CONFIG]);
+  chunkbot = new CliProcess('run-skills', ['run', '--no-autonomy', '--config', CONFIG]);
   let owner: Bot | undefined;
   try {
     await check('S0', 'run joins the fixture with the skill layer installed; status shows skills ready, planner not ready', async (ev) => {
@@ -1147,7 +1147,7 @@ async function main(): Promise<void> {
     const travelConfig = { ...base, storage: { ...base.storage, dataDir: join(PROJECT_ROOT, 'var') }, limits: { ...base.limits, travelRadius: 8 } };
     const travelConfigPath = join(outDir, 'travel-radius-8.json');
     writeFileSync(travelConfigPath, `${JSON.stringify(travelConfig, null, 2)}\n`);
-    chunkbot = new CliProcess('run-travel-radius-8', ['run', '--config', travelConfigPath]);
+    chunkbot = new CliProcess('run-travel-radius-8', ['run', '--no-autonomy', '--config', travelConfigPath]);
     const ANCHOR = { x: 205.5, y: -60, z: 198.5 };
     await check('B0', 'second session joins with travelRadius 8; anchor set at a recorded position', async (ev) => {
       ev.push(await chunkbot.waitFor(new RegExp(`\\[chunkbot\\] ready: version=${FIXTURE_VERSION_RE}`), 30_000));

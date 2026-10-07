@@ -204,7 +204,7 @@ const runEvents = () => readJsonl(eventsPath);
 const journal = () => readJsonl(join(eventsPath, '..', 'planner.jsonl'));
 
 async function startChunkbot(name: string, configPath: string, env: NodeJS.ProcessEnv): Promise<CliProcess> {
-  const p = new CliProcess(name, ['run', '--config', configPath], env);
+  const p = new CliProcess(name, ['run', '--no-autonomy', '--config', configPath], env);
   await p.waitFor(/\[chunkbot\] planner: /, 30_000);
   const runLine = await p.waitFor(/\[chunkbot\] run \S+; evidence: /, 10_000);
   eventsPath = /evidence: (\S+)$/.exec(runLine)?.[1] ?? '';

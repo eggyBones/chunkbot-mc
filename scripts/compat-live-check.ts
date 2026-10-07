@@ -164,7 +164,7 @@ async function main(): Promise<void> {
   process.stdout.write(`fixture: ${await rcon('list')}\n`);
   const fixturePid = Number(readFileSync(fx.pidFile, 'utf8').trim());
   let owner: Bot | undefined;
-  chunkbot = new CliProcess('run-compat', ['run', '--config', CONFIG]);
+  chunkbot = new CliProcess('run-compat', ['run', '--no-autonomy', '--config', CONFIG]);
   try {
     await chunkbot.waitFor(new RegExp(`\\[chunkbot\\] ready: version=${FIXTURE_VERSION_RE}`), 30_000);
     owner = await fixtureBot('FixtureOwner');

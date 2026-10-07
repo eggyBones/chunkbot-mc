@@ -249,7 +249,7 @@ async function main(): Promise<void> {
   });
 
   // ---------------------------------------------------------------- main run session
-  const chunkbot = new CliProcess('run-main', ['run', '--config', FIXTURE_CONFIG]);
+  const chunkbot = new CliProcess('run-main', ['run', '--no-autonomy', '--config', FIXTURE_CONFIG]);
   let owner: { bot: Bot; messages: string[] } | undefined;
   let guest: { bot: Bot; messages: string[] } | undefined;
   try {
@@ -375,7 +375,7 @@ async function main(): Promise<void> {
 
   // ---------------------------------------------------------------- restart
   await check('L12', 'restart starts fresh and idle; /quit exits 0', async (ev) => {
-    const again = new CliProcess('run-restart', ['run', '--config', FIXTURE_CONFIG]);
+    const again = new CliProcess('run-restart', ['run', '--no-autonomy', '--config', FIXTURE_CONFIG]);
     try {
       ev.push(await again.waitFor(new RegExp(`\\[chunkbot\\] ready: version=${FIXTURE_VERSION_RE}`), 30_000));
       again.send('status');
@@ -392,7 +392,7 @@ async function main(): Promise<void> {
   });
 
   await check('L16', 'run --no-terminal shuts down cleanly with exit 3 when kicked', async (ev) => {
-    const proc = new CliProcess('run-no-terminal', ['run', '--no-terminal', '--config', FIXTURE_CONFIG]);
+    const proc = new CliProcess('run-no-terminal', ['run', '--no-terminal', '--no-autonomy', '--config', FIXTURE_CONFIG]);
     try {
       ev.push(await proc.waitFor(new RegExp(`\\[chunkbot\\] ready: version=${FIXTURE_VERSION_RE}`), 30_000));
       ev.push(`rcon kick: ${await rcon('kick Chunkbot No terminal check')}`);
@@ -427,7 +427,7 @@ async function main(): Promise<void> {
   });
   try {
     await check('L13', 'terminal stop during joining (stalled loopback server) cancels the join and releases the socket', async (ev) => {
-      const proc = new CliProcess('join-cancel-stop', ['run', '--config', stalled]);
+      const proc = new CliProcess('join-cancel-stop', ['run', '--no-autonomy', '--config', stalled]);
       try {
         ev.push(await proc.waitFor(/\[chunkbot\] joining 127\.0\.0\.1:\d+/));
         await sleep(500);
@@ -451,7 +451,7 @@ async function main(): Promise<void> {
     });
 
     await check('L14', 'SIGTERM during joining exits cleanly', async (ev) => {
-      const proc = new CliProcess('join-cancel-sigterm', ['run', '--config', stalled]);
+      const proc = new CliProcess('join-cancel-sigterm', ['run', '--no-autonomy', '--config', stalled]);
       try {
         ev.push(await proc.waitFor(/\[chunkbot\] joining 127\.0\.0\.1:\d+/));
         await sleep(300);
@@ -474,7 +474,7 @@ async function main(): Promise<void> {
   }
 
   await check('L15', 'stop issued immediately on the real fixture during joining', async (ev) => {
-    const proc = new CliProcess('join-cancel-real', ['run', '--config', FIXTURE_CONFIG]);
+    const proc = new CliProcess('join-cancel-real', ['run', '--no-autonomy', '--config', FIXTURE_CONFIG]);
     try {
       ev.push(await proc.waitFor(/\[chunkbot\] joining/));
       proc.send('stop');

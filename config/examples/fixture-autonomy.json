@@ -1,0 +1,101 @@
+{
+  "$comment": "Trusted LOCAL TEST FIXTURE only (loopback, offline auth, REAL Codex subscription planner on normal goal intake). MB-FLOW-001/003/LOC-001 profile: automatic progression + survival + locator routes, durable scope = the memory profile (autonomy.scope omitted, so both always agree). Contains no secrets. Not for Jake's real world or any non-loopback server. Harnesses opt out with `run --no-autonomy`.",
+  "minecraft": {
+    "host": "127.0.0.1",
+    "port": 25566,
+    "version": "26.1.2",
+    "joinTimeoutMs": 30000
+  },
+  "bot": {
+    "auth": "offline",
+    "username": "Chunkbot",
+    "trustedOfflineFixture": true
+  },
+  "owner": {
+    "name": "FixtureOwner"
+  },
+  "chat": {
+    "prefix": "!chunkbot",
+    "maxInstructionChars": 500,
+    "replyMode": "whisper",
+    "requireSignedChat": false
+  },
+  "storage": {
+    "dataDir": "var",
+    "keepRuns": 20,
+    "maxEventsPerRun": 5000,
+    "maxEventChars": 2000
+  },
+  "models": {
+    "planner": {
+      "provider": "codex-subscription",
+      "command": "codex",
+      "mode": "codex",
+      "model": "gpt-6.1-sol",
+      "reasoningEffort": "low"
+    },
+    "decision": {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13",
+      "apiKeyEnv": "OPENROUTER_API_KEY"
+    }
+  },
+  "limits": {
+    "observationRadius": 32,
+    "travelRadius": 128,
+    "nearOwnerDistance": 3,
+    "planWindowSteps": 8,
+    "totalTaskCeiling": 64,
+    "decisionMaxOptions": 8,
+    "decisionConcurrentRequests": 1,
+    "decisionMinIntervalMs": 1000,
+    "decisionTimeoutMs": 5000,
+    "plannerTimeoutMs": 45000,
+    "plannerTurnsPerGoal": 20,
+    "goalDeadlineMs": 1200000,
+    "decisionRequestsPerGoal": 1200,
+    "noProgressMs": 30000,
+    "ownerLossMs": 10000,
+    "perTargetRetries": 2,
+    "replans": 8,
+    "lowHealth": 8,
+    "openRouterSpendCapUsd": 1,
+    "cleanupTimeoutMs": 2000
+  },
+  "memory": {
+    "worldProfile": "fixture-26-1-2",
+    "worldRevision": 1,
+    "botProfile": "chunkbot-fixture"
+  },
+  "autonomy": {
+    "enabled": true,
+    "startDelayMs": 5000,
+    "afterCompletionMs": 3000,
+    "afterBlockedMs": 60000,
+    "maxBackoffMs": 900000,
+    "session": {
+      "maxProgressionGoals": 16,
+      "maxSupportGoals": 16,
+      "maxPlannerTurns": 200,
+      "maxConsecutiveUnproductive": 3,
+      "maxRepeatsPerFingerprint": 2
+    },
+    "home": {
+      "enabled": true,
+      "interior": 3,
+      "maxSiteDistance": 16
+    }
+  },
+  "survival": {
+    "enabled": true
+  },
+  "locator": {
+    "enabled": true,
+    "routes": {
+      "enabled": true,
+      "sources": [
+        "owner"
+      ]
+    }
+  }
+}

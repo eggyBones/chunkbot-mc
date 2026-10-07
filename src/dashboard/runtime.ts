@@ -14,7 +14,7 @@
 import type { DashboardMemorySummary, DashboardPause, DashboardPendingDirective } from '../contracts/dashboard.ts';
 import type { EvidenceEvent, Readiness, RunStore } from '../contracts/index.ts';
 import type { EngineStatus } from '../goals/goal-engine.ts';
-import type { SurvivalSummary } from './directive.ts';
+import type { AutonomyView, SurvivalSummary } from './directive.ts';
 import { dashboardPaths, type DashboardPaths } from './files.ts';
 import { UsageHistoryStore } from './history.ts';
 import { DashboardStatusPublisher, type DashboardGame } from './publisher.ts';
@@ -40,6 +40,8 @@ export interface DashboardRuntimeDeps {
   survival?: () => SurvivalSummary | undefined;
   /** Pause latch (automatic work paused; manual goals may still execute). */
   pause?: () => DashboardPause | undefined;
+  /** MB-FLOW-001 read-only supervisor status. */
+  autonomy?: () => AutonomyView | undefined;
   pid?: number;
   intervalMs?: number;
   timeZone?: string;
@@ -94,6 +96,7 @@ export function createDashboardRuntime(deps: DashboardRuntimeDeps): DashboardRun
     ...(deps.memory ? { memory: deps.memory } : {}),
     ...(deps.survival ? { survival: deps.survival } : {}),
     ...(deps.pause ? { pause: deps.pause } : {}),
+    ...(deps.autonomy ? { autonomy: deps.autonomy } : {}),
     ...(history ? { usageSink: history } : {}),
     ...(deps.intervalMs !== undefined ? { intervalMs: deps.intervalMs } : {}),
     ...(deps.log ? { log: deps.log } : {}),
