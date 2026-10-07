@@ -68,6 +68,7 @@ export const LOCATOR_HINT_REASONS = [
   'untracked', // the server withdrew the owner's waypoint (hidden: crouching, invisibility, head item, range, logout, ...)
   'expired', // the last statement is older than the freshness bound
   'no_position', // the server tracks the owner with an `empty` payload
+  'direction_undetermined', // the statement does not determine a horizontal direction from here (e.g. owner's chunk is this chunk, or directly above/below)
   'dimension_changed', // a dimension change/respawn voided earlier statements
   'disconnected', // no ready connection (statements never carry across connections)
   'owner_identity_unverified', // the owner policy cannot verify identity on this connection (e.g. UUID mode on an offline-mode server)
@@ -146,11 +147,20 @@ export const RoutePolicySchema = z
     legRadius: z.number().int().min(16).max(256).default(96),
     /** Legs per goal, including legs that made no progress. */
     maxLegs: z.number().int().min(1).max(64).default(12),
-    /** Sum of leg displacements per goal (blocks, horizontal). */
+    /**
+     * MB-LOC-001-C1: CUMULATIVE own movement per goal once its first leg begins
+     * (horizontal path length sampled from the bot's own position; server
+     * position corrections are counted and labelled). Out-and-back trips and
+     * detours consume it. Net/projected progress is separate (stall detection).
+     */
     maxTotalDistance: z.number().int().min(64).max(8_192).default(1_024),
-    /** Wall-clock budget from the first leg (ms); also bounded by the goal deadline. */
+    /**
+     * Wall-clock route budget measured from goal ADMISSION (fixed when the
+     * authorization is granted; a leg never restarts it). The effective
+     * deadline is min(admission + maxRouteMs, goal deadline).
+     */
     maxRouteMs: z.number().int().min(10_000).max(3_600_000).default(15 * 60_000),
-    /** Consecutive legs whose progress toward the destination is below minLegProgress before the route is blocked. */
+    /** Consecutive legs whose NET progress toward the destination is below minLegProgress before the route is blocked. */
     maxStalledLegs: z.number().int().min(1).max(8).default(3),
     minLegProgress: z.number().int().min(1).max(64).default(8),
     /** Destination kinds a goal may route toward. */
@@ -166,7 +176,7 @@ export const LocatorConfigSchema = z
     /** Locator perception (waypoint packets -> coarse owner hint). */
     enabled: z.boolean().default(true),
     /** A tracked owner statement older than this is `expired` (not actionable). */
-    hintMaxAgeMs: z.number().int().min(1_000).max(600_000).default(60_000),
+    hintMaxAgeMs: z.number().int().min(1_000).max(600_000).default(120_000),
     routes: RoutePolicySchema.default(RoutePolicySchema.parse({})),
   })
   .strict();
@@ -188,11 +198,20 @@ export type RouteGoalSource = (typeof ROUTE_GOAL_SOURCES)[number];
 export interface RouteCeilings {
   legRadius: number;
   maxLegs: number;
+  /** Cumulative own movement (path length) budget once the first leg begins. */
   maxTotalDistance: number;
-  /** Absolute wall-clock end of the route budget (ms since epoch); min(admission + maxRouteMs, goal deadline). */
+  /** Absolute wall-clock end fixed at admission: min(admittedAt + maxRouteMs, goal deadline). */
   routeDeadlineMs: number;
   maxStalledLegs: number;
   minLegProgress: number;
+}
+
+/** Owner-typed coordinates recorded for the goal (code-parsed from the owner's own words; provenance for owner_destination). */
+export interface RouteOwnerCoordinate {
+  x: number;
+  y: number;
+  z: number;
+  source: 'instruction' | 'answer';
 }
 
 /** Immutable once granted (Object.freeze); only the route controller holds mutable usage. */
@@ -212,7 +231,11 @@ export interface RouteAuthorization {
   ceilings: Readonly<RouteCeilings>;
 }
 
-/** Input of the synchronous admission hook (called with the travel-anchor capture). */
+/**
+ * Input of the synchronous admission hook (called right after the travel-anchor
+ * capture, before planning). One admission per goal epoch: a repeated or older
+ * epoch is refused, so no callback can regrant or reset a route.
+ */
 export interface RouteAdmission {
   goalId: string;
   goalEpoch: number;
@@ -224,6 +247,8 @@ export interface RouteAdmission {
   dimension: string;
   admissionAnchor: Vec3;
   admissionRadius: number;
+  /** Coordinates the owner typed in the admitted instruction (GoalEngine ownerCoordinates). */
+  ownerCoordinates: readonly RouteOwnerCoordinate[];
 }
 
 export const ROUTE_STATES = ['authorized', 'leg_active', 'exhausted', 'blocked', 'revoked'] as const;
@@ -233,15 +258,22 @@ export const ROUTE_BLOCKERS = [
   'leg_limit',
   'distance_limit',
   'time_limit',
-  'stalled', // maxStalledLegs consecutive legs without progress toward the destination
+  'stalled', // maxStalledLegs consecutive legs without net progress toward the destination
   'no_actionable_hint', // owner not visible and no current locator statement
   'destination_not_authorized',
+  'destination_unverified', // owner_destination not typed by the owner for this goal / own_death not from the provider
+  'destination_changed', // the code-owned destination changed after the route bound it
   'dimension_mismatch',
   'not_authorized', // no route authorization for this goal epoch/connection
 ] as const;
 export type RouteBlocker = (typeof ROUTE_BLOCKERS)[number];
 
-/** Effective local travel bound of the active leg (consumed by the perception travel guard). */
+/**
+ * Effective local travel bound of the active leg, with its full route context.
+ * Consumers (perception travel guard) must apply it ONLY when goalEpoch,
+ * connectionEpoch, dimension AND admissionAnchor exactly match their own
+ * goal-owned admission anchor; on any mismatch the admission bound applies.
+ */
 export interface RouteLegBounds {
   routeId: RouteId;
   goalEpoch: number;
@@ -251,6 +283,18 @@ export interface RouteLegBounds {
   /** The bot's own position when the leg began (not a hidden coordinate). */
   anchor: Vec3;
   radius: number;
+  /** The unchanged admission anchor/radius of the same authorization. */
+  admissionAnchor: Vec3;
+  admissionRadius: number;
+}
+
+/** Own-movement accounting source (C1): client physics samples vs server position corrections. */
+export interface RouteDistanceAccount {
+  /** Total counted path length (blocks, horizontal). */
+  total: number;
+  clientPhysics: number;
+  serverCorrections: number;
+  correctionCount: number;
 }
 
 /** Model/status-visible route progress (no destination coordinates, no hidden positions). */
@@ -259,9 +303,12 @@ export const RouteStatusSchema = z
     routeId: RouteIdSchema,
     goalId: GoalIdSchema,
     state: z.enum(ROUTE_STATES),
+    destinations: z.array(z.enum(ROUTE_DESTINATION_KINDS)).max(3),
     legsUsed: z.number().int().nonnegative(),
     maxLegs: z.number().int().positive(),
+    /** Cumulative own movement since the first leg (C1). */
     distanceUsed: z.number().nonnegative(),
+    distanceSources: z.object({ clientPhysics: z.number().nonnegative(), serverCorrections: z.number().nonnegative(), correctionCount: z.number().int().nonnegative() }).strict(),
     maxTotalDistance: z.number().positive(),
     remainingMs: z.number().int().nonnegative(),
     stalledLegs: z.number().int().nonnegative(),
@@ -271,13 +318,26 @@ export const RouteStatusSchema = z
       .strict()
       .nullable(),
     lastLeg: z
-      .object({ index: z.number().int().positive(), outcome: z.string().max(64), progress: z.number(), displacement: z.number().nonnegative() })
+      .object({ index: z.number().int().positive(), outcome: z.string().max(64), netProgress: z.number(), displacement: z.number().nonnegative() })
       .strict()
       .nullable(),
     blocker: z.object({ reason: z.enum(ROUTE_BLOCKERS), detail: textSchema(BOUNDS.shortText) }).strict().nullable(),
   })
   .strict();
 export type RouteStatus = z.infer<typeof RouteStatusSchema>;
+
+/**
+ * Planner/proposal-check view of the goal's route context (proposed
+ * PlannerRequest.route / ProposalContext.route). No coordinates: owner
+ * destinations are validated against ownerCoordinates already shown.
+ */
+export interface RouteProposalContext {
+  authorized: boolean;
+  destinations: readonly RouteDestinationKind[];
+  /** A code-owned own-death destination exists in the current dimension and the policy allows it. */
+  ownDeathAvailable: boolean;
+  state: RouteState | null;
+}
 
 // ---------------------------------------------------------------- ports
 
@@ -293,13 +353,17 @@ export interface LocatorPort {
  * this port; proposals cannot grant, extend or reset authorizations.
  */
 export interface RoutePort {
-  /** Synchronous admission hook: grants (or declines, returning undefined) a route authorization for the new goal epoch from operator policy. */
+  /** Synchronous admission hook: grants (or declines) a route authorization for a NEW goal epoch from operator policy. */
   admit(admission: RouteAdmission): RouteAuthorization | undefined;
-  /** Active leg bounds for (goalEpoch, connectionEpoch, dimension), else undefined (the admission bound applies). */
+  /** Owner coordinates from a correlated clarification answer (same goal epoch only). */
+  noteOwnerCoordinates(goalEpoch: number, coordinates: readonly RouteOwnerCoordinate[]): void;
+  /** Active leg bounds with full route context on an EXACT match, else undefined (the admission bound applies). */
   legBounds(ctx: { goalEpoch: number; connectionEpoch: number; dimension: string }): RouteLegBounds | undefined;
+  /** Proposal-validation/planner view (no coordinates). */
+  proposalContext(ctx: { goalEpoch: number; connectionEpoch: number; dimension: string }): RouteProposalContext;
   /** Route progress for a goal epoch (status/observation); null when none. */
   status(goalEpoch?: number): RouteStatus | null;
-  /** Goal end / replacement / lifecycle: the route can never steer again. */
+  /** Goal end / replacement / lifecycle: the route can never steer again (never regranted). */
   revoke(reason: string, goalEpoch?: number): void;
 }
 
@@ -307,9 +371,10 @@ export interface RoutePort {
  * Seam for a CODE-OWNED historical destination (e.g. the survival module's own
  * last death position, recorded from the bot's own server-confirmed state).
  * Not a planner coordinate, not another player's position. The route module
- * only routes toward it when the goal's authorization lists `own_death`.
+ * only routes toward it when the goal's authorization lists `own_death`, and
+ * binds the first destinationId it uses (a later change is refused).
  */
 export interface RouteDestinationProvider {
   readonly kind: 'own_death';
-  current(ctx: { connectionEpoch: number; dimension: string; goalEpoch: number }): { destinationId: string; dimension: string; at: Vec3; recordedAtMs: number; label: string } | undefined;
+  current(ctx: { connectionEpoch: number; dimension: string; goalEpoch: number }): { destinationId: string; dimension: string; at: Vec3; recordedAtMs: number; label: string; provenance: 'own_incident' } | undefined;
 }
