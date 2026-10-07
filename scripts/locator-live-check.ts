@@ -96,7 +96,11 @@ export const FLAT_BASELINE: ReadonlyArray<{ y: number; block: string }> = [
 export const FLAT_AIR_FROM = -60;
 
 export const BASE = { x: 1000.5, y: -60, z: 1000.5 };
-export const SCENE_BASE = { x: 1004.5, y: -60, z: 1120.5 };
+// MB-LOC-001-C5: the bot starts WEST of every obstacle (obstacles begin at x 1003);
+// the owner stands on intact ground east of them; the drop is a stone platform
+// (never a hole through bedrock).
+export const SCENE_BASE = { x: 1000.5, y: -60, z: 1120.5 };
+export const SCENE_PLATFORM = { x1: 1000, x2: 1002, y1: -60, y2: -56, z1: 1118, z2: 1122 };
 export const NETHER_ROOF = { x: 0.5, y: 128, z: 0.5 };
 
 /** Every overworld teleport destination of the harness (offsets from BASE unless absolute). */
@@ -117,7 +121,8 @@ export const TELEPORTS: Record<string, { x: number; y: number; z: number }> = {
   ownerG3: { x: BASE.x + 300, y: BASE.y, z: BASE.z + 40 },
   guestWest30: { x: BASE.x - 30, y: BASE.y, z: BASE.z },
   sceneBot: SCENE_BASE,
-  sceneOwner: { x: SCENE_BASE.x + 34, y: SCENE_BASE.y, z: SCENE_BASE.z },
+  scenePlatform: { x: 1001.5, y: -55, z: 1120.5 },
+  sceneOwner: { x: 1034.5, y: -60, z: 1120.5 },
 };
 
 export function insideBox(b: Box, p: { x: number; y: number; z: number }): boolean {
@@ -563,13 +568,33 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         };
         if (baselineMisses.length === 0 && refMisses.length === 0 && equal) {
         restores.push({ label: 'G5 scene restored to the flat baseline (every layer) and verified', fn: restoreScene });
-        const scenario = async (id: string, title: string, setup: string[], expect: string) =>
+        /**
+         * One negative scene. Valid L5 outcomes: the expected specific blocker, or a
+         * SAFE detour (route progress/success) — in both cases with no obstacle
+         * contact, no damage and no death, monitored for the whole scenario.
+         */
+        const scenario = async (id: string, title: string, setup: string[], expect: string, start: 'sceneBot' | 'scenePlatform', contact: (p: { x: number; y: number; z: number }) => boolean) =>
           check(id, title, async (ev) => {
             await restoreScene();
             for (const cmd of setup) await rcon(cmd);
-            await tp(BOT, 'sceneBot');
+            await tp(BOT, start);
             await tp(OWNER, 'sceneOwner');
             await sleep(2_000);
+            const bot0 = game.session()?.bot;
+            const health0 = bot0?.health ?? 0;
+            let minHealth = health0;
+            let touched: string | undefined;
+            let died = false;
+            const offLife = game.onLifecycle((e) => {
+              if (e.type === 'death') died = true;
+            });
+            const mon = setInterval(() => {
+              const b = game.session()?.bot;
+              if (!b) return;
+              minHealth = Math.min(minHealth, b.health ?? minHealth);
+              const p = b.entity.position;
+              if (!touched && contact(p)) touched = `obstacle contact at x ${p.x.toFixed(1)}, y ${p.y.toFixed(1)}, z ${p.z.toFixed(1)}`;
+            }, 100);
             epoch += 1;
             const goalId = `goal-locn${epoch}`;
             runtime.onGoalAdmitted({ goalId, epoch, admittedAtMs: Date.now() });
@@ -577,14 +602,25 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
             const set = candidates.generate({ objective: 'o', decisionInstruction: 'd', allowedCapabilities: ['seek_owner'], targetSelectors: [{ kind: 'owner' }], parameters: {}, completion: { predicate: 'near_target', target: { kind: 'owner' }, within: 3 } }, snap);
             const c = set.candidates.find((x) => x.capability === 'seek_owner');
             assert(c, `seek option (${set.unavailable.map((u) => u.reason).join(', ')})`);
-            const o = await executor.execute(c, new AbortController().signal, { kind: 'goal', goalEpoch: epoch, goalId, taskId: randomIds.next('task') });
+            let o;
+            try {
+              o = await executor.execute(c, new AbortController().signal, { kind: 'goal', goalEpoch: epoch, goalId, taskId: randomIds.next('task') });
+            } finally {
+              clearInterval(mon);
+              offLife();
+            }
             const p = await serverPos(BOT);
-            ev.push(`${o.status} (${o.reason}): ${o.effect.slice(0, 160)}; bot x offset ${(p.x - SCENE_BASE.x).toFixed(1)}`);
-            assert(o.status === 'failed' && o.reason === expect, `specific blocker ${expect}`);
+            const detour = o.status === 'partial' || o.status === 'succeeded';
+            ev.push(`${o.status} (${o.reason ?? '-'}): ${o.effect.slice(0, 160)}; server position offset x ${(p.x - TELEPORTS[start]!.x).toFixed(1)}, y ${(p.y - TELEPORTS[start]!.y).toFixed(1)}; health ${health0} -> min ${minHealth}; death ${died}; ${touched ?? 'no obstacle contact'}`);
+            assert(!died && !touched && minHealth >= health0, 'no obstacle contact, damage or death');
+            assert((o.status === 'failed' && o.reason === expect) || detour, `specific blocker ${expect} or a safe detour (got ${o.status}/${o.reason ?? '-'})`);
+            if (detour) ev.push('outcome: safe detour around the obstacle (valid L5 outcome)');
           });
-        await scenario('G5-lava', 'lava band across the cue', [`fill ${sc.x1 + 3} -61 ${sc.z1} ${sc.x1 + 12} -61 ${sc.z2} lava`], 'hazard_lava');
-        await scenario('G5-wall', 'wall higher than one block across the cue', [`fill ${sc.x1 + 3} -60 ${sc.z1} ${sc.x1 + 4} -54 ${sc.z2} stone`], 'wall');
-        await scenario('G5-drop', 'drop deeper than 3 blocks across the cue', [`fill ${sc.x1 + 3} -64 ${sc.z1} ${sc.x2} -61 ${sc.z2} air`], 'cliff_drop');
+        const inBand = (p: { x: number; z: number }, x1: number, x2: number) => Math.floor(p.x) >= x1 && Math.floor(p.x) <= x2 && Math.floor(p.z) >= sc.z1 && Math.floor(p.z) <= sc.z2;
+        await scenario('G5-lava', 'lava band across the cue', [`fill ${sc.x1 + 3} -61 ${sc.z1} ${sc.x1 + 12} -61 ${sc.z2} lava`], 'hazard_lava', 'sceneBot', (p) => inBand(p, sc.x1 + 3, sc.x1 + 12) && p.y < -60.2);
+        await scenario('G5-wall', 'wall higher than one block across the cue', [`fill ${sc.x1 + 3} -60 ${sc.z1} ${sc.x1 + 4} -54 ${sc.z2} stone`], 'wall', 'sceneBot', (p) => inBand(p, sc.x1 + 3, sc.x1 + 4) && p.y < -53);
+        const pf = SCENE_PLATFORM;
+        await scenario('G5-drop', 'drop deeper than 3 blocks (5-high platform) all around', [`fill ${pf.x1} ${pf.y1} ${pf.z1} ${pf.x2} ${pf.y2} ${pf.z2} stone`], 'cliff_drop', 'scenePlatform', (p) => p.y < -55.5);
         }
       }
     }
