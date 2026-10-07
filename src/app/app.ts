@@ -99,7 +99,7 @@ export interface AppExtensions {
   /** MB-FLOW-003-C5 owned admission barrier (durable recovery authority before any model call/action). */
   admissionBarrier?: GoalEngineDeps['admissionBarrier'];
   /** Extra status lines and chat summary for autonomy/survival/route (read-only; no inference). */
-  autonomyStatus?(): { lines: string[]; chat: string } | undefined;
+  autonomyStatus?(): { lines: string[]; chat: string; /** Automatic work can run after a resume (not disabled/scope-blocked). */ automatic?: boolean } | undefined;
   /** Terminal-only operator mechanic diagnostics (`/diag ...`). */
   diagnostic?(args: string): Promise<void>;
 }
@@ -345,7 +345,7 @@ export class ChunkbotApp implements CommandTarget {
     }
     const result = await this.engine.stop('owner_stop', origin.surface);
     if (!result.stopped && !cancelledControl) {
-      const text = 'Nothing to stop; Chunkbot is idle.';
+      const text = this.deps.extensions?.autonomyStatus?.()?.automatic === true ? 'Nothing was running; automatic work stays paused until you say resume.' : 'Nothing to stop; Chunkbot is idle.';
       this.deps.out(`[chunkbot] ${text}`);
       if (origin.surface === 'chat') this.deps.game.replyToOwner(text);
     }
@@ -353,8 +353,11 @@ export class ChunkbotApp implements CommandTarget {
 
   resume(origin: IntakeOrigin): void {
     const { wasPaused } = this.engine.resume(origin.surface);
+    const automatic = this.deps.extensions?.autonomyStatus?.()?.automatic === true;
     const text = wasPaused
-      ? 'Resumed: automatic work is allowed again. Nothing earlier is replayed and nothing new was started.'
+      ? automatic
+        ? 'Resumed: automatic work is allowed again. Nothing earlier is replayed; automatic work restarts from a fresh assessment.'
+        : 'Resumed: automatic work is allowed again. Nothing earlier is replayed and nothing new was started.'
       : 'Automatic work is not paused; nothing to resume.';
     this.deps.out(`[chunkbot] ${text}`);
     if (origin.surface === 'chat') this.deps.game.replyToOwner(text);

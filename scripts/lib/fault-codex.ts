@@ -33,7 +33,7 @@ export interface FaultControl {
 
 const SCRIPT = (node: string) => `#!${node}
 // Generated planner fault fixture (see scripts/lib/fault-codex.ts). Harness validation only.
-const { readFileSync, writeFileSync, existsSync } = require('node:fs');
+const { readFileSync, writeFileSync, existsSync, appendFileSync } = require('node:fs');
 const { spawnSync, spawn } = require('node:child_process');
 const { join } = require('node:path');
 const dir = __dirname;
@@ -63,6 +63,14 @@ let input = '';
 process.stdin.on('data', (c) => (input += c));
 process.stdin.on('end', () => {
   writeFileSync(join(dir, 'fault-codex-last-prompt-chars.json'), JSON.stringify({ n, chars: input.length, hasJevKeyName: /OPENROUTER|sk-or-/.test(JSON.stringify(process.env)) }));
+  // Structural metadata of the planner input (no content): which goal origin and context blocks it carried.
+  let meta = {};
+  try {
+    const doc = JSON.parse(input.split('\\n').find((l) => l.startsWith('{')) || '{}');
+    const g = doc.goal || {};
+    meta = { origin: g.origin || null, subject: g.status || null, turnKind: g.turnKind || null, autonomy: doc.autonomy ? { source: doc.autonomy.source && doc.autonomy.source.kind, home: doc.autonomy.home ? doc.autonomy.home.state : null, milestones: (doc.autonomy.recentMilestones || []).length, plannerTurnsLeft: doc.autonomy.session && doc.autonomy.session.plannerTurnsLeft } : null, route: Boolean(doc.route), locator: Boolean(doc.locator) };
+  } catch (e) { meta = { parseError: String(e).slice(0, 120) }; }
+  appendFileSync(join(dir, 'fault-codex-prompts.jsonl'), JSON.stringify({ n, atMs: Date.now(), chars: input.length, ...meta }) + '\\n');
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
   out({ type: 'thread.started', thread_id: 'fault-fixture-thread-' + n });
   out({ type: 'turn.started' });
