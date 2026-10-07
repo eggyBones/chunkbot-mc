@@ -24,6 +24,9 @@ const FIXTURE_VERSION_RE = FIXTURE_PINS.minecraftVersion.replace(/\./g, '\\.');
 import { CliProcess, CLI } from './lib/cli-process.ts';
 import { rconCommand } from './lib/rcon.ts';
 import { SCENE, sceneClearCommands, sceneCommands } from './lib/scene.ts';
+import { catalogProblems, expectedCapabilityIds, runProfile } from './lib/profile-catalog.ts';
+import { loadConfigFile } from '../src/config/load.ts';
+import { allSkills } from '../src/skills/index.ts';
 
 type Bot = ReturnType<typeof mineflayer.createBot>;
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -44,6 +47,8 @@ interface Result {
 const results: Result[] = [];
 const setupLog: Array<{ atMs: number; command: string; reply: string }> = [];
 const STOP_TARGET_MS = 250;
+/** MB-FLOW-001-C9: set when initial setup (S0) fails; dependent scenarios are then not run. */
+let aborted: string | null = null;
 
 function rconPassword(): string {
   const line = readFileSync(fx.properties, 'utf8').split('\n').find((l) => l.startsWith('rcon.password='));
@@ -301,8 +306,12 @@ async function main(): Promise<void> {
     ev.push(`unknown item: ${unknown.status} (${unknown.detail})`);
     const cat = offline('catalog', ['catalog', '--json', '--config', CONFIG]);
     const catalog = JSON.parse(cat.stdout) as Json;
-    ev.push(`catalog ${catalog.catalogVersion}: ${catalog.capabilities.length} capabilities from registered definitions`);
-    assert(catalog.capabilities.length >= 20, 'catalog size');
+    // The offline `catalog` command lists the FOUNDATION skill definitions only; a `run` adds the
+    // profile's optional families (checked against the run's own registry in S0).
+    const foundation = allSkills().map((x) => x.descriptor.id);
+    const listed = (catalog.capabilities as Json[]).map((c) => String(c.id));
+    ev.push(`catalog ${catalog.catalogVersion}: ${listed.length} foundation capabilities from registered definitions (the run profile adds its optional families; see S0)`);
+    assert(listed.length === foundation.length && foundation.every((id) => listed.includes(id)), `offline catalog lists exactly the ${foundation.length} foundation definitions`);
   });
 
   chunkbot = new CliProcess('run-skills', ['run', '--no-autonomy', '--config', CONFIG]);
@@ -310,14 +319,40 @@ async function main(): Promise<void> {
   try {
     await check('S0', 'run joins the fixture with the skill layer installed; status shows skills ready, planner not ready', async (ev) => {
       ev.push(await chunkbot.waitFor(new RegExp(`\\[chunkbot\\] ready: version=${FIXTURE_VERSION_RE}`), 30_000));
-      ev.push(await chunkbot.waitFor(/\[chunkbot\] skills: 20 capabilities/, 5_000).catch(() => chunkbot.lines.find((l) => /skills:/.test(l.text))?.text ?? 'skills line seen before ready'));
+      // MB-FLOW-001-C9: the expectation is the catalog THIS profile registers (never a fixed count).
+      const expected = expectedCapabilityIds(runProfile(loadConfigFile(CONFIG).config, false));
+      const skillsLine = await chunkbot.waitSince(/\[chunkbot\] skills: \d+ capabilities/, 0, 5_000);
+      ev.push(skillsLine);
       chunkbot.send('status');
-      ev.push(await chunkbot.waitFor(/\[status\] adapters: planner=not-ready knowledge=ready perception=ready skills=ready capabilities=20/));
+      // Planner disabled by the inference-free profile; knowledge, perception and skills ready.
+      const statusLine = await chunkbot.waitFor(/\[status\] adapters: planner=not-ready knowledge=ready perception=ready skills=ready capabilities=\d+/);
+      ev.push(statusLine);
+      const from = chunkbot.length;
+      chunkbot.send('/diag catalog');
+      const diagHead = await chunkbot.waitSince(/\[diag\] catalog \S+: \d+ capabilities/, from, 10_000);
+      const diagCount = Number(/: (\d+) capabilities/.exec(diagHead)?.[1]);
+      const deadline = Date.now() + 5_000;
+      let ids: string[] = [];
+      while (Date.now() < deadline) {
+        ids = chunkbot.lines.slice(from).map((l) => /^\[diag\] {3}([a-z0-9_]+) \(/.exec(l.text)?.[1]).filter((x): x is string => Boolean(x));
+        if (ids.length >= diagCount) break;
+        await sleep(50);
+      }
+      const problems = catalogProblems({ skillsLineCount: Number(/skills: (\d+) capabilities/.exec(skillsLine)?.[1] ?? NaN) || null, statusCount: Number(/capabilities=(\d+)/.exec(statusLine)?.[1] ?? NaN) || null, diagCount: diagCount || null, ids }, expected);
+      ev.push(`registered catalog (${ids.length}): ${ids.join(', ')}; expected for this profile (${expected.length}): foundation + ${expected.slice(allSkills().length).join(', ') || 'no optional families'}`);
+      assert(problems.length === 0, `registered catalog disagrees with the profile: ${problems.join('; ')}`);
       await setupScene();
       ev.push(`scene reset with ${setupLog.length} recorded RCON setup commands`);
     });
 
     // ---------------------------------------------------------------- G-04 perception / occlusion
+    if (!results.find((r) => r.id === 'S0')?.pass) {
+      // MB-FLOW-001-C9: initial setup failed (no verified catalog/scene/anchor); dependent scenarios would only cascade.
+      aborted = 'S0 initial setup failed; every dependent scenario was NOT run (no evidence claimed for them)';
+      process.stdout.write(`ABORT ${aborted}\n`);
+      return;
+    }
+
     await check('P1', 'perception: walled-in ore/cow/apple hidden; glass window, pig, bread visible; handles carry snapshot/dimension; no hidden data fields', async (ev) => {
       const snap = await observe();
       const keys = (snap.blockSummary as Json[]).map((b) => b.key);
@@ -1290,12 +1325,13 @@ async function main(): Promise<void> {
       stopTargetMs: STOP_TARGET_MS,
       passed,
       total: results.length,
+      aborted,
       results,
       setupCommands: setupLog,
     };
     writeFileSync(join(outDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
-    process.stdout.write(`\n${passed}/${results.length} skill scenarios passed; report ${join(outDir, 'report.json')}\n`);
-    process.exitCode = passed === results.length ? 0 : 1;
+    process.stdout.write(`\n${passed}/${results.length} skill scenarios passed${aborted ? ` (ABORTED: ${aborted})` : ''}; report ${join(outDir, 'report.json')}\n`);
+    process.exitCode = passed === results.length && !aborted ? 0 : 1;
   }
 }
 
