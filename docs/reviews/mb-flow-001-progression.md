@@ -114,6 +114,8 @@ The progression-owned and shared-writer commits are listed first. The companion 
 - `5503827` harness A4/A5 extensions and this review.
 - `09ded35` review update for the survival C6/C1 picks.
 - `fecdfcc` P-C7 dashboard survival wording.
+- `4bbaa11` review update for the final dependency picks.
+- `750d50d` P-C8 harness correction: complete footprint, reconciled forceload and cleanup, awaited child exit.
 
 Companion cherry-picks:
 
@@ -162,15 +164,15 @@ The `src/contracts/survival.ts` and `src/contracts/locator.ts` changes are cherr
 
 | Check | Exit | Result |
 | --- | --- | --- |
-All results below are at `98dbc69`, the source and build freeze.
+All results below are at `750d50d` (P-C8 harness correction), the source and build freeze. `dist/cli.js` sha256 is `de9409f3ddb24e918274db15435ad1a15d1c5a2896f93149e7799b58e0fa7553`.
 
 | Check | Exit | Result |
 | --- | --- | --- |
 | `npm run typecheck` | 0 | |
 | `npm run build` | 0 | |
-| `npm test` | 0 | 743 of 743 pass. The obsolete locator `pre-H2` test is gone with `a87b07a`. |
+| `npm test` | 0 | 745 of 745 pass. The obsolete locator `pre-H2` test is gone with `a87b07a`. |
 | `npm run doctor -- --config config/examples/{fixture,fixture-autonomy,fixture-26.2,fixture-26.2-autonomy,fixture-inference-free,fixture-memory}.json` | 0 each | read-only |
-| `node --test tests/survival-*.test.ts tests/autonomy-*.test.ts tests/construction-*.test.ts tests/locator-*.test.ts` | 0 | 259 of 259 pass. |
+| `node --test tests/survival-*.test.ts tests/autonomy-*.test.ts tests/construction-*.test.ts tests/locator-*.test.ts` | 0 | 261 of 261 pass. |
 | `node --test tests/autonomy-harness-guard.test.ts` | 0 | Import-safe. Refuses exit 2 with no lease, an empty lease, an invalid lease, or `--fixture 26.2` alone; creates no output directory. |
 
 ## Acceptance status (A1–A9)
@@ -211,14 +213,43 @@ This is harness validation, not planner or Jev quality evidence. Each scenario r
 - It uses an independent data directory under the report directory, with a fresh scope per run.
 - It records the source freeze: HEAD, dirty count, and the `dist/cli.js` sha256 and mtime.
 - Every setup command and intervention is recorded.
-- It never signals anything except its own child CLI process, and only after `/quit` has failed for 20 s.
+- It never signals anything except its own child CLI process, and only after `/quit` has failed for 20 s. Its exit is still awaited (bounded 10 s) after that SIGKILL fallback (P-C8).
 
-**Footprint:**
+**P-C8 corrections.** The harness review recorded these in the root plan before correction; the U0–U5 logic and scenario evidence are unchanged.
 
-- Area: x 196..224, z 190..224, y -63..-50 (the existing scene area). It is reset to flat grass with one oak trunk at 208,-60..-58,202, and forceloaded like the other scene harnesses.
-- Inventories: Chunkbot's and FixtureOwner's. Chunkbot gets 8 bread (above the default safe-food reserve), then 64 cobblestone, a crafting table, a furnace and a chest.
-- Teleports: Chunkbot and FixtureOwner, inside the area.
-- No difficulty, gamerule or time change.
+- **Complete footprint.** The header, the report's `footprint` field and this section now give the actual entity selector box (y -64..-24) as well as the block area, and every player change.
+- **Forceload is reconciled.**
+  - `forceload query` (read-only) records the existing forceloaded set before any world change. An unrecognized reply refuses before any change.
+  - `resetScene` refuses if that set was not recorded.
+  - At finalization only the area chunks this run newly added are removed, and the full set is re-queried and verified equal to the recorded one.
+- **Cleanup is reconciled, never silent.** Every cleanup step is recorded in `report.cleanup.steps`:
+  - the owned CLI's stop, quit and exit;
+  - items, the bot's and owner's inventories, and the bot's effects;
+  - forceload restoration;
+  - owner bot disconnect and loopback Jev close.
+- **Cleanup gates the result.** Any failed or unverified step sets `cleanup.reconciled: false`. That makes `pass` false and the exit code 1 even when every scenario passed (`scenariosPass` stays separately visible), and the failures are printed.
+- **Tests.** `tests/autonomy-harness-guard.test.ts` checks:
+  - the record-before-change order;
+  - removal limited to new additions;
+  - the awaited exit after SIGKILL;
+  - cleanup gating pass;
+  - every `kill @e` staying inside the reviewed entity box;
+  - the forceload reply parser, which fails closed.
+
+**Footprint (complete):**
+
+- **Blocks:** x 196..224, z 190..224, y -63..-50 (the existing scene area).
+  - The reset sets dirt at y -63..-62, grass at y -61 and air at y -60..-50, plus one oak trunk at 208,-60..-58,202.
+  - The shelter the bot builds is left in place for later inspection. The next standard reset clears it; no baseline clone is taken.
+- **Entities:** kills happen only inside the selector box `x=196,y=-64,z=190,dx=28,dy=40,dz=34`, which covers x 196..224, y -64..-24, z 190..224.
+  - The reset kills non-player entities, then items and XP orbs.
+  - Cleanup kills items only.
+- **Players:**
+  - Chunkbot and FixtureOwner have their inventories cleared. Chunkbot is given 8 bread (above the default safe-food reserve), then 64 cobblestone, a crafting table, a furnace and a chest.
+  - Chunkbot gets slow_falling during the reset, then `effect clear` (cleared again at cleanup), and is set to survival mode.
+  - Both are teleported only to positions inside the block area.
+- **Forceload:** only the chunks covering the block area (chunk x 12..14, z 11..14). Pre-existing forceloads are recorded and kept.
+- **No difficulty, gamerule or time change.**
 
 **Requested:** an exclusive driver lease on the 26.2 fixture (`127.0.0.1:25567` / RCON 25577, `--fixture 26.2`, base config `config/examples/fixture-26.2-autonomy.json`), and later on 26.1.2 (`127.0.0.1:25566` / RCON 25576). No provider lease is needed; there is no inference.
 
