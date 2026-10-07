@@ -522,7 +522,8 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     let firstBlocked: (RoutineEval & { blocked: object }) | undefined;
     for (const routine of ROUTINE_ORDER) {
       if (interrupted && !(NECESSARY_ROUTINES as readonly string[]).includes(routine)) continue;
-      if (this.onCooldown(routine, now)) continue;
+      // A routine cooldown never suppresses a NECESSARY low-health eat/rest (safety).
+      if (this.onCooldown(routine, now) && !(lowNow && (routine === 'eat' || routine === 'rest'))) continue;
       const ev = this.evaluate(routine, ctx, now);
       if (!ev.need) {
         this.blocks.delete(routine);
