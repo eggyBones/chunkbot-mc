@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 import type { AllowanceTaskRef, RecoveryEpisode, SurvivalProposal } from '../src/contracts/survival.ts';
 import type { RouteDestinationProvider } from '../src/contracts/locator.ts';
-import { OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, slot, snapshot, type Harness } from './survival-helpers.ts';
+import { OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, settle, slot, snapshot, type Harness } from './survival-helpers.ts';
 
 after(cleanupRoots);
 
@@ -32,7 +32,7 @@ function lowHealthEat(h: Harness, goalEpoch = 7) {
 const eat = (n: number) => ({ id: `act-c2-${n}`, capability: 'eat_safe_food', parameters: { item: 'minecraft:bread' } });
 
 describe('low-health allowance accounting (C2)', () => {
-  it('the last allowed dispatch leaves zero; a further (local) window is refused', () => {
+  it('the last allowed dispatch leaves zero; a further (local) window is refused', async () => {
     const h = harness();
     const a = lowHealthEat(h);
     assert.equal(a.grant.maxActions, 4);
@@ -47,7 +47,7 @@ describe('low-health allowance accounting (C2)', () => {
     assert.equal(h.service.check(a.task, a.snap).allowed, false, 'the guard also refuses the next round');
   });
 
-  it('an aborted/thrown dispatch without any outcome still consumed its action', () => {
+  it('an aborted/thrown dispatch without any outcome still consumed its action', async () => {
     const h = harness();
     const a = lowHealthEat(h);
     h.service.reserve(a.id, a.task, eat(1), a.snap); // dispatch aborted: no consumed() call ever arrives
@@ -56,7 +56,7 @@ describe('low-health allowance accounting (C2)', () => {
     assert.equal((r as { remainingActions?: number }).remainingActions, 1);
   });
 
-  it('a reserved action is never counted twice; an unreserved dispatch is counted conservatively', () => {
+  it('a reserved action is never counted twice; an unreserved dispatch is counted conservatively', async () => {
     const h = harness();
     const a = lowHealthEat(h);
     h.service.reserve(a.id, a.task, eat(1), a.snap);
@@ -69,7 +69,7 @@ describe('low-health allowance accounting (C2)', () => {
     assert.equal((r as { remainingActions?: number }).remainingActions, 1, '1 reserved + 1 unreserved + this one = 3 of 4');
   });
 
-  it('expiry is fixed: a later dispatch is refused even with actions left', () => {
+  it('expiry is fixed: a later dispatch is refused even with actions left', async () => {
     const h = harness();
     const a = lowHealthEat(h);
     assert.equal(h.service.reserve(a.id, a.task, eat(1), a.snap).allowed, true);
@@ -78,7 +78,7 @@ describe('low-health allowance accounting (C2)', () => {
     assert.equal((r as { reason?: string }).reason, 'allowance_expired');
   });
 
-  it('a stale owner holds nothing: ended goal, other epoch, other task, other connection', () => {
+  it('a stale owner holds nothing: ended goal, other epoch, other task, other connection', async () => {
     const h = harness();
     const a = lowHealthEat(h);
     assert.equal(h.service.reserve(a.id, { ...a.task, goalEpoch: 8 }, eat(1), snapshot({ goalEpoch: 8 })).allowed, false);
@@ -90,7 +90,7 @@ describe('low-health allowance accounting (C2)', () => {
     assert.equal((r as { reason: string }).reason, 'not_support_goal');
   });
 
-  it('no renewal: a replayed admission gets no new grant and the exhausted count never resets', () => {
+  it('no renewal: a replayed admission gets no new grant and the exhausted count never resets', async () => {
     const h = harness();
     const a = lowHealthEat(h);
     for (let i = 1; i <= 4; i += 1) h.service.reserve(a.id, a.task, eat(i), a.snap);
@@ -98,7 +98,7 @@ describe('low-health allowance accounting (C2)', () => {
     assert.equal(h.service.check(a.task, a.snap).allowed, false);
   });
 
-  it('death revokes the grant before any further dispatch', () => {
+  it('death revokes the grant before any further dispatch', async () => {
     const h = harness();
     const a = lowHealthEat(h);
     h.service.onLifecycle({ type: 'death', connectionEpoch: 1 });
@@ -107,7 +107,7 @@ describe('low-health allowance accounting (C2)', () => {
 });
 
 describe('own-death destination (canonical RouteDestinationProvider)', () => {
-  function bound(): { h: Harness; goalEpoch: number } {
+  async function bound(): Promise<{ h: Harness; goalEpoch: number }> {
     const h = harness();
     const kit = { 36: slot('iron_pickaxe'), 37: slot('bread', 4) };
     h.packets.inventory(kit);
@@ -115,14 +115,16 @@ describe('own-death destination (canonical RouteDestinationProvider)', () => {
     dieWithItems(h, kit);
     h.service.linkIncident(h.service.deathContext().captureId as string, 'mf-0001');
     respawnFresh(h, {}, { dimensionName: OW, location: { x: 30, y: 64, z: 10 } });
+    await settle(h);
     const d = h.service.assess(assessInput(h));
     const p = (d as { proposal: SurvivalProposal }).proposal;
     h.service.onSupportAdmitted({ proposalId: p.proposalId, goalId: 'goal-dest5', goalEpoch: 5, connectionEpoch: 1, admittedAtMs: h.clock.now() });
+    await settle(h);
     return { h, goalEpoch: 5 };
   }
 
-  it('returns own_incident provenance and an id encoding the whole incident identity', () => {
-    const { h } = bound();
+  it('returns own_incident provenance and an id encoding the whole incident identity', async () => {
+    const { h } = await bound();
     const provider: RouteDestinationProvider = h.service;
     const dest = provider.current({ connectionEpoch: 1, dimension: OW, goalEpoch: 5 });
     assert.ok(dest);
@@ -133,8 +135,8 @@ describe('own-death destination (canonical RouteDestinationProvider)', () => {
     assert.equal(provider.current({ connectionEpoch: 2, dimension: OW, goalEpoch: 5 }), undefined);
   });
 
-  it('a changed coordinate after admission is refused (never a stale or substituted target)', () => {
-    const { h } = bound();
+  it('a changed coordinate after admission is refused (never a stale or substituted target)', async () => {
+    const { h } = await bound();
     const book = (h.service as unknown as { book: { open(): RecoveryEpisode } }).book;
     const e = book.open();
     (e.site.at as { x: number }).x += 5;
@@ -143,7 +145,7 @@ describe('own-death destination (canonical RouteDestinationProvider)', () => {
     assert.ok('error' in t && t.error === 'destination_changed');
   });
 
-  it('an unlinked incident is never a destination', () => {
+  it('an unlinked incident is never a destination', async () => {
     const h = harness();
     const kit = { 36: slot('bread', 4) };
     h.packets.inventory(kit);

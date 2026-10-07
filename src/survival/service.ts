@@ -58,6 +58,14 @@ import { SurvivalTracker, type CapturedDeathRecord, type TrackerEvent } from './
 /** Subset of MemoryService survival uses (designated storage, recovery updates). */
 export interface SurvivalMemoryPort {
   facts(): readonly MemoryFact[];
+  /**
+   * C5 proposed seam (progression/memory writer): whether this fact is in the
+   * last COMPLETE durable memory revision at its current fact revision.
+   * `pending`: queued/not yet fsynced; `failed`: its write failed (rolled
+   * back); `unknown`: not a fact of this scope. Absent: recovery is blocked
+   * (`incident_durability_unknown`) — an in-process fact is not authority.
+   */
+  factDurability?(factId: string): FactDurability;
   updateDeathRecovery(factId: string, update: { regained?: Array<{ key: string; count: number }>; status?: 'abandoned'; detail?: string }, evidence: { detail: string; actionId?: string; capability?: string }): Promise<{ ok: boolean; detail: string }>;
 }
 
@@ -80,6 +88,11 @@ export interface SurvivalServiceOptions {
   /** Store test seams. */
   store?: { pid?: number; isAlive?: (pid: number) => boolean; beforeRename?: (tmp: string) => void | Promise<void> };
 }
+
+export type FactDurability = 'durable' | 'pending' | 'failed' | 'unknown';
+
+/** Survival store durability of the current in-process book. */
+export type StoreDurability = 'durable' | 'pending' | 'failed' | 'unavailable';
 
 interface Pending {
   proposal: SurvivalProposal;
@@ -105,6 +118,8 @@ interface ActiveSupport {
   searchDone?: boolean;
   /** Whole own-incident identity frozen at admission (recovery only). */
   frozen?: FrozenIncident;
+  /** C5: book version containing this attempt; recovery acts only once a durable revision includes it. */
+  commitVersion?: number;
 }
 
 interface FrozenIncident {
@@ -144,6 +159,10 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   private storeDetail: string;
   private persistedVersion = -1;
   private persistQueued = false;
+  /** C5: the most recent write failed (cleared by a later successful write). */
+  private writeFailed: { atMs: number; error: string } | undefined;
+  private writesInFlight = 0;
+  private readonly inflight = new Set<Promise<void>>();
   private readonly allowances: AllowanceBook;
   private readonly pending = new Map<string, Pending>();
   private active: ActiveSupport | undefined;
@@ -229,17 +248,61 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       this.persistQueued = false;
       if (!this.book || this.book.version === this.persistedVersion) return;
       const version = this.book.version;
-      void this.store?.write(this.book.snapshot()).then((rev) => {
+      this.writesInFlight += 1;
+      const done = (this.store as SurvivalFileStore).write(this.book.snapshot()).then((rev) => {
+        this.writesInFlight -= 1;
         if (rev !== undefined) {
           this.persistedVersion = Math.max(this.persistedVersion, version);
-          this.record({ type: 'survival_written', revision: rev });
-        } else this.record({ type: 'survival_write_failed', error: clip(this.store?.lastError ?? 'unknown') });
+          if (this.persistedVersion >= version) this.writeFailed = undefined;
+          this.record({ type: 'survival_written', revision: rev, version });
+        } else {
+          this.writeFailed = { atMs: this.options.now(), error: clip(this.store?.lastError ?? 'unknown') };
+          this.record({ type: 'survival_write_failed', error: this.writeFailed.error, version });
+        }
       });
+      this.inflight.add(done);
+      void done.finally(() => this.inflight.delete(done));
     });
   }
 
+  /**
+   * C5: durability of the in-process book. `durable` only when the last
+   * successful complete revision contains the current version and nothing
+   * failed since; actions that need restart-safe limits require it.
+   */
+  durability(): StoreDurability {
+    if (!this.storeWritable || !this.book) return 'unavailable';
+    if (this.writeFailed) return 'failed';
+    if (this.book.version !== this.persistedVersion || this.writesInFlight > 0 || this.persistQueued) return 'pending';
+    return 'durable';
+  }
+
+  /** Bounded retry of a failed write (called from assess at most every 30 s; never on the lifecycle path). */
+  private retryFailedWrite(now: number): void {
+    if (!this.writeFailed || now - this.writeFailed.atMs < 30_000 || this.writesInFlight > 0) return;
+    this.writeFailed = { ...this.writeFailed, atMs: now };
+    this.persistSoon();
+  }
+
+  /** C5: exact memory fact durability through the proposed seam (absent seam: unknown). */
+  private incidentDurability(factId: string | undefined): FactDurability | 'unlinked' | 'seam_missing' {
+    if (!factId) return 'unlinked';
+    const fn = this.options.memory?.factDurability;
+    if (!fn) return 'seam_missing';
+    try {
+      return fn.call(this.options.memory, factId);
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  /** Waits for every queued survival write AND its durability bookkeeping. */
   async flush(): Promise<void> {
     await Promise.resolve();
+    while (this.inflight.size > 0 || this.persistQueued) {
+      await Promise.all([...this.inflight]);
+      await Promise.resolve();
+    }
     await this.store?.flush();
   }
 
@@ -403,6 +466,8 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     const now = input.nowMs;
     const cfg = this.cfg;
     if (!cfg) return { kind: 'none', reason: 'survival disabled' };
+    // C5: bounded retry of a failed durable write (also while a support goal runs; never on the lifecycle path).
+    this.retryFailedWrite(now);
     if (!input.connection?.ready) return this.decide({ kind: 'none', reason: 'not connected' }, now);
     if (input.connection.connectionEpoch !== this.tracker.connectionEpoch) return this.decide({ kind: 'none', reason: 'survival tracker is not attached to this connection' }, now);
     this.dimensionValue = input.connection.dimension;
@@ -444,6 +509,9 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       connection: { connectionEpoch: input.connection.connectionEpoch, dimension: input.connection.dimension },
       episode: this.book?.open(),
       episodeLinked: Boolean(this.book?.open()?.incidentFactId),
+      durability: this.durability(),
+      ...(this.writeFailed ? { durabilityError: this.writeFailed.error } : {}),
+      incidentDurability: this.incidentDurability(this.book?.open()?.incidentFactId),
       storeWritable: this.storeWritable,
       storeDetail: this.storeDetail,
       storage: this.designatedStorage(),
@@ -464,6 +532,11 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
         if ('conclude' in ev && ev.conclude && ctx.episode) this.concludeEpisode(ctx.episode, ev.conclude.status, ev.conclude.blocker, now);
         const prior = this.blocks.get(routine);
         if (!prior || prior.signature !== ev.signature) this.blocks.set(routine, { signature: ev.signature, reason: ev.blocked.reason, detail: ev.blocked.detail, transient: ev.blocked.transient, atMs: now, ...(ev.blocked.transient ? { untilMs: now + Math.min(cfg.blockedCooldownMs, 60_000) } : {}) });
+        // C5: a pending durable write is a short bounded wait that holds the support slot (lower routines do not jump in).
+        if (ev.blocked.reason === 'durable_write_pending' || ev.blocked.reason === 'incident_write_pending') {
+          this.blocks.delete(routine);
+          return this.decide({ kind: 'blocked', routine, reason: ev.blocked.reason, detail: ev.blocked.detail, signature: ev.signature, retryAfterMs: 1_000 }, now);
+        }
         firstBlocked ??= ev;
         continue;
       }
@@ -542,6 +615,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       const prep = p.preparation;
       const linked = e && e.incidentFactId && e.site.at && e.site.dimension ? e : undefined;
       const attempt = linked && prep ? this.book.beginAttempt(linked, adm.goalId, prep, now) : undefined;
+      if (attempt) active.commitVersion = this.book.version;
       if (linked) active.frozen = { episodeId: linked.episodeId, factId: linked.incidentFactId as string, dimension: linked.site.dimension as string, at: { ...(linked.site.at as { x: number; y: number; z: number }) }, source: linked.site.source, recordedAtMs: linked.site.observedAtMs ?? linked.occurredAtMs };
       if (!attempt) {
         this.record({ type: 'survival_attempt_refused', goalId: adm.goalId, episodeId: active.episodeId });
@@ -811,6 +885,12 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (!e || !isOpen(e)) return { error: 'episode_not_open', detail: 'the recovery episode is not open' };
     if (!e.incidentFactId) return { error: 'incident_not_linked', detail: 'the incident is not linked to a durable memory death fact' };
     if (!e.site.at || !e.site.dimension) return { error: 'site_unknown', detail: 'the death location is unknown' };
+    // C5: no travel/pickup until the attempt (and everything before it) is in a durable revision, and the incident fact is durable in memory.
+    if (a.commitVersion === undefined) return { error: 'attempt_not_recorded', detail: 'no recovery attempt was recorded for this goal' };
+    if (this.writeFailed) return { error: 'attempt_write_failed', detail: `the recovery attempt could not be saved durably (${this.writeFailed.error}); restart limits cannot be enforced, so nothing moves` };
+    if (this.persistedVersion < a.commitVersion) return { error: 'attempt_write_pending', detail: 'the recovery attempt is not yet saved durably; waiting (bounded) before any travel or pickup' };
+    const mem = this.incidentDurability(e.incidentFactId);
+    if (mem !== 'durable') return { error: mem === 'pending' ? 'incident_write_pending' : mem === 'failed' ? 'incident_write_failed' : mem === 'seam_missing' ? 'incident_durability_unknown' : 'incident_not_durable', detail: `the memory death fact ${e.incidentFactId} is not confirmed durable (${mem})` };
     const f = a.frozen;
     if (!f || !sameIncident(f, e)) return { error: 'destination_changed', detail: 'the own-incident identity frozen at admission (episode, fact, dimension, coordinates, source) changed; the old target is not used' };
     if (f.dimension !== fence.dimension) return { error: 'dimension_mismatch', detail: `the death site is in ${f.dimension}` };

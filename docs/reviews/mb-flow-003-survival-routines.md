@@ -27,7 +27,7 @@ No existing file was edited.
 
 - `npm run typecheck`: 0
 - `npm run build`: 0
-- `npm test`: 0, 576/576 passing. That includes 93 survival tests across 11 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), store, skills, wiring and harness guard.
+- `npm test`: 0, 586/586 passing. That includes 103 survival tests across 12 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring and harness guard.
 - The harness guard spawns `scripts/survival-live-check.ts` with a missing or invalid lease. Each run exits 2 before any password read, RCON command, join or output directory.
 - Not run (they need a lease or provider): the fixture gates, live-check, skills-live-check, planner and Jev checks, doctor.
 
@@ -73,6 +73,11 @@ No existing file was edited.
   - Inventory room: owner-designated storage only (memory `container` facts with source `owner_statement`), and nothing is ever dropped. Tools, armor, food, reserves and valuables are never deposited.
   - Resupply: a low/high reserve (default safe food 2/6) with a 15-minute cooldown.
   - Global caps: 12 automatic admissions per hour. An unchanged blocked signature is never re-proposed.
+- **Durable recovery authority (C5).** Recovery travel and pickup are authorized (`recoveryTarget`, the own-death route destination, `go_to_death_site`/`recover_lost_items` candidates) only when ALL of these hold:
+  - the admitted attempt and everything before it (the incident, its exact link, budgets) are in a COMPLETE durable survival revision, i.e. the successful write's version is at least the attempt's commit version;
+  - no survival write has failed since;
+  - the exact memory death fact is durable through the memory seam.
+  A pending survival or memory write is a bounded wait: `durable_write_pending` / `incident_write_pending`, no destination, and the support slot is held so lower routines don't jump in. A failed write blocks with `attempt_write_failed` / `durable_write_failed` / `incident_write_failed` until a later write succeeds; `assess` retries at most every 30 s, never on the lifecycle path. Capture and lifecycle never wait for disk. After a failed attempt write the in-process counter is kept; after a restart the never-durable attempt is absent from disk, but nothing travelled or collected under it, so restart-safe limits hold. A durable attempt survives restart and counts.
 - **Interrupted owner intent (C4).** `SurvivalAssessmentInput` splits the old ambiguous flag:
   - `ownerIntakePending`: LIVE intake only, i.e. a preparing or handing-off instruction, or an owner question awaiting an answer. Survival yields to it.
   - `ownerIntentInterrupted`: a retained interrupted directive. Survival then proposes only necessary support (`eat`, `rest`, `death_recovery`) serving `owner_intent`; other upkeep and unrelated progression wait.
@@ -115,7 +120,13 @@ No existing file was edited.
 8. **Skills.** Register `survivalSkills(service)`, which is empty when disabled.
 9. **Status and dashboard.** Use `survival.statusLines(now)` and `survival.status(now)`, at most 4,000 characters, read-only.
 10. **Routing.** Pass `farRoute` and the own-death provider to locator's RoutePort when the corrected routing is integrated. `SurvivalService` implements the canonical `RouteDestinationProvider` (locator `b323883`, cherry-picked unchanged): `current(ctx)` returns `provenance: 'own_incident'` only for the bound recovery goal epoch, connection and dimension, with an exact capture → memory fact → episode link, and only while the whole incident identity frozen at admission (episode, fact, dimension, coordinates, source) is unchanged. The `destinationId` encodes that whole identity; a changed coordinate gives no destination (`destination_changed`). Far recovery stays blocked until then.
-11. **Optional memory extension.** `updateDeathRecovery({retained})` so a respawn-retained inventory isn't recorded as "regained". The current use is labeled in the detail text.
+11. **Memory durability seam (C5, required for recovery; the progression/memory writer owns it).** Add `MemoryService.factDurability(factId: string): 'durable' | 'pending' | 'failed' | 'unknown'`, passed through `SurvivalMemoryPort.factDurability`:
+    - `durable`: the last complete durable revision contains the fact at its current fact revision (the existing private `durable` map holds a value at least `fact.revision`);
+    - `pending`: the fact exists in the book but isn't durable yet;
+    - `failed`: its write failed or was rolled back;
+    - `unknown`: no such fact in this scope.
+    Without the seam, recovery is blocked as `incident_durability_unknown`. The synchronous `onLifecycle` fact return stays the exact CAPTURE association; durability is a separate, later check made before planning or action, never on the revocation path. The gate harness uses a labeled stand-in that reads memory's last complete on-disk revision (`inspectMemory`).
+12. **Optional memory extension.** `updateDeathRecovery({retained})` so a respawn-retained inventory isn't recorded as "regained". The current use is labeled in the detail text.
 
 ## Lease request (R-G1/R-G2/R-G3 gate)
 

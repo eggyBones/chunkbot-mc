@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 import type { SurvivalDecision, SurvivalProposal } from '../src/contracts/survival.ts';
-import { OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, slot, type Harness } from './survival-helpers.ts';
+import { OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, settle, slot, type Harness } from './survival-helpers.ts';
 
 after(cleanupRoots);
 
@@ -91,6 +91,7 @@ describe('interrupted owner intent (C4)', () => {
     // Fresh connection after restart; the supervisor's in-process owner-intent state is gone.
     h.packets.inventory({ 38: slot('stone_pickaxe', 1, [{ type: 'damage', data: 130 }]) });
     h.packets.health(20, 20);
+    await settle(h);
     const p = proposal(h.service.assess(assessInput(h, { ownerIntentInterrupted: false })));
     assert.equal(p?.routine, 'death_recovery', 'necessary recovery runs (the worn tool upkeep waits)');
     assert.equal(p?.serves, 'owner_intent');

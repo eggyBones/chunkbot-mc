@@ -118,6 +118,9 @@ export function cleanupRoots(): void {
 
 export interface FakeMemory {
   factList: MemoryFact[];
+  /** C5 durability per fact (default: durable for any linked fact id). */
+  durability: Map<string, 'durable' | 'pending' | 'failed' | 'unknown'>;
+  factDurability(factId: string): 'durable' | 'pending' | 'failed' | 'unknown';
   updates: Array<{ factId: string; update: unknown; detail: string }>;
   facts(): readonly MemoryFact[];
   updateDeathRecovery(factId: string, update: unknown, evidence: { detail: string }): Promise<{ ok: boolean; detail: string }>;
@@ -126,6 +129,8 @@ export interface FakeMemory {
 export function fakeMemory(): FakeMemory {
   const m: FakeMemory = {
     factList: [],
+    durability: new Map(),
+    factDurability: (id) => m.durability.get(id) ?? 'durable',
     updates: [],
     facts: () => m.factList,
     updateDeathRecovery: async (factId, update, evidence) => {
@@ -147,10 +152,10 @@ export interface Harness {
   snap: { value: ObservationSnapshot | undefined };
 }
 
-export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; root?: string; clock?: TestClock; farRoute?: () => string | undefined; pid?: number; connectionEpoch?: number } = {}): Harness {
+export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; root?: string; clock?: TestClock; farRoute?: () => string | undefined; pid?: number; connectionEpoch?: number; beforeRename?: (tmp: string) => void | Promise<void>; memory?: FakeMemory } = {}): Harness {
   const clock = opts.clock ?? new TestClock();
   const root = opts.root ?? tempRoot();
-  const memory = fakeMemory();
+  const memory = opts.memory ?? fakeMemory();
   const events: Array<Record<string, unknown>> = [];
   const snap: { value: ObservationSnapshot | undefined } = { value: undefined };
   const service = new SurvivalService({
@@ -164,7 +169,7 @@ export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; 
     memory,
     latestSnapshot: () => snap.value,
     ...(opts.farRoute ? { farRoute: opts.farRoute } : {}),
-    store: { pid: opts.pid ?? 4242, isAlive: () => false },
+    store: { pid: opts.pid ?? 4242, isAlive: () => false, ...(opts.beforeRename ? { beforeRename: opts.beforeRename } : {}) },
   });
   service.open();
   const packets = new Packets();
@@ -229,3 +234,8 @@ export function sampleEpisode(over: Partial<RecoveryEpisode> = {}): RecoveryEpis
   };
 }
 
+
+/** Waits until every queued survival write settled (durability bookkeeping included). */
+export async function settle(h: Harness): Promise<void> {
+  await h.service.flush();
+}
