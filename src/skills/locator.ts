@@ -231,7 +231,11 @@ export function routeTravelSkill(deps: LocatorSkillDeps): SkillDefinition<RouteT
       const durationMs = admitted.durationMs ?? 60_000;
       const rc = routeCtx(ctx);
       const self = ctx.snapshot.self.at;
+      const seenDest = new Set<string>();
       for (const d of ctx.hints.destinations) {
+        const key = `${d.dimension}|${d.at.x},${d.at.y},${d.at.z}`;
+        if (seenDest.has(key)) continue; // a selector and a completion predicate often name the same destination
+        seenDest.add(key);
         if (d.dimension !== ctx.snapshot.dimension) {
           unavailable.push({ reason: 'dimension_mismatch', detail: `the owner-supplied destination is in ${d.dimension}` });
           continue;
