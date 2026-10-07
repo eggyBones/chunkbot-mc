@@ -25,14 +25,18 @@ async function die(h: Harness, dimensionName: string): Promise<void> {
 }
 
 describe('C7 dimension identity (session vs wire spelling)', () => {
-  it('canonical helpers: the minecraft namespace is the only difference ignored', () => {
+  it('canonical helpers: only the recognized vanilla aliases normalize', () => {
     assert.equal(sessionDimension('minecraft:overworld'), 'overworld');
     assert.equal(sessionDimension('overworld'), 'overworld');
     assert.equal(sessionDimension('mypack:minecraft:overworld'), 'mypack:minecraft:overworld');
     assert.ok(sameDimension('minecraft:overworld', 'overworld'));
     assert.ok(sameDimension('minecraft:the_nether', 'the_nether'));
     assert.ok(!sameDimension('minecraft:the_nether', 'overworld'));
+    assert.equal(sessionDimension('minecraft:the_end'), 'the_end');
     assert.ok(!sameDimension('mypack:overworld', 'overworld'), 'a datapack dimension is not the vanilla one');
+    // Only recognized vanilla aliases normalize: an unrecognized minecraft-namespaced id keeps its exact identity.
+    assert.equal(sessionDimension('minecraft:custom_dim'), 'minecraft:custom_dim');
+    assert.ok(!sameDimension('minecraft:custom_dim', 'custom_dim'));
     assert.ok(!sameDimension(undefined, 'overworld'));
     assert.ok(!sameDimension(undefined, undefined));
   });
@@ -69,6 +73,34 @@ describe('C7 dimension identity (session vs wire spelling)', () => {
     const d = h.service.assess(assessInput(h));
     assert.ok(d.kind !== 'propose' || d.proposal.routine !== 'death_recovery');
     assert.ok(h.service.status(h.clock.now()).blocked.some((b) => b.routine === 'death_recovery' && b.reason === 'cross_dimension'));
+  });
+
+  it('an unrecognized dimension alias is refused conservatively (cross_dimension), never normalized', async () => {
+    const h = harness();
+    h.pos.dimension = 'custom_dim';
+    await die(h, 'minecraft:custom_dim');
+    assert.equal(h.service.status(h.clock.now()).incidents[0]?.site.dimension, 'minecraft:custom_dim', 'exact server identity kept');
+    const d = h.service.assess(assessInput(h, { connection: { ready: true, connectionEpoch: 1, dimension: 'custom_dim' } }));
+    assert.ok(d.kind !== 'propose' || d.proposal.routine !== 'death_recovery');
+    assert.ok(h.service.status(h.clock.now()).blocked.some((b) => b.routine === 'death_recovery' && b.reason === 'cross_dimension'));
+  });
+
+  it('a pre-C7 episode holding the namespaced vanilla id still compares as the same dimension', async () => {
+    const h = harness();
+    await die(h, OW);
+    const inc = h.service.status(h.clock.now()).incidents[0];
+    const ep = (h.service as unknown as { book: { get(id: string): { site: { dimension?: string } } | undefined } }).book.get(inc?.episodeId as string);
+    assert.ok(ep);
+    ep.site.dimension = OW; // the spelling a pre-C7 store held
+    const d = h.service.assess(assessInput(h));
+    assert.equal(d.kind, 'propose', JSON.stringify(d));
+    const p = (d as { proposal: SurvivalProposal }).proposal;
+    assert.equal(p.routine, 'death_recovery');
+    h.service.onSupportAdmitted({ proposalId: p.proposalId, goalId: 'goal-dim8', goalEpoch: 5, connectionEpoch: 1, admittedAtMs: h.clock.now() });
+    await settle(h);
+    const t = h.service.recoveryTarget({ goalEpoch: 5, connectionEpoch: 1, dimension: SESSION_OW });
+    assert.ok(!('error' in t), JSON.stringify(t));
+    assert.equal(t.site.dimension, 'overworld', 'reported in the canonical form');
   });
 
   it('the login last-death GlobalPos is reported in the session spelling', () => {
