@@ -62,7 +62,7 @@ describe('survival skills', () => {
     assert.equal(skill(h, 'rest_in_place').resolve(ctxFor(h, threat)).unavailable?.[0]?.reason, 'threat_nearby');
   });
 
-  it('death-site travel and recovery candidates exist only for the bound goal, scoped to sought drops near the site', () => {
+  it('death-site travel candidates exist only for the bound goal, inside the travel bound, never into visible lava', () => {
     const h = harness();
     const kit = { 36: slot('iron_pickaxe'), 37: slot('bread', 4) };
     h.packets.inventory(kit);
@@ -84,19 +84,7 @@ describe('survival skills', () => {
     // Lava at the site: refused.
     const lava = snapshot({ goalEpoch: 5, blocks: [{ handle: 'blk-1', key: 'minecraft:lava', at: { x: 30, y: 64, z: 11 }, distance: 30 }] });
     assert.equal(skill(h, 'go_to_death_site').resolve(ctxFor(h, lava)).unavailable?.[0]?.reason, 'site_hazard_visible');
-    const drops = snapshot({
-      goalEpoch: 5,
-      at: { x: 29, y: 64, z: 10 },
-      drops: [
-        { handle: 'drp-1', key: 'minecraft:bread', at: { x: 31, y: 64, z: 11 }, distance: 2 },
-        { handle: 'drp-2', key: 'minecraft:diamond_sword', at: { x: 31, y: 64, z: 11 }, distance: 2 },
-        { handle: 'drp-3', key: 'minecraft:iron_pickaxe', at: { x: 60, y: 64, z: 10 }, distance: 31 },
-      ],
-    });
-    const rec = skill(h, 'recover_lost_items').resolve(ctxFor(h, drops));
-    assert.deepEqual(rec.drafts.map((x) => (x.parameters['target'] as { handle: string }).handle), ['drp-1'], 'only a still-sought drop within the search radius');
-    const none = skill(h, 'recover_lost_items').resolve(ctxFor(h, snapshot({ goalEpoch: 5, at: { x: 30, y: 64, z: 10 } })));
-    assert.equal(none.unavailable?.[0]?.reason, 'no_scoped_drops_visible');
+    // recover_lost_items scoping/identity/oversized/named-target cases: tests/survival-pickup.test.ts (C3).
   });
 
   it('equip_suitable_tool prefers the cheapest capable unworn tool; unknown block gets no tool', () => {

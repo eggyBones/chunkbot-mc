@@ -28,7 +28,10 @@ describe('survival tracker', () => {
     const inv = t.inventory();
     assert.ok(inv && inv.fullSync && inv.source === 'server_packets');
     const pick = inv.stacks.find((s) => s.key === 'minecraft:iron_pickaxe');
-    assert.deepEqual(pick?.meta, { metadata: 'server_slot', maxDurability: 250, damage: 230 });
+    assert.equal(pick?.meta.metadata, 'server_slot');
+    assert.equal(pick?.meta.maxDurability, 250);
+    assert.equal(pick?.meta.damage, 230);
+    assert.match(pick?.meta.digest ?? '', /^[0-9a-f]{16}$/, 'server identity digest');
     const sword = inv.stacks.find((s) => s.key === 'minecraft:diamond_sword');
     assert.equal(sword?.meta.damage, 0, 'no damage patch on a stated slot means damage 0');
     assert.equal(sword?.meta.enchanted, true);
@@ -136,6 +139,26 @@ describe('survival tracker', () => {
     assert.equal(t.inventory()?.source, 'ready_seed');
     p.inventory({ 36: slot('bread', 4) });
     assert.equal(t.inventory()?.source, 'server_packets');
+  });
+
+  it('records server-stated drop stacks with identity; never from labels; cleared on destroy/respawn', () => {
+    const { p, t } = attached();
+    p.login(42);
+    p.spawnItem(500, slot('diamond_sword', 1, [{ type: 'enchantments', data: { levels: { sharpness: 3 } } }]));
+    p.spawnItem(501, slot('bread', 64));
+    p.spawnItemWithoutStack(502);
+    const sword = t.dropStack(500);
+    assert.equal(sword?.key, 'minecraft:diamond_sword');
+    assert.equal(sword?.meta.enchanted, true);
+    assert.equal(t.dropStack(501)?.count, 64);
+    assert.equal(t.dropStack(502), undefined, 'no stated stack: unknown');
+    // A different enchantment is a different identity.
+    p.spawnItem(503, slot('diamond_sword', 1, [{ type: 'enchantments', data: { levels: { sharpness: 1 } } }]));
+    assert.notEqual(t.dropStack(503)?.meta.digest, sword?.meta.digest);
+    p.destroy(501);
+    assert.equal(t.dropStack(501), undefined);
+    p.respawn();
+    assert.equal(t.dropStack(500), undefined, 'respawn restarts the entity space');
   });
 
   it('classifies vanilla death keys and drops names', () => {

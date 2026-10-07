@@ -207,6 +207,13 @@ export const ItemMetadataSchema = z
     damage: z.number().int().nonnegative().optional(),
     enchanted: z.boolean().optional(),
     customName: z.boolean().optional(),
+    /**
+     * sha256 (16 hex) over the identity-relevant server component patch
+     * (damage, max_damage, enchantments, stored_enchantments, custom_name,
+     * trim, unbreakable). Present only for `server_slot` metadata. Two stacks
+     * of one key with different digests are different items.
+     */
+    digest: z.string().regex(/^[0-9a-f]{16}$/).optional(),
   })
   .strict();
 export type ItemMetadata = z.infer<typeof ItemMetadataSchema>;
@@ -356,9 +363,28 @@ export const ManifestItemSchema = z
     metadata: z.enum(['server_slot', 'unknown']),
     /** `missing`, `regained`, `likely_destroyed` (cause mechanics, unverified), `unknown`. */
     state: z.enum(['missing', 'regained', 'likely_destroyed', 'unknown']),
+    /**
+     * Valuable items only (C3): the server identity digest of each still-missing
+     * stack, one entry per stack. A valuable drop counts only when its server
+     * digest equals one of these; absent (metadata unknown) -> identity unproven,
+     * never collected or counted as this item.
+     */
+    identities: z.array(z.object({ digest: z.string().regex(/^[0-9a-f]{16}$/), count: z.number().int().positive() }).strict()).max(8).optional(),
   })
   .strict();
 export type ManifestItem = z.infer<typeof ManifestItemSchema>;
+
+/** Identity check of one drop against the manifest (C3). */
+export type DropIdentity = 'not_required' | 'match' | 'mismatch' | 'unproven';
+
+/** Server-stated facts of one dropped item entity (from its own metadata packet; never a display label). */
+export interface DropStackFacts {
+  entityId: number;
+  key: string;
+  count: number;
+  meta: ItemMetadata;
+  atMs: number;
+}
 
 export const LossManifestSchema = z
   .object({
