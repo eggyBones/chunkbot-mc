@@ -44,6 +44,8 @@ export class AllowanceBook {
   private readonly grants = new Map<string, LowHealthAllowanceGrant>();
   /** Goal epochs that ever received a grant (no second grant, even after revocation). */
   private readonly issuedFor = new Set<number>();
+  /** Action ids already counted by `reserve` (so `consumed` never counts them twice). */
+  private readonly reserved = new Map<string, Set<string>>();
   private readonly facts: AllowanceFacts;
 
   constructor(facts: AllowanceFacts) {
@@ -119,10 +121,10 @@ export class AllowanceBook {
     const bad = this.validate(g, task, snapshot);
     if (bad) return bad;
     if (g.taskId === null) g.taskId = task.taskId;
-    return { allowed: true, allowanceId: g.allowanceId, capabilities: g.capabilities, items: g.items, detail: `low-health allowance ${g.allowanceId} (${g.routine}): ${g.maxActions - g.actionsUsed} action(s) left, expires in ${Math.max(0, Math.round((g.expiresAtMs - this.facts.now()) / 1000))}s` };
+    return { allowed: true, allowanceId: g.allowanceId, capabilities: g.capabilities, items: g.items, detail: `low-health allowance ${g.allowanceId} (${g.routine}): ${g.maxActions - g.actionsUsed} action(s) left, expires in ${Math.max(0, Math.round((g.expiresAtMs - this.facts.now()) / 1000))}s`, remainingActions: g.maxActions - g.actionsUsed };
   }
 
-  recheck(allowanceId: string, task: AllowanceTaskRef, candidate: { capability: string; parameters: Readonly<Record<string, unknown>> }, snapshot: ObservationSnapshot): LowHealthCheck {
+  recheck(allowanceId: string, task: AllowanceTaskRef, candidate: { id?: string; capability: string; parameters: Readonly<Record<string, unknown>> }, snapshot: ObservationSnapshot): LowHealthCheck {
     const g = this.grants.get(allowanceId);
     if (!g || g.goalId !== task.goalId || g.goalEpoch !== task.goalEpoch) return this.refuse('no_allowance', 'the allowance does not belong to this goal epoch');
     if (g.taskId !== task.taskId) return this.refuse('task_mismatch', 'the allowance was not bound to this task');
@@ -138,11 +140,36 @@ export class AllowanceBook {
     return { allowed: true, allowanceId: g.allowanceId, capabilities: g.capabilities, items: g.items, detail: 'rechecked after the choice' };
   }
 
+  /**
+   * Conservative per-dispatch accounting: recheck, then count the action
+   * BEFORE it runs (abort/exception/no outcome still consumed it). The same
+   * action id is never counted twice; nothing ever extends the grant.
+   */
+  reserve(allowanceId: string, task: AllowanceTaskRef, candidate: { id: string; capability: string; parameters: Readonly<Record<string, unknown>> }, snapshot: ObservationSnapshot): LowHealthCheck {
+    const g = this.grants.get(allowanceId);
+    const seen = this.reserved.get(allowanceId) ?? new Set<string>();
+    if (g && seen.has(candidate.id)) return this.refuse('already_reserved', `action ${candidate.id} was already dispatched under ${allowanceId}`);
+    const r = this.recheck(allowanceId, task, candidate, snapshot);
+    if (!r.allowed || !g) return r;
+    g.actionsUsed += 1;
+    seen.add(candidate.id);
+    this.reserved.set(allowanceId, seen);
+    this.facts.record?.({ type: 'survival_allowance_reserved', allowanceId, actionId: candidate.id, capability: candidate.capability, actionsUsed: g.actionsUsed, maxActions: g.maxActions });
+    return { ...r, detail: `dispatch ${g.actionsUsed}/${g.maxActions} counted before execution`, remainingActions: g.maxActions - g.actionsUsed };
+  }
+
   consumed(allowanceId: string, outcome: { actionId: string; capability: string; status: string }): void {
     const g = this.grants.get(allowanceId);
     if (!g) return;
-    g.actionsUsed += 1;
-    this.facts.record?.({ type: 'survival_allowance_consumed', allowanceId, actionId: outcome.actionId, capability: outcome.capability, status: outcome.status, actionsUsed: g.actionsUsed, maxActions: g.maxActions });
+    const seen = this.reserved.get(allowanceId) ?? new Set<string>();
+    const counted = seen.has(outcome.actionId);
+    if (!counted) {
+      // Unreserved dispatch: count it conservatively (never skipped).
+      g.actionsUsed += 1;
+      seen.add(outcome.actionId);
+      this.reserved.set(allowanceId, seen);
+    }
+    this.facts.record?.({ type: 'survival_allowance_consumed', allowanceId, actionId: outcome.actionId, capability: outcome.capability, status: outcome.status, actionsUsed: g.actionsUsed, maxActions: g.maxActions, alreadyCounted: counted });
   }
 
   /** Goal end / lifecycle: the grant can never be used again (not deleted, so it is never re-issued). */

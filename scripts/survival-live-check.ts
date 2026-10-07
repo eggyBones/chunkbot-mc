@@ -469,9 +469,9 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         check(c1.allowed, 'allowance check passes with fresh vitals and no threat');
         const cand = g.candidates.generate({ objective: 'eat', decisionInstruction: 'eat', allowedCapabilities: [...grant.capabilities], targetSelectors: [], parameters: {}, completion: { predicate: 'inventory_amount', selector: 'minecraft:bread', atLeast: 1, mode: 'possess' } }, g.snapshot()).candidates[0];
         check(cand, 'a grounded eat candidate exists');
-        const rc = g.survival.recheck(c1.allowanceId, ref, cand, g.snapshot());
-        ev.push(`recheck: ${JSON.stringify(rc).slice(0, 200)}`);
-        check(rc.allowed, 'post-choice recheck passes');
+        const rc = g.survival.reserve(c1.allowanceId, ref, cand, g.snapshot());
+        ev.push(`reserve (recheck + count before dispatch): ${JSON.stringify(rc).slice(0, 200)}`);
+        check(rc.allowed, 'post-choice recheck/reservation passes');
         const out = await g.executor.execute(cand, new AbortController().signal, { kind: 'goal', goalEpoch: g.epoch, goalId: g.goalId, taskId: 'task-gate1' });
         g.survival.consumed(c1.allowanceId, { actionId: out.actionId, capability: cand.capability, status: out.status });
         ev.push(`low-health eat: ${out.status} ${out.effect.slice(0, 160)}`);

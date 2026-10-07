@@ -99,7 +99,21 @@ interface ActiveSupport {
   allowanceId?: string;
   arrivedAtMs?: number;
   searchDone?: boolean;
+  /** Whole own-incident identity frozen at admission (recovery only). */
+  frozen?: FrozenIncident;
 }
+
+interface FrozenIncident {
+  episodeId: string;
+  factId: string;
+  dimension: string;
+  at: { x: number; y: number; z: number };
+  source: string;
+  recordedAtMs: number;
+}
+
+const sameIncident = (f: FrozenIncident, e: RecoveryEpisode): boolean =>
+  e.episodeId === f.episodeId && e.incidentFactId === f.factId && e.site.dimension === f.dimension && e.site.source === f.source && !!e.site.at && e.site.at.x === f.at.x && e.site.at.y === f.at.y && e.site.at.z === f.at.z;
 
 interface RoutineBlock {
   signature: string;
@@ -519,7 +533,9 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (active.routine === 'death_recovery' && this.book && active.episodeId) {
       const e = this.book.get(active.episodeId);
       const prep = p.preparation;
-      const attempt = e && prep ? this.book.beginAttempt(e, adm.goalId, prep, now) : undefined;
+      const linked = e && e.incidentFactId && e.site.at && e.site.dimension ? e : undefined;
+      const attempt = linked && prep ? this.book.beginAttempt(linked, adm.goalId, prep, now) : undefined;
+      if (linked) active.frozen = { episodeId: linked.episodeId, factId: linked.incidentFactId as string, dimension: linked.site.dimension as string, at: { ...(linked.site.at as { x: number; y: number; z: number }) }, source: linked.site.source, recordedAtMs: linked.site.observedAtMs ?? linked.occurredAtMs };
       if (!attempt) {
         this.record({ type: 'survival_attempt_refused', goalId: adm.goalId, episodeId: active.episodeId });
         this.active = { ...active, episodeId: 'refused' };
@@ -648,9 +664,14 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     return this.allowances.check(task, snapshot);
   }
 
-  recheck(allowanceId: string, task: AllowanceTaskRef, candidate: { capability: string; parameters: Readonly<Record<string, unknown>> }, snapshot: ObservationSnapshot): LowHealthCheck {
+  recheck(allowanceId: string, task: AllowanceTaskRef, candidate: { id?: string; capability: string; parameters: Readonly<Record<string, unknown>> }, snapshot: ObservationSnapshot): LowHealthCheck {
     if (!this.active || this.active.goalId !== task.goalId || this.active.goalEpoch !== task.goalEpoch || this.active.allowanceId !== allowanceId) return { allowed: false, reason: 'not_support_goal', detail: 'the allowance no longer belongs to the active support goal' };
     return this.allowances.recheck(allowanceId, task, candidate, snapshot);
+  }
+
+  reserve(allowanceId: string, task: AllowanceTaskRef, candidate: { id: string; capability: string; parameters: Readonly<Record<string, unknown>> }, snapshot: ObservationSnapshot): LowHealthCheck {
+    if (!this.active || this.active.goalId !== task.goalId || this.active.goalEpoch !== task.goalEpoch || this.active.allowanceId !== allowanceId) return { allowed: false, reason: 'not_support_goal', detail: 'the allowance no longer belongs to the active support goal' };
+    return this.allowances.reserve(allowanceId, task, candidate, snapshot);
   }
 
   consumed(allowanceId: string, outcome: { actionId: string; capability: string; status: string }): void {
@@ -735,10 +756,13 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
 
   // ------------------------------------------------------------ own-death destination (locator RouteDestinationProvider shape)
 
-  current(ctx: { connectionEpoch: number; dimension: string; goalEpoch: number }): { destinationId: string; dimension: string; at: { x: number; y: number; z: number }; recordedAtMs: number; label: string } | undefined {
+  current(ctx: { connectionEpoch: number; dimension: string; goalEpoch: number }): { destinationId: string; dimension: string; at: { x: number; y: number; z: number }; recordedAtMs: number; label: string; provenance: 'own_incident' } | undefined {
     const t = this.recoveryTarget(ctx);
     if ('error' in t) return undefined;
-    return { destinationId: `own_death:${t.episodeId}`, dimension: t.site.dimension, at: { ...t.site.at }, recordedAtMs: t.recordedAtMs, label: 'own death site' };
+    const r = (n: number) => Math.round(n * 10) / 10;
+    // The id encodes the WHOLE incident identity: a changed coordinate/source/fact never reuses it.
+    const destinationId = `own_death:${t.episodeId}:${t.factId}:${t.site.dimension}:${r(t.site.at.x)},${r(t.site.at.y)},${r(t.site.at.z)}:${t.source}`.slice(0, 200);
+    return { destinationId, dimension: t.site.dimension, at: { ...t.site.at }, recordedAtMs: t.recordedAtMs, label: `own death site (${t.source})`, provenance: 'own_incident' };
   }
 
   // ------------------------------------------------------------ skill support API (read-only facts + fenced bookkeeping)
@@ -762,7 +786,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   }
 
   /** The bound recovery target for a goal epoch on the current connection/dimension, or why not. */
-  recoveryTarget(fence: { goalEpoch: number; connectionEpoch: number; dimension: string }): { episodeId: string; goalId: string; site: { dimension: string; at: { x: number; y: number; z: number } }; recordedAtMs: number; sought: Map<string, number>; searchRadius: number; arrivalWithin: number } | { error: string; detail: string } {
+  recoveryTarget(fence: { goalEpoch: number; connectionEpoch: number; dimension: string }): { episodeId: string; factId: string; goalId: string; site: { dimension: string; at: { x: number; y: number; z: number } }; source: string; recordedAtMs: number; sought: Map<string, number>; searchRadius: number; arrivalWithin: number } | { error: string; detail: string } {
     const a = this.active;
     const cfg = this.cfg;
     if (!cfg) return { error: 'survival_disabled', detail: 'survival is disabled' };
@@ -772,8 +796,10 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (!e || !isOpen(e)) return { error: 'episode_not_open', detail: 'the recovery episode is not open' };
     if (!e.incidentFactId) return { error: 'incident_not_linked', detail: 'the incident is not linked to a durable memory death fact' };
     if (!e.site.at || !e.site.dimension) return { error: 'site_unknown', detail: 'the death location is unknown' };
-    if (e.site.dimension !== fence.dimension) return { error: 'dimension_mismatch', detail: `the death site is in ${e.site.dimension}` };
-    return { episodeId: e.episodeId, goalId: a.goalId, site: { dimension: e.site.dimension, at: e.site.at }, recordedAtMs: e.site.observedAtMs ?? e.occurredAtMs, sought: this.book?.sought(e) ?? new Map(), searchRadius: cfg.recovery.searchRadius, arrivalWithin: cfg.recovery.arrivalWithin };
+    const f = a.frozen;
+    if (!f || !sameIncident(f, e)) return { error: 'destination_changed', detail: 'the own-incident identity frozen at admission (episode, fact, dimension, coordinates, source) changed; the old target is not used' };
+    if (f.dimension !== fence.dimension) return { error: 'dimension_mismatch', detail: `the death site is in ${f.dimension}` };
+    return { episodeId: f.episodeId, factId: f.factId, goalId: a.goalId, site: { dimension: f.dimension, at: { ...f.at } }, source: f.source, recordedAtMs: f.recordedAtMs, sought: this.book?.sought(e) ?? new Map(), searchRadius: cfg.recovery.searchRadius, arrivalWithin: cfg.recovery.arrivalWithin };
   }
 
   /** go_to_death_site arrived (fenced). */
