@@ -48,6 +48,16 @@ describe('survival gate harness guard', () => {
     assert.match(code, /addedForceload\.push/, 'only trial-added forceload chunks are tracked for removal');
   });
 
+  it('C6 follow-up assertions are present (not logged only)', () => {
+    assert.match(source, /check\('error' in before && before\.error === 'attempt_write_pending'/, 'G2 asserts NOT authorized before the save');
+    assert.match(source, /equals RCON LastDeathLocation/, 'G1 compares the captured GlobalPos with RCON LastDeathLocation');
+    assert.match(source, /wrong-identity foreign sword is still on the ground/, 'G2 proves the wrong-identity sword was not collected');
+    assert.match(source, /counts\.bread === 4 && counts\.cobblestone === 20 && counts\.iron_pickaxe === 1 && counts\.diamond_sword === 1/, 'G2b requires the full kit');
+    assert.match(source, /recovered\.status === 'satisfied' && inc\?\.status === 'recovered'/, 'G2b requires recovered status');
+    assert.match(source, /onDisk\.revision >= current\.revision/, 'stand-in durability compares exact fact revisions');
+    assert.match(source, /factDurability\?: \(id: string\) => unknown/, 'prefers the integrated canonical durability string');
+  });
+
   for (const args of [[], ['--fixture-lease'], ['--fixture-lease', '../x;rm'], ['--with-settings'], ['--fixture', '26.2']]) {
     it(`refuses without a valid lease: ${JSON.stringify(args)}`, () => {
       const before = listLive();

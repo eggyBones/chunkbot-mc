@@ -27,7 +27,7 @@ No existing file was edited.
 
 - `npm run typecheck`: 0
 - `npm run build`: 0
-- `npm test`: 0, 589/589 passing. That includes 106 survival tests across 12 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring and harness guard.
+- `npm test`: 0, 590/590 passing. That includes 107 survival tests across 12 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring and harness guard.
 - The harness guard spawns `scripts/survival-live-check.ts` with a missing or invalid lease. Each run exits 2 before any password read, RCON command, join or output directory.
 - Not run (they need a lease or provider): the fixture gates, live-check, skills-live-check, planner and Jev checks, doctor.
 
@@ -153,7 +153,10 @@ No existing file was edited.
   - trial-added forceload removed and verified;
   - bot inventory and effects cleared, bot moved to just above the scene.
 - **Gates and assertions:**
-  - G1, G2, G2b: no settings needed. G1 additionally requires the server-stated own death location.
+  - G1: the captured server death GlobalPos must equal RCON `LastDeathLocation` (dimension and block), not just carry the source label.
+  - G2: authority must be REFUSED (`attempt_write_pending`) immediately after admission and granted only after the save. The tagged wrong-identity sword must still be on the ground, and any held sword must carry the lost sword's server digest.
+  - G2b: full recovery only. Bread 4, cobblestone 20, iron pickaxe 1 and diamond sword 1 on the server, the held sword's digest equal to the lost one, and `recovered` satisfied with episode status `recovered`. Otherwise the gate fails with the exact unsupported metadata or count, rather than counting a partial collection as a full trial.
+  - Memory durability stand-in: uses the integrated `factDurability` string when present; otherwise `durable` only when the last complete on-disk revision holds the fact at its current revision.
   - G3: eating is completed only when `survival_state eat` is satisfied (food ≥ `eatUntil`). A necessary low-health eat runs right after it, which proves the cooldown fix. With regeneration verified on, rest must give a server health gain of at least 1. With regeneration verified off, rest must end `no_regeneration` inside its bounded window with no gain.
   - G4 and G4n are R8 OBSERVATIONS only, with day or night set at trial start. They record the server respawn data, `sleeping_pos`, bed occupancy and daytime after sleeping. R8 stays gated; no sleep/spawn support is claimed.
 - **Join:** the offline `Chunkbot` from the inference-free example configs. No model calls.

@@ -73,7 +73,7 @@ import { SkillRegistry } from '../src/execution/registry.ts';
 import { TaskCandidateGenerator } from '../src/execution/candidates.ts';
 import { MineflayerConnection } from '../src/game/connection.ts';
 import { MemoryService } from '../src/memory/service.ts';
-import { inspectMemory } from '../src/memory/report.ts';
+import { MemoryFileStore, scopeDirectory } from '../src/memory/store.ts';
 import { installedMemoryWorld } from '../src/memory/world.ts';
 import { allSkills } from '../src/skills/index.ts';
 import { survivalSkills } from '../src/skills/survival.ts';
@@ -155,10 +155,20 @@ class Gate {
         // C1: `retained` passes through unchanged (integrated memory, P c704, accepts it; an older memory ignores it and G1k then fails honestly).
         updateDeathRecovery: (factId, update, evidence) => (this.memory.updateDeathRecovery as (f: string, u: typeof update, e: typeof evidence) => Promise<{ ok: boolean; detail: string }>)(factId, update, evidence),
         factDurability: (factId) => {
-          const onDisk = inspectMemory(join(outDir, 'memory'), memoryConfig, systemClock, { includeInactive: true, limit: 1_000 }).facts.some((f) => f.id === factId);
-          if (onDisk) return 'durable';
+          // Integrated memory (canonical seam): use its own string result directly.
+          const canonical = (this.memory as unknown as { factDurability?: (id: string) => unknown }).factDurability;
+          if (typeof canonical === 'function') {
+            const r = canonical.call(this.memory, factId);
+            return r === 'durable' || r === 'pending' || r === 'failed' ? r : 'unknown';
+          }
+          // Pre-integration stand-in: durable only when the last COMPLETE on-disk revision holds the fact at its CURRENT revision.
+          const current = this.memory.facts().find((f) => f.id === factId);
+          if (!current) return 'unknown';
+          const load = new MemoryFileStore({ dir: scopeDirectory(join(outDir, 'memory'), memoryConfig), scope: memoryConfig, clock: systemClock }).open({ readOnly: true });
+          const onDisk = load.body?.facts.find((f) => f.id === factId);
+          if (onDisk && onDisk.revision >= current.revision) return 'durable';
           const st = this.memory.status();
-          return st.pendingWrites > 0 ? 'pending' : st.lastError ? 'failed' : 'unknown';
+          return st.pendingWrites > 0 || onDisk ? 'pending' : st.lastError ? 'failed' : 'pending';
         },
       },
       latestSnapshot: () => this.runtime.perception.latest(),
@@ -447,10 +457,16 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       const d = g.survival.tracker.latest();
       check(d, 'no captured death');
       ev.push(`capture ${captureId}: frozenAt=${d.lastAlive.frozenAt} clearingPacketsAfterFreeze=${d.lastAlive.clearingPacketsAfterFreeze} lastAlive=${d.lastAlive.stacks.map((s) => `${s.key}x${s.count}${s.meta.digest ? '#' : ''}`).join(',')} cause=${d.cause.translationKey ?? d.cause.kind} site=${d.site.source} ${JSON.stringify(d.site.at)} offBy=${d.site.clientEstimateOffBy ?? 'n/a'}`);
-      ev.push(`RCON LastDeathLocation: ${(await g.lastDeathLocation()).slice(0, 200)}`);
+      const ldl = await g.lastDeathLocation();
+      ev.push(`RCON LastDeathLocation: ${ldl.slice(0, 200)}`);
+      const pos = /pos: \[I; (-?\d+), (-?\d+), (-?\d+)\]/.exec(ldl);
+      const dim = /dimension: "([^"]+)"/.exec(ldl)?.[1];
       ev.push(`memory fact ${factId}; memory status ${g.memory.status().state}`);
       check(d.lastAlive.stacks.length >= 3, 'last-alive inventory kept the kit (frozen before clearing)');
-      check(d.site.source === 'server_death_location', 'the server stated the own death location');
+      check(d.site.source === 'server_death_location' && d.site.at, 'the server stated the own death location');
+      check(pos && dim, `RCON LastDeathLocation is readable (${ldl.slice(0, 120)})`);
+      const block = { x: Math.floor(d.site.at.x), y: Math.floor(d.site.at.y), z: Math.floor(d.site.at.z) };
+      check(dim === d.site.dimension && block.x === Number(pos[1]) && block.y === Number(pos[2]) && block.z === Number(pos[3]), `captured GlobalPos ${d.site.dimension} ${block.x},${block.y},${block.z} equals RCON LastDeathLocation ${dim} ${pos[1]},${pos[2]},${pos[3]}`);
       check(factId && /^mf-/.test(factId), 'memory recorded the SAME capture and it was linked exactly');
       const inc = g.survival.status(Date.now()).incidents.at(-1);
       ev.push(`incident: ${JSON.stringify(inc)}`.slice(0, 900));
@@ -473,6 +489,7 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       g.admitProposal(decision.proposal);
       const before = g.survival.recoveryTarget({ goalEpoch: g.epoch, connectionEpoch: g.game.connectionEpoch, dimension: g.snapshot().dimension });
       ev.push(`authority before the attempt is durable: ${'error' in before ? before.error : 'authorized'}`);
+      check('error' in before && before.error === 'attempt_write_pending', 'NOT authorized immediately after admission (attempt not yet saved)');
       await g.durable();
       const afterCommit = g.survival.recoveryTarget({ goalEpoch: g.epoch, connectionEpoch: g.game.connectionEpoch, dimension: g.snapshot().dimension });
       ev.push(`authority after the attempt is durable: ${'error' in afterCommit ? afterCommit.error : 'authorized'}`);
@@ -491,6 +508,13 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       ev.push(`foreign piles still on the ground (RCON): ${(await g.rcon(`execute if entity @e[type=item,tag=${FOREIGN_TAG},${ITEM_AREA}]`, false)).slice(0, 120)}`);
       check(counts.dirt === 0, 'no unrelated dirt was collected');
       check(counts.bread <= 4, 'the oversized 64-bread pile was not collected');
+      const foreignSword = await g.rcon(`execute if entity @e[type=item,tag=${FOREIGN_TAG},nbt={Item:{id:"minecraft:diamond_sword"}},${ITEM_AREA}]`, false);
+      ev.push(`foreign (wrong-identity) sword on the ground (RCON): ${foreignSword.slice(0, 80)}`);
+      check(/passed/i.test(foreignSword), 'the wrong-identity foreign sword is still on the ground (not collected)');
+      const lostSword = g.survival.tracker.latest()?.lastAlive.stacks.find((x) => x.key === 'minecraft:diamond_sword');
+      const heldSwords = (g.survival.inventory(g.game.connectionEpoch)?.stacks ?? []).filter((x) => x.key === 'minecraft:diamond_sword');
+      ev.push(`lost sword digest ${lostSword?.meta.digest ?? 'none'}; held sword digests ${heldSwords.map((x) => x.meta.digest ?? 'none').join(',') || 'none'}`);
+      check(heldSwords.every((x) => lostSword?.meta.digest && x.meta.digest === lostSword.meta.digest), 'any sword now held is the lost one (same server identity digest)');
       check(g.outcomes.every((o) => o.capability !== 'recover_lost_items' || o.reason !== 'unscoped_item_collected'), 'no unplanned loot was collected');
     });
 
@@ -517,7 +541,15 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       const collected = g.outcomes.filter((o) => o.capability === 'recover_lost_items' && (o.status === 'succeeded' || o.status === 'partial'));
       check(collected.length > 0, 'at least one server-confirmed collection');
       check(collected.every((o) => o.confirmation === 'server_sync' || o.confirmation === 'server_packet'), 'collections are server-confirmed');
-      check((inc?.regained.reduce((n, r) => n + r.count, 0) ?? 0) > 0, 'regains counted from collect packets');
+      const lost = g.survival.tracker.latest()?.lastAlive.stacks ?? [];
+      const lostSword = lost.find((x) => x.key === 'minecraft:diamond_sword');
+      check(lostSword, `the kit's enchanted sword was not in the last-alive record (give reply in setup log) — the matching-valuable trial is unsupported here, not a full recovery`);
+      check(lostSword.meta.metadata === 'server_slot' && lostSword.meta.digest, `the lost sword has no server identity metadata (${JSON.stringify(lostSword.meta)}) — identity-matched recovery unsupported, not a full recovery`);
+      const heldSword = (g.survival.inventory(g.game.connectionEpoch)?.stacks ?? []).find((x) => x.key === 'minecraft:diamond_sword');
+      ev.push(`held sword digest ${heldSword?.meta.digest ?? 'none'} vs lost ${lostSword.meta.digest}`);
+      check(counts.bread === 4 && counts.cobblestone === 20 && counts.iron_pickaxe === 1 && counts.diamond_sword === 1, `full recovery requires bread 4, cobblestone 20, iron_pickaxe 1, diamond_sword 1 on the server (got ${JSON.stringify(counts)}); a partial collection is NOT a full trial`);
+      check(heldSword?.meta.digest === lostSword.meta.digest, 'the recovered sword is the lost one (same server identity digest)');
+      check(recovered.status === 'satisfied' && inc?.status === 'recovered', `survival_state recovered satisfied and episode recovered (got ${recovered.status}/${inc?.status})`);
     });
 
     if (!withSettings) {
