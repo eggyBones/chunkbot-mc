@@ -288,6 +288,39 @@ export interface RouteLegBounds {
   admissionRadius: number;
 }
 
+/**
+ * Goal-owned ADMISSION proof (MB-LOC-001-C2/C3): the original admission bound of
+ * a goal epoch, from a dedicated accessor that never returns a route leg
+ * (proposed PerceptionService.admissionBounds()). Route legs apply only when
+ * the authorization's admission anchor/radius equal this proof exactly.
+ */
+export interface RouteAdmissionProof {
+  goalEpoch: number;
+  connectionEpoch: number;
+  dimension: string;
+  anchor: Vec3;
+  radius: number;
+}
+
+/**
+ * The canonical travel bound for ALL movement of a goal (shared travel guard,
+ * every skill/navigation poll): the active leg only while the route is
+ * `leg_active`, before its fixed deadline, under its cumulative distance
+ * ceiling and with an exactly matching admission proof; otherwise the
+ * unchanged admission bound. Never a stale expanded leg.
+ */
+export type EffectiveTravel =
+  | { kind: 'admission'; anchor: Vec3; radius: number; reason: 'no_route' | 'route_not_active' | 'route_exhausted' | 'route_expired' | 'proof_mismatch' }
+  | { kind: 'route_leg'; anchor: Vec3; radius: number; routeId: RouteId; legIndex: number; admissionAnchor: Vec3; admissionRadius: number };
+
+/** Frozen own-incident destination identity (C3): bound at first use; any later difference stops the route. */
+export interface FrozenOwnIncident {
+  destinationId: string;
+  dimension: string;
+  at: Vec3;
+  recordedAtMs: number;
+}
+
 /** Own-movement accounting source (C1): client physics samples vs server position corrections. */
 export interface RouteDistanceAccount {
   /** Total counted path length (blocks, horizontal). */
@@ -357,8 +390,10 @@ export interface RoutePort {
   admit(admission: RouteAdmission): RouteAuthorization | undefined;
   /** Owner coordinates from a correlated clarification answer (same goal epoch only). */
   noteOwnerCoordinates(goalEpoch: number, coordinates: readonly RouteOwnerCoordinate[]): void;
-  /** Active leg bounds with full route context on an EXACT match, else undefined (the admission bound applies). */
+  /** Active (leg_active, unexpired, under the distance ceiling) leg bounds with full route context on an EXACT match, else undefined. */
   legBounds(ctx: { goalEpoch: number; connectionEpoch: number; dimension: string }): RouteLegBounds | undefined;
+  /** The canonical travel bound for every movement poll (see EffectiveTravel). */
+  effectiveTravel(admission: RouteAdmissionProof): EffectiveTravel;
   /** Proposal-validation/planner view (no coordinates). */
   proposalContext(ctx: { goalEpoch: number; connectionEpoch: number; dimension: string }): RouteProposalContext;
   /** Route progress for a goal epoch (status/observation); null when none. */
@@ -372,7 +407,8 @@ export interface RoutePort {
  * last death position, recorded from the bot's own server-confirmed state).
  * Not a planner coordinate, not another player's position. The route module
  * only routes toward it when the goal's authorization lists `own_death`, and
- * binds the first destinationId it uses (a later change is refused).
+ * freezes the WHOLE identity (id, dimension, position, recorded time) at first
+ * use; any later difference or absence stops the route (C3).
  */
 export interface RouteDestinationProvider {
   readonly kind: 'own_death';
