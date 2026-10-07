@@ -736,9 +736,9 @@ export interface SurvivalPredicatePort {
 
 /** EventEmitter-like raw protocol packet source (the bot's protocol client). */
 export interface SurvivalPacketSource {
-  on(event: string, listener: (packet: never) => void): unknown;
-  off?(event: string, listener: (packet: never) => void): unknown;
-  removeListener?(event: string, listener: (packet: never) => void): unknown;
+  on(event: string, listener: (...args: any[]) => void): unknown;
+  off?(event: string, listener: (...args: any[]) => void): unknown;
+  removeListener?(event: string, listener: (...args: any[]) => void): unknown;
 }
 
 /** MB-MEM-001 DeathContext shape for the SAME frozen capture, plus its capture id. */

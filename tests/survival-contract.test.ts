@@ -13,34 +13,10 @@ import {
   SurvivalConfigSchema,
   SurvivalStatePredicateSchema,
   SurvivalStoreBodySchema,
-  type RecoveryEpisode,
 } from '../src/contracts/survival.ts';
+import { sampleEpisode } from './survival-helpers.ts';
 
 const NOW = 1_700_000_000_000;
-
-export function sampleEpisode(over: Partial<RecoveryEpisode> = {}): RecoveryEpisode {
-  return {
-    episodeId: 'rep-0001',
-    incidentFactId: 'mf-0001',
-    originalIncidentFactId: 'mf-0001',
-    relatedIncidentFactIds: [],
-    openedAtMs: NOW,
-    updatedAtMs: NOW,
-    occurredAtMs: NOW,
-    phase: 'awaiting_respawn',
-    status: 'pending',
-    site: { source: 'client_position_at_death_event', dimension: 'minecraft:overworld', at: { x: 1, y: 64, z: 2 }, observedAtMs: NOW },
-    cause: { kind: 'unknown', hazard: 'unknown' },
-    lastAlive: { source: 'server_packets', frozenAt: 'combat_kill_packet', capturedAtMs: NOW, ageMsAtDeath: 5, stacks: [], clearingPacketsAfterFreeze: 0 },
-    regained: [],
-    attempts: [],
-    maxAttempts: 2,
-    budget: { plannerTurns: 0, tasks: 0, replans: 0, admissions: 0, activeMs: 0 },
-    hazards: [],
-    detail: '',
-    ...over,
-  };
-}
 
 describe('survival contract', () => {
   it('config defaults are bounded with hysteresis', () => {
