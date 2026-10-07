@@ -1,6 +1,6 @@
 # MB-LOC-001 — Locator-assisted following, reunion and bounded travel
 
-Reported: 2026-10-06. Status: **Authorized for native implementation in [batch002](feature-batch-002-plan.md); launch in preparation.**
+Reported: 2026-10-06. Status: **Native implementation in progress in [batch002](feature-batch-002-plan.md); not yet accepted.**
 Parent: [companion upgrades](companion-upgrades-plan.md). Baseline: [perception/skills](v1-perception-skills-plan.md).
 
 ## Outcome and happy path

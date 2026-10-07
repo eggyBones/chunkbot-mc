@@ -1,6 +1,6 @@
 # MB-FLOW-001 — Default survival progression and a home
 
-Reported: 2026-10-06. Status: **Authorized for native implementation in [batch002](feature-batch-002-plan.md); launch in preparation.**
+Reported: 2026-10-06. Status: **Native implementation in progress in [batch002](feature-batch-002-plan.md); not yet accepted.**
 Parent: [companion upgrades](companion-upgrades-plan.md). Foundations: [handoff](smooth-handoff-plan.md), [memory](gameplay-memory-plan.md).
 Subplan: [MB-FLOW-003 survival routines and death recovery](survival-routines-plan.md).
 

@@ -37,10 +37,10 @@ Jake's requested upgrades are broken down in [the companion roadmap](docs/compan
 
 | ID | Feature plan | Status |
 | --- | --- | --- |
-| MB-FLOW-001 | [Default progression, upgrades and home building](docs/autonomous-progression-plan.md) | Authorized in batch002; native launch in preparation |
+| MB-FLOW-001 | [Default progression, upgrades and home building](docs/autonomous-progression-plan.md) | Native implementation in progress in batch002 |
 | MB-FLOW-002 | [Continue current work while the next directive loads](docs/smooth-handoff-plan.md) | Implemented/integrated; accepted in batch001 |
-| MB-FLOW-003 | [Survival routines and death recovery — progression subplan](docs/survival-routines-plan.md) | Authorized in batch002; native launch in preparation |
-| MB-LOC-001 | [Locator-assisted following and bounded travel](docs/locator-follow-plan.md) | Authorized in batch002; native launch in preparation |
+| MB-FLOW-003 | [Survival routines and death recovery — progression subplan](docs/survival-routines-plan.md) | Native implementation in progress in batch002 |
+| MB-LOC-001 | [Locator-assisted following and bounded travel](docs/locator-follow-plan.md) | Native implementation in progress in batch002 |
 | MB-MEM-001 | [Persistent gameplay memory and known locations](docs/gameplay-memory-plan.md) | Implemented/integrated; accepted in batch001 |
 | MB-UI-001 | [Local dashboard, token usage, OpenRouter spend and optional Codex allowance](docs/chunkbot-dashboard-plan.md) | Implemented/integrated; accepted in batch001 |
 | MB-OPS-001 | [Verified live updates with a brief automatic reconnect](docs/live-update-plan.md) | Proposed; unassigned |

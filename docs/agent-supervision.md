@@ -1,10 +1,22 @@
 # Current assignment — batch002
 
-Updated: 2026-10-06. Jake authorized progression, survival/death recovery and locator-assisted following now. [Batch002](feature-batch-002-plan.md) fixes ownership, shared interfaces, runtime boundaries and acceptance. Three new local native Opus 5.5 sessions/worktrees are being prepared, with high effort and full access. Final MB-V1-05 gameplay acceptance is deferred until Jake is online tonight; live eggyBot69 remains stopped.
+Updated: 2026-10-07T01:18:01.636627+00:00. Jake authorized progression, survival/death recovery and locator-assisted following. **Three verified native Opus 5.5 implementations are running in parallel.** [Batch002](feature-batch-002-plan.md) fixes ownership, shared interfaces, runtime boundaries and acceptance. Final **MB-V1-05/live gameplay acceptance waits for Jake tonight**; live eggyBot69 remains stopped.
 
-Root intake is clean at public `d348d58f8d74799dd05aa0dcac9dfedbb241c973`. Both fixture status commands exit 0: existing PIDs 31385/15009, zero players. All prior native sessions are idle; no old fixture lease carries over. Fresh loaded-SDK verification is underway before any new prompt. Progression is the single existing-file integration writer; survival and locator own new modules and propose shared changes through Codex. No new worker has a fixture lease yet.
+| Feature | Native session / workspace | Branch / checkout | Verified launch state |
+| --- | --- | --- | --- |
+| MB-FLOW-001 | `session-8df7ffa4-44d2-405d-8b9c-54b0b5bcb138` / `0628f76e-412b-4b83-b54d-4e92123cfd1e` | `chunkbot/mb-flow-001` / `/Users/jakewilcox/code/worktrees/chunkbot-mc/mb-flow-001` | running, seq 57, one native turn started, both queues empty |
+| MB-FLOW-003 | `session-2798fe81-82dc-42c7-93f2-f0adf98c4d70` / `b8e1561f-c4ef-46bf-aecc-f036e63c0c96` | `chunkbot/mb-flow-003` / `/Users/jakewilcox/code/worktrees/chunkbot-mc/mb-flow-003` | running, seq 36, one native turn started, both queues empty |
+| MB-LOC-001 | `session-c4a01baf-e21f-4d68-98e1-c59878849c88` / `88609d9f-c8cb-4b39-8566-1150e1579f97` | `chunkbot/mb-loc-001` / `/Users/jakewilcox/code/worktrees/chunkbot-mc/mb-loc-001` | running, seq 36, one native turn started, both queues empty |
 
-Exact native sessions, workspace membership, common base, source/build evidence, queues and granted leases will be recorded here immediately as launch is verified. Private briefs/receipts and operational evidence live in ignored var/batch002; no credentials will enter the new worktrees or handoffs. Historical batch001 evidence below remains valid for its phase.
+- Common committed base: `f05628f8d92499a7a8ea847992a8960e51d9300f`, documenting the authorized batch, based on accepted public `d348d58f`. Root is the integration checkout; no feature implementation is merged or accepted yet.
+- Fresh loaded SDK at `2026-10-07T01:15:02.732Z`: 0.3.280, Claude Team subscription, `opus[1m]` resolves EXACTLY to `claude-opus-5-5[1m]`, high supported. Each new session read back `relay-claude`, `claude:claude-default`, high, danger-full-access/native bypassPermissions and exact registered worktree membership. Actual native turns/Bash activity are observed; prompt acceptance alone is not the evidence.
+- Independent npm ci exits 0 in all three worktrees, manifest/lock bytes unchanged and Git initially clean; each node_modules/dist/var is separate. No fixture symlink or credentials were copied. Complete briefs/receipts, model gate and launch state are ignored under var/batch002.
+- Progression is the single writer for existing scheduler/contracts/app/CLI/config/planner/skills/status integration. Survival and locator own new modules/companion contracts/tests/harnesses/reviews only. Codex approves shared ports and exact dependency merges, supervises review and grants world leases. Recursive/background agents are prohibited.
+- **No worker has a fixture lease.** Both installed status commands exited 0, with existing 26.1.2 PID31385 and 26.2 PID15009 and zero players. All old batch001 leases are released and invalid. Initial work is source/codec inspection, offline implementation and typed port proposals. World access requires an explicit recorded batch002 lease and frozen build.
+- Final V1/Jake's live trial is deferred. Feature-specific loopback checks and capped coordinator provider checks are within the assigned batch; workers cannot fetch secrets or run real inference. Preserve known J1 and batch001 R1/R2 quality limitations without claiming them passed.
+- Next: review early companion ports, relay approved integration to the shared writer, keep independent modules moving, then lease the separate fixtures for the actual packet/mechanic/harness gates. No live reconnect/client/server change is authorized.
+
+Historical completed batch001 evidence follows; it does not override this new assignment.
 
 # Coordinator supervision checkpoint
 

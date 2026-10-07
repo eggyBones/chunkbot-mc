@@ -1,6 +1,6 @@
 # Feature batch002 — Progression, survival and locator following
 
-Authorized: 2026-10-06. Owner/coordinator: Codex. Status: **authorized implementation; native worker launch being prepared**. Parent: [companion roadmap](companion-upgrades-plan.md). Base delivery: [accepted batch001](reviews/mb-batch001-coordinator-review.md).
+Authorized: 2026-10-06. Owner/coordinator: Codex. Status: **three native implementations running in parallel; acceptance pending**. Parent: [companion roadmap](companion-upgrades-plan.md). Base delivery: [accepted batch001](reviews/mb-batch001-coordinator-review.md).
 
 Jake selected the next three suggested features and will join tonight for final V1 gameplay acceptance. This batch implements and verifies those features against the separate loopback fixtures. **MB-V1-05 and live gameplay acceptance are deferred until Jake's evening session.** Do not connect the live bot, inspect/change the live server, or touch Jake's client/world for this batch.
 
@@ -60,4 +60,4 @@ These coordinator assumptions refine the linked plans and can be adjusted from e
 
 ## Current evidence
 
-Initial root is clean at accepted public `d348d58f8d74799dd05aa0dcac9dfedbb241c973`. Both fixture status commands confirm existing servers running with zero players. Prior workers are idle; fresh model/permissions/session registration and assignments are the next launch gates. No new feature is implemented or accepted yet.
+Initial root is clean at accepted public `d348d58f8d74799dd05aa0dcac9dfedbb241c973`. Both fixture status commands confirm existing servers running with zero players. Prior workers remain idle. Fresh SDK verification resolves exactly to Claude Opus 5.5, and all three new registered high-effort/full-access sessions have actual native turns and Bash activity with empty queues. Each isolated npm ci exits 0; no initial world leases are granted. Exact IDs/source/base/status are in supervision. No new feature is complete or accepted yet.

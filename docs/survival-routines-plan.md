@@ -1,6 +1,6 @@
 # MB-FLOW-003 — Survival routines and death recovery
 
-Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Status: **Authorized for native implementation in [batch002](feature-batch-002-plan.md); launch in preparation.**
+Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Status: **Native implementation in progress in [batch002](feature-batch-002-plan.md); not yet accepted.**
 Subplan of [MB-FLOW-001 default progression](autonomous-progression-plan.md). Integrates [handoff](smooth-handoff-plan.md), [gameplay memory](gameplay-memory-plan.md) and [dashboard](chunkbot-dashboard-plan.md).
 
 ## Outcome and happy path
