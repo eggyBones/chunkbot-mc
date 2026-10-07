@@ -9,7 +9,7 @@ import type { ObservationSnapshot } from '../src/contracts/observation.ts';
 import type { SurvivalProposal } from '../src/contracts/survival.ts';
 import type { AnySkill, ResolveContext } from '../src/skills/definition.ts';
 import { survivalSkills } from '../src/skills/survival.ts';
-import { OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, slot, snapshot, type Harness } from './survival-helpers.ts';
+import { OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, settle, slot, snapshot, type Harness } from './survival-helpers.ts';
 
 after(cleanupRoots);
 
@@ -33,13 +33,13 @@ const skill = (h: Harness, id: string): AnySkill => {
 };
 
 describe('survival skills', () => {
-  it('registers nothing when survival is disabled', () => {
+  it('registers nothing when survival is disabled', async () => {
     assert.equal(survivalSkills(undefined).length, 0);
     assert.equal(survivalSkills(harness({ config: { enabled: false } }).service).length, 0);
     assert.deepEqual(survivalSkills(harness().service).map((s) => s.descriptor.id), ['eat_safe_food', 'rest_in_place', 'go_to_death_site', 'recover_lost_items', 'equip_suitable_tool']);
   });
 
-  it('eat_safe_food offers only safe owned foods and nothing at full hunger', () => {
+  it('eat_safe_food offers only safe owned foods and nothing at full hunger', async () => {
     const h = harness();
     h.packets.inventory({ 36: slot('bread', 2), 37: slot('rotten_flesh', 3), 38: slot('golden_apple', 1), 39: slot('cooked_beef', 1) });
     h.packets.health(20, 12);
@@ -51,7 +51,7 @@ describe('survival skills', () => {
     assert.equal(full.unavailable?.[0]?.reason, 'not_hungry');
   });
 
-  it('rest_in_place requires food >= 18 and no visible hostile', () => {
+  it('rest_in_place requires food >= 18 and no visible hostile', async () => {
     const h = harness();
     h.packets.inventory({});
     h.packets.health(10, 12);
@@ -62,7 +62,7 @@ describe('survival skills', () => {
     assert.equal(skill(h, 'rest_in_place').resolve(ctxFor(h, threat)).unavailable?.[0]?.reason, 'threat_nearby');
   });
 
-  it('death-site travel candidates exist only for the bound goal, inside the travel bound, never into visible lava', () => {
+  it('death-site travel candidates exist only for the bound goal, inside the travel bound, never into visible lava', async () => {
     const h = harness();
     const kit = { 36: slot('iron_pickaxe'), 37: slot('bread', 4) };
     h.packets.inventory(kit);
@@ -70,11 +70,13 @@ describe('survival skills', () => {
     dieWithItems(h, kit);
     h.service.linkIncident(h.service.deathContext().captureId as string, 'mf-0001');
     respawnFresh(h, {}, { dimensionName: OW, location: { x: 30, y: 64, z: 10 } });
+    await settle(h);
     const unbound = skill(h, 'go_to_death_site').resolve(ctxFor(h, snapshot({ goalEpoch: 5 })));
     assert.equal(unbound.unavailable?.[0]?.reason, 'not_a_recovery_goal');
     const d = h.service.assess(assessInput(h));
     const p = (d as { proposal: SurvivalProposal }).proposal;
     h.service.onSupportAdmitted({ proposalId: p.proposalId, goalId: 'goal-rec5', goalEpoch: 5, connectionEpoch: 1, admittedAtMs: h.clock.now() });
+    await settle(h);
     const go = skill(h, 'go_to_death_site').resolve(ctxFor(h, snapshot({ goalEpoch: 5 })));
     assert.equal(go.drafts.length, 1);
     // Outside the travel bound: never relaxed.
@@ -87,7 +89,7 @@ describe('survival skills', () => {
     // recover_lost_items scoping/identity/oversized/named-target cases: tests/survival-pickup.test.ts (C3).
   });
 
-  it('equip_suitable_tool prefers the cheapest capable unworn tool; unknown block gets no tool', () => {
+  it('equip_suitable_tool prefers the cheapest capable unworn tool; unknown block gets no tool', async () => {
     const h = harness();
     h.packets.inventory({ 36: slot('iron_pickaxe', 1, [{ type: 'damage', data: 10 }]), 37: slot('stone_pickaxe', 1, [{ type: 'damage', data: 128 }]) });
     h.packets.health(20, 20);

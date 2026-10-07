@@ -63,6 +63,7 @@ import { SkillRegistry } from '../src/execution/registry.ts';
 import { TaskCandidateGenerator } from '../src/execution/candidates.ts';
 import { MineflayerConnection } from '../src/game/connection.ts';
 import { MemoryService } from '../src/memory/service.ts';
+import { inspectMemory } from '../src/memory/report.ts';
 import { installedMemoryWorld } from '../src/memory/world.ts';
 import { allSkills } from '../src/skills/index.ts';
 import { survivalSkills } from '../src/skills/survival.ts';
@@ -129,7 +130,18 @@ class Gate {
       limits: { lowHealth: config.limits.lowHealth, travelRadius: config.limits.travelRadius },
       now: () => Date.now(),
       record: (e) => this.store.record(e),
-      memory: this.memory,
+      // C5 pre-integration stand-in for the proposed MemoryService.factDurability seam: a fact is
+      // `durable` only when memory's last COMPLETE on-disk revision contains it (read-only inspection).
+      memory: {
+        facts: () => this.memory.facts(),
+        updateDeathRecovery: (factId, update, evidence) => this.memory.updateDeathRecovery(factId, update, evidence),
+        factDurability: (factId) => {
+          const onDisk = inspectMemory(join(outDir, 'memory'), memoryConfig, systemClock, { includeInactive: true, limit: 1_000 }).facts.some((f) => f.id === factId);
+          if (onDisk) return 'durable';
+          const st = this.memory.status();
+          return st.pendingWrites > 0 ? 'pending' : st.lastError ? 'failed' : 'unknown';
+        },
+      },
       latestSnapshot: () => this.runtime.perception.latest(),
     });
     check(survival, 'survival service could not be created');
@@ -296,6 +308,12 @@ class Gate {
     return { nowMs: Date.now(), connection: { ready: this.game.state === 'ready', connectionEpoch: this.game.connectionEpoch, dimension: s.dimension }, snapshot: s, autonomyAllowed: true, active: { kind: 'none' }, ownerIntakePending: false, ownerIntentInterrupted: false, goalLimits: { plannerTurns: 20, tasks: 64, replans: 8, deadlineMs: 20 * 60_000 }, ...over };
   }
 
+  /** C5: settle memory and survival writes (the harness stands in for the integrated async barrier before planning/action). */
+  async durable(): Promise<void> {
+    await this.memory.flush();
+    await this.survival.flush();
+  }
+
   /** Harness-as-supervisor: admit survival's own proposal under a fresh code goal epoch. */
   admitProposal(p: SurvivalProposal): ReturnType<SurvivalService['onSupportAdmitted']> {
     this.admit(randomIds.next('goal'));
@@ -382,11 +400,19 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       await g.rcon(`summon item ${DEATH_AT.x - 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:dirt",count:3},PickupDelay:0s,Tags:["chunkbot_foreign"]}`);
       await g.rcon(`summon item ${DEATH_AT.x} ${DEATH_AT.y} ${DEATH_AT.z - 4} {Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":1}}},PickupDelay:0s,Tags:["chunkbot_foreign"]}`);
       await sleep(1_500);
+      await g.durable();
+      ev.push(`durability before recovery: survival=${g.survival.durability()} memory-disk=${JSON.stringify(g.survival.status(Date.now()).incidents.at(-1)?.incidentFactId)}`);
       const decision = g.survival.assess(g.assessInput());
       ev.push(`decision: ${decision.kind} ${decision.kind === 'propose' ? decision.proposal.routine : 'reason' in decision ? decision.reason : ''}`);
       check(decision.kind === 'propose' && decision.proposal.routine === 'death_recovery', 'recovery proposed');
       g.recovery = decision.proposal;
       g.admitProposal(decision.proposal);
+      const before = g.survival.recoveryTarget({ goalEpoch: g.epoch, connectionEpoch: g.game.connectionEpoch, dimension: g.snapshot().dimension });
+      ev.push(`authority before the attempt is durable: ${'error' in before ? before.error : 'authorized'}`);
+      await g.durable();
+      const afterCommit = g.survival.recoveryTarget({ goalEpoch: g.epoch, connectionEpoch: g.game.connectionEpoch, dimension: g.snapshot().dimension });
+      ev.push(`authority after the attempt is durable: ${'error' in afterCommit ? afterCommit.error : 'authorized'}`);
+      check(!('error' in afterCommit), 'recovery authorized only after the durable commit');
       const go = await g.act('go_to_death_site', [], 60_000);
       ev.push(`go_to_death_site: ${go?.status} ${go?.effect.slice(0, 160)}`);
       for (let i = 0; i < 8; i += 1) {

@@ -48,6 +48,11 @@ export interface PolicyContext {
   episodeLinked: boolean;
   /** The survival store is scoped and writable (attempt bounds can persist). */
   storeWritable: boolean;
+  /** C5: durability of the current episode/attempt bookkeeping. */
+  durability: 'durable' | 'pending' | 'failed' | 'unavailable';
+  durabilityError?: string;
+  /** C5: durability of the exact memory death fact. */
+  incidentDurability: 'durable' | 'pending' | 'failed' | 'unknown' | 'unlinked' | 'seam_missing';
   storeDetail: string;
   storage: readonly DesignatedStorage[];
   /** Route policy id for a FAR own-death site when code-owned routing is integrated (else undefined). */
@@ -197,6 +202,13 @@ export function evalRecovery(ctx: PolicyContext): RoutineEval {
   const conclude = (status: RecoveryStatus, reason: string, detail: string): RoutineEval => ({ routine: 'death_recovery', need: true, signature: sig(reason), blocked: { reason, detail, transient: false }, conclude: { status, blocker: { reason, detail, atMs: ctx.now, signature: sig(reason) } } });
   if (!ctx.storeWritable) return blocked('death_recovery', sig(`store:${ctx.storeDetail.slice(0, 40)}`), 'durable_scope_unavailable', `recovery attempts must persist under the operator scope: ${ctx.storeDetail}`);
   if (!ctx.episodeLinked) return blocked('death_recovery', sig('unlinked'), 'incident_not_linked', 'the death capture is not exactly linked to a durable memory death fact; recovery is not authorized without it');
+  // C5: durable authority before any recovery admission.
+  if (ctx.durability === 'pending') return blocked('death_recovery', sig('store_pending'), 'durable_write_pending', 'the survival episode is not yet saved durably; waiting before recovery', true);
+  if (ctx.durability === 'failed') return blocked('death_recovery', sig('store_failed'), 'durable_write_failed', `the survival episode could not be saved durably (${ctx.durabilityError ?? 'write failed'}); recovery waits for a successful save`, true);
+  if (ctx.incidentDurability === 'pending') return blocked('death_recovery', sig('mem_pending'), 'incident_write_pending', 'the memory death fact is not yet durable; waiting', true);
+  if (ctx.incidentDurability === 'failed') return blocked('death_recovery', sig('mem_failed'), 'incident_write_failed', 'the memory death fact could not be saved durably');
+  if (ctx.incidentDurability === 'seam_missing') return blocked('death_recovery', sig('mem_seam'), 'incident_durability_unknown', 'memory durability of the death fact cannot be confirmed (durability seam not installed); recovery is not authorized');
+  if (ctx.incidentDurability !== 'durable') return blocked('death_recovery', sig(`mem_${ctx.incidentDurability}`), 'incident_not_durable', `the memory death fact is not confirmed durable (${ctx.incidentDurability})`);
   if (!ctx.inv || ctx.inv.source !== 'server_packets' || !ctx.inv.fullSync) return blocked('death_recovery', sig('inv'), 'inventory_unknown', 'no full server inventory on this connection yet', true);
   const rem = recoveryRemaining(ctx, e);
   if (ctx.now >= rem.deadlineMs) return conclude(e.regained.length ? 'partially_recovered' : 'unknown', 'recovery_window_ended', 'the bounded recovery window ended; the items may or may not still exist (no despawn time is claimed)');
