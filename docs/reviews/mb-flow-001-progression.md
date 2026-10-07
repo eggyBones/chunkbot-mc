@@ -116,6 +116,9 @@ The progression-owned and shared-writer commits are listed first. The companion 
 - `fecdfcc` P-C7 dashboard survival wording.
 - `4bbaa11` review update for the final dependency picks.
 - `750d50d` P-C8 harness correction: complete footprint, reconciled forceload and cleanup, awaited child exit.
+- `a80d894` review update for P-C8.
+- `8246f14` MB-FLOW-001-C9: `skills-live-check` S0 expects the profile's registered catalog, and a failed initial setup stops the run.
+- `88c83e5` P-C8 nuance: truthful labels for `clear` / `effect clear` cleanup replies.
 
 Companion cherry-picks:
 
@@ -164,16 +167,40 @@ The `src/contracts/survival.ts` and `src/contracts/locator.ts` changes are cherr
 
 | Check | Exit | Result |
 | --- | --- | --- |
-All results below are at `750d50d` (P-C8 harness correction), the source and build freeze. `dist/cli.js` sha256 is `de9409f3ddb24e918274db15435ad1a15d1c5a2896f93149e7799b58e0fa7553`.
+All results below are at `88c83e5`, the source and build freeze after C9 and the P-C8 nuance. `dist/cli.js` sha256 is `de9409f3ddb24e918274db15435ad1a15d1c5a2896f93149e7799b58e0fa7553`.
 
 | Check | Exit | Result |
 | --- | --- | --- |
 | `npm run typecheck` | 0 | |
 | `npm run build` | 0 | |
-| `npm test` | 0 | 745 of 745 pass. The obsolete locator `pre-H2` test is gone with `a87b07a`. |
-| `npm run doctor -- --config config/examples/{fixture,fixture-autonomy,fixture-26.2,fixture-26.2-autonomy,fixture-inference-free,fixture-memory}.json` | 0 each | read-only |
-| `node --test tests/survival-*.test.ts tests/autonomy-*.test.ts tests/construction-*.test.ts tests/locator-*.test.ts` | 0 | 261 of 261 pass. |
+| `npm test` | 0 | 751 of 751 pass. The obsolete locator `pre-H2` test is gone with `a87b07a`. |
+| `npm run doctor -- --config config/examples/{fixture,fixture-autonomy,fixture-26.2,fixture-26.2-autonomy,fixture-inference-free,fixture-26.2-inference-free,fixture-memory}.json` | 0 each | read-only |
+| `node --test tests/harness-profile-catalog.test.ts tests/survival-*.test.ts tests/autonomy-*.test.ts tests/construction-*.test.ts tests/locator-*.test.ts` | 0 | 267 of 267 pass. |
 | `node --test tests/autonomy-harness-guard.test.ts` | 0 | Import-safe. Refuses exit 2 with no lease, an empty lease, an invalid lease, or `--fixture 26.2` alone; creates no output directory. |
+
+## MB-FLOW-001-C9 — stale capability count in `skills-live-check` (`8246f14`)
+
+**Problem.** The integrated 26.2 skills trial at root `674` exited 1 with 13 of 33 scenarios passing.
+- S0 expected a fixed 20 capabilities. The composed run registers 22, because the locator adds `seek_owner` and `route_travel`.
+- S0 failed before the scene setup and diagnostic anchor, and the dependent scenarios then ran anyway and cascaded.
+
+**Correction.**
+- **S0 expectation:** `scripts/lib/profile-catalog.ts` derives the expected catalog from the profile, mirroring the run composition:
+  - foundation definitions;
+  - plus memory skills when memory is configured;
+  - plus locator skills unless the locator is disabled;
+  - plus construction and survival skills only with automatic work and a durable scope.
+- **S0 checks:** S0 compares the skills line count, the `status` capability count and the `/diag catalog` ids with that expectation, and reports every disagreement. The planner-disabled/readiness check (`planner=not-ready knowledge=ready perception=ready skills=ready`) is retained.
+- **Explicit stop:** a failed S0 now sets `report.aborted`, prints `ABORT`, runs no dependent scenario and exits non-zero.
+- **K1:** K1 now states truthfully that the offline `catalog` command lists the foundation definitions only. It checks that list exactly; the run's registry is checked in S0.
+- **Other harnesses:** none hard-codes a capability count. `live-check`, `jev-live-check`, `planner-live-check`, `handoff-live-check`, `compat-live-check`, `memory-live-check` and the survival harness were all checked.
+- **Regression** (`tests/harness-profile-catalog.test.ts`):
+  - for both fixture inference-free profiles, the expectation equals the actual composed `SkillRuntime` registry (22 = foundation + `seek_owner`, `route_travel`, never the stale 20);
+  - the automatic profile adds memory, construction and survival only with automatic work;
+  - `catalogProblems` detects the stale count, missing or unexpected ids, duplicates and missing counts;
+  - static checks cover the abort guard placement and the exit code.
+
+**Note for Codex (source behavior, not changed):** the offline `chunkbot catalog` command still lists only the foundation skill definitions, while `run` composes the profile's optional families. It is documented as "generated from registered skill definitions", so it is not wrong, but it is not the run catalog. `/diag catalog` inside a run is the authoritative listing.
 
 ## Acceptance status (A1–A9)
 
@@ -235,6 +262,11 @@ This is harness validation, not planner or Jev quality evidence. Each scenario r
   - cleanup gating pass;
   - every `kill @e` staying inside the reviewed entity box;
   - the forceload reply parser, which fails closed.
+
+**P-C8 nuance (`88c83e5`): truthful cleanup labels.** A `clear` or `effect clear` reply is labelled by what it proves:
+- `verified_removed` or `verified_none`: the server reply states the outcome for the named player.
+- `player_absent`: the player is not online (for example, Chunkbot after the CLI quit). This is explicitly NOT verified; the next standard setup resets those inventories.
+- `unrecognized`: the cleanup is unreconciled, so the run fails.
 
 **Footprint (complete):**
 
