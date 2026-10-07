@@ -22,7 +22,8 @@ import { z } from 'zod';
 import { BOUNDS, CapabilityIdSchema, DimensionSchema, RegistryKeySchema, Vec3Schema } from './common.ts';
 import { MemoryFactIdSchema, MemoryScopeSchema, type MemoryScope } from './memory.ts';
 import type { ObservationSnapshot } from './observation.ts';
-import type { PredicateEvaluation } from './predicate.ts';
+import type { GameLifecycleEvent } from './ports.ts';
+import type { OutcomePredicate, PredicateEvaluation } from './predicate.ts';
 import type { TaskMode, TaskSpec } from './task.ts';
 
 export const SURVIVAL_SCHEMA_VERSION = 1 as const;
@@ -330,8 +331,10 @@ export interface CapturedDeath {
  * respawn inventory retained everything (no trip). `recovered`: every missing
  * item regained (server-confirmed pickups). `partially_recovered`.
  * `blocked`: a known prerequisite/route/hazard/budget/scope prevents it.
- * `known_destroyed`: server evidence or cause mechanics make the items gone
- * (still reported per item, never assumed for an unknown cause).
+ * `known_destroyed`: reserved for ACTUAL server evidence that the items are
+ * gone. This release has no such evidence source, so it never sets it; cause
+ * mechanics (lava, void) only mark items `likely_destroyed` and the episode
+ * `blocked` (C1: never upgraded without evidence).
  * `unknown`: bounded search ended without finding them; NOT proof of despawn.
  * `abandoned`: the owner redirected or dismissed it.
  */
@@ -400,6 +403,8 @@ export const RecoveryAttemptSchema = z
     outcome: z.string().regex(/^[a-z_]{1,48}$/).optional(),
     preparation: PreparationSignatureSchema,
     regained: z.number().int().nonnegative().default(0),
+    /** The bot reached the site and the bounded visible search ended (nothing scoped remained visible). */
+    searchedSite: z.boolean().default(false),
   })
   .strict();
 export type RecoveryAttempt = z.infer<typeof RecoveryAttemptSchema>;
@@ -447,13 +452,16 @@ export type EpisodeId = z.infer<typeof EpisodeIdSchema>;
 // ---------------------------------------------------------------- interrupted owner directive
 
 /**
- * An owner directive that ended because of a lifecycle/safety interruption.
- * Kept visible until the owner decides. `compatible_original_baseline`: its
- * accepted outcome is inventory-only and can be re-evaluated against the
- * ORIGINAL admission baseline (recovered prior possessions never count as new
- * acquisition); still requires the supervisor's explicit, approved
- * continuation API — never a silent resubmission of the text with a new
- * baseline. `unsupported_requires_owner`: semantics cannot be retained safely.
+ * An owner directive that ended because of a lifecycle/safety interruption
+ * (C1 first-release decision). It stays VISIBLE and requires an owner
+ * decision: it is never replayed, never resubmitted with a new baseline and
+ * never silently dropped. Actual continuation would need the preserved
+ * original outcome, baseline, counters, deadline and fenced references, which
+ * this release does not provide; an outcome's shape alone (e.g. inventory
+ * only) is NOT evidence of compatibility. A bare `resume` only clears the stop
+ * latch and does not dismiss it; a new explicit owner instruction supersedes
+ * it. Support/recovery may address the interruption meanwhile; unrelated
+ * progression waits.
  */
 export const InterruptedDirectiveSchema = z
   .object({
@@ -470,10 +478,11 @@ export const InterruptedDirectiveSchema = z
     confirmedProgress: z.string().max(BOUNDS.text),
     interruptedAtMs: atMs,
     reason: z.string().regex(/^[a-z_]{1,48}$/),
-    continuation: z.enum(['compatible_original_baseline', 'unsupported_requires_owner']),
+    /** First release: always `requires_owner_decision` (no automatic continuation exists). */
+    continuation: z.literal('requires_owner_decision'),
     continuationDetail: shortText,
-    /** `awaiting_owner`: shown until the owner gives a new instruction or dismisses it. */
-    state: z.enum(['awaiting_owner', 'superseded_by_owner', 'continued', 'dismissed']),
+    /** `awaiting_owner` until a new explicit owner instruction supersedes it (or the owner dismisses it explicitly). */
+    state: z.enum(['awaiting_owner', 'superseded_by_owner', 'dismissed_by_owner']),
     stateAtMs: atMs,
   })
   .strict();
@@ -562,6 +571,8 @@ export interface SurvivalAssessmentInput {
   active: ActiveWorkFacts;
   /** A pending/unanswered/blocked owner instruction exists (it keeps priority and stays visible). */
   ownerIntentPending: boolean;
+  /** An interrupted owner directive awaits the owner's decision (support may address it; progression waits). */
+  ownerIntentInterrupted: boolean;
   /** Remaining goal-level limits the supervisor would grant a support goal (ceilings never exceed these). */
   goalLimits: { plannerTurns: number; tasks: number; replans: number; deadlineMs: number };
 }
@@ -581,8 +592,13 @@ export interface SurvivalPlannerContext {
 export type SurvivalExecution =
   /** A natural-language goal for the gameplay planner (prerequisites chosen by the planner). */
   | { kind: 'planner_goal'; instruction: string; context: SurvivalPlannerContext }
-  /** A small preapproved code-built TaskSpec (eat/rest): same task runtime, executor and lease; no planner turn. */
-  | { kind: 'code_task'; spec: TaskSpec; mode: TaskMode; objective: string };
+  /**
+   * A small preapproved code-built task (eat/rest): same task runtime, Jev
+   * choice, executor and lease; no planner turn. `completion` is the proposed
+   * `survival_state` predicate; the writer composes `{ ...spec, completion }`
+   * once that predicate is in the shared union.
+   */
+  | { kind: 'code_task'; spec: Omit<TaskSpec, 'completion'>; completion: SurvivalStatePredicate | OutcomePredicate; mode: TaskMode; objective: string };
 
 export interface SurvivalProposal {
   proposalId: string;
@@ -593,6 +609,8 @@ export interface SurvivalProposal {
   signature: string;
   execution: SurvivalExecution;
   episodeId?: EpisodeId;
+  /** What the routine serves (canonical autonomy GoalSource `support.serves`). */
+  serves: 'owner_intent' | 'progression' | 'none';
   /** Ceilings for THIS admission (<= remaining episode budget and <= goal limits). */
   ceilings: { plannerTurns: number; tasks: number; replans: number; deadlineMs: number };
   /** Narrow low-health allowance the supervisor must attach to the admitted code task (eat/rest only). */
@@ -623,34 +641,60 @@ export interface LowHealthAllowanceRequest {
   ttlMs: number;
 }
 
-/** A granted allowance, bound to ONE admitted goal epoch (issued by survival at admission). */
+/**
+ * A granted allowance (issued once by survival at support admission). Bound
+ * to ONE goal id/epoch, connection epoch and dimension, the admitted support
+ * task (bound at its first check; any other task id is refused), and the
+ * exact capabilities/items of the proposal. Fixed expiry and a fixed maximum
+ * of consumed actions: there is no renewal; a second grant for the same goal
+ * epoch is refused, so counts and expiry can never be reset or extended.
+ */
 export interface LowHealthAllowanceGrant {
-  allowanceId: string;
-  goalId: string;
-  goalEpoch: number;
-  connectionEpoch: number;
-  routine: (typeof LOW_HEALTH_ROUTINES)[number];
-  capabilities: readonly string[];
-  items: readonly string[];
-  maxActions: number;
+  readonly allowanceId: string;
+  readonly goalId: string;
+  readonly goalEpoch: number;
+  readonly connectionEpoch: number;
+  readonly dimension: string;
+  /** Support task bound at the first check (null until then). */
+  taskId: string | null;
+  readonly routine: (typeof LOW_HEALTH_ROUTINES)[number];
+  readonly capabilities: readonly string[];
+  readonly items: readonly string[];
+  readonly maxActions: number;
   actionsUsed: number;
-  grantedAtMs: number;
-  expiresAtMs: number;
+  readonly grantedAtMs: number;
+  readonly expiresAtMs: number;
+  revoked?: string;
 }
 
 export type LowHealthCheck =
   | { allowed: true; allowanceId: string; capabilities: readonly string[]; items: readonly string[]; detail: string }
   | { allowed: false; reason: string; detail: string };
 
+/** The task identity every allowance call carries (the runtime's admitted task). */
+export interface AllowanceTaskRef {
+  goalId: string;
+  goalEpoch: number;
+  taskId: string;
+  connectionEpoch: number;
+  allowedCapabilities: readonly string[];
+}
+
 /**
- * Proposed TaskRuntime seam. At the low-health guard the runtime asks this
- * port; only an allowed result lets the round continue, and then ONLY with
- * candidates of `capabilities` (and `items`). Everything still goes through
- * the same candidate generator, Jev choice, revalidation, fenced executor and
- * single lease. Without the port, or on refusal, the guard blocks as today.
+ * TaskRuntime seam (C1-approved shape). At the low-health guard the runtime
+ * calls `check`; only an allowed result lets the round continue, and then ONLY
+ * with candidates whose capability is in `capabilities` and whose item
+ * parameter (if any) is in `items`. After the Jev choice and its fresh
+ * revalidation, and BEFORE execution, the runtime calls `recheck` with the
+ * chosen candidate and the fresh snapshot (ownership, connection/dimension,
+ * expiry, remaining actions, health/food, visible threat, item still owned);
+ * a refusal executes nothing. The executor's lease/epoch fencing still
+ * applies. Without the port, or on refusal, the guard blocks `low_health` as
+ * today. There is no generic restore/escape exception and no global disable.
  */
 export interface LowHealthAllowancePort {
-  check(task: { goalId: string; goalEpoch: number; taskId: string; allowedCapabilities: readonly string[] }, snapshot: ObservationSnapshot): LowHealthCheck;
+  check(task: AllowanceTaskRef, snapshot: ObservationSnapshot): LowHealthCheck;
+  recheck(allowanceId: string, task: AllowanceTaskRef, candidate: { capability: string; parameters: Readonly<Record<string, unknown>> }, snapshot: ObservationSnapshot): LowHealthCheck;
   /** Called after each action executed under an allowance (counts it; never extends it). */
   consumed(allowanceId: string, outcome: { actionId: string; capability: string; status: string }): void;
 }
@@ -659,17 +703,25 @@ export interface LowHealthAllowancePort {
 
 /**
  * Proposed atomic predicate: a survival condition evaluated by CODE from fresh
- * server evidence and the durable episode. `satisfied` for `death_recovery`
- * means CONCLUDED (recovered, partially recovered with the bounded search
- * done, known destroyed, or no loss) — never a claim that every item returned.
- * For `eat`/`rest`: fresh server food/health reached the routine's high
- * threshold, or nothing suitable remains (then `unsatisfied` with the reason).
+ * server evidence and the durable episode, fenced to the owning support goal.
+ *
+ * `death_recovery`:
+ *   - `recovered`: satisfied ONLY when nothing is still sought: every missing
+ *     item was regained through server-confirmed pickups, or the respawn
+ *     inventory retained everything (`no_loss`).
+ *   - `concluded`: satisfied when the bounded episode ENDED in any way
+ *     (recovered, partially recovered after the bounded visible search,
+ *     unknown, blocked). Its evidence carries `recoveryStatus`; a concluded
+ *     label alone never implies that all loot was recovered.
+ * `eat`/`rest`/`tool_upkeep`/`inventory_room`/`resupply` use `satisfied`:
+ * fresh server food/health/inventory reached the routine's high threshold.
+ * Any other routine/expect pairing evaluates `unknown`.
  */
 export const SurvivalStatePredicateSchema = z
   .object({
     predicate: z.literal('survival_state'),
     routine: SurvivalRoutineSchema,
-    expect: z.enum(['concluded', 'satisfied']),
+    expect: z.enum(['recovered', 'concluded', 'satisfied']),
   })
   .strict();
 export type SurvivalStatePredicate = z.infer<typeof SurvivalStatePredicateSchema>;
@@ -680,7 +732,57 @@ export interface SurvivalPredicatePort {
   evaluateSurvivalState(predicate: SurvivalStatePredicate, owner: { goalId: string; goalEpoch: number } | undefined): SurvivalStateEvaluation;
 }
 
-// ---------------------------------------------------------------- lifecycle / supervisor hooks
+// ---------------------------------------------------------------- lifecycle / packet hooks (C1-approved order)
+
+/** EventEmitter-like raw protocol packet source (the bot's protocol client). */
+export interface SurvivalPacketSource {
+  on(event: string, listener: (packet: never) => void): unknown;
+  off?(event: string, listener: (packet: never) => void): unknown;
+  removeListener?(event: string, listener: (packet: never) => void): unknown;
+}
+
+/** MB-MEM-001 DeathContext shape for the SAME frozen capture, plus its capture id. */
+export interface SurvivalDeathContext {
+  captureId?: string;
+  dimension?: string;
+  position?: { x: number; y: number; z: number };
+  accuracy: 'client_position_at_death_event' | 'last_observation' | 'unknown';
+  positionAgeMs?: number;
+  inventory: { source: 'server_sync' | 'client_model' | 'unavailable'; capturedAtMs?: number; items: Array<{ key: string; count: number }> };
+  cause?: { kind: 'observed'; detail: string };
+}
+
+/**
+ * Lifecycle seam. Order (C1-approved): (1) synchronous GoalEngine ownership
+ * revocation; (2) `onLifecycle(death)` consumes the packet-frozen last-alive
+ * evidence (no I/O); (3) memory records the SAME capture via
+ * `deathContext()` and the writer reports the fact with `linkIncident`;
+ * (4) lifecycle ledger invalidation / resource teardown. Disk writes are
+ * queued after capture and never awaited on this path.
+ */
+export interface SurvivalLifecyclePort {
+  /** Synchronous `onBotCreated` hook: attach the packet tracker before login. */
+  attachConnection(source: SurvivalPacketSource, ctx: { connectionEpoch: number; selfPosition: () => { dimension: string; at: { x: number; y: number; z: number } } | undefined; containerLayout?: () => { id: number; inventoryStart: number } | undefined }): void;
+  onLifecycle(event: GameLifecycleEvent): void;
+  deathContext(): SurvivalDeathContext;
+  linkIncident(captureId: string, memoryFactId: string): void;
+  /** Persists pending survival state (shutdown, after owned gameplay cleanup). */
+  close(): Promise<void>;
+}
+
+/**
+ * Structural copy of the locator `RouteDestinationProvider` (b894867): the
+ * CURRENT incident's own proven historical site, returned only for the bound
+ * recovery goal epoch on the same connection and dimension. Far recovery
+ * stays honestly blocked until the route port is integrated; the original
+ * travel bound is never relaxed and a stale target is never replayed.
+ */
+export interface OwnDeathDestinationProvider {
+  readonly kind: 'own_death';
+  current(ctx: { connectionEpoch: number; dimension: string; goalEpoch: number }): { destinationId: string; dimension: string; at: { x: number; y: number; z: number }; recordedAtMs: number; label: string } | undefined;
+}
+
+// ---------------------------------------------------------------- supervisor hooks
 
 /** Support goal admission/terminal facts the supervisor reports back (plain data). */
 export interface SupportAdmission {
@@ -730,8 +832,10 @@ export interface SurvivalPolicyPort {
   onSupportTerminal(end: SupportTerminal): void;
   /** Any owner goal end (interruption bookkeeping; never resubmits). */
   onOwnerGoalEnd(end: OwnerGoalEnd): void;
-  /** A NEW owner instruction was admitted: interrupted directives become superseded_by_owner; recovery yields. */
+  /** A NEW explicit owner instruction was admitted: interrupted directives become superseded_by_owner; recovery yields. (Bare `resume` is NOT this.) */
   onOwnerInstruction(atMs: number): void;
+  /** Owner explicitly dismissed an interrupted directive. */
+  dismissInterrupted(goalId: string, atMs: number): boolean;
   /** Owner dismissed/redirected recovery explicitly (episode abandoned). */
   abandonRecovery(detail: string, atMs: number): void;
   status(nowMs: number): SurvivalStatus;
