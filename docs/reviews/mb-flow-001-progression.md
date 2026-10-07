@@ -90,6 +90,10 @@ Both are fixed:
 - **Status:** status and in-game replies include autonomy, home, survival, route and locator lines.
 - **Replies:** idle stop and resume replies state what the latch means when automatic work is installed.
 - **Doctor and dashboard** (read-only): the dashboard shows an "Automatic work" block, mode labels `automatic_progression` / `automatic_support`, and the support/route/home status.
+- **P-C7 correction (`fecdfcc`).** The dashboard survival callout used to append "(your directive stays queued)" unconditionally. That was false when there is no owner directive, or when a held/interrupted intent needs an owner decision.
+  - The callout now names only the survival routine.
+  - Whether an owner instruction is held, interrupted or absent comes only from the canonical autonomy owner-intent line ("Your … instruction: … — needs your decision").
+  - There is no new UI flow or control. `tests/autonomy-dashboard.test.ts` asserts the wording.
 
 ## Commits (base..HEAD, oldest first)
 
@@ -108,6 +112,8 @@ The progression-owned and shared-writer commits are listed first. The companion 
 - `4a28142` planner wire/prompt fix.
 - `bb3594a` autonomy-live-check and truthful stop/resume replies.
 - `5503827` harness A4/A5 extensions and this review.
+- `09ded35` review update for the survival C6/C1 picks.
+- `fecdfcc` P-C7 dashboard survival wording.
 
 Companion cherry-picks:
 
@@ -115,7 +121,11 @@ Companion cherry-picks:
   - The C6 pick conflicted only in `scripts/survival-live-check.ts`. This branch's copy of that survival-owned harness had drifted from survival's lineage (it lacked the G4 bed-mechanics gate present at `9af4ef3`), while every other survival path matched `9af4ef3` exactly.
   - The conflict was resolved by taking survival's own `8ca45c3` file unchanged. No manual edit was made.
   - After both picks, all survival paths (`src/survival/`, `src/skills/survival.ts`, `src/contracts/survival.ts`, `tests/survival-*`, the survival harness and review) are byte-identical to `8c756b1`.
-- **Locator:** `940d7bc`, `2d6d178`, `393148a`, `4bc7ea6`, `97504cf`, `d3a98e3`.
+- **Survival (latest harness only):** `98dbc69` (from `07853e24676f832f5f4f612fd6a831b5ac4ad1fe`). It applied cleanly and touches only survival's harness assertions, guard test and review. All survival paths are byte-identical to `07853e2`.
+- **Locator:** `940d7bc`, `2d6d178`, `393148a`, `4bc7ea6`, `97504cf`, `d3a98e3`, then the authorized final picks `df89c80` (from `2fb02f69ef522425a32ecd49f1ab2424c32cced5`) and `bd23f13` (from `a87b07aaeb765b55955a45294c88c9fce11b6536`).
+  - Locator's own history is `2fb02f6` → `52687a0` → `96ed4ad` (revert of `2fb02f6`) → `a87b07a`. This branch's locator source matched the reverted state, so the two picks give exactly the observed-only blocker source plus the H2 admission-proof test adaptation.
+  - `src/locator/`, `src/skills/locator.ts`, `tests/locator-runner.test.ts` and `tests/locator-terrain.test.ts` are byte-identical to `2fb02f6`. `tests/locator-skills.test.ts` is byte-identical to `a87b07a`.
+  - The only conflict was locator's review `docs/reviews/mb-loc-001-locator.md`, which never existed on this branch (delete/modify). It was left absent: root carries it through locator's own history, and copying it would have imported records of locator commits not picked here. No companion source was edited.
 
 ## Changed paths (excluding companion-owned modules)
 
@@ -152,11 +162,15 @@ The `src/contracts/survival.ts` and `src/contracts/locator.ts` changes are cherr
 
 | Check | Exit | Result |
 | --- | --- | --- |
+All results below are at `98dbc69`, the source and build freeze.
+
+| Check | Exit | Result |
+| --- | --- | --- |
 | `npm run typecheck` | 0 | |
 | `npm run build` | 0 | |
-| `npm test` | 1 | At `ff8d043`: 735 tests, 734 pass. The single failure is the obsolete locator-owned `pre-H2: travelBounds is accepted only when goal-owned AND equal to the route authorization admission anchor` (asserts pre-H2 behavior). Locator fixed the canonical admission-proof tests at `a87b07aa`, and root integrates that history. |
-| `npm run doctor -- --config config/examples/{fixture,fixture-autonomy,fixture-26.2-autonomy,fixture-inference-free,fixture-memory}.json` | 0 each | read-only |
-| `node --test tests/survival-*.test.ts tests/autonomy-*.test.ts tests/construction-*.test.ts` | 0 | At `ff8d043`: 184 of 184 pass. |
+| `npm test` | 0 | 743 of 743 pass. The obsolete locator `pre-H2` test is gone with `a87b07a`. |
+| `npm run doctor -- --config config/examples/{fixture,fixture-autonomy,fixture-26.2,fixture-26.2-autonomy,fixture-inference-free,fixture-memory}.json` | 0 each | read-only |
+| `node --test tests/survival-*.test.ts tests/autonomy-*.test.ts tests/construction-*.test.ts tests/locator-*.test.ts` | 0 | 259 of 259 pass. |
 | `node --test tests/autonomy-harness-guard.test.ts` | 0 | Import-safe. Refuses exit 2 with no lease, an empty lease, an invalid lease, or `--fixture 26.2` alone; creates no output directory. |
 
 ## Acceptance status (A1–A9)
@@ -206,7 +220,11 @@ This is harness validation, not planner or Jev quality evidence. Each scenario r
 - Teleports: Chunkbot and FixtureOwner, inside the area.
 - No difficulty, gamerule or time change.
 
-**Requested:** an exclusive driver lease on the 26.1.2 fixture (`127.0.0.1:25566` / RCON 25576), then optionally on 26.2. No provider lease is needed; there is no inference.
+**Requested:** an exclusive driver lease on the 26.2 fixture (`127.0.0.1:25567` / RCON 25577, `--fixture 26.2`, base config `config/examples/fixture-26.2-autonomy.json`), and later on 26.1.2 (`127.0.0.1:25566` / RCON 25576). No provider lease is needed; there is no inference.
+
+**One point for the coordinator's decision before the run.** As in `handoff-live-check`, the planner fault fixture passes three read-only gate commands to the real installed `codex` CLI: `--version`, `debug models --bundled` and `features list`. Per AGENTS.md, `features list` loads the account's cloud config.
+- No model turn, quota RPC or login change happens: `login status` is scripted, and `exec` never reaches the real CLI.
+- Please confirm this is covered by the granted lease, or run the harness yourself. This worker has not invoked it.
 
 Commands (build first; never rebuild while it runs):
 
