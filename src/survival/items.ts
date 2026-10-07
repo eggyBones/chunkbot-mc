@@ -25,14 +25,19 @@ export const mk = (name: string): string => (name.includes(':') ? name : `minecr
 
 /**
  * MB-FLOW-003-C7: the application's canonical dimension name is the SESSION
- * form (mineflayer `bot.game.dimension`, which strips the `minecraft:`
- * namespace: `overworld`). Packet GlobalPos values (`respawn`/`login`
- * `worldState.death.dimensionName`) are namespaced (`minecraft:overworld`).
- * Every server-stated dimension is converted at capture, and every comparison
- * uses `sameDimension`, so the two spellings of one dimension never differ.
- * Other namespaces (datapack dimensions) stay as stated, as in mineflayer.
+ * form (mineflayer `bot.game.dimension`, snapshots, lifecycle: `overworld`).
+ * Packet GlobalPos values (`respawn`/`login` `worldState.death.dimensionName`)
+ * are namespaced (`minecraft:overworld`). ONLY the three recognized vanilla
+ * aliases are normalized; every other identity (datapack or unknown, in any
+ * namespace) is kept exactly as stated, so an unrecognized name can only
+ * compare unequal (cross-dimension refusal), never be merged by guesswork.
  */
-export const sessionDimension = (name: string): string => name.replace(/^minecraft:/, '');
+const VANILLA_DIMENSION_ALIASES: ReadonlyMap<string, string> = new Map([
+  ['minecraft:overworld', 'overworld'],
+  ['minecraft:the_nether', 'the_nether'],
+  ['minecraft:the_end', 'the_end'],
+]);
+export const sessionDimension = (name: string): string => VANILLA_DIMENSION_ALIASES.get(name) ?? name;
 export const sameDimension = (a: string | undefined, b: string | undefined): boolean => a !== undefined && b !== undefined && sessionDimension(a) === sessionDimension(b);
 
 /**

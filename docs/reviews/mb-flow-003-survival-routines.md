@@ -16,7 +16,8 @@ Delivery state: **implemented and verified offline; first leased 26.1.2 trial FA
 | `8c650d5d088f245015afea013a536625c0b103f3`, `ee4ef1dfb7465ca1117134b1958fe0925e69d717` | Authorized cherry-picks of the locator contracts (b894867, b323883), unchanged |
 | `311b8db0533a010e8c291d1efc4775b8197e4979` | Canonical own-incident `RouteDestinationProvider`; C2 per-dispatch allowance |
 | `a660d21df52dea07d66e52708e4b5a812406ffd7` … `07853e24676f832f5f4f612fd6a831b5ac4ad1fe` | C3, C4, C5, C6, C1, C6 follow-ups (the source frozen for leased trial 1) |
-| (this commit) | C7 dimension identity; C8 26.x settings command names |
+| `df9c7e6607105d0fe1af0e7d662572786529879a` | C7 dimension identity; C8 26.x settings command names |
+| (this commit) | C7 narrowed to recognized vanilla aliases (coordinator record); unrecognized names keep exact identity |
 
 Owned paths only:
 - `src/contracts/survival.ts`
@@ -32,7 +33,7 @@ No existing file was edited.
 
 - `npm run typecheck`: 0
 - `npm run build`: 0
-- `npm test`: 0, 595/595 passing. That includes 112 survival tests across 13 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring, harness guard and dimension (C7).
+- `npm test`: 0, 597/597 passing. That includes 114 survival tests across 13 files: contract, tracker, recovery, upkeep, allowance (C2), pickup (C3), interrupted intent (C4), durability (C5), store, skills, wiring, harness guard and dimension (C7).
 - The harness guard spawns `scripts/survival-live-check.ts` with a missing or invalid lease. Each run exits 2 before any password read, RCON command, join or output directory.
 - Fixture gate: leased trial 1 (26.1.2), exit 1; see below. Not run (they need a lease or a provider): a re-run with C7/C8, the 26.2 gate, live-check, skills-live-check, planner and Jev checks, doctor.
 
@@ -184,8 +185,9 @@ No existing file was edited.
 - **After the run:** 0 players online. The acceptance checkout was clean at 674dab6c, and its dist was unchanged. No source was edited during the trial, and the lease was not used for anything else.
 - **MB-FLOW-003-C7: dimension identity.**
   - **Cause:** mineflayer stores `bot.game.dimension` without the namespace (`overworld`; `lib/plugins/game.js` strips `minecraft:`). Lifecycle events, snapshots, perception and memory all use that session form. The server GlobalPos is `minecraft:overworld`, so the policy saw two dimensions. The offline tests used `minecraft:overworld` on both sides, which masked it.
-  - **Fix:** `sessionDimension`/`sameDimension` in `src/survival/items.ts`. Every server-stated dimension is stored in the session form at capture (tracker site, respawn refinement, login last-death). Every comparison is canonical: policy cross-dimension and storage checks, recovery target fence, arrival check, same-hazard radius, repeated-hazard and preparation start. The destination and recovery target report the session form.
-  - **Tests:** the helpers now use the real split (session `overworld`, wire `minecraft:overworld`). New `tests/survival-dimension.test.ts` reproduces G2: it proposes `death_recovery`, the target resolves under either spelling, and the client estimate offset is now computed. A genuine nether site is still blocked `cross_dimension`, and datapack namespaces are kept distinct. Two of its tests fail without the fix and pass with it. The harness's G1 RCON comparison is now canonical too.
+  - **Coordinator record:** root `docs/survival-routines-plan.md` lists MB-FLOW-003-C7 and -C8 under these IDs. The trial is finished, its lease is released, and the exit-1 report is preserved as evidence.
+  - **Fix:** `sessionDimension`/`sameDimension` in `src/survival/items.ts` normalize ONLY the three recognized vanilla aliases (`minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end` to their session names). Every other identity, including an unrecognized `minecraft:` id, is kept exactly, so it can only compare unequal and is refused as `cross_dimension`. True cross-dimension refusal is unchanged. Every server-stated dimension is stored in the session form at capture (tracker site, respawn refinement, login last-death). Every comparison is canonical: policy cross-dimension and storage checks, recovery target fence, arrival check, same-hazard radius, repeated-hazard and preparation start. The destination and recovery target report the session form.
+  - **Tests:** the helpers now use the real split (session `overworld`, wire `minecraft:overworld`). New `tests/survival-dimension.test.ts` reproduces G2: it proposes `death_recovery`, the target resolves under either spelling, and the client estimate offset is now computed. A genuine nether site is still blocked `cross_dimension`. An unrecognized `minecraft:custom_dim` against session `custom_dim` keeps its exact identity and is refused. Datapack namespaces stay distinct. A pre-C7 episode holding `minecraft:overworld` still proposes recovery and reports the canonical form. Two of its tests fail without the fix and pass with it. The harness's G1 RCON comparison is now canonical too.
 - **MB-FLOW-003-C8: 26.x settings commands.**
   - **Cause:** the official 26.1.2 and 26.2 server command reports (generated `commands.json`) show that gamerules are snake_case, `keep_inventory` and `natural_health_regeneration`. `keepInventory` and `naturalRegeneration` no longer exist. `time query daytime` was replaced by `time query time` (world clocks); `time set <time>` still exists. The harness queried the removed names, and its query helper did not record replies.
   - **Fix:** constants `RULE_KEEP`, `RULE_REGEN` and `TIME_QUERY`. Every settings query is recorded in the setup log, and a failed read quotes the last replies. Day/night checks use the time of day (clock modulo 24,000), and restore re-sets and re-verifies the exact original clock value.
