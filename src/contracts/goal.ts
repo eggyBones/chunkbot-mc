@@ -5,8 +5,10 @@ import { BOUNDS } from './common.ts';
 import { ClarificationRequestSchema } from './clarification.ts';
 import { EpochSchema, GoalIdSchema } from './ids.ts';
 import { GoalStateSchema, TerminalReasonCodeSchema } from './states.ts';
+import { GoalSourceSchema } from './autonomy.ts';
 
-export const INTAKE_SURFACES = ['chat', 'terminal'] as const;
+/** `supervisor`: an automatic goal submitted by the MB-FLOW-001 supervisor (never owner words). */
+export const INTAKE_SURFACES = ['chat', 'terminal', 'supervisor'] as const;
 export const IntakeSurfaceSchema = z.enum(INTAKE_SURFACES);
 export type IntakeSurface = z.infer<typeof IntakeSurfaceSchema>;
 
@@ -14,8 +16,8 @@ export type IntakeSurface = z.infer<typeof IntakeSurfaceSchema>;
 export const IntakeOriginSchema = z
   .object({
     surface: IntakeSurfaceSchema,
-    /** Role, not a personal identifier: chat input is always from the verified owner. */
-    principal: z.enum(['owner', 'operator']),
+    /** Role, not a personal identifier: chat input is always from the verified owner; `supervisor` is code. */
+    principal: z.enum(['owner', 'operator', 'supervisor']),
   })
   .strict();
 export type IntakeOrigin = z.infer<typeof IntakeOriginSchema>;
@@ -26,8 +28,11 @@ export type IntakeOrigin = z.infer<typeof IntakeOriginSchema>;
  * run through the same ownership/epoch/anchor/controller path with real Jev
  * choices (MB-V1-03 controller diagnostic). It is never natural-language goal
  * acceptance and never reachable from chat.
+ * `support_task`: a survival code-built TaskSpec (MB-FLOW-003 code_task, e.g.
+ * eat/rest) admitted by the MB-FLOW-001 supervisor with a `support` source;
+ * same admission/task runtime/executor, no planner turn, never from chat.
  */
-export const GOAL_KINDS = ['owner_goal', 'operator_task_diagnostic'] as const;
+export const GOAL_KINDS = ['owner_goal', 'operator_task_diagnostic', 'support_task'] as const;
 export const GoalKindSchema = z.enum(GOAL_KINDS);
 export type GoalKind = z.infer<typeof GoalKindSchema>;
 
@@ -35,6 +40,8 @@ export const GoalRecordSchema = z
   .object({
     id: GoalIdSchema,
     kind: GoalKindSchema.optional(),
+    /** MB-FLOW-001: who the goal is for (code-owned; absent on records from before the field = owner). */
+    source: GoalSourceSchema.optional(),
     epoch: EpochSchema,
     instruction: z.string().min(1).max(BOUNDS.longText),
     origin: IntakeOriginSchema,

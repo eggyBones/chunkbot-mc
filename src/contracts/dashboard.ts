@@ -190,7 +190,7 @@ export const DirectivePhaseSchema = z.enum(DIRECTIVE_PHASES);
 export const GoalSectionSchema = z
   .object({
     id: shortText,
-    kind: z.enum(['owner_goal', 'operator_task_diagnostic']),
+    kind: z.enum(['owner_goal', 'operator_task_diagnostic', 'support_task']),
     epoch: nonNegInt,
     instruction: text,
     phase: DirectivePhaseSchema,

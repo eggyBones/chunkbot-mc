@@ -1,7 +1,9 @@
 // MB-FLOW-001 progression contracts: goal source/priority, operating mode,
-// durable control (pause) and construction-project state, session limits and
-// the consumer-side ports the progression supervisor uses to integrate the
-// companion features (MB-FLOW-003 survival support, MB-LOC-001 route legs).
+// durable control (pause) and construction-project state and session limits.
+// Companion ports are canonical in their own contracts and consumed as-is:
+// survival (src/contracts/survival.ts: SurvivalPolicyPort, LowHealthAllowancePort,
+// SurvivalStatus) and locator (src/contracts/locator.ts: LocatorPort, RoutePort,
+// RouteStatus). This file owns GoalSource.
 //
 // Rules carried by these shapes:
 // - ONE supervisor submits work through the ONE GoalEngine admission path.
@@ -23,8 +25,10 @@
 import { z } from 'zod';
 import { BOUNDS, CapabilityIdSchema, DimensionSchema, RegistryKeySchema, Vec3Schema } from './common.ts';
 import { GoalIdSchema } from './ids.ts';
+import type { RouteStatus } from './locator.ts';
 import { ProfileIdSchema } from './memory.ts';
 import { GoalOutcomeContractSchema } from './predicate.ts';
+import { EpisodeIdSchema, SurvivalRoutineSchema, type SurvivalPlannerContext, type SurvivalStatus } from './survival.ts';
 
 export const AUTONOMY_SCHEMA_VERSION = 1 as const;
 export const AUTONOMY_FILE_FORMAT = 'chunkbot-autonomy' as const;
@@ -41,20 +45,13 @@ export type RoutineId = z.infer<typeof RoutineIdSchema>;
 
 /**
  * Who a goal is for. Code sets it at admission; the planner cannot set or
- * change it. `owner`: an owner/operator instruction (optionally the code-owned
- * continuation of an interrupted owner intent). `progression`: a supervisor
- * milestone assessment. `support`: a survival/upkeep/recovery routine issued
- * by the support policy (`safety` priority only for a verified immediate
- * danger/health need).
+ * change it. `owner`: an owner/operator instruction. `progression`: a
+ * supervisor milestone assessment. `support`: work admitted for a survival
+ * policy proposal (MB-FLOW-003), either a planner goal or a small code-built
+ * task; `safety` only for an immediate verified need.
  */
 export const GoalSourceSchema = z.discriminatedUnion('kind', [
-  z
-    .object({
-      kind: z.literal('owner'),
-      /** Set only when code re-admits an interrupted owner intent with its ORIGINAL accepted outcome. */
-      continuationOf: GoalIdSchema.optional(),
-    })
-    .strict(),
+  z.object({ kind: z.literal('owner') }).strict(),
   z
     .object({
       kind: z.literal('progression'),
@@ -65,14 +62,15 @@ export const GoalSourceSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('support'),
-      routine: RoutineIdSchema,
+      routine: SurvivalRoutineSchema,
       priority: z.enum(['safety', 'support']),
-      /** What the routine serves: an unresolved owner intent, progression, or nothing. */
-      serves: z.enum(['owner_intent', 'progression', 'none']),
+      /** Survival proposal correlation (opaque, code-generated). */
+      proposalId: z.string().regex(/^[a-z][a-z0-9_-]{2,63}$/),
+      episodeId: EpisodeIdSchema.optional(),
+      /** planner_goal: planned by the gameplay planner; code_task: a preapproved code-built task (no planner turn). */
+      execution: z.enum(['planner_goal', 'code_task']),
       /** Bounded, code-generated reason shown to the owner/status. */
       reason: z.string().min(1).max(BOUNDS.shortText),
-      /** Durable incident/episode correlation owned by the support policy (opaque). */
-      episodeId: z.string().regex(/^[a-z][a-z0-9_-]{2,47}$/).optional(),
       /** 1-based admission number of support goals in this application run. */
       sessionAttempt: z.number().int().positive(),
     })
@@ -90,28 +88,6 @@ export function priorityOfSource(source: GoalSource | undefined): Exclude<Autono
 export function isAutomaticSource(source: GoalSource | undefined): boolean {
   return source !== undefined && source.kind !== 'owner';
 }
-
-// ---------------------------------------------------------------- low-health exception
-
-/**
- * Typed, code-owned exception to the task runtime's low-health guard. Granted
- * ONLY by the support policy for a support goal after verifying its own
- * prerequisites (e.g. suitable owned food); never by the planner, never for
- * owner/progression goals, and never a lowered threshold. While health is at
- * or below the guard, only candidates of `allowedCapabilities` (intersected
- * with the task's own allowed capabilities) may run; at or below
- * `abortAtOrBelowHealth` nothing runs (the task blocks low_health).
- */
-export const LowHealthExceptionSchema = z
-  .object({
-    purpose: z.enum(['restore_health', 'escape']),
-    allowedCapabilities: z.array(CapabilityIdSchema).min(1).max(BOUNDS.listSmall),
-    abortAtOrBelowHealth: z.number().min(0).max(20),
-    /** Bounded statements of what code verified before granting it. */
-    verified: z.array(z.string().min(1).max(BOUNDS.shortText)).max(BOUNDS.listSmall),
-  })
-  .strict();
-export type LowHealthException = z.infer<typeof LowHealthExceptionSchema>;
 
 // ---------------------------------------------------------------- planner-visible autonomy context
 
@@ -135,8 +111,8 @@ export interface AutonomyPlannerContext {
   session: { automaticGoalsLeft: number; plannerTurnsLeft: number };
   /** The scope's home project, when any (code-verified state only). */
   home: HomeProjectSummary | null;
-  /** Support-policy context (survival-owned, bounded JSON), only for support goals. */
-  support?: unknown;
+  /** Survival-owned planner context, only for support planner goals. */
+  support?: SurvivalPlannerContext;
   /** Guidance restated as data. */
   rules: string[];
 }
@@ -147,12 +123,12 @@ export const OWNER_INTENT_STATES = ['active', 'awaiting_answer', 'blocked', 'int
 export type OwnerIntentState = (typeof OWNER_INTENT_STATES)[number];
 
 /**
- * The latest unresolved owner instruction, kept visible and given priority over
- * unrelated progression until it completes, the owner gives a new instruction,
- * or the owner explicitly resumes automatic work. Interrupted intent is
- * CONTINUED by code only when its accepted outcome is baseline-independent
- * (persistent, or pure current-state predicates); a count/time-baseline outcome
- * is never silently re-admitted with a fresh baseline.
+ * The latest unresolved owner instruction (MB-FLOW-001-C1). It stays visible
+ * and holds unrelated progression until a NEW explicit owner instruction
+ * supersedes it. Bare `resume` only clears the stop latch; it never dismisses,
+ * replays, replaces or resets this record. First release: an interrupted or
+ * blocked directive always requires an owner decision (no automatic
+ * continuation). Support/recovery may run meanwhile.
  */
 export interface OwnerIntentRecord {
   goalId: string;
@@ -162,15 +138,11 @@ export interface OwnerIntentRecord {
   reason: string;
   detail: string;
   sinceMs: number;
-  /** Accepted outcome, when one was bound. */
+  /** Accepted outcome, when one was bound (display only; never re-admitted by code). */
   outcome?: z.infer<typeof GoalOutcomeContractSchema>;
   interpretation?: string;
-  /** Whether code may continue it with the ORIGINAL outcome after support, and why (not). */
-  continuation: { allowed: boolean; detail: string };
-  /** Counters carried into a continuation (never reset). */
-  counters?: Record<string, number>;
-  /** Original admission time (deadline continuity). */
-  admittedAtMs: number;
+  /** Always true for blocked/interrupted intent in this release. */
+  requiresOwnerDecision: boolean;
 }
 
 // ---------------------------------------------------------------- mode / status
@@ -205,22 +177,23 @@ export interface AutonomyStatus {
   persistence: { state: PersistenceState; detail: string; revision: number; lastWriteAtMs?: number };
   latch: { paused: boolean; sinceMs?: number; source?: string; durable: 'loaded' | 'written' | 'pending' | 'failed' | 'none' };
   active: null | { goalId: string; source: GoalSource; priority: Exclude<AutonomyPriority, 'lifecycle'> };
-  ownerIntent: null | { goalId: string; instruction: string; state: OwnerIntentState; detail: string; continuable: boolean };
+  ownerIntent: null | { goalId: string; instruction: string; state: OwnerIntentState; detail: string; requiresOwnerDecision: boolean };
   nextAssessmentAtMs: number | null;
   session: AutonomySessionCounters & { limits: AutonomySessionLimits };
   lastOutcome: null | { goalId: string; source: GoalSource['kind']; state: string; reason: string; detail: string; atMs: number };
   blocker: null | { code: string; detail: string };
   home: HomeProjectSummary | null;
-  /** Support-policy status (survival), whitelisted plain data. */
-  support: SupportStatus | null;
-  /** Route-leg status (locator), whitelisted plain data. */
+  /** Canonical survival status (MB-FLOW-003), when the policy is installed. */
+  support: SurvivalStatus | null;
+  /** Canonical route status (MB-LOC-001) of the active goal epoch, when any. */
   route: RouteStatus | null;
 }
 
 export interface AutonomySessionCounters {
   progressionGoals: number;
   supportGoals: number;
-  continuations: number;
+  /** Unsafe active work revoked for a survival safety decision. */
+  safetyRevocations: number;
   /** Planner turns spent by automatic goals this run (from goal counters at terminal). */
   plannerTurns: number;
   completed: number;
@@ -428,101 +401,3 @@ export const AutonomyConfigSchema = z
   .strict();
 export type AutonomyConfig = z.output<typeof AutonomyConfigSchema>;
 export type AutonomyConfigInput = z.input<typeof AutonomyConfigSchema>;
-
-// ---------------------------------------------------------------- companion ports (consumer side; proposals to Codex)
-
-/** Fresh, bounded facts the supervisor passes to the support policy at a scheduling point (never per tick). */
-export interface SupportAssessmentInput {
-  nowMs: number;
-  connectionEpoch: number;
-  /** Ready connection and alive (respawned) bot. */
-  ready: boolean;
-  paused: boolean;
-  /** Source of the goal that is active now (null: idle). */
-  active: GoalSource | null;
-  ownerIntent: { state: OwnerIntentState; continuable: boolean } | null;
-  /** Spend/provider readiness (no inference). */
-  providersReady: boolean;
-}
-
-/**
- * MB-FLOW-003 -> supervisor (proposal): the survival policy reports the most
- * important needed routine from FRESH server-backed state, or null. Pure code;
- * it never actuates, never calls a model and never admits a goal itself. The
- * supervisor admits the returned need through GoalEngine as a `support` source
- * (or skips it when a higher priority holds), with the same limits, lease and
- * planner slot as every goal. `instruction` and `context` are code-generated,
- * bounded and planner-visible; the planner still chooses steps from the catalog.
- */
-export interface SupportNeed {
-  routine: RoutineId;
-  priority: 'safety' | 'support';
-  serves: 'owner_intent' | 'progression' | 'none';
-  reason: string;
-  instruction: string;
-  /** Bounded JSON (<= 2,000 serialized chars) shown to the planner as `autonomy.support`. */
-  context?: unknown;
-  episodeId?: string;
-  /** Same fingerprint twice without a state change => the supervisor waits instead of retrying. */
-  fingerprint: string;
-  /** Typed health exception for this support goal, when the policy verified one. */
-  lowHealth?: LowHealthException;
-}
-
-export interface SupportStatus {
-  routine: string | null;
-  phase: string | null;
-  reason: string;
-  episode: null | { id: string; attempts: number; maxAttempts: number; state: string; detail: string };
-  blocker: null | { code: string; detail: string };
-  sinceMs: number;
-}
-
-export interface SupportPolicyPort {
-  /** Whether the policy is installed and has what it needs (no inference). */
-  readiness(): { ready: boolean; detail: string };
-  assess(input: SupportAssessmentInput): SupportNeed | null;
-  /** Goal terminal of a support goal it issued (episode accounting; must not throw). */
-  onSupportTerminal?(end: { goalId: string; routine: string; episodeId?: string; state: string; reason: string; detail: string }): void;
-  status(): SupportStatus | null;
-}
-
-/** One code-authorized travel leg beyond the admission anchor (MB-LOC-001 proposal). */
-export interface TravelLegBounds {
-  legId: string;
-  goalId: string;
-  goalEpoch: number;
-  connectionEpoch: number;
-  dimension: string;
-  center: { x: number; y: number; z: number };
-  radius: number;
-  expiresAtMs: number;
-}
-
-export interface RouteStatus {
-  goalId: string | null;
-  state: 'idle' | 'seeking' | 'leg_active' | 'reacquired' | 'lost' | 'blocked';
-  detail: string;
-  legs: number;
-  maxLegs: number;
-  distance: number;
-  maxDistance: number;
-  elapsedMs: number;
-  maxElapsedMs: number;
-  hint: null | { freshness: 'fresh' | 'stale'; bearing: string; elevation: 'above' | 'below' | 'level' | 'unknown'; ageMs: number };
-}
-
-/**
- * MB-LOC-001 -> perception/skills (proposal): extra code-owned travel bounds
- * for the CURRENT goal epoch. The admission anchor is never moved and goal
- * counters are never reset; perception's withinTravel admits a position inside
- * the admission bound OR an unexpired leg of the same goal epoch, connection
- * epoch and dimension.
- */
-export interface RouteLegPort {
-  activeLegs(goalEpoch: number, connectionEpoch: number, dimension: string, nowMs: number): readonly TravelLegBounds[];
-  status(): RouteStatus | null;
-}
-
-/** Bounds for the support context the planner may see (serialized characters). */
-export const SUPPORT_CONTEXT_MAX_CHARS = 2_000;

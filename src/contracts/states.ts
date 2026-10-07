@@ -57,6 +57,7 @@ export const TERMINAL_REASON_CODES = [
   'decision_not_ready', // Jev adapter unconfigured/unauthorized/unpaid/unroutable (explicit; no fallback)
   'no_progress', // no meaningful progress on an unmet outcome within the no-progress window
   'low_health', // health at or below the configured interruption threshold
+  'safety_interrupted', // MB-FLOW-001/003: a survival safety decision revoked unsafe active work (owner intent retained)
   // failed
   'death',
   'disconnected',
