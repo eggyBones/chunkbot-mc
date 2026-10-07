@@ -152,7 +152,6 @@ export class AutonomySupervisor {
   private admittingProposal: SurvivalProposal | undefined;
   /** Survival proposals by admitted goal id (terminal correlation). */
   private readonly proposals = new Map<string, { proposalId: string; goalEpoch: number }>();
-  private lastSurvivalBlock: { signature: string; until: number } | null = null;
   private started = false;
   private closed = false;
   private lastNotice = '';
@@ -229,6 +228,19 @@ export class AutonomySupervisor {
         });
       }
     }
+  }
+
+  /**
+   * A pending (not admitted) owner instruction ended without admission. A
+   * planning failure keeps the owner's words visible as a blocked intent
+   * (C1); supersession, stop, lifecycle and shutdown do not.
+   */
+  onPreparationDiscarded(p: { intentId: string; instruction: string; reason: string; detail: string }): void {
+    if (!this.enabled) return;
+    if (['superseded', 'owner_stop', 'lifecycle', 'shutdown', 'not_connected'].includes(p.reason)) return;
+    this.ownerIntent = { goalId: p.intentId, instruction: clip(p.instruction, 400), state: 'blocked', reason: p.reason, detail: clip(p.detail, 300), sinceMs: this.deps.clock.now(), requiresOwnerDecision: true };
+    this.deps.record({ type: 'autonomy_owner_intent', goalId: p.intentId, state: 'blocked', reason: p.reason, preparation: true });
+    if (!this.deps.engine.activeSource) this.schedule(0, `owner instruction ${p.reason}`);
   }
 
   onGoalTerminal(end: GoalTerminalEvent): void {
@@ -495,7 +507,8 @@ export class AutonomySupervisor {
         autonomyAllowed: !engine.latch.paused && this.mayRun(),
         active: this.activeFacts(engine),
         ownerIntentPending: this.ownerIntentPending(engine),
-        goalLimits: { ...this.deps.goalLimits },
+        ownerIntentInterrupted: this.ownerIntent?.state === 'interrupted',
+        goalLimits: { ...this.deps.goalLimits, plannerTurns: Math.min(this.deps.goalLimits.plannerTurns, this.plannerTurnsLeft()) },
       });
     } catch (error) {
       this.deps.record({ type: 'autonomy_survival_assess_error', message: error instanceof Error ? error.message : String(error) });
@@ -613,7 +626,7 @@ export class AutonomySupervisor {
       avoid,
       session: {
         automaticGoalsLeft: Math.max(0, source.kind === 'support' ? limits.maxSupportGoals - this.session.supportGoals : limits.maxProgressionGoals - this.session.progressionGoals),
-        plannerTurnsLeft: Math.max(0, limits.maxPlannerTurns - this.session.plannerTurns),
+        plannerTurnsLeft: this.plannerTurnsLeft(),
       },
       home: this.deps.home?.() ?? null,
       ...(support ? { support } : {}),
@@ -621,13 +634,31 @@ export class AutonomySupervisor {
     };
   }
 
+  /** Planner turns left in this run's automatic allowance (never replenished by resume, death or a new milestone). */
+  private plannerTurnsLeft(): number {
+    return Math.max(0, this.deps.config.session.maxPlannerTurns - this.session.plannerTurns);
+  }
+
+  /** MB-FLOW-001-C2: every automatic planner admission is clamped to the remaining session planner turns. */
+  private plannerCeilings(base: GoalCeilings): GoalCeilings | undefined {
+    const left = this.plannerTurnsLeft();
+    if (left <= 0) return undefined;
+    return { ...base, plannerTurns: Math.min(base.plannerTurns, left) };
+  }
+
   private async submitProgression(why: string): Promise<void> {
     const source: GoalSource = { kind: 'progression', sessionAttempt: this.session.progressionGoals + 1 };
+    const ceilings = this.plannerCeilings({ ...this.deps.goalLimits });
+    if (!ceilings) {
+      this.blocker = { code: 'session_allowance_exhausted', detail: `${this.session.plannerTurns}/${this.deps.config.session.maxPlannerTurns} automatic planner turns used this run` };
+      this.setPhase('exhausted', `no automatic planner turns are left this run (${this.blocker.detail}); owner instructions still work`);
+      return;
+    }
     const context = this.context(source, `no owner instruction is pending (${why})`);
     this.submitting = true;
     this.setPhase('assessing', `starting automatic progression assessment ${source.sessionAttempt}`);
     try {
-      const r = await this.deps.engine.submitAutomatic(progressionInstruction(context), source, { context });
+      const r = await this.deps.engine.submitAutomatic(progressionInstruction(context), source, { context, ceilings });
       if (r.status === 'admitted') {
         this.session.progressionGoals += 1;
         this.deps.record({ type: 'autonomy_goal_submitted', goalId: r.goal.id, source, why });
@@ -665,15 +696,25 @@ export class AutonomySupervisor {
       proposalId: proposal.proposalId,
       ...(proposal.episodeId ? { episodeId: proposal.episodeId } : {}),
       execution: proposal.execution.kind,
+      serves: proposal.serves,
       reason: clip(proposal.reason, 200),
       sessionAttempt: this.session.supportGoals + 1,
     };
-    const ceilings: GoalCeilings = {
+    const base: GoalCeilings = {
       plannerTurns: Math.min(proposal.ceilings.plannerTurns, this.deps.goalLimits.plannerTurns),
       tasks: Math.min(proposal.ceilings.tasks, this.deps.goalLimits.tasks),
       replans: Math.min(proposal.ceilings.replans, this.deps.goalLimits.replans),
       deadlineMs: Math.min(proposal.ceilings.deadlineMs, this.deps.goalLimits.deadlineMs),
     };
+    // Planner goals are clamped to the remaining session planner turns (and refused when none remain);
+    // an inference-free code task needs no planner turn and stays bounded by its own ceilings.
+    const ceilings = proposal.execution.kind === 'planner_goal' ? this.plannerCeilings(base) : base;
+    if (!ceilings) {
+      this.blocker = { code: 'session_allowance_exhausted', detail: `${this.session.plannerTurns}/${this.deps.config.session.maxPlannerTurns} automatic planner turns used this run` };
+      this.setPhase('exhausted', `support routine ${proposal.routine} needs planning but no automatic planner turns are left this run`);
+      this.noticeOnce(`I need to ${clip(proposal.reason, 80)}, but the automatic planning allowance for this session is used up.`);
+      return;
+    }
     this.submitting = true;
     this.admittingProposal = proposal;
     this.setPhase('assessing', `starting support routine ${proposal.routine}`);

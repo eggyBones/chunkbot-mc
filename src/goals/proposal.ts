@@ -28,6 +28,7 @@ import {
   type ParameterSpec,
   type PlannerProposal,
   type RegistryFacts,
+  type RouteProposalContext,
   type TargetSelector,
   type TaskSpec,
 } from '../contracts/index.ts';
@@ -69,6 +70,14 @@ export interface ProposalContext {
    * admission). Absent: memory is not installed (memory selectors/predicates rejected).
    */
   memory?: { refs: ReadonlySet<string>; kind: 'executable' | 'prepared' };
+  /** MB-FLOW-001: home construction installed (structure_state evaluable). */
+  structures?: boolean;
+  /** MB-FLOW-003: survival policy installed (survival_state evaluable). */
+  survival?: boolean;
+  /** MB-LOC-001: the goal epoch's route authorization view (route_travel destination validation). */
+  route?: RouteProposalContext;
+  /** Preparation drafts: no goal epoch/route authorization exists yet; route checks run after the real admission. */
+  routeDeferred?: boolean;
 }
 
 const MAX_PROBLEMS = 12;
@@ -202,6 +211,34 @@ class Checker {
       case 'memory_state':
         if (!this.ctx.memory) this.add(`${where}: memory is not installed in this run; memory_state cannot be evaluated`);
         return;
+      case 'structure_state':
+        if (!this.ctx.structures) this.add(`${where}: home construction is not installed in this run (no durable scope or autonomy.home disabled); structure_state cannot be evaluated`);
+        return;
+      case 'survival_state':
+        if (!this.ctx.survival) this.add(`${where}: the survival policy is not installed in this run; survival_state cannot be evaluated`);
+        return;
+    }
+  }
+
+  /** MB-LOC-001: a route_travel task must name a destination the goal's route authorization allows now. */
+  route(t: TaskSpec, where: string): void {
+    if (!t.allowedCapabilities.includes('route_travel') || this.ctx.routeDeferred) return;
+    const r = this.ctx.route;
+    if (!r || !r.authorized) {
+      this.add(`${where}: route_travel is not authorized for this goal (no code-owned route authorization; travel stays inside the admission radius)`);
+      return;
+    }
+    const p = t.parameters as Record<string, unknown>;
+    if (p['destination'] === 'own_death') {
+      if (!r.destinations.includes('own_death')) this.add(`${where}.parameters.destination: own_death is not an authorized route destination for this goal`);
+      else if (!r.ownDeathAvailable) this.add(`${where}.parameters.destination: no code-owned own-death destination is available in this dimension`);
+    }
+    const target = p['target'];
+    const typed = (target && typeof target === 'object' && (target as Record<string, unknown>)['kind'] === 'destination') || t.targetSelectors.some((s) => s.kind === 'owner_destination');
+    if (typed && !r.destinations.includes('owner_destination')) this.add(`${where}: owner-typed destinations are not authorized route destinations for this goal`);
+    if (target && typeof target === 'object' && (target as Record<string, unknown>)['kind'] === 'destination') {
+      const d = target as { dimension?: unknown; x?: unknown; y?: unknown; z?: unknown };
+      if (typeof d.x === 'number' && typeof d.y === 'number' && typeof d.z === 'number' && typeof d.dimension === 'string') this.destination(d.dimension, { x: d.x, y: d.y, z: d.z }, `${where}.parameters.target`);
     }
   }
 
@@ -330,6 +367,7 @@ export function checkProposal(raw: unknown, registry: CapabilityRegistry, limits
     c.predicate(t.completion, `${where}.completion`);
     const declared = catalogParams(catalog, t.allowedCapabilities);
     for (const [name, value] of Object.entries(t.parameters)) c.parameter(name, value, declared.get(name), `${where}.parameters.${name}`);
+    c.route(t, where);
   });
   if (c.problems.length > 0) return { ok: false, kind: 'reference', problems: c.problems };
 
