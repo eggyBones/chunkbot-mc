@@ -117,3 +117,22 @@ describe('MB-LOC-001-C4 declared footprint, flat baseline and restoration', () =
     assert.ok(/throw new Error\(`scene restoration not verified/.test(runBody), 'restoration is re-verified, not assumed');
   });
 });
+
+describe('MB-LOC-001-C5 negative-scene geometry', () => {
+  it('the bot starts west of every obstacle, the owner on intact ground, the drop is a platform inside the scene (bedrock never removed)', () => {
+    const F = harness.LOCATOR_FOOTPRINT;
+    const t = harness.TELEPORTS;
+    const obstaclesFrom = F.scene.x1 + 3;
+    assert.ok(Math.floor(t['sceneBot']!.x) < obstaclesFrom, 'bot west of the lava/wall bands');
+    assert.ok(Math.floor(t['sceneOwner']!.x) > F.scene.x1 + 12, 'owner east of the widest band');
+    const pf = harness.SCENE_PLATFORM;
+    assert.ok(harness.insideBox(F.scene, { x: pf.x1, y: pf.y1, z: pf.z1 }) && harness.insideBox(F.scene, { x: pf.x2, y: pf.y2, z: pf.z2 }));
+    assert.ok(pf.y1 > -61, 'the platform is built on top of the ground; no layer below it is removed');
+    const p = t['scenePlatform']!;
+    assert.ok(Math.floor(p.x) >= pf.x1 && Math.floor(p.x) <= pf.x2 && p.y === pf.y2 + 1, 'bot stands on the platform top');
+    assert.ok(pf.y2 + 1 - (-60) > 3, 'the drop is deeper than 3 blocks');
+    const code = source.split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+    assert.ok(!/-64 \$\{sc\.z1\}[^`]*air/.test(code) && !/fill \$\{sc\.x1 \+ 3\} -64/.test(code), 'no scene setup removes the bedrock layer');
+    assert.ok(/no obstacle contact, damage or death/.test(code), 'contact/damage/death are monitored for every scene');
+  });
+});
