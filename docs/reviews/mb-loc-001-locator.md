@@ -1,6 +1,6 @@
 # MB-LOC-001 — Locator-assisted following: worker handoff evidence
 
-Worker: native Claude Opus 5.5 (local DSH), branch `chunkbot/mb-loc-001`, base `f05628f`. Status: **new modules, contracts, tests and gate harness implemented and verified offline. Pre-integration 26.2 module gates G1/G2/G3/G5 passed 19/19 under lease `batch002-locator-262-gates-01`.** Shared-hook integration (H1–H6), 26.1.2 sanity, root gates and real Codex/Jev L7 are pending. No provider call has been made. Not accepted.
+Worker: native Claude Opus 5.5 (local DSH), branch `chunkbot/mb-loc-001`, base `f05628f`. Status: **new modules, contracts, tests and gate harness implemented and verified offline. Pre-integration module gates G1/G2/G3/G5 passed 19/19 on 26.2 (`batch002-locator-262-gates-01`) and 26.1.2 (`batch002-locator-261-gates-01`); the C5 observed-geometry label fix (`2fb02f6`) awaits a focused G5 rerun.** Shared-hook integration (H1–H6), ordinary-follow regression, root gates and real Codex/Jev L7 are pending. No provider call has been made. Not accepted.
 
 ## Commits
 
@@ -233,3 +233,62 @@ Run conditions:
 - This is pre-integration module evidence. The harness composes the real connection, perception, executor and lease, with the locator attached late (pre-H1).
 - The route runner's explicit bounds prove only its own movement. The production all-skill guard needs H2 `effectiveTravel`.
 - Still open: 26.1.2 broadcast sanity plus an ordinary-follow regression, root gates after H1–H6, and real Codex/Jev L7.
+
+## 26.1.2 broadcast sanity and module gates (lease `batch002-locator-261-gates-01`)
+
+Run from frozen `7b28c90` (HEAD `57ac58d` differs only in this document); default 26.1.2 fixture (127.0.0.1:25566, view-distance 6). Rules approval `batch002-locator-261-rules-01`, scene approval `batch002-locator-261-scene-01`.
+
+```
+node scripts/locator-live-check.ts --fixture-lease batch002-locator-261-gates-01 --gates g1,g2,g3,g5 --approve-rules batch002-locator-261-rules-01 --approve-scene batch002-locator-261-scene-01
+```
+
+**Result:** exit **0**, **19/19**. Report: `var/live-check/2026-10-07T02-22-35-525Z-locator/report.json`.
+
+- **Codec:** 26.1.2 codec verified.
+- **Variants:** the same official-rule variants were observed from server positions — 40 east block position, 200 south chunk, 400 west azimuth, north-east block position, above block position.
+- **Withdrawals:** guest attributed as another player; crouch, invisibility, pumpkin and logout withdrawn and restored; dimension changes voided statements.
+- **G2:** `locator_bar` and range behaviour matched 26.2.
+- **G3:** two legs, 206.2 of 1024 route blocks, server distance 2.2.
+- **G5:** lava detour, `wall`, `cliff_drop`; no contact, damage or death.
+- **Packets:** 44.
+- **Cleanup:** `restoreFailures` empty, every restore verified, all fake players disconnected, no harness process remaining.
+
+This is broadcast and module evidence only. The **ordinary-follow regression** (`npm run skills-live-check`, unchanged `follow_entity`/`move_near` code) was NOT run by this worker; it needs its own lease.
+
+## Report index
+
+| Report | Fixture | Source | Exit | Status |
+| --- | --- | --- | --- | --- |
+| `var/live-check/2026-10-07T02-11-21-880Z-26.2-locator` | 26.2 | `fef8ed3` | 1 (18/19) | **Original, retained.** G5 invalid (C5 geometry); the wall label there was `no_safe_frontier`. |
+| `var/live-check/2026-10-07T02-15-17-487Z-26.2-locator` | 26.2 | `bce707f` | 1 (13/19) | G5 valid; G1 oracle unproven (C6). |
+| `var/live-check/2026-10-07T02-19-17-753Z-26.2-locator` | 26.2 | `7b28c90` | 0 (19/19) | Module gates passed. |
+| `var/live-check/2026-10-07T02-22-35-525Z-locator` | 26.1.2 | `7b28c90` | 0 (19/19) | Module gates passed. |
+
+## MB-LOC-001-C5: observed-geometry blocker labels (`2fb02f6`, offline only)
+
+**Problem.**
+- Before this fix, `classifyBlocker` named walls and drops from loaded collision geometry along the bearing, which may include terrain the bot never saw.
+- Run 1's wall case was mislabelled `no_safe_frontier`. That run is invalid because the bot was inside the wall.
+
+**Fix.**
+- Every label is derived from voxels in the current line-of-sight observation only:
+  - **wall:** an observed solid voxel at feet and head height;
+  - **cliff_drop:** past the last observed walkable floor, the next observed floor is more than 3 below walk level;
+  - **hazard / water:** observed voxels.
+- The world view is read only for chunk loadedness. A content-read spy test proves no block name or shape is read from it.
+- Columns with nothing observed are labelled `unobserved_terrain`; nothing is invented.
+- The scripted runner sim now records visible faces.
+
+**Checks:** typecheck, build and test all exit 0 (569/569, including 6 new `locator-terrain` tests).
+
+**Not yet live-gated.** The 26.2 lease is released, and the 26.1.2 run above used the earlier classifier (`7b28c90`), which already labelled the fixture wall `wall`. A focused G5 rerun of `2fb02f6`, with the same declared footprint and restoration, needs a new lease.
+
+## Ordinary-follow seam recommendations (for the progression writer; no shared file edited)
+
+1. **Planner guidance (H5).** For owner-following and "come to me" instructions, the maintain/complete task should allow `seek_owner` alongside `follow_entity`/`move_near`. Jev can then switch to locator seeking when the owner leaves sight (`follow_entity` ends `target_lost`), with no planner turn. `seek_owner`'s resolver already declines (`owner_visible`) whenever the owner is visible inside the bound, so ordinary visible following is unchanged.
+2. **Travel guard (H2).** `follow_entity` and `move_near` check `perception.withinTravel` on every poll. Once `travelBounds()` returns `routes.effectiveTravel(admissionBounds())`, they operate inside a live leg after `seek_owner` begins one. They fall back to the unchanged admission bound as soon as the route is exhausted, expired, blocked or revoked (C2).
+3. **Persistent follow.** Keep `near_target owner` (visible-now) as the maintained predicate. A locator cue never satisfies it. A route leg does not end the persistent task, and route ceilings bound the seeking.
+4. **Loss reporting.** When `seek_owner` reports `no_actionable_hint` or `hint_withdrawn`, surface the hint reason in status/feedback (untracked, expired, disabled, dimension). Do not replay old cues.
+5. **26.1.2 regression.** Run the root `skills-live-check` and ordinary-follow scenarios after integrating H1–H6, so the shared wiring is proven not to alter visible following.
+
+L7 (real Codex/Jev choosing these tasks from the shared catalog) and the production all-skill guard remain undelivered. The module harness's executor runs are not L7 evidence.
