@@ -1,60 +1,240 @@
 # MB-FLOW-001 progression — worker delivery evidence
 
-Worker: native Claude Code (Opus 5.5) progression worker, branch `chunkbot/mb-flow-001`, base `f05628f8d92499a7a8ea847992a8960e51d9300f`.
-Status: **in progress** — shared-port proposals sent to Codex; implementation continuing.
+Worker: native Claude Code (Opus 5.5) progression worker. This worker is also the single writer of existing shared files for batch 002.
 
-## Proposed shared ports (sent to Codex for design approval)
+- Branch: `chunkbot/mb-flow-001`
+- Base: `f05628f8d92499a7a8ea847992a8960e51d9300f`
 
-Source of truth for the types: [`src/contracts/autonomy.ts`](../../src/contracts/autonomy.ts). Everything below is a proposal until Codex approves; progression is the single writer of the existing shared files that apply it.
+**Status: source and harness reviewable; NO live evidence yet.** No fixture lease or provider lease has been granted. No fixture join, RCON, live harness or real inference was run. Every result below is offline: typecheck, build, unit/integration tests and the read-only doctor.
 
-### P1 — Supervisor and goal source (progression-owned)
+Plan: [autonomous-progression-plan.md](../autonomous-progression-plan.md), acceptance criteria A1–A9.
 
-- `AutonomySupervisor` (new `src/autonomy/`) sits above the single `GoalEngine`. It never actuates and never calls a model itself; it decides, by code, *whether* and *what kind* of automatic goal to submit at bounded scheduling points (connection ready/respawn + settle delay, goal terminal, explicit resume, finite cooldown timer). No physics-tick or polling inference.
-- Typed `GoalSource` on every admitted goal: `owner` (optionally `continuationOf` an interrupted owner goal), `progression {sessionAttempt}`, `support {routine, priority: safety|support, serves, reason, episodeId?, sessionAttempt}`. It is code-owned context on `GoalRecord` and the planner request; it is not a goal/task enum and does not change `TaskSpec`.
-- New engine intake `GoalEngine.submitAutomatic(instruction, source, context)` sharing `admit()` with `submit`. It refuses synchronously (no side effects) when: closed, not connected, paused latch set, an active goal/pending instruction exists, an owner admission is in flight, or the source is `owner`. Owner intake always supersedes an in-flight automatic admission (existing intake-generation fencing); an automatic admission can never supersede owner intake.
-- Priority: lifecycle/stop > immediate verified safety > owner intent > support > progression. The supervisor never preempts an active owner goal. A `support`/`safety` need may replace an active *progression* goal; owner instructions use the existing smooth handoff against any automatic goal (the current safe task may continue while the owner instruction is prepared).
+## Design as delivered (coordinator decisions applied)
 
-### P2 — Durable pause latch and scope (progression-owned file, engine hook)
+### Supervisor and admission
 
-- Scope = `autonomy.scope` or, by default, the configured memory scope (`worldProfile`, `worldRevision`, `botProfile`). No scope → mode `scope_blocked`; manual owner goals stay usable.
-- One atomic, fsynced, checksummed control file per scope: `<dataDir>/autonomy/<world>@r<rev>/<bot>/control.json` (+ previous revisions, `O_EXCL` writer lock with pid/start-time liveness, endpoint binding like memory). Corrupt/unreadable/locked → fail closed: `paused`-equivalent `scope_blocked` with the reason; never silently unpaused.
-- Engine latch hooks: `GoalEngine` gains `onLatchChanged(latch)` (called synchronously inside `stop()` before any await and inside `resume()`), and `restoreLatch(latch)` at startup. The supervisor cancels its timers synchronously in the hook and persists asynchronously; status shows `durable: pending|written|failed`.
-- Resume: clears the latch durably, dismisses an unresolved owner intent (explicit owner acknowledgement), then one fresh bounded assessment. Nothing old is replayed; no reconnect/login.
+- **One supervisor, one admission path.** `AutonomySupervisor` (`src/autonomy/supervisor.ts`) sits above the single `GoalEngine` and never actuates.
+  - It schedules only at bounded points: ready/respawn plus a settle delay, goal terminal, explicit resume, and a finite cooldown timer. There is no tick or polling inference.
+  - Automatic goals use `GoalEngine.submitAutomatic` (planner goal) or `submitSupportTask` (survival code task). Both share `admit()` with owner intake (surface `supervisor`).
+  - Every goal carries a typed `GoalSource`: `owner`, `progression {sessionAttempt}`, or `support {routine, priority, proposalId, episodeId?, execution, serves, reason, sessionAttempt}`.
+- **Priority:** lifecycle/stop > safety (`revokeForSafety`, terminal `safety_interrupted`) > owner intent > support > progression.
+  - Owner intake always supersedes automatic work, through smooth handoff against an automatic goal.
+  - Automatic admission never supersedes owner intake (`ownerIntakesInFlight`).
+- **Automatic goal limits.**
+  - Outcomes must be finite.
+  - An automatic clarification ends the goal `cannot_execute`.
+  - Each automatic planner admission is clamped to the remaining session planner turns (C2). Code tasks make no planner turn but do need Jev (spend reservation is checked).
+  - Repeated blocked fingerprints wait for a state change, with backoff.
 
-### P3 — Config / CLI
+### Durable stop latch (C1 semantics)
 
-- `autonomy` config section (`AutonomyConfigSchema`): `enabled` (default true), optional `scope`, `dir`, `rebindEndpoint`, `startDelayMs` 5 s, `afterCompletionMs` 3 s, `afterBlockedMs` 60 s doubling to `maxBackoffMs` 15 min, `session` limits (16 progression goals, 16 support goals, 200 automatic planner turns per run, 3 consecutive unproductive goals, 2 attempts per blocked fingerprint), `home` (`enabled`, `interior` 3, `maxSiteDistance` 16).
-- `run --no-autonomy` suppresses scheduling. `models.planner.mode: "disabled"` (inference-free profiles), `connect-check`, `doctor`, `auth`, diagnostics and all existing harnesses never schedule. Existing harnesses get explicit `--no-autonomy` opt-outs.
+- **Store.** Atomic, fsynced, checksummed `ControlFileStore` revisions with a writer lock and endpoint binding.
+  - The scope is `autonomy.scope` or the memory scope.
+  - Recovery fails closed: the latch is forced paused (`store_recovery`).
+  - `stop` updates the latch synchronously (`onLatchChanged`) and persists it. Status shows `durable pending/written/failed`.
+- **Resume** only clears the latch. A fresh assessment follows; nothing is replayed.
+- **Owner intent.** A blocked or interrupted owner intent, including survival's durable interrupted directive after a restart, holds progression until a NEW owner instruction supersedes it.
+  - Stopping the active owner goal resolves that intent.
+  - There is no continuation API in this release.
+- **C5 scope consistency.** `resolveAutonomyScope` requires `worldProfile`, `worldRevision` and `botProfile` to agree when both scopes exist.
+  - A conflict visibly blocks automatic work (persistence `conflict`; survival is not composed).
+  - Manual goals keep working, and ordinary CLI config is not rejected.
 
-### P4 — Typed low-health exception (survival grants, progression applies)
+### Home (`small_shelter_v1`)
 
-- `LowHealthException {purpose: restore_health|escape, allowedCapabilities, abortAtOrBelowHealth, verified[]}` is attached by code to a `support` goal's admission only when the support policy returns it. `AdmittedTask` carries it; at/below `limits.lowHealth` the task runtime offers only candidates of the intersection of the exception and the task's allowed capabilities, and blocks `low_health` at/below `abortAtOrBelowHealth`. The threshold is unchanged; owner/progression goals never get it; the planner cannot request it.
+- **Blueprint and phases** (`src/autonomy/blueprint.ts`): walls → one temporary aid block → roof → remove own aid → close roof → crafting table, furnace, chest.
+- **Project persistence** (`HomeProjectService`): the project is persisted in the same scope. Checkpoints are only server-confirmed own effects; verification is always a fresh inspection.
+- **`ShelterInspector` truth order (C3):**
+  - a pending or unloaded voxel is unknown;
+  - a fact must agree with the chunk;
+  - cache validity is checked.
+- **Predicate.** `structure_state {home: site_approved | enclosed | complete}` is code-evaluated.
+- **Skills** (`src/skills/construction.ts`): `select_home_site` and `build_home`.
+  - Stand points are `near_cell` (C4); the admitted material is binding.
+  - Own-aid removal needs identity proof. Restart-unproven aid removal stays blocked.
+- **Memory.** A verified complete shelter is recorded in memory. It never overrides an owner-designated home; otherwise it is a separate location labelled `chunkbot shelter`.
 
-### P5 — Survival support port (MB-FLOW-003 implements)
+### Companion integration (canonical ports, cherry-picked)
 
-- `SupportPolicyPort { readiness(); assess(SupportAssessmentInput): SupportNeed | null; onSupportTerminal?(end); status(): SupportStatus | null }`. Pure code from fresh server-backed state; never actuates, admits or calls a model. `SupportNeed {routine, priority, serves, reason, instruction, context? (<= 2,000 chars), episodeId?, fingerprint, lowHealth?}`.
-- The supervisor admits a need as a `support` goal via `submitAutomatic`. Support goals count against the run's session limits plus the policy's own per-episode limits; death/respawn never replenish either.
-- Lifecycle ordering proposal: `ChunkbotApp.onLifecycle` → `engine.endOwnership` synchronous prefix → supervisor `onLifecycle` (sync: cancel timers, record interrupted owner intent) → `SkillRuntime.onLifecycle`: memory (death capture from last-alive evidence) → **survival recorder hook** (sync, reads the same last-alive evidence) → lease/ledger/perception invalidation. After `respawn`/`ready` the supervisor waits `startDelayMs`, then assesses (support first).
+- **Survival:**
+  - `SurvivalPolicyPort` (none / revoke_unsafe / propose / blocked);
+  - `LowHealthAllowancePort` (check → recheck → reserve before both Jev and local dispatch; `consumed` in `finally`);
+  - the `survival_state` predicate;
+  - durable recovery authority behind the owned `recoveryAdmissionBarrier`. The barrier is bounded and abortable, runs only before recovery's planner/task start, and never on revocation or capture; stop stays immediate.
+- **Memory seam:** the canonical string `factDurability(factId)`.
+- **Locator:**
+  - `RouteController.admit/effectiveTravel/proposalContext/revoke` and `LocatorService`;
+  - perception polls `effectiveTravel(RouteAdmissionProof)` every time;
+  - the proposal checker enforces route authorization.
+- **Lifecycle order:**
+  1. engine sync revoke;
+  2. `survival.onLifecycle` capture;
+  3. `memory.onLifecycle(event, deathContext)` returns the fact;
+  4. `survival.linkIncident(captureId, factId)`;
+  5. locator/routes/inspector;
+  6. lease/ledger/perception invalidation.
 
-### P6 — Route-leg port (MB-LOC-001 implements)
+### Planner input (fixed in this delivery, `4a28142`)
 
-- `RouteLegPort { activeLegs(goalEpoch, connectionEpoch, dimension, nowMs): TravelLegBounds[]; status(): RouteStatus | null }`. Perception's `withinTravel`/`travelBounds` admit a position inside the immutable admission bound OR an unexpired leg of the SAME goal epoch, connection epoch and dimension. Legs are authorized only by locator code from fresh safe geometry and owner-verified coarse hints, with route ceilings (legs, distance, elapsed time) enforced in code; goal counters and the admission anchor are never reset or moved. Withdrawn/stale hints authorize nothing.
+The generated output schema had no `structure_state` or `survival_state` variants, and their enum words would have been namespaced. The real planner therefore could not state a home or survival outcome. The prompt also never rendered `autonomy`, `route` or `locator`.
 
-### P7 — Owner intent continuation (R9 / A4)
+Both are fixed:
 
-- The supervisor keeps the latest unresolved owner intent (`active`, `awaiting_answer`, `blocked`, `interrupted`) visible and holds unrelated progression while it is unresolved; support may still run.
-- Code continues an interrupted owner intent (after a death or a low-health support routine) **only** when its accepted outcome is baseline-independent: persistent, or finite with only current-state predicates (`inventory_amount` possess, `equipped`, `near_target`, `block_state`, `container_state`, `structure_state`, `entity_outcome observed_present`). The continuation is admitted as `source {kind: owner, continuationOf}` with the ORIGINAL accepted outcome pre-bound, carried counters and the remaining original deadline. Count/time-baseline outcomes (`inventory_delta`, `collect_additional`, crafting/smelting results, visited locations, defeat, memory writes) stay visibly `interrupted` until the owner decides.
+- **Schema:** each predicate is offered only when its capabilities are in the catalog, and their enum words are not namespaced.
+- **Labelling:** automatic goals are labelled `goal.origin: automatic_progression | automatic_support` with `automaticInstruction`, never as owner words.
+- **Bounded rendering:** the autonomy, route and locator blocks are rendered with bounds. The instructions version is now `gameplay-planner-v4`.
 
-### P8 — Status / dashboard
+### Operator surfaces
 
-- `AutonomyStatus` (whitelisted) is rendered by `status` (terminal + compact chat line) and published in a new optional `directive.autonomy` dashboard section; the existing `directive.survival` seam is filled from `SupportStatus`. Read-only: no controls, no inference, no account refresh.
+- **CLI:** `run --no-autonomy` opts out. Diagnostics, inference-free profiles (`models.planner.mode: "disabled"`) and every existing harness never schedule automatic work.
+- **Status:** status and in-game replies include autonomy, home, survival, route and locator lines.
+- **Replies:** idle stop and resume replies state what the latch means when automatic work is installed.
+- **Doctor and dashboard** (read-only): the dashboard shows an "Automatic work" block, mode labels `automatic_progression` / `automatic_support`, and the support/route/home status.
 
-### P9 — Construction capabilities and `structure_state` predicate (progression-owned)
+## Commits (base..HEAD, oldest first)
 
-- New skill file `src/skills/construction.ts` (the base has no construction file): `select_home_site` approves one small vacant footprint from the current observation (flat natural ground, every footprint ground block visible now, the whole volume air/replaceable, no foreign workstations/containers/doors/beds nearby, inside travel bounds) and records the code-generated `small_shelter_v1` blueprint durably; `build_home` offers only feasible blueprint actions of the earliest incomplete phase (walls → interior construction aid → roof → remove own aid → close the roof → workstations/storage), each a server-confirmed placement at a blueprint position or the removal of the project's own aid block. No demolition, no navigation digging/towering; foreign blocks at blueprint positions block the project with a precise reason.
-- New atomic predicate `{predicate: "structure_state", structure: "home", expect: "site_approved" | "enclosed" | "complete"}` evaluated by code from server block evidence (own confirmed changes on this connection, or visible-now chunk data with no pending prediction) at every blueprint cell; unknown cells make it `unknown`, never satisfied.
-- A verified complete shelter is written to memory as a trusted `verified_skill` `location`/`home` fact (an owner-designated home is never overridden); a selected site alone is never a home.
+The progression-owned and shared-writer commits are listed first. The companion cherry-picks are authorized copies from the survival (MB-FLOW-003) and locator (MB-LOC-001) workers.
 
-## Implementation log
+- `ce214b0` autonomy contracts.
+- `56de4af` C1 contract revision.
+- `ea5903d` engine/task hooks and supervisor.
+- `9a9244d` C2 contract.
+- `8b427af` C2 planner-turn clamp, allowance recheck and route guard.
+- `4dcfc48` home construction modules.
+- `c704ad4` app/CLI composition.
+- `0b48e4c` C3/C4, S311 reserve, survival C4 flags, C5 memory seam and code-task Jev truthfulness.
+- `74cb055` C5 integration (factDurability, barrier, scope).
+- `e6b6698` dashboard/doctor status, `--no-autonomy` opt-outs and config examples.
+- `4a28142` planner wire/prompt fix.
+- `bb3594a` autonomy-live-check and truthful stop/resume replies.
+- (this commit) harness A4/A5 extensions and this review.
 
-(continues below as work lands)
+Companion cherry-picks:
+
+- **Survival:** `1307958`, `6370ed5`, `f0841dc`, `29c6c0a`, `7d63bdb`, `31779ca`, `14577e2`, `80c3995`.
+- **Locator:** `940d7bc`, `2d6d178`, `393148a`, `4bc7ea6`, `97504cf`, `d3a98e3`.
+
+## Changed paths (excluding companion-owned modules)
+
+**Owned (new):**
+
+- `src/autonomy/`: `store`, `control`, `supervisor`, `context`, `blueprint`, `home`, `status-text`, `barrier`, `scope`.
+- `src/contracts/autonomy.ts`.
+- `src/skills/construction.ts`.
+- `scripts/autonomy-live-check.ts`.
+- Tests:
+  - `tests/autonomy-supervisor`, `-allowance`, `-barrier`, `-scope`, `-dashboard`, `-memory-seams`, `-wire`, `-harness-guard`, plus `autonomy-fakes.ts`;
+  - `tests/construction-blueprint`, `tests/construction-inspector`.
+- `config/examples/fixture-autonomy.json`, `fixture-26.2-autonomy.json`.
+- This review.
+
+**Shared (single writer):**
+
+- Contracts: `src/contracts/{goal,states,planner,predicate,index,dashboard,memory}.ts`.
+- Goals and tasks: `src/goals/{goal-engine,proposal}.ts`, `src/tasks/task-runtime.ts`.
+- Perception and execution: `src/perception/perception.ts`, `src/execution/{ledger,predicates}.ts`.
+- Memory: `src/memory/{service,book,world}.ts`.
+- Game and config: `src/game/connection.ts`, `src/config/schema.ts`.
+- App and CLI: `src/app/{app,skill-runtime,doctor}.ts`, `src/cli.ts`.
+- Planner: `src/planner/{wire,prompt}.ts`.
+- Dashboard: `src/dashboard/{directive,publisher,runtime,viewmodel,outcome-text,assets/page}.ts`.
+- Scripts:
+  - `scripts/{live-check,skills-live-check,jev-live-check,planner-live-check,handoff-live-check,compat-live-check}.ts` (`--no-autonomy`);
+  - `scripts/lib/fault-codex.ts` (records structural planner-input metadata only, never content).
+- `tests/app.test.ts`.
+
+The `src/contracts/survival.ts` and `src/contracts/locator.ts` changes are cherry-picked companion contracts.
+
+## Offline checks (Node 24 PATH, run from the worktree root)
+
+| Check | Exit | Result |
+| --- | --- | --- |
+| `npm run typecheck` | 0 | |
+| `npm run build` | 0 | |
+| `npm test` | 1 | 732 tests, 731 pass. The single failure is locator-owned `pre-H2: travelBounds is accepted only when goal-owned AND equal to the route authorization admission anchor` (asserts pre-H2 behavior; Codex/locator own the fix). |
+| `npm run doctor -- --config config/examples/{fixture,fixture-autonomy,fixture-26.2-autonomy,fixture-inference-free,fixture-memory}.json` | 0 each | read-only |
+| `node --test tests/autonomy-harness-guard.test.ts` | 0 | Import-safe. Refuses exit 2 with no lease, an empty lease, an invalid lease, or `--fixture 26.2` alone; creates no output directory. |
+
+## Acceptance status (A1–A9)
+
+| | Offline evidence | Live evidence needed |
+| --- | --- | --- |
+| A1 | Supervisor tests: ready + settle → one progression goal. Disabled/inference-free profiles make zero planner calls. No scheduling-initiated connection. | autonomy-live-check U0/U1; Codex real-provider run |
+| A2 | Generic instruction (no milestone ladder); planner chooses. | Codex real-provider empty vs prepared trials |
+| A3 | Blueprint/inspector/construction tests; `structure_state` reachable on the wire. | autonomy-live-check U4 (scripted planner); Codex real-provider A3 with gathering |
+| A4 | Supervisor tests: owner preempts; completion returns to progression; persistent follow keeps priority; blocked/interrupted intent visible and held. | U2 |
+| A5 | Supervisor test: stop during automatic planning, restart, fresh resume. Timers make no calls. | U3 (stop during an in-flight planner turn, restart, resume); stop during movement/crafting/building in the Codex combined run |
+| A6 | Inspector truth order; checkpoints only from server-confirmed own effects; never-override-owner-home memory test. | U4/U5 (restart, offline damage, fresh inspection repair) |
+| A7 | Provider-not-ready, session clamp, unchanged-state wait, spend/Jev gating tests. | Codex combined run |
+| A8 | Read-only dashboard projection test. | Codex combined acceptance with memory, handoff and dashboard |
+| A9 | Survival integration tests (allowance, code tasks, safety revocation, durable interrupted intent, barrier). The survival gate harness is MB-FLOW-003's. | Survival R-gates plus Codex combined run |
+
+## Live harness (`scripts/autonomy-live-check.ts`) — lease request
+
+**What it drives.** The REAL built CLI `run`, with autonomy enabled. Providers are stand-ins, so no inference happens:
+
+- the planner fault fixture (scripted turns; the real CLI answers only the read-only gate commands; login mode is scripted);
+- loopback Jev, which always picks the first code-ranked option.
+
+This is harness validation, not planner or Jev quality evidence. Each scenario runs only if the previous ones passed.
+
+| Scenario | What it checks |
+| --- | --- |
+| U0 | An operator stop before the first assessment latches; no automatic goal starts while paused. |
+| U1 | Resume → fresh assessment → progression admitted on the `supervisor` surface with a `progression` source. The planner input is labelled automatic and carries autonomy context. The outcome is code-verified, and the log is confirmed over RCON. |
+| U2 | An owner instruction during an automatic task replaces it; no automatic task runs after the switch. The owner goal completes, and progression returns. |
+| U3 | An owner stop during an in-flight automatic planner turn cancels it. The latch is durable on disk (read-only store inspection between processes) and is restored at restart with no automatic goal. Resume starts a fresh assessment. |
+| U4 | The automatic goal approves a site and builds `small_shelter_v1` (interior 2, cobblestone plus table, furnace and chest). `structure_state complete` is verified by code. Every blueprint cell is confirmed by `execute if block`, the status shows the home complete, and the project is on disk. |
+| U5 | The verified home is in memory (read-only inspection). A wall block is removed while the bot is offline (recorded intervention). After restart, the planner sees the stored historical state; `build_home` inspects afresh and re-places the cell; code re-verifies; RCON confirms. |
+
+**Safety.**
+
+- The script refuses before any password read, RCON call, join, config write or output.
+- It uses an independent data directory under the report directory, with a fresh scope per run.
+- It records the source freeze: HEAD, dirty count, and the `dist/cli.js` sha256 and mtime.
+- Every setup command and intervention is recorded.
+- It never signals anything except its own child CLI process, and only after `/quit` has failed for 20 s.
+
+**Footprint:**
+
+- Area: x 196..224, z 190..224, y -63..-50 (the existing scene area). It is reset to flat grass with one oak trunk at 208,-60..-58,202, and forceloaded like the other scene harnesses.
+- Inventories: Chunkbot's and FixtureOwner's. Chunkbot gets 8 bread (above the default safe-food reserve), then 64 cobblestone, a crafting table, a furnace and a chest.
+- Teleports: Chunkbot and FixtureOwner, inside the area.
+- No difficulty, gamerule or time change.
+
+**Requested:** an exclusive driver lease on the 26.1.2 fixture (`127.0.0.1:25566` / RCON 25576), then optionally on 26.2. No provider lease is needed; there is no inference.
+
+Commands (build first; never rebuild while it runs):
+
+```sh
+npm run build
+npm run fixture -- status
+node scripts/autonomy-live-check.ts --fixture-lease <granted id>
+# optional, with the 26.2 fixture leased:
+node scripts/autonomy-live-check.ts --fixture-lease <granted id> --fixture 26.2
+```
+
+The report is written to `var/live-check/<stamp>[-26.2]-autonomy/report.json`. It includes the results, setup, interventions, per-run admissions by source, planner-input metadata and Jev call count.
+
+## Known gaps / notes for Codex
+
+- **Live evidence.** All live and real-provider evidence is pending a lease: A2, A3 with gathering, A5 stop during movement/crafting/building, A7, A8 and the combined run.
+- **Memory acceptance.** `config/examples/fixture-memory.json` has a memory scope, so a normal `run` with it now starts automatic progression (`autonomy.enabled` defaults to true). Memory CLI acceptance that wants isolation should pass `run --no-autonomy`.
+- **Catalog.** The locator is composed by default, so the catalog has 22 capabilities in the fixture profiles.
+- **Aid removal.** Restart-unproven own-aid removal stays blocked (strict identity). An aid left by an interrupted build is reported as a partial effect and needs a fresh decision.
+- **Stop semantics** are as approved (C1).
+- **Harness limitation.** The harness's Jev stand-in picks the first code-ranked option. A build that needs non-first choices would show up as a harness failure, not as a Jev quality result.
+
+## Proposed AGENTS.md / README.md additions (for Codex; not edited by this worker)
+
+- **Required checks table, new row.** "Autonomy supervisor, durable latch, home construction, `src/autonomy/`, construction skills or the autonomy planner seams" → run `npm run build && node scripts/autonomy-live-check.ts --fixture-lease <granted id>` with the fixture running and exclusively leased. It uses a scripted planner and loopback Jev, with no inference. Real acceptance is the A3/combined run with real Codex and Jev.
+- **Runtime constraints:**
+  - a normal `run` starts automatic progression when a durable scope exists;
+  - `run --no-autonomy` opts out;
+  - the inference-free profiles and all diagnostics never schedule;
+  - the autonomy state lives in `<dataDir>/autonomy/<world>/r<rev>/<bot>/`.
+- **README operator guide:**
+  - `stop` pauses automatic work durably (across restarts);
+  - bare `resume` clears only the latch and starts a fresh assessment;
+  - a blocked owner instruction holds progression until a new instruction;
+  - config examples `config/examples/fixture-autonomy.json` and `fixture-26.2-autonomy.json`.
