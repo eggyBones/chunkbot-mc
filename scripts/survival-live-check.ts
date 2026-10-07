@@ -28,13 +28,18 @@
 //   G3  food/health on Easy: hunger -> eat_safe_food raises server food;
 //       low health -> allowance check/recheck + eat; rest regenerates; with
 //       naturalRegeneration=false rest ends no_regeneration   [--with-settings]
+//   G4  R8 bed/spawn MECHANICS ONLY (no routine): using an Overworld bed in the
+//       day through the existing interact_block; RCON respawn data shows
+//       whether the spawn was set; at night ([--with-settings], time restored)
+//       the bed occupancy and whether the night was skipped with the bot as the
+//       only player are recorded (never generalized to multiplayer)
 //
 //   npm run fixture -- status                     (fixture lease required)
 //   node scripts/survival-live-check.ts --fixture-lease <granted id> [--fixture 26.2] [--with-settings]
 //
 // --with-settings authorizes ONLY: difficulty peaceful->easy, gamerule
-// keepInventory and naturalRegeneration; all are read first and restored in
-// `finally`. Scene footprint: x 196..224, z 190..224, y -61..-50 (the existing
+// keepInventory and naturalRegeneration, and (G4) time of day; all are read
+// first and restored in `finally`. Scene footprint: x 196..224, z 190..224, y -61..-50 (the existing
 // skills scene area) plus the bot's own spawnpoint inside it.
 //
 // Report: var/live-check/<stamp>[-26.2]-survival/report.json
@@ -392,9 +397,27 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       check((inc?.regained.find((r) => r.key === 'minecraft:bread')?.count ?? 0) <= 4, 'regained bread never exceeds the missing count');
     });
 
+    await g.gate('G4', 'R8 mechanics: daytime bed use and respawn point (no routine)', async (ev) => {
+      await g.scene();
+      await g.rcon('setblock 208 -60 208 red_bed[facing=south,part=foot]');
+      await g.rcon('setblock 208 -60 209 red_bed[facing=south,part=head]');
+      await g.rcon(`tp ${BOT} 208.5 -60 206.5 0 40`);
+      await sleep(1_500);
+      ev.push(`respawn before: ${(await g.rcon(`data get entity ${BOT} respawn`, false)).slice(0, 200)}`);
+      g.admit(randomIds.next('goal'));
+      const used = await g.act('interact_block', ['minecraft:red_bed'], 15_000);
+      ev.push(`interact_block bed (day): ${used?.status} ${used?.reason ?? ''} ${used?.effect.slice(0, 200)}`);
+      await sleep(1_000);
+      const after = await g.rcon(`data get entity ${BOT} respawn`, false);
+      ev.push(`respawn after: ${after.slice(0, 200)}`);
+      ev.push(`daytime: ${(await g.rcon('time query daytime', false)).slice(0, 80)}`);
+      check(used, 'a bed candidate existed (bed visible and in reach)');
+    });
+
     if (!withSettings) {
       g.skip('G1k', 'keepInventory death retains inventory (no trip)', 'requires --with-settings (gamerule keepInventory)');
       g.skip('G3', 'food/health on Easy, allowance, rest/no-regeneration', 'requires --with-settings (difficulty, naturalRegeneration)');
+      g.skip('G4n', 'R8 mechanics: night sleep with the bot as only player', 'requires --with-settings (time of day)');
     } else {
       const difficulty = /The difficulty is (\w+)/.exec(await g.rcon('difficulty'))?.[1]?.toLowerCase() ?? 'peaceful';
       const keep = /currently set to: (\w+)/.exec(await g.rcon('gamerule keepInventory'))?.[1] ?? 'false';
@@ -468,6 +491,26 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         ev.push(`rest (regen off): ${noRegen?.status} ${noRegen?.reason ?? ''} ${noRegen?.effect.slice(0, 160)}`);
         await g.rcon(`gamerule naturalRegeneration ${regen}`);
         check(noRegen?.status === 'failed' && noRegen.reason === 'no_regeneration', 'no regeneration ends honestly');
+      });
+
+      await g.gate('G4n', 'R8 mechanics: night sleep with the bot as the only player (recorded, not generalized)', async (ev) => {
+        const day = /The time is (\d+)/.exec(await g.rcon('time query daytime'))?.[1];
+        if (day) restore.push(`time set ${day}`);
+        await g.rcon(`difficulty ${difficulty}`); // no hostile spawns needed for this observation
+        await g.scene();
+        await g.rcon('setblock 208 -60 208 red_bed[facing=south,part=foot]');
+        await g.rcon('setblock 208 -60 209 red_bed[facing=south,part=head]');
+        await g.rcon('time set 13000');
+        await g.rcon(`tp ${BOT} 208.5 -60 206.5 0 40`);
+        await sleep(1_500);
+        g.admit(randomIds.next('goal'));
+        const used = await g.act('interact_block', ['minecraft:red_bed'], 15_000);
+        ev.push(`interact_block bed (night): ${used?.status} ${used?.reason ?? ''} ${used?.effect.slice(0, 200)}`);
+        await sleep(6_000);
+        ev.push(`bed block: ${(await g.rcon('execute if block 208 -60 208 red_bed[occupied=true]', false)).slice(0, 80)}`);
+        ev.push(`daytime after ~6s: ${(await g.rcon('time query daytime', false)).slice(0, 80)}`);
+        ev.push(`players online: ${(await g.rcon('list', false)).slice(0, 120)}`);
+        check(used, 'a bed candidate existed at night');
       });
     }
   } finally {

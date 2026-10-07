@@ -84,7 +84,7 @@ No existing file was edited.
 | R5 | Offline: pause, owner priority, stale admission and terminal callbacks, lifecycle clearing of pending proposals and allowances. Still needed: real stop races through the integrated supervisor. |
 | R6 | Offline: thresholds, safe-food selection, all allowance bindings, regeneration requirements. Live server food and health rise needs the G3 gate with authorized settings. |
 | R7 | Offline: worn-tool proposal, armor code task, designated storage only, resupply cooldown. Planner-selected replacement execution comes after integration. |
-| R8 | **Not delivered:** gated. No bed/spawn skill until the mechanics gate is authorized and passes. |
+| R8 | **Not delivered:** gated. The G4/G4n mechanics observations are in the harness; no bed/spawn routine or skill until that gate passes and the routine is approved. |
 | R9 | Delivered as explicit interrupted state (no continuation, per C1). Integrated behavior pending. |
 | R10 | Offline: fake clocks, repeated deaths, unchanged blockers, admission cap, episode ceilings. A combined real fixture trial is Codex acceptance after integration. |
 
@@ -107,13 +107,14 @@ No existing file was edited.
 
 ## Lease request (R-G1/R-G2/R-G3 gate)
 
-- **Frozen source:** commit `c04b10a7a431fabf92a5023ea76f6e6061b06ff7`, clean tree. The harness records `git rev-parse HEAD` and the dirty count, and imports `src` directly, as the memory harness does. No `dist` is needed, and the build won't be cleaned during the run.
+- **Frozen source:** the HEAD reported in the handoff message, clean tree. The harness records `git rev-parse HEAD` and the dirty count, and imports `src` directly, as the memory harness does. No `dist` is needed, and the build won't be cleaned during the run.
 - **Commands:**
   - 26.1.2: `node scripts/survival-live-check.ts --fixture-lease <id> [--with-settings]`
   - 26.2: the same command with `--fixture 26.2`
 - **Scene footprint:** forceload and reset of x 196..224, z 190..224, y −61..−50 (the existing skills scene area).
 - **Bot state changes:** `spawnpoint Chunkbot 205 -60 205`, `clear`, `effect clear`, tp, give (damaged iron pickaxe, bread, cobblestone), `kill Chunkbot`, summoned item entities (dirt, bread) inside the area, `damage Chunkbot`, hunger and saturation effects.
-- **Settings, only with `--with-settings`:** difficulty Peaceful → Easy (needed for real hunger and regeneration on the peaceful fixture), `gamerule keepInventory true`, `gamerule naturalRegeneration false`. All three are read first and restored in `finally`, and every command and reply is recorded in the report.
+- **Settings, only with `--with-settings`:** difficulty Peaceful → Easy (needed for real hunger and regeneration on the peaceful fixture), `gamerule keepInventory true`, `gamerule naturalRegeneration false`, and `time set 13000` for the night bed observation. All are read first and restored in `finally`, and every command and reply is recorded in the report.
+- **Gates:** G1, G2 and G4 (daytime bed use and respawn data, through the existing `interact_block`) need no settings. G1k, G3 and G4n run only with `--with-settings`. G4 and G4n are mechanics observations for R8 only; no bed routine is enabled.
 - **Join:** the offline `Chunkbot` from the inference-free example configs. No model calls.
 - **Report:** `var/live-check/<stamp>[-26.2]-survival/report.json`.
 
