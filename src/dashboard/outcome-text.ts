@@ -78,7 +78,7 @@ export function describePredicate(p: OutcomePredicate): string {
     case 'structure_state':
       return p.expect === 'site_approved' ? 'has an approved site for its home (not built yet)' : p.expect === 'enclosed' ? 'has a home with walls, roof and entrance confirmed' : 'has a finished home: walls, roof, entrance, crafting table, furnace and chest confirmed';
     case 'survival_state':
-      return `${p.expect === 'concluded' ? 'has concluded' : 'has satisfied'} its ${p.routine.replace(/_/g, ' ')} routine`;
+      return `${p.expect === 'concluded' ? 'has concluded' : p.expect === 'recovered' ? 'has recovered what it lost in' : 'has satisfied'} its ${p.routine.replace(/_/g, ' ')} routine`;
     case 'all':
       return join(p.of, 'and');
     case 'any':
