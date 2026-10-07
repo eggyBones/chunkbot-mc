@@ -33,10 +33,21 @@
 //   node scripts/locator-live-check.ts --fixture-lease <id> --fixture 26.2 [--gates g1,g2,g3,g5] [--approve-rules <id>] [--approve-scene <id>]
 //   node scripts/locator-live-check.ts --fixture-lease <id> --gates g1   (26.1.2 broadcast sanity)
 //
-// Footprint (declared; request before running G3/G5): players are teleported
-// within x 1000..1420, z 960..1060 at the flat-world standing level y=-60
-// (G3: no block writes). G5 fills ONLY x 1000..1040, z 1100..1140, y -64..-50
-// and restores grass/air there afterwards.
+// Footprint (MB-LOC-001-C4; every bound is declared in LOCATOR_FOOTPRINT and
+// enforced before any RCON teleport/fill):
+//   overworldTeleports  every player teleport destination: x 600..1301,
+//                       y -60..-46, z 958..1201 (named in TELEPORTS)
+//   netherTeleports     the dimension trip: nether (0.5, 128, 0.5) on the
+//                       bedrock roof, x 0..1, y 128, z 0..1
+//   g3BotEnvelope       G3 seeking aborts if the bot leaves x 900..1400, z 900..1140
+//   scene               G5 writes ONLY x 1000..1040, y -64..-50, z 1100..1140
+//   sceneReference      read-only comparison region x 1060..1100 (same y/z)
+// G3 makes no block writes. G5 first proves the scene equals the dedicated flat
+// baseline (FLAT_BASELINE: official FlatLevelGeneratorSettings.getDefault +
+// scripts/fixture.ts level-type=minecraft:flat; verified at runtime against
+// the untouched reference region and per-layer probes) and refuses to write if
+// it does not; restoration rewrites EVERY layer and re-verifies. Any failed
+// restoration or verification fails the whole report.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -52,13 +63,75 @@ interface Result {
   evidence: string[];
 }
 
-export const LOCATOR_FOOTPRINT = {
-  players: { x1: 1000, x2: 1420, z1: 960, z2: 1060, y: -60 },
-  scene: { x1: 1000, x2: 1040, z1: 1100, z2: 1140, y1: -64, y2: -50 },
-} as const;
+export interface Box {
+  x1: number;
+  x2: number;
+  y1: number;
+  y2: number;
+  z1: number;
+  z2: number;
+}
 
-const BASE = { x: 1000.5, y: -60, z: 1000.5 };
-const SCENE_BASE = { x: 1004.5, y: -60, z: 1120.5 };
+export const LOCATOR_FOOTPRINT = {
+  overworldTeleports: { x1: 600, x2: 1301, y1: -60, y2: -46, z1: 958, z2: 1201 },
+  netherTeleports: { x1: 0, x2: 1, y1: 128, y2: 128, z1: 0, z2: 1 },
+  g3BotEnvelope: { x1: 900, x2: 1400, y1: -64, y2: 320, z1: 900, z2: 1140 },
+  scene: { x1: 1000, x2: 1040, y1: -64, y2: -50, z1: 1100, z2: 1140 },
+  sceneReference: { x1: 1060, x2: 1100, y1: -64, y2: -50, z1: 1100, z2: 1140 },
+} as const satisfies Record<string, Box>;
+
+/**
+ * The dedicated fixture's flat baseline: scripts/fixture.ts writes
+ * level-type=minecraft:flat with no generator settings, so the official
+ * default applies (26.2 jar, FlatLevelGeneratorSettings.getDefault: 1 bedrock,
+ * 2 dirt, 1 grass_block from the minimum build height -64), air above.
+ * Verified at runtime before any write.
+ */
+export const FLAT_BASELINE: ReadonlyArray<{ y: number; block: string }> = [
+  { y: -64, block: 'bedrock' },
+  { y: -63, block: 'dirt' },
+  { y: -62, block: 'dirt' },
+  { y: -61, block: 'grass_block' },
+];
+export const FLAT_AIR_FROM = -60;
+
+export const BASE = { x: 1000.5, y: -60, z: 1000.5 };
+export const SCENE_BASE = { x: 1004.5, y: -60, z: 1120.5 };
+export const NETHER_ROOF = { x: 0.5, y: 128, z: 0.5 };
+
+/** Every overworld teleport destination of the harness (offsets from BASE unless absolute). */
+export const TELEPORTS: Record<string, { x: number; y: number; z: number }> = {
+  base: BASE,
+  ownerStart: { x: BASE.x + 24, y: BASE.y, z: BASE.z },
+  ownerEast40: { x: BASE.x + 40, y: BASE.y, z: BASE.z },
+  ownerSouth200: { x: BASE.x, y: BASE.y, z: BASE.z + 200 },
+  ownerWest400: { x: BASE.x - 400, y: BASE.y, z: BASE.z },
+  ownerNorthEast60: { x: BASE.x + 42, y: BASE.y, z: BASE.z - 42 },
+  ownerAbove: { x: BASE.x + 30, y: BASE.y + 14, z: BASE.z },
+  ownerLevel30: { x: BASE.x + 30, y: BASE.y, z: BASE.z },
+  ownerBack26: { x: BASE.x + 26, y: BASE.y, z: BASE.z },
+  ownerRule28: { x: BASE.x + 28, y: BASE.y, z: BASE.z },
+  ownerRange60: { x: BASE.x + 60, y: BASE.y, z: BASE.z },
+  ownerRange61: { x: BASE.x + 61, y: BASE.y, z: BASE.z },
+  ownerRange62: { x: BASE.x + 62, y: BASE.y, z: BASE.z },
+  ownerG3: { x: BASE.x + 300, y: BASE.y, z: BASE.z + 40 },
+  guestWest30: { x: BASE.x - 30, y: BASE.y, z: BASE.z },
+  sceneBot: SCENE_BASE,
+  sceneOwner: { x: SCENE_BASE.x + 34, y: SCENE_BASE.y, z: SCENE_BASE.z },
+};
+
+export function insideBox(b: Box, p: { x: number; y: number; z: number }): boolean {
+  return p.x >= b.x1 && p.x <= b.x2 + 1 && p.y >= b.y1 && p.y <= b.y2 && p.z >= b.z1 && p.z <= b.z2 + 1;
+}
+
+/** Restoration commands for every layer of a box over the flat baseline (bottom up). */
+export function baselineRestoreCommands(b: Box): string[] {
+  const out: string[] = [];
+  for (const layer of FLAT_BASELINE) if (layer.y >= b.y1 && layer.y <= b.y2) out.push(`fill ${b.x1} ${layer.y} ${b.z1} ${b.x2} ${layer.y} ${b.z2} ${layer.block}`);
+  const airFrom = Math.max(b.y1, FLAT_AIR_FROM);
+  if (airFrom <= b.y2) out.push(`fill ${b.x1} ${airFrom} ${b.z1} ${b.x2} ${b.y2} ${b.z2} air`);
+  return out;
+}
 
 function argOf(argv: readonly string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -200,10 +273,37 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   };
 
   const restores: Array<{ label: string; fn: () => Promise<unknown> }> = [];
+  const restoreFailures: string[] = [];
   let owner: Awaited<ReturnType<typeof fixturePlayer>> | undefined;
   let guest: Awaited<ReturnType<typeof fixturePlayer>> | undefined;
-  const ownerAt = async (dx: number, dy: number, dz: number) => {
-    await rcon(`tp ${OWNER} ${BASE.x + dx} ${BASE.y + dy} ${BASE.z + dz}`);
+  /** The ONLY teleport path: declared destination, checked against the declared footprint before any RCON. */
+  const tp = async (player: string, key: keyof typeof TELEPORTS | 'netherRoof', extra = '') => {
+    if (key === 'netherRoof') {
+      assert(insideBox(LOCATOR_FOOTPRINT.netherTeleports, NETHER_ROOF), 'nether destination outside the declared footprint');
+      await rcon(`execute in minecraft:the_nether run tp ${player} ${NETHER_ROOF.x} ${NETHER_ROOF.y} ${NETHER_ROOF.z}`);
+      return;
+    }
+    const at = TELEPORTS[key];
+    assert(at && insideBox(LOCATOR_FOOTPRINT.overworldTeleports, at), `teleport ${String(key)} outside the declared footprint`);
+    await rcon(`execute in minecraft:overworld run tp ${player} ${at.x} ${at.y} ${at.z}${extra}`);
+  };
+  const ownerAt = (key: keyof typeof TELEPORTS) => tp(OWNER, key);
+  /** Region equality with the untouched read-only reference region (execute if blocks). */
+  const sceneEqualsReference = async () => {
+    const sc = LOCATOR_FOOTPRINT.scene;
+    const ref = LOCATOR_FOOTPRINT.sceneReference;
+    const r = await rcon(`execute if blocks ${sc.x1} ${sc.y1} ${sc.z1} ${sc.x2} ${sc.y2} ${sc.z2} ${ref.x1} ${ref.y1} ${ref.z1} all`);
+    return /passed/i.test(r);
+  };
+  /** Per-layer probes of the expected flat baseline at three columns of a box. */
+  const layersMatchBaseline = async (b: Box) => {
+    const columns = [[b.x1, b.z1], [Math.floor((b.x1 + b.x2) / 2), Math.floor((b.z1 + b.z2) / 2)], [b.x2, b.z2]] as const;
+    const misses: string[] = [];
+    for (const [x, z] of columns) {
+      for (const layer of FLAT_BASELINE) if (!/passed/i.test(await rcon(`execute if block ${x} ${layer.y} ${z} minecraft:${layer.block}`))) misses.push(`${layer.block}@y${layer.y}`);
+      for (const y of [FLAT_AIR_FROM, b.y2]) if (!/passed/i.test(await rcon(`execute if block ${x} ${y} ${z} minecraft:air`))) misses.push(`air@y${y}`);
+    }
+    return misses;
   };
   const hint = () => locator.ownerHint();
 
@@ -223,11 +323,11 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     locator.attach(client, session.connectionEpoch, true);
     tapPackets(client);
     routes.attachMovement(session, () => epoch);
-    await rcon(`tp ${BOT} ${BASE.x} ${BASE.y} ${BASE.z} -90 0`);
+    await tp(BOT, 'base', ' -90 0');
     owner = await fixturePlayer(OWNER);
     restores.push({ label: 'owner effects/head/sneak cleared', fn: async () => { owner?.setControlState('sneak', false); await rcon(`effect clear ${OWNER}`); await rcon(`item replace entity ${OWNER} armor.head with air`); } });
     await sleep(1_500);
-    await ownerAt(24, 0, 0);
+    await ownerAt('ownerStart');
     await sleep(1_500);
 
     if (gates.has('g1')) {
@@ -240,15 +340,17 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         assert(h.actionable, `owner hint actionable (${h.note})`);
       });
 
-      for (const [label, dx, dz, expect] of [
-        ['east 40 (owner chunk in view distance)', 40, 0, 'vec3i'],
-        [`south 200 (beyond view distance ${viewDistance})`, 0, 200, 'chunk'],
-        ['west 400 (beyond 332)', -400, 0, 'azimuth'],
-        ['north_east 60', 42, -42, 'vec3i'],
+      for (const [label, key, expect] of [
+        ['east 40 (owner chunk in view distance)', 'ownerEast40', 'vec3i'],
+        [`south 200 (beyond view distance ${viewDistance})`, 'ownerSouth200', 'chunk'],
+        ['west 400 (beyond 332)', 'ownerWest400', 'azimuth'],
+        ['north_east 60', 'ownerNorthEast60', 'vec3i'],
       ] as const) {
+        const dx = TELEPORTS[key]!.x - BASE.x;
+        const dz = TELEPORTS[key]!.z - BASE.z;
         await check(`G1-${label.split(' ')[0]}-${expect}`, `variant and coarse cue for owner offset ${label}`, async (ev) => {
           const t0 = Date.now();
-          await ownerAt(dx, 0, dz);
+          await ownerAt(key);
           const p = await waitOwner(t0, (x) => x.variant === expect);
           ev.push(`owner statements since move: ${sinceOwner(t0).map((x) => `${x.op}:${x.variant}`).join(', ') || 'none'}`);
           assert(p, `a ${expect} statement for the owner`);
@@ -265,20 +367,20 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       await check('G1-above', 'block precision states height (owner above, slow falling)', async (ev) => {
         const t0 = Date.now();
         await rcon(`effect give ${OWNER} slow_falling 10 0 true`);
-        await ownerAt(30, 14, 0);
+        await ownerAt('ownerAbove');
         await waitOwner(t0, (x) => x.variant === 'vec3i');
         await sleep(300);
         const h = hint();
         ev.push(`cue ${h.direction} ${h.elevation}`);
         assert(h.elevation === 'above', 'above');
         await rcon(`effect clear ${OWNER}`);
-        await ownerAt(30, 0, 0);
+        await ownerAt('ownerLevel30');
       });
 
       await check('G1-guest', 'a second player is tracked but never the owner', async (ev) => {
         guest = await fixturePlayer('FixtureGuest');
         guestUuid = offlinePlayerUuid('FixtureGuest');
-        await rcon(`tp FixtureGuest ${BASE.x - 30} ${BASE.y} ${BASE.z}`);
+        await tp('FixtureGuest', 'guestWest30');
         await sleep(1_500);
         const st = locator.status();
         ev.push(`others tracked ${st.counters.otherTracked}; guest statements ${packets.filter((p) => p.who === 'guest').length}`);
@@ -315,7 +417,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         ev.push(`after logout: ${u ? 'untrack' : 'none'}; hint ${hint().reason}`);
         assert(!hint().actionable, 'no direction after logout');
         owner = await fixturePlayer(OWNER);
-        await ownerAt(24, 0, 0);
+        await ownerAt('ownerStart');
         const t = await waitOwner(t0, (x) => x.op === 'track', 6_000);
         await sleep(300);
         ev.push(`after rejoin: ${t ? `track ${t.variant}` : 'none'}; hint ${hint().reason}`);
@@ -324,22 +426,22 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
 
       await check('G1-dimension', 'owner dimension change withdraws; Chunkbot dimension change voids statements', async (ev) => {
         const t0 = Date.now();
-        await rcon(`execute in minecraft:the_nether run tp ${OWNER} 0 80 0`);
+        await tp(OWNER, 'netherRoof');
         const u = await waitOwner(t0, (x) => x.op === 'untrack', 6_000);
         await sleep(300);
         ev.push(`owner to nether: ${u ? 'untrack' : 'none'}; hint ${hint().reason}`);
         assert(!hint().actionable, 'withdrawn');
-        await rcon(`execute in minecraft:overworld run tp ${OWNER} ${BASE.x + 24} ${BASE.y} ${BASE.z}`);
+        await ownerAt('ownerStart');
         await waitOwner(t0, (x) => x.op === 'track', 6_000);
         await sleep(500);
         assert(hint().actionable, 'restored in the overworld');
-        await rcon(`execute in minecraft:the_nether run tp ${BOT} 0 80 0`);
+        await tp(BOT, 'netherRoof');
         await sleep(3_000);
         ev.push(`Chunkbot in ${game.session()?.bot.game.dimension}: hint ${hint().reason}`);
         assert(!hint().actionable, 'no overworld cue in the nether');
-        await rcon(`execute in minecraft:overworld run tp ${BOT} ${BASE.x} ${BASE.y} ${BASE.z}`);
+        await tp(BOT, 'base');
         await sleep(3_000);
-        await ownerAt(26, 0, 0);
+        await ownerAt('ownerBack26');
         await sleep(1_000);
         ev.push(`back in the overworld: hint ${hint().reason}`);
       });
@@ -350,7 +452,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       else {
         const original = /(true|false)/.exec(await rcon('gamerule locator_bar'))?.[1] ?? 'true';
         restores.push({ label: `gamerule locator_bar restored to ${original}`, fn: () => rcon(`gamerule locator_bar ${original}`) });
-        restores.push({ label: 'owner/bot waypoint range attributes reset', fn: async () => { await rcon(`attribute ${OWNER} minecraft:waypoint_transmit_range base reset`); await rcon(`attribute ${BOT} minecraft:waypoint_receive_range base reset`); } });
+        restores.push({ label: 'owner waypoint_transmit_range attribute reset', fn: () => rcon(`attribute ${OWNER} minecraft:waypoint_transmit_range base reset`) });
         await check('G2-gamerule', 'locator_bar false withdraws every waypoint; true restores', async (ev) => {
           const t0 = Date.now();
           await rcon('gamerule locator_bar false');
@@ -360,24 +462,24 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
           assert(u && !hint().actionable, 'withdrawn when disabled');
           const t1 = Date.now();
           await rcon(`gamerule locator_bar ${original}`);
-          await ownerAt(28, 0, 0);
+          await ownerAt('ownerRule28');
           const t = await waitOwner(t1, (x) => x.op === 'track', 6_000);
           ev.push(`rule restored: ${t ? 'track' : 'none'}`);
           assert(t, 'restored');
         });
         await check('G2-range', 'transmit range below the distance withdraws (range-limited); reset restores', async (ev) => {
-          await ownerAt(60, 0, 0);
+          await ownerAt('ownerRange60');
           await sleep(500);
           const t0 = Date.now();
           await rcon(`attribute ${OWNER} minecraft:waypoint_transmit_range base set 30`);
-          await ownerAt(61, 0, 0);
+          await ownerAt('ownerRange61');
           const u = await waitOwner(t0, (x) => x.op === 'untrack', 6_000);
           await sleep(300);
           ev.push(`range 30 at 60: ${u ? 'untrack' : 'none'}; hint ${hint().reason}`);
           assert(!hint().actionable, 'range-limited: no direction');
           const t1 = Date.now();
           await rcon(`attribute ${OWNER} minecraft:waypoint_transmit_range base reset`);
-          await ownerAt(62, 0, 0);
+          await ownerAt('ownerRange62');
           assert(await waitOwner(t1, (x) => x.op === 'track', 6_000), 'restored');
         });
       }
@@ -385,8 +487,8 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
 
     if (gates.has('g3')) {
       await check('G3-route', 'owner 300 blocks away: seek_owner through counted legs, reunion by server positions', async (ev) => {
-        await rcon(`tp ${BOT} ${BASE.x} ${BASE.y} ${BASE.z}`);
-        await ownerAt(300, 0, 40);
+        await tp(BOT, 'base');
+        await ownerAt('ownerG3');
         await sleep(2_000);
         epoch += 1;
         const goalId = `goal-loc${epoch}`;
@@ -398,7 +500,18 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         assert(auth, 'route authorized');
         const task = { objective: 'Rejoin the owner.', decisionInstruction: 'Seek the owner.', allowedCapabilities: ['seek_owner'], targetSelectors: [{ kind: 'owner' as const }], parameters: {}, completion: { predicate: 'near_target' as const, target: { kind: 'owner' as const }, within: 3 } };
         let reached = false;
-        for (let window = 0; window < 14 && !reached; window += 1) {
+        // Declared envelope: seeking is aborted (lease revoked) if the bot leaves it.
+        const envelope = new AbortController();
+        let left: string | undefined;
+        const watch = setInterval(() => {
+          const p = game.session()?.bot.entity.position;
+          if (p && !insideBox(LOCATOR_FOOTPRINT.g3BotEnvelope, p) && !left) {
+            left = `bot left the declared G3 envelope at x ${p.x.toFixed(0)}, z ${p.z.toFixed(0)}`;
+            envelope.abort();
+          }
+        }, 250);
+        try {
+        for (let window = 0; window < 14 && !reached && !left; window += 1) {
           const snap = runtime.perception.take(epoch);
           assert(snap, 'observation');
           const set = candidates.generate(task, snap);
@@ -407,12 +520,16 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
             ev.push(`window ${window}: no option (${set.unavailable.map((u) => `${u.capability}:${u.reason}`).join(', ')})`);
             break;
           }
-          const o = await executor.execute(c, new AbortController().signal, { kind: 'goal', goalEpoch: epoch, goalId, taskId: randomIds.next('task') });
+          const o = await executor.execute(c, envelope.signal, { kind: 'goal', goalEpoch: epoch, goalId, taskId: randomIds.next('task') });
           const r = (o.evidence['route'] ?? {}) as Json;
           ev.push(`window ${window}: ${o.status}${o.reason ? ` (${o.reason})` : ''}; legs ${r['legsUsed'] ?? 0}/${r['maxLegs'] ?? '-'}, route blocks ${r['distanceUsed'] ?? 0}`);
           if (o.status === 'succeeded') reached = true;
           else if (!(o.status === 'partial' && o.reason === 'route_window_elapsed')) break;
         }
+        } finally {
+          clearInterval(watch);
+        }
+        assert(!left, left ?? '');
         const [b, w] = [await serverPos(BOT), await serverPos(OWNER)];
         const d = Math.hypot(b.x - w.x, b.y - w.y, b.z - w.z);
         const st = routes.status(epoch)!;
@@ -427,14 +544,31 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       if (!approveScene) skip('G5', 'negative route scenes (lava/wall/drop)', 'not run: requires --approve-scene <coordinator approval id> for the declared footprint');
       else {
         const sc = LOCATOR_FOOTPRINT.scene;
-        restores.push({ label: 'G5 scene restored', fn: async () => { await rcon(`fill ${sc.x1} ${sc.y1 + 3} ${sc.z1} ${sc.x2} ${sc.y2} ${sc.z2} air`); await rcon(`fill ${sc.x1} -61 ${sc.z1} ${sc.x2} -61 ${sc.z2} grass_block`); } });
+        // Players near the scene keep both regions loaded for the comparisons.
+        await tp(BOT, 'sceneBot');
+        await tp(OWNER, 'sceneOwner');
+        await sleep(2_000);
+        const baselineMisses = await layersMatchBaseline(sc);
+        const refMisses = await layersMatchBaseline(LOCATOR_FOOTPRINT.sceneReference);
+        const equal = await sceneEqualsReference();
+        await check('G5-baseline', 'the scene equals the dedicated flat baseline before any write', async (ev) => {
+          ev.push(`scene probe misses: ${baselineMisses.join(', ') || 'none'}; reference probe misses: ${refMisses.join(', ') || 'none'}; scene==reference: ${equal}`);
+          assert(baselineMisses.length === 0 && refMisses.length === 0 && equal, 'baseline proven (nothing was written)');
+        });
+        const restoreScene = async () => {
+          for (const cmd of baselineRestoreCommands(sc)) await rcon(cmd);
+          const misses = await layersMatchBaseline(sc);
+          const same = await sceneEqualsReference();
+          if (misses.length > 0 || !same) throw new Error(`scene restoration not verified (probe misses: ${misses.join(', ') || 'none'}; equals reference: ${same})`);
+        };
+        if (baselineMisses.length === 0 && refMisses.length === 0 && equal) {
+        restores.push({ label: 'G5 scene restored to the flat baseline (every layer) and verified', fn: restoreScene });
         const scenario = async (id: string, title: string, setup: string[], expect: string) =>
           check(id, title, async (ev) => {
-            await rcon(`fill ${sc.x1} ${sc.y1 + 3} ${sc.z1} ${sc.x2} ${sc.y2} ${sc.z2} air`);
-            await rcon(`fill ${sc.x1} -61 ${sc.z1} ${sc.x2} -61 ${sc.z2} grass_block`);
+            await restoreScene();
             for (const cmd of setup) await rcon(cmd);
-            await rcon(`tp ${BOT} ${SCENE_BASE.x} ${SCENE_BASE.y} ${SCENE_BASE.z}`);
-            await rcon(`tp ${OWNER} ${SCENE_BASE.x + 34} ${SCENE_BASE.y} ${SCENE_BASE.z}`);
+            await tp(BOT, 'sceneBot');
+            await tp(OWNER, 'sceneOwner');
             await sleep(2_000);
             epoch += 1;
             const goalId = `goal-locn${epoch}`;
@@ -451,6 +585,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         await scenario('G5-lava', 'lava band across the cue', [`fill ${sc.x1 + 3} -61 ${sc.z1} ${sc.x1 + 12} -61 ${sc.z2} lava`], 'hazard_lava');
         await scenario('G5-wall', 'wall higher than one block across the cue', [`fill ${sc.x1 + 3} -60 ${sc.z1} ${sc.x1 + 4} -54 ${sc.z2} stone`], 'wall');
         await scenario('G5-drop', 'drop deeper than 3 blocks across the cue', [`fill ${sc.x1 + 3} -64 ${sc.z1} ${sc.x2} -61 ${sc.z2} air`], 'cliff_drop');
+        }
       }
     }
   } finally {
@@ -459,7 +594,9 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         await r.fn();
         setupLog.push({ atMs: Date.now(), command: `RESTORE: ${r.label}`, reply: 'ok' });
       } catch (error) {
-        setupLog.push({ atMs: Date.now(), command: `RESTORE FAILED: ${r.label}`, reply: error instanceof Error ? error.message.slice(0, 200) : String(error) });
+        const why = error instanceof Error ? error.message.slice(0, 200) : String(error);
+        restoreFailures.push(`${r.label}: ${why}`);
+        setupLog.push({ atMs: Date.now(), command: `RESTORE FAILED: ${r.label}`, reply: why });
       }
     }
     owner?.quit();
@@ -468,11 +605,13 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   }
 
   const counted = results.filter((r) => r.pass !== 'skipped');
-  const pass = counted.length > 0 && counted.every((r) => r.pass === true);
+  // A failed restoration fails the whole report (never just a warning).
+  if (restoreFailures.length > 0) results.push({ id: 'RESTORE', title: 'every fixture change restored and verified', pass: false, evidence: restoreFailures });
+  const pass = counted.length > 0 && counted.every((r) => r.pass === true) && restoreFailures.length === 0;
   const locatorEvents = store.events.filter((e) => String(e.type).startsWith('locator_') || String(e.type).startsWith('route_')).slice(-200);
   writeFileSync(
     join(outDir, 'report.json'),
-    `${JSON.stringify({ check: 'MB-LOC-001 locator live gates (pre-integration harness)', fixture: PINS.profile, lease, approvals: { rules: approveRules ?? null, scene: approveScene ?? null }, footprint: LOCATOR_FOOTPRINT, viewDistance, pass, results, setup: setupLog, packetEvidence: { count: packets.length, sample: packets.slice(0, 400).map((p) => ({ dtMs: p.t - (packets[0]?.t ?? p.t), op: p.op, variant: p.variant, who: p.who })) }, locatorEvents }, null, 2)}\n`,
+    `${JSON.stringify({ check: 'MB-LOC-001 locator live gates (pre-integration harness)', fixture: PINS.profile, lease, approvals: { rules: approveRules ?? null, scene: approveScene ?? null }, footprint: LOCATOR_FOOTPRINT, teleports: TELEPORTS, flatBaseline: FLAT_BASELINE, viewDistance, pass, restoreFailures, results, setup: setupLog, packetEvidence: { count: packets.length, sample: packets.slice(0, 400).map((p) => ({ dtMs: p.t - (packets[0]?.t ?? p.t), op: p.op, variant: p.variant, who: p.who })) }, locatorEvents }, null, 2)}\n`,
   );
   process.stdout.write(`${pass ? 'PASS' : 'FAIL'} locator live check: ${counted.filter((r) => r.pass === true).length}/${counted.length} (${results.length - counted.length} skipped) — ${outDir}\n`);
   return pass ? 0 : 1;

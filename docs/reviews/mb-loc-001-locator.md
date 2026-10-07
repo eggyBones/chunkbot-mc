@@ -93,7 +93,7 @@ Static evidence does not prove runtime broadcasts. Gates L-G1/L-G2 remain requir
 
 ## Checks (direct exits, worktree `mb-loc-001`, Node 24.21.0)
 
-- `npm run typecheck`: 0. `npm run build`: 0. `npm test`: 0, **557/557**. This includes 74 locator tests across 6 files:
+- `npm run typecheck`: 0. `npm run build`: 0. `npm test`: 0, **562/562**. This includes 79 locator tests across 6 files:
   - `locator-codec`: pinned serializer/deserializer round trips for 26.1.2/26.2 and the fail-closed gate;
   - `locator-service`: attribution, variants, hiding, expiry, lifecycle, connection scoping, no-coordinate telemetry;
   - `locator-routes`: C1/C2/C3 ceilings, sampling, freezing, scope;
@@ -114,15 +114,26 @@ What each gate does:
 
 | Gate | Behaviour |
 | --- | --- |
-| G1 | Controlled offline `FixtureOwner` and `FixtureGuest`. Owner moved by RCON `tp` to the vec3i, chunk and azimuth distances (view distance read from the fixture properties). Above-elevation case uses slow falling. Hiding cases: crouch, invisibility effect, carved pumpkin, logout/rejoin. Dimension case: `execute in minecraft:the_nether` for the owner and then the bot. |
+| G1 | Controlled offline `FixtureOwner` and `FixtureGuest`. Owner moved by RCON `tp` to the vec3i, chunk and azimuth distances (view distance read from the fixture properties). Above-elevation case uses slow falling. Hiding cases: crouch, invisibility effect, carved pumpkin, logout/rejoin. Dimension case: owner, then bot, to the nether bedrock roof (0.5, 128, 0.5) and back. |
 | G2 | Needs `--approve-rules`. `gamerule locator_bar` false then the original value; `attribute FixtureOwner minecraft:waypoint_transmit_range base set 30` then `base reset` (receive range reset too). Restored in `finally`. |
 | G3 | Owner 300 blocks east (+40 z) of base (1000.5, −60, 1000.5); `seek_owner` windows run through the real executor; reunion checked from RCON server positions. No block writes. |
 | G5 | Needs `--approve-scene`. Lava, wall and >3 drop scenes, each restored. |
 
-**Footprint:**
-- Players are teleported within x 1000..1420, z 960..1060, y −60, plus the bot/owner nether `tp` at (0, 80, 0).
-- G5 fills only x 1000..1040, z 1100..1140, y −64..−50, restored to air with a grass floor at −61.
-- The skills scene (x 196..224, z 190..224) is never touched.
+**Footprint (MB-LOC-001-C4; declared in `LOCATOR_FOOTPRINT`/`TELEPORTS`, enforced before every RCON teleport):**
+- Overworld teleport destinations: x 600..1301, y −60..−46, z 958..1201. The named destinations are base (1000.5, −60, 1000.5); owner at east 40, south 200 (z 1200.5), west 400 (x 600.5), north-east 60 (z 958.5), elevated +14 (y −46), 24/26/28/30/60/61/62 east, G3 (+300, +40); guest west 30; scene bot/owner (1004.5 / 1038.5, −60, 1120.5).
+- Nether: (0.5, 128, 0.5), standing on the bedrock roof, for the owner and then the bot.
+- G3 bot envelope: seeking is aborted if the bot leaves x 900..1400, z 900..1140.
+- G5 writes only x 1000..1040, y −64..−50, z 1100..1140. The read-only reference region is x 1060..1100 (same y/z). The skills scene is never touched.
+
+**G5 baseline and restoration:**
+- **Expected baseline.** `scripts/fixture.ts` sets `level-type=minecraft:flat` with no generator settings. The official 26.2 `FlatLevelGeneratorSettings.getDefault` gives 1 bedrock, 2 dirt and 1 grass_block, so bedrock −64, dirt −63..−62, grass −61, air above.
+- **Check before any write.** The scene and the reference region are probed per layer at three columns, then compared with one `execute if blocks … all`. If either check fails, G5 fails without writing anything.
+- **Restoration.** Every scene layer is rewritten (bedrock, dirt, grass, then air from −60 to −50) and re-verified with the same probes and comparison.
+- **Failure handling.** Any restoration or verification failure fails the whole report (`restoreFailures` plus a `RESTORE` result), not just a warning.
+
+**Pre-integration label:**
+- The harness's route runner uses explicit admission-proof/leg bounds, so it can prove only its own movement.
+- The production all-skill travel guard requires progression's H2 `effectiveTravel` wiring.
 
 **Setting changes and logging:**
 - Changes are limited to owner/bot effects, the owner's head item, gamerule `locator_bar`, and the waypoint range attributes, all restored in `finally`.
