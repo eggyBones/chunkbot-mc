@@ -1,3 +1,21 @@
+# Latest live state — rejoined; local controls authorized
+
+## Local-control implementation and fixture checkpoint — 2026-10-07 03:14 UTC
+
+- MB-OPS-002-L1 is now delivered to native S on its existing subscription/worktree after the survival correction checkpoint. New local-control paths are disjoint from P shared app ownership. Existing live PID71629 and viewer65554 have proven birth/argv receipts; no helper trial may stop or restart them during active play. Ignored non-secret operator profile pins the accepted d348d58 artifact/build/config.
+- Root prepared isolated publication branch chunkbot/local-controls-publication at public d348d58 in code/reviews/chunkbot-mc/local-controls-publication; only independently accepted local-control files and focused operator docs can be published there. Root main still contains unfinished batch002 work and is not a publication candidate.
+- L frozen combined skills26.2 trial at674dab6c failed exit1, 13/33; S0 expected old capabilities20 while runtime22 was ready, preventing initial setup/anchoring. Direct original report preserved; shared MB-FLOW-001-C9 recorded before assigning P. L world lease released, no fixture process/server restart, both worlds currently available pending new grants. No repeated unchanged trial.
+- S independent module trial still fails G2/SETUP; offline df9c7e6/f380466 normalize only known vanilla dimension aliases and use official26.x command names. The full corrected world gate remains pending, so no recovery acceptance is claimed.
+
+
+Updated 2026-10-07T03:03:32.898200+00:00. Jake explicitly requested a new join and simple local scripts. Cached eggyBot69 is verified ready as PID71629 on the unchanged accepted publicd348 artifact; viewer7382 follows live data. Actual owner gameplay is now running through real Codex/Jev; do not interrupt it just to test helpers. Root current receipt/profile remain ignored, with credentials external. MB-OPS-002-L1 is recorded before implementation in server-control-plan.md; S receives only the listed new control files after its survival checkpoint. Vanilla bridge and automatic update manager remain unimplemented.
+
+Combined development source674dab6 independently passes749/749; separate immutable acceptance checkout sameSHA passes clean install/typecheck/build/both doctors. S first26.1.2 module trial exits1: G1 and restoration pass, G2 missing recovery plus settings setup failed; root recordsS-C7 dimension andS-C8 settings reader, preserving report. S is correcting ONLY its own worktree. L leases26.2 for the existing combined skills/ordinary-follow regression; P is correcting harnessC8 before a world lease. No worker controls the live bot or root live status. Earlier live stop notes below are historical.
+
+# Latest live state — logged out at Jake's request
+
+Updated 2026-10-07T02:54:26.295993+00:00. Jake asked to log eggyBot69 out so he can sleep. Proven owned PID65258 gracefully stopped after SIGINT; server TCP closed; dashboard publisher is stopped. Viewer7382 stays open with historical data. Do not reconnect until a fresh explicit join instruction. Preserve bot-owned auth/config. Current operational record: `var/live-chunkbot/current.json`. Published release remainsd348; batch002 source/acceptance is separate and unpublished. Earlier running-state notes below are historical.
+
 # Current live-play operation — 2026-10-07 02:45 UTC
 
 Jake now asks to publish completed work and join him. The public remote is independently verified at `d348d58f8d74799dd05aa0dcac9dfedbb241c973`, containing accepted dashboard, memory and smooth handoff. Batch002 remains under acceptance and is not published or deployed. The coordinator launched the isolated accepted `var/batch001/clean-install` artifact (141 public application/config/vendor/manifest inputs match); root development source/dist and fixture worlds are independent of the live process. No worker may alter this artifact. [Current join authority](live-server-connection-plan.md) supersedes earlier logout/deferral. MB-OPS-001 automatic updates are not implemented.
