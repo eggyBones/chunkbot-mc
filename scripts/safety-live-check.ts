@@ -33,7 +33,7 @@
 //   M4   stop during a retreat: lease and controls cleared; no further motion.
 //
 //   npm run fixture -- status                               (fixture lease required)
-//   node scripts/safety-live-check.ts --fixture-lease <granted id> [--fixture 26.2] [--require-real-executor]
+//   node scripts/safety-live-check.ts --fixture-lease <granted id> [--fixture 26.2] [--require-real-executor] [--raised-stage]
 //
 // EXECUTOR SELECTION (never silent): when the shared contract accepts the
 // `safety` SkillOutcome owner (P's ExecutionOwner variant integrated), safety
@@ -105,10 +105,9 @@ const BACKUP_BOX = `${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y
 const ENTITY_AREA = trialEntitySelector([AREA.x1, SCENE_Y.y1, AREA.z1, AREA.x2, SCENE_Y.y2, AREA.z2]);
 /** Unique per-run tag for every summoned mob. */
 const MOB_TAG = `cbsafe_${Date.now().toString(36)}_${process.pid.toString(36)}`;
-/** Raised proposal is opt-in, for coordinator source/layout review before a
- * named frozen trial. Default retains the previous exact world coordinates. */
+/** Coordinator-approved raised layout remains opt-in for a new named frozen
+ * trial. Default retains the previous exact world coordinates. */
 const LAYOUT = process.argv.includes('--raised-stage') ? SAFETY_RAISED_LAYOUT : SAFETY_BASE_LAYOUT;
-const SAFETY_MUTATION_BOX = LAYOUT.mutation;
 const MOB_TRIAL_ORIGIN = mobTrialOrigin(LAYOUT);
 /** Same 7x7, four-deep pool and bank; optional vertical translation only. */
 const POOL = { x1: 252, z1: 202, x2: 258, z2: 208 };
@@ -352,7 +351,7 @@ class Gate {
       };
       if (!restoring && !readOnly && /^(?:fill|clear|effect|item replace|summon|damage|tp|kill|difficulty)\b/.test(command)) {
         return guardedStageMutation(send, mutate, command, MOB_TAG, BOT, (kind, query, reply) => {
-          this.staging.push({ gate: phase, atMs: Date.now(), kind, command: query, beforeMutation: command.split(' ')[0], mutation: SAFETY_MUTATION_BOX, reply, occupied: parseEntityTest(reply) ?? 'unknown' });
+          this.staging.push({ gate: phase, atMs: Date.now(), kind, command: query, beforeMutation: command.split(' ')[0], mutation: LAYOUT.mutation, reply, occupied: parseEntityTest(reply) ?? 'unknown' });
         }, LAYOUT);
       }
       return mutate(command);
@@ -489,7 +488,7 @@ class Gate {
 
   async noForeignOccupants(): Promise<void> {
     await guardMutationVolume((command) => this.rcon(command, false), MOB_TAG, BOT, (kind, command, reply) => {
-      this.staging.push({ gate: this.phase, atMs: Date.now(), kind, command, mutation: SAFETY_MUTATION_BOX, reply, occupied: parseEntityTest(reply) ?? 'unknown' });
+      this.staging.push({ gate: this.phase, atMs: Date.now(), kind, command, mutation: LAYOUT.mutation, reply, occupied: parseEntityTest(reply) ?? 'unknown' });
     }, LAYOUT);
   }
 
@@ -498,8 +497,8 @@ class Gate {
     this.staging.push({ gate: this.phase, atMs: Date.now(), arenaVerified: true, comparisons, plan: mobArenaPlan(LAYOUT) });
   }
 
-  /** Staging inside the smaller mutation box: water unchanged; mob gates replace
-   * the pool with a sealed luminous dry floor. Restaged/verified every gate,
+  /** Staging inside the selected mutation box retains relative water geometry;
+   * mob gates replace the pool with a sealed luminous dry floor. Verified every gate,
    * including after a creeper can damage walls. Never kills natural mobs. */
   async scene(opts: { lid?: boolean; mobs?: boolean } = {}): Promise<void> {
     check(this.basis === 'none' && !this.leases.current, 'scene staging requires stopped ownership/controls');
@@ -788,7 +787,7 @@ async function run(outDir: string): Promise<Json> {
     const backupNonAir = await g.nonAirBlocks(BACKUP_BOX);
     check(backupNonAir === 0, `backup volume ${BACKUP_BOX} is not verified empty (${backupNonAir ?? 'unknown'} non-air blocks); refusing to change the scene`);
     backupPlanned = true;
-    journal.remember({ backupPlanned, scene: SCENE_BOX, backup: BACKUP_BOX, stagingMutation: SAFETY_MUTATION_BOX });
+    journal.remember({ backupPlanned, scene: SCENE_BOX, backup: BACKUP_BOX, stagingMutation: LAYOUT.mutation });
     const backupReply = await g.rcon(`clone ${SCENE_BOX} ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1}`);
     check(/cloned/i.test(backupReply) || /no blocks/i.test(backupReply), `scene backup failed: ${backupReply.slice(0, 120)}`);
     check(/passed/i.test(await g.rcon(`execute if blocks ${SCENE_BOX} ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} all`, false)), 'scene backup not verified byte-for-block; refusing scene mutation');
@@ -1066,7 +1065,7 @@ function buildReport(g: Gate, st: ReportState, extra: Json = {}): Json {
     damagePackets: g.damagePackets,
     fixture: PINS.profile,
     source,
-    footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, stagingMutation: SAFETY_MUTATION_BOX.join(' '), layout: LAYOUT === SAFETY_RAISED_LAYOUT ? 'raised_proposal' : 'original', feetY: LAYOUT.feetY, occupantSelector: trialEntitySelector(SAFETY_MUTATION_BOX), mobTag: MOB_TAG, addedForceload, difficulty },
+    footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, stagingMutation: LAYOUT.mutation.join(' '), layout: LAYOUT === SAFETY_RAISED_LAYOUT ? 'raised' : 'original', feetY: LAYOUT.feetY, occupantSelector: trialEntitySelector(LAYOUT.mutation), mobTag: MOB_TAG, addedForceload, difficulty },
     restoration: restoreChecks,
     pass: counted.length > 0 && counted.every((r) => r.status === 'pass'),
     results,

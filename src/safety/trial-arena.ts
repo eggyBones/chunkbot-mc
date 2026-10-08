@@ -12,7 +12,7 @@ export const SAFETY_MUTATION_BOX: TrialBox = [240, -61, 196, 268, -48, 220];
 export const MOB_TRIAL_ORIGIN = { x: 255.5, y: -56, z: 205.5 };
 export interface TrialLayout { mutation: TrialBox; feetY: number }
 export const SAFETY_BASE_LAYOUT: TrialLayout = { mutation: SAFETY_MUTATION_BOX, feetY: -56 };
-/** Opt-in proposal for coordinator review before world use. Translate the
+/** Coordinator-approved opt-in layout for frozen leased trials. Translate the
  * four-deep pool/bank/mob floor up four blocks, leaving the original bottom
  * four layers untouched. Opaque support excludes bodies below by geometry,
  * never by species, UUID or a policy/entity filter. */
@@ -70,8 +70,9 @@ export async function guardedStageMutation(read: (command: string) => Promise<st
 
 /** Opaque walls exclude external mobs from player-visible policy input. The
  * luminous roof seals ingress/visibility; luminous floor prevents spawning.
- * Interior 27x23, eight blocks tall. The existing six-block retreat leg fits
- * from MOB_TRIAL_ORIGIN in every bearing; the 12-block grant is unchanged,
+ * Interior 27x23: eight blocks tall in the original layout, four in the raised
+ * layout. The existing six-block retreat leg fits
+ * from the selected mob origin in every bearing; the 12-block grant is unchanged,
  * and targets near walls must still pass the ordinary geometry checks.
  * All blocks are inside the ORIGINAL clone, with no clock/gamerule changes. */
 export function arenaShellPlan(layout: TrialLayout = SAFETY_BASE_LAYOUT): ArenaFill[] {
