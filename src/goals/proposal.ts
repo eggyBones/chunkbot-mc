@@ -39,6 +39,7 @@ import {
 import { ownerQuestionProblems } from './declarative.ts';
 import { scanForbidden } from './forbidden.ts';
 import { matchesOwnerCoordinate } from './owner-coordinates.ts';
+import { enableOwnerSeeking } from './owner-navigation.ts';
 
 export type ProposalCheck =
   | { ok: true; proposal: PlannerProposal }
@@ -378,6 +379,8 @@ export function checkProposal(raw: unknown, registry: CapabilityRegistry, limits
   const c = new Checker(ctx);
   c.predicate(outcomeRoot, 'outcome');
   const catalog = registry.catalog();
+  const seekingProblems = enableOwnerSeeking(proposal.tasks, catalog);
+  if (seekingProblems.length > 0) return { ok: false, kind: 'semantic', problems: seekingProblems };
   proposal.tasks.forEach((t: TaskSpec, i) => {
     const where = `tasks[${i}]`;
     t.targetSelectors.forEach((s, j) => c.selector(s, `${where}.targetSelectors[${j}]`));

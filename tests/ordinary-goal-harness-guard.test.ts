@@ -8,7 +8,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { PROJECT_ROOT } from '../src/app/fixture-layout.ts';
-import { LAYOUT, questionLines, verifyOrdinaryContinuation } from '../scripts/ordinary-goal-live-check.ts';
+import { LAYOUT, currentMeleeDamage, fixtureEntityTest, onWaterBank, questionLines, verifyOrdinaryContinuation } from '../scripts/ordinary-goal-live-check.ts';
 import { SCENE } from '../scripts/lib/scene.ts';
 
 const SCRIPT = join(PROJECT_ROOT, 'scripts', 'ordinary-goal-live-check.ts');
@@ -54,6 +54,40 @@ describe('ordinary-goal live harness guard', () => {
   it('question detection on CLI output', () => {
     assert.deepEqual(questionLines(['[chunkbot] Question q1: Which tree? (reply: answer q1 <reply>)', '[chunkbot] Goal goal-1 accepted: "kill that chicken". Planning…', '[status] goal: x?']).length, 1);
     assert.equal(questionLines(['[chunkbot] Reply not applied: no question is pending']).length, 0);
+  });
+
+  it('entity disappearance requires a readable negative server reply', () => {
+    assert.equal(fixtureEntityTest('Test passed. Count: 1'), true);
+    assert.equal(fixtureEntityTest('Test passed, count: 2'), true);
+    assert.equal(fixtureEntityTest('Test failed'), false);
+    for (const reply of ['', 'No entity was found', 'Unknown command', 'Test passed. Count: 0']) assert.equal(fixtureEntityTest(reply), null);
+  });
+
+  it('water completion rejects a surface bob and requires a settled supported bank', () => {
+    assert.equal(onWaterBank({ x: 207.5, y: -56, z: 206.5 }), false);
+    assert.equal(onWaterBank({ x: 207.5, y: -55, z: 206.5 }), false);
+    assert.equal(onWaterBank({ x: 211.5, y: -56, z: 206.5 }), true);
+    assert.equal(onWaterBank({ x: 225.5, y: -56, z: 206.5 }), false);
+    assert.equal(onWaterBank({ x: 211.5, y: -55, z: 206.5 }), false);
+    assert.match(source, /episode released before reaching a dry bank/);
+    assert.match(source, /server confirms dry stable support/);
+    assert.match(source, /stays settled after controls release/);
+    assert.match(source, /replacement episode cannot rescue premature release/);
+  });
+
+  it('defense staging binds fresh server damage to the actual victim and attacker before admission', () => {
+    const hit = { entityId: 4, sourceCauseId: 9, atMs: 100 };
+    assert.equal(currentMeleeDamage(hit, 4, 8, 101), true);
+    assert.equal(currentMeleeDamage(hit, 5, 8, 101), false);
+    assert.equal(currentMeleeDamage(hit, 4, 9, 101), false);
+    assert.equal(currentMeleeDamage({ ...hit, sourceCauseId: 0 }, 4, 8, 101), false);
+    assert.equal(currentMeleeDamage(hit, 4, 8, 99), false);
+    assert.equal(currentMeleeDamage(hit, 4, 8, 6101), false);
+    const staging = source.indexOf('await h.stageMeleeEngagement(tag, summon, ev)');
+    assert.ok(staging > 0 && staging < source.indexOf("goal = await h.goal('follow me')", staging));
+    assert.match(source, /id: 'O8A', armed: true, engaging: false/);
+    assert.match(source, /NoAI:1b/);
+    assert.ok(!source.slice(source.indexOf('async stageMeleeEngagement'), source.indexOf('async interruptByDeath')).includes('h.goal('));
   });
 
   it('ordinary recovery oracle permits separate support and rejects authority refills or task replay', () => {
