@@ -71,6 +71,9 @@ function armedScene(opts: { zombieAt?: number; player?: boolean } = {}) {
   sc.client.emit('window_items', { windowId: 0, stateId: 1, items });
   sc.client.emit('update_health', { health: 20, food: 20, foodSaturation: 5 });
   const z = sc.fake.addEntity({ id: 50, type: opts.player ? 'player' : 'hostile', name: opts.player ? 'player' : 'zombie', at: { x: 0.5 + (opts.zombieAt ?? 2.2), y: 0, z: 0.5 }, height: 1.95 });
+  // Server metadata: mob_flags aggressive bit (the exact version's zombie metadata key index).
+  const flagsIndex = reg.metadataIndex('zombie', 'mob_flags');
+  if (!opts.player && flagsIndex !== undefined) (z as unknown as { metadata: Record<number, unknown> }).metadata = { [flagsIndex]: 0x04 };
   return { sc, rt, z };
 }
 

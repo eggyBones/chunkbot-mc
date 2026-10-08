@@ -108,12 +108,34 @@ function airEvidence(service: SafetyService): JsonValue {
   return a ? { value: a.value, previous: a.previous, source: 'server_metadata', atMs: a.atMs } : { value: null, source: 'unknown' };
 }
 
-export function applyDeepWaterAvoidance(movements: unknown, world: () => SafetyBlockReader | undefined): void {
-  const m = movements as { exclusionAreasStep?: Array<(b: { position: Vec }) => number> };
-  m.exclusionAreasStep?.push((b) => {
-    const w = world();
-    return w ? deepWaterStepCost(w, Math.floor(b.position.x), Math.floor(b.position.y), Math.floor(b.position.z)) : 0;
-  });
+/**
+ * C11 deep-water path policy for the installed mineflayer-pathfinder 2.4.5
+ * Movements (instance-level; node_modules untouched). Verified against the
+ * installed source: `exclusionAreasStep` is consulted only by safeOrBreak,
+ * while getMoveDiagonal's step-down and getLandingBlock's drop accept a
+ * liquid landing without it. Every move reads blocks through
+ * `Movements.getBlock`, so the wrapper marks water that is at swimming depth
+ * (no solid block directly beneath) or a bubble column as `safe = false`:
+ * safeOrBreak then costs 100 (refused), the diagonal step-down returns
+ * ("don't self-immolate") and a liquid landing is no longer accepted. One
+ * block of water over a solid floor (wading) is unchanged. The step hook is
+ * kept as a second layer. `world` must be a live view (e.g. safetyWorld(session)).
+ */
+export function applyDeepWaterAvoidance(movements: unknown, world: SafetyBlockReader): void {
+  const m = movements as {
+    getBlock?: (pos: unknown, dx: number, dy: number, dz: number) => { position?: Vec; safe?: boolean };
+    exclusionAreasStep?: Array<(b: { position: Vec }) => number>;
+  };
+  const original = m.getBlock;
+  if (typeof original === 'function') {
+    m.getBlock = function wrapped(this: unknown, pos, dx, dy, dz) {
+      const b = original.call(this, pos, dx, dy, dz);
+      const p = b.position;
+      if (p && deepWaterStepCost(world, Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)) >= 100) b.safe = false;
+      return b;
+    };
+  }
+  m.exclusionAreasStep?.push((b) => deepWaterStepCost(world, Math.floor(b.position.x), Math.floor(b.position.y), Math.floor(b.position.z)));
 }
 
 export function safetySkills(service: SafetyService | undefined): AnySkill[] {
@@ -290,7 +312,7 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
           tried.add(`${t.x},${t.y},${t.z}`);
           const { movements, verified } = conservativeMovements(bot, travel && b.grant === undefined ? travel : undefined);
           assertPolicy(verified);
-          applyDeepWaterAvoidance(movements, () => service.world());
+          applyDeepWaterAvoidance(movements, world);
           const mm = movements as { entitiesToAvoid?: Set<string> };
           for (const th of threats) mm.entitiesToAvoid?.add(th.key.replace(/^minecraft:/, ''));
           act.fence();
@@ -402,7 +424,11 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
         entityId = live.entityId;
         targetKey = `minecraft:${live.name}`;
       }
+      const safetyOwner = ownerOf(ctx);
+      const grantId = safetyOwner.kind === 'safety' ? safetyOwner.grantId : undefined;
+      // Per-action cap; under a safety grant the CUMULATIVE episode budget is reserved per attack as well.
       const maxAttacks = Math.min(params.maxAttacks, cfg.mobs.defense.maxAttacks);
+      const startHealth = typeof bot.health === 'number' ? bot.health : 20;
       const startSeq = session.evidence.seq;
       session.evidence.watch(entityId);
       let attacks = 0;
@@ -426,10 +452,15 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
           const fact = r.entities.find((e) => e.entityId === entityId);
           if (!fact || !dispositionOf(fact.key, undefined, fact.heldItem).defenseSupported) return { status: 'partial', reason: 'target_unsupported', effect: 'the target is no longer a supported matchup', confirmation: 'none', evidence: ev() };
           const others = active.filter((e) => e.entityId !== entityId);
-          const readiness = defenseReadiness(r.self, [fact, ...others], hazards, service.policyContext(r.self), false);
-          if (r.self.health <= cfg.mobs.defense.disengageHealth || !readiness.admitted) {
-            return { status: 'partial', reason: 'readiness_changed', effect: `defense readiness changed (${r.self.health <= cfg.mobs.defense.disengageHealth ? 'health at/below disengage' : readiness.refusals.join(', ')}); switching to avoidance`, confirmation: hits > 0 ? 'server_packet' : 'none', evidence: ev({ refusals: readiness.refusals }) };
+          // Every readiness check again, including escape terrain (an observed retreat leg): never waived mid-fight.
+          const pctx = service.policyContext(r.self, (x, y, z) => b.allowed(x, y, z, true));
+          const readiness = defenseReadiness(r.self, [fact, ...others], hazards, pctx, !pctx.retreatAvailable([fact, ...others]));
+          const healthLoss = startHealth - r.self.health;
+          if (r.self.health <= cfg.mobs.defense.disengageHealth || healthLoss >= 6 || !readiness.admitted) {
+            const why = r.self.health <= cfg.mobs.defense.disengageHealth ? 'health at/below disengage' : healthLoss >= 6 ? `lost ${healthLoss} health during the engagement` : readiness.refusals.join(', ');
+            return { status: 'partial', reason: 'readiness_changed', effect: `defense readiness changed (${why}); switching to avoidance`, confirmation: hits > 0 ? 'server_packet' : 'none', evidence: ev({ refusals: readiness.refusals, healthLoss }) };
           }
+          if (hyp(bot.entity.position, b.origin) > b.maxDisplacement) return { status: 'partial', reason: 'displacement_limit', effect: 'outside the displacement bound', confirmation: hits > 0 ? 'server_packet' : 'none', evidence: ev() };
           const weapon = readiness.weapon;
           if (!weapon) return { status: 'partial', reason: 'readiness_changed', effect: 'no verified weapon', confirmation: 'none', evidence: ev() };
           if (weapon.switchFromHotbar !== null) {
@@ -459,6 +490,10 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
           if (wait > 0) {
             await act.sleep(Math.min(wait, 200));
             continue;
+          }
+          // The attack is reserved against the grant's cumulative budget immediately before it is sent.
+          if (grantId !== undefined && !service.reserveAttack(grantId)) {
+            return { status: 'partial', reason: 'attack_budget_exhausted', effect: `the episode's cumulative attack budget is used up (${cfg.mobs.defense.maxAttacks}); no further attack`, confirmation: hits > 0 ? 'server_packet' : 'none', evidence: ev() };
           }
           const hitSeq = session.evidence.seq;
           await act.attackEntity(entityId, { x: e.position.x, y: e.position.y + h * 0.6, z: e.position.z });

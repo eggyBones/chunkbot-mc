@@ -98,7 +98,15 @@ describe('mob threats', () => {
     assert.equal(planSafety(self(), [mob('zombie', 7, { aggressive: true })], policyCtx()).kind, 'respond');
   });
 
-  it('armed, armored and healthy: a single supported zombie in reach is defended', () => {
+  it('retreat is the default: armed and ready, a zombie that is near but not engaging is avoided', () => {
+    const p = respond(planSafety(self(), [mob('zombie', 3, { approaching: true })], policyCtx()));
+    assert.equal(p.response, 'retreat');
+    assert.equal(p.defense?.admitted, true, 'readiness passed, still retreat');
+    assert.match(p.reason, /retreat default/);
+    assert.equal(respond(planSafety(self(), [mob('zombie', 6, { aggressive: true })], policyCtx())).response, 'retreat', 'engaging but not in melee contact');
+  });
+
+  it('armed, armored and healthy: a single supported zombie in melee contact and engaging is defended', () => {
     const z = mob('zombie', 2.5, { aggressive: true });
     const p = respond(planSafety(self(), [z], policyCtx()));
     assert.equal(p.response, 'defend');
@@ -140,26 +148,44 @@ describe('mob threats', () => {
     const s = self({ equipment: { ...armed(), armor: [item('iron_chestplate', 6, 240, 5), item('iron_helmet', 5, 165, 160)] } });
     assert.equal(verifiedArmorPoints(s, 0.1), 2);
     const switchable = self({ equipment: { ...armed(), mainHand: item('dirt', 36), heldHotbar: 0, hotbar: [item('dirt', 36), item('stone_sword', 38, 131, 120)] } });
-    const p = respond(planSafety(switchable, [mob('zombie', 2.5)], policyCtx()));
+    const p = respond(planSafety(switchable, [mob('zombie', 2.5, { aggressive: true })], policyCtx()));
     assert.equal(p.response, 'defend');
     assert.equal(p.defense?.weapon?.switchFromHotbar, 2);
-    const noSwitch = respond(planSafety(switchable, [mob('zombie', 2.5)], policyCtx({ config: config({ mobs: { defense: { allowHotbarSwitch: false } } }) })));
+    const noSwitch = respond(planSafety(switchable, [mob('zombie', 2.5, { aggressive: true })], policyCtx({ config: config({ mobs: { defense: { allowHotbarSwitch: false } } }) })));
     assert.equal(noSwitch.response, 'retreat');
   });
 
-  it('cornered: defense only when every other check passes; else a declarative blocker', () => {
-    const p = respond(planSafety(self(), [mob('zombie', 2.5)], policyCtx({ retreatAvailable: () => false })));
-    assert.equal(p.response, 'defend');
-    assert.match(p.reason, /cornered/);
-    const blocked = planSafety(self({ equipment: unarmed() }), [mob('zombie', 2.5)], policyCtx({ retreatAvailable: () => false }));
-    assert.equal(blocked.kind, 'blocked');
-    assert.equal(blocked.kind === 'blocked' && blocked.reason, 'no_retreat_and_defense_refused');
-    const creeperCornered = planSafety(self(), [mob('creeper', 3)], policyCtx({ retreatAvailable: () => false }));
-    assert.equal(creeperCornered.kind, 'blocked', 'never fights a creeper even when cornered');
+  it('cornered: escape terrain is never waived — no retreat leg is a declarative blocker, never a fight', () => {
+    const engaged = () => [mob('zombie', 2.5, { aggressive: true })];
+    const ready = planSafety(self(), engaged(), policyCtx({ retreatAvailable: () => false }));
+    assert.equal(ready.kind, 'blocked', 'even fully ready: no cornered defense');
+    assert.equal(ready.kind === 'blocked' && ready.reason, 'no_retreat_leg');
+    assert.match(ready.kind === 'blocked' ? ready.detail : '', /no_retreat_space/);
+    for (const [label, entities, over] of [
+      ['unready', engaged(), { equipment: unarmed() }],
+      ['creeper', [mob('creeper', 3)], {}],
+      ['ranged', [mob('skeleton', 3, { aggressive: true })], {}],
+      ['group', [mob('zombie', 2.5, { aggressive: true }), mob('husk', 3)], {}],
+      ['unknown', [mob('mystery', 3, { approaching: true })], {}],
+    ] as const) {
+      assert.equal(planSafety(self(over), entities, policyCtx({ retreatAvailable: () => false })).kind, 'blocked', label);
+    }
+  });
+
+  it('unknown/new entities: established visible danger is avoided without waiting for damage; never attacked', () => {
+    const unknownNear = mob('mystery', 5, { approaching: true });
+    assert.equal(unknownNear.disposition, 'unknown');
+    const p = respond(planSafety(self(), [unknownNear], policyCtx()));
+    assert.equal(p.response, 'retreat');
+    assert.ok(p.hazards.some((h) => h.kind === 'unknown_threat'));
+    assert.equal(planSafety(self(), [mob('mystery', 5)], policyCtx()).kind, 'none', 'idle unknown at distance: no threat');
+    const angryWolf = mob('wolf', 4, { aggressive: true });
+    assert.equal(respond(planSafety(self(), [angryWolf], policyCtx())).response, 'retreat', 'aggressive neutral is avoided');
+    assert.ok(respond(planSafety(self(), [mob('mystery', 2, { approaching: true, aggressive: true })], policyCtx())).defense?.refusals.includes('neutral_or_unknown_threat'), 'never a defense target');
   });
 
   it('defense disabled or mobs disabled by config', () => {
-    assert.equal(respond(planSafety(self(), [mob('zombie', 2.5)], policyCtx({ config: config({ mobs: { defense: { enabled: false } } }) }))).response, 'retreat');
+    assert.equal(respond(planSafety(self(), [mob('zombie', 2.5, { aggressive: true })], policyCtx({ config: config({ mobs: { defense: { enabled: false } } }) }))).response, 'retreat');
     assert.equal(planSafety(self(), [mob('zombie', 2.5)], policyCtx({ config: config({ mobs: { enabled: false } }) })).kind, 'none');
   });
 });

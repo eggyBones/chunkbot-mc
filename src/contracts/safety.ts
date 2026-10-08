@@ -72,7 +72,7 @@ export const SAFETY_BOUNDS = {
   displacementCeiling: 48,
   /** Absolute ceiling on executions (skill dispatches) in one grant. */
   actionsCeiling: 12,
-  /** Absolute ceiling on melee attacks in one defensive engagement. */
+  /** Absolute ceiling on melee attacks in ONE EPISODE (cumulative across all defense steps of its grant). */
   attacksCeiling: 10,
   /** Recent episode history kept for status/repeated-hazard accounting. */
   history: 16,
@@ -348,6 +348,8 @@ export const SAFETY_HAZARD_KINDS = [
   'group_threat',
   /** A neutral or unknown entity that the server says damaged the bot. */
   'provoked_threat',
+  /** Established visible danger from an uncurated entity (aggressive flag or close approach) or an aggressive neutral: avoided, never attacked. */
+  'unknown_threat',
 ] as const;
 export type SafetyHazardKind = (typeof SAFETY_HAZARD_KINDS)[number];
 
@@ -415,6 +417,9 @@ export interface SafetyGrant {
   readonly expiresAtMs: number;
   readonly maxActions: number;
   actionsUsed: number;
+  /** Cumulative melee attacks this grant may send (<= SAFETY_BOUNDS.attacksCeiling); each attack is reserved before it is sent. */
+  readonly maxAttacks: number;
+  attacksUsed: number;
   readonly origin: Vec3;
   readonly maxDisplacement: number;
   /** Work suspended when issued (informational; never authority). */
@@ -545,10 +550,12 @@ export type SafetyClear =
  */
 export interface SafetyPort {
   readonly enabled: boolean;
-  /** ActuatorLeases.ownerCurrent for `{ kind: 'safety' }` (grant fence incl. expiry/epoch/pause). */
+  /** ActuatorLeases.ownerCurrent for `{ kind: 'safety' }`: grant fence incl. revocation, expiry, connection/dimension, authority basis and the displacement bound (checked in every lease fence while controls run). */
   grantCurrent(grantId: string): boolean;
   /** The CURRENT grant (copy) for a verified safety owner, else undefined (skills read bounds from here, never from parameters). */
   grant(grantId: string): Readonly<SafetyGrant> | undefined;
+  /** Reserves ONE attack of the grant's cumulative budget immediately before it is sent; false = refused (send nothing). */
+  reserveAttack(grantId: string): boolean;
   /** Non-null while ordinary work must not dispatch (episode, first post-join assessment, active blocker). */
   hold(): SafetyHold | null;
   /** Resolves when the hold clears, a blocker is declared, the signal aborts, or `maxWaitMs` passes. */

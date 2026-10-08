@@ -2,13 +2,24 @@
 //
 // Priority: fluid hazards (submerged / swimming-depth water / low or unknown
 // air while submerged / lava) first — nothing is fought from water — then mob
-// threats. Mob responses default to RETREAT. Defensive melee is admitted only
-// when EVERY check passes for exactly one supported, visible, reachable
-// threat (dispositions.ts) with a verified equipped weapon, armor,
-// durability, health/food and dry footing, and with no creeper, ranged,
-// group or provoked-neutral threat present. A retreat that cannot be found
-// with adequate readiness becomes a cornered defense; without readiness it is
-// a declarative blocker. No model is consulted.
+// threats.
+//
+// DOCUMENTED MOB CRITERION (coordinator assumption, review 2): RETREAT is the
+// default response to every active threat. Defensive melee is a narrow
+// exception admitted only when ALL hold:
+//   1. every readiness check passes (defenseReadiness): exactly one active
+//      threat, of a supported type (dispositions.ts), not a baby; no creeper,
+//      ranged, group, provoked/unknown threat; server-stated health >= minHealth
+//      and food >= minFood; dry footing on the ground; a server-stated stone+
+//      sword/axe with durability margin (held, or one hotbar switch); verified
+//      armor points; AND an observed retreat leg exists (escape terrain is
+//      required, never waived);
+//   2. that target is already in melee contact (<= closeRadius) and engaging
+//      (server aggressive flag, or server-attributed damage within the
+//      provoked window).
+// Otherwise: retreat when a leg exists; with no leg a declarative blocker
+// (never a cornered fight). Players, the owner, passive and neutral mobs are
+// never attack targets. No model is consulted.
 import type { DefenseReadiness, SafetyConfig, SafetyEntityFact, SafetyHazard, SafetyHazardKind, SafetyItemFact, SafetyPlan, SafetySelfFacts } from '../contracts/safety.ts';
 import { armorPointsOf, weaponFacts, type WeaponFacts } from './dispositions.ts';
 
@@ -79,9 +90,17 @@ export function threatHazards(entities: readonly SafetyEntityFact[], config: Saf
         else if (e.distance <= m.dangerRadius && (e.aggressive === true || e.approaching === true)) add('melee_threat', 'moderate', e.aggressive ? 'aggressive (server metadata)' : 'approaching');
         break;
       case 'neutral':
+        // Never an enemy merely for being near; avoided after server-attributed damage or
+        // when the server states it is aggressive (e.g. an angered wolf/enderman) nearby. Never attacked.
+        if (provoked(e)) add('provoked_threat', 'high', 'neutral entity damaged the bot (server damage event)');
+        else if (e.distance <= m.dangerRadius && e.aggressive === true) add('unknown_threat', 'high', 'neutral entity is aggressive (server metadata); avoided, never attacked');
+        break;
       case 'unknown':
-        // Never an enemy merely for being near; only server-attributed damage provokes it.
-        if (provoked(e)) add('provoked_threat', 'high', `${e.disposition} entity damaged the bot (server damage event)`);
+        // No curated policy: avoid established visible danger (damage, aggressive flag, or a close
+        // approach) instead of waiting to be hurt. Never attacked.
+        if (provoked(e)) add('provoked_threat', 'high', 'unknown entity damaged the bot (server damage event)');
+        else if (e.distance <= m.dangerRadius && e.aggressive === true) add('unknown_threat', 'high', 'unknown entity is aggressive (server metadata)');
+        else if (e.distance <= m.dangerRadius && e.approaching === true) add('unknown_threat', 'moderate', 'unknown entity approaching');
         break;
     }
   }
@@ -128,7 +147,7 @@ export function defenseReadiness(self: SafetySelfFacts, active: readonly SafetyE
   if (kinds.has('creeper')) refusals.push('creeper');
   if (kinds.has('ranged_threat')) refusals.push('ranged_threat');
   if (kinds.has('group_threat') || active.length > 1) refusals.push('group');
-  if (kinds.has('provoked_threat')) refusals.push('neutral_or_unknown_threat');
+  if (kinds.has('provoked_threat') || kinds.has('unknown_threat')) refusals.push('neutral_or_unknown_threat');
   const target = active.length === 1 ? (active[0] as SafetyEntityFact) : undefined;
   if (target && !ctx.defenseSupported(target)) refusals.push(`unsupported_matchup:${target.key.replace(/^minecraft:/, '')}`);
   if (target && target.baby === true) refusals.push('baby_variant');
@@ -187,23 +206,22 @@ export function planSafety(self: SafetySelfFacts, entities: readonly SafetyEntit
   const hazards = mob.sort((a, b) => sev(b) - sev(a));
   const signature = signatureOf(hazards);
   const retreat = ctx.retreatAvailable(active);
+  // Escape terrain is a readiness requirement (never waived): no leg -> `no_retreat_space` refusal.
   const readiness = defenseReadiness(self, active, hazards, ctx, !retreat);
-  if (readiness.admitted) {
-    return { kind: 'respond', response: 'defend', hazards, reason: `defend against ${readiness.target?.key ?? 'threat'}`, defense: readiness, signature };
+  const target = active.length === 1 ? (active[0] as SafetyEntityFact) : undefined;
+  const engaging = target !== undefined && target.distance <= ctx.config.mobs.closeRadius && (target.aggressive === true || (target.damagedSelfAtMs !== null && ctx.nowMs - target.damagedSelfAtMs <= ctx.config.mobs.provokedWindowMs));
+  if (readiness.admitted && engaging) {
+    return { kind: 'respond', response: 'defend', hazards, reason: `defend against ${readiness.target?.key ?? 'threat'} (in melee contact and engaging; every readiness check passed)`, defense: readiness, signature };
   }
   if (retreat) {
-    return { kind: 'respond', response: 'retreat', hazards, reason: `retreat (${readiness.refusals.slice(0, 4).join(', ') || 'avoidance'})`, defense: readiness, signature };
-  }
-  // Cornered: defense is allowed only when every OTHER check passes.
-  const cornered = defenseReadiness(self, active, hazards, ctx, false);
-  if (cornered.admitted) {
-    return { kind: 'respond', response: 'defend', hazards, reason: `cornered: no retreat leg; defend against ${cornered.target?.key ?? 'threat'}`, defense: cornered, signature };
+    const why = readiness.admitted ? 'retreat default: the threat is not in melee contact and engaging' : readiness.refusals.slice(0, 4).join(', ');
+    return { kind: 'respond', response: 'retreat', hazards, reason: `retreat (${why})`, defense: readiness, signature };
   }
   return {
     kind: 'blocked',
     hazards,
-    reason: 'no_retreat_and_defense_refused',
-    detail: `${hazards.map((h) => h.detail).join('; ')}; no observed dry retreat leg and defense refused (${cornered.refusals.slice(0, 5).join(', ')})`,
+    reason: 'no_retreat_leg',
+    detail: `${hazards.map((h) => h.detail).join('; ')}; no observed dry retreat leg inside the bounds (defense requires escape terrain; refusals: ${readiness.refusals.slice(0, 5).join(', ')})`,
     signature,
   };
 }

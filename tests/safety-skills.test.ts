@@ -8,6 +8,8 @@ import { after, describe, it } from 'node:test';
 import type { ActionCandidate } from '../src/contracts/index.ts';
 import type { SafetyExecutionOwner } from '../src/contracts/safety.ts';
 import { fluidState } from '../src/safety/geometry.ts';
+import { Actuator } from '../src/execution/actuator.ts';
+import { clock } from './safety-session.ts';
 import { ownerAuthority, runtime, scene, stopPhysics, until } from './safety-session.ts';
 
 after(stopPhysics);
@@ -63,6 +65,29 @@ describe('safety skills over the installed physics (client-physics evidence)', (
     assert.equal(s.blocker?.reason, 'no_reachable_surface');
     assert.equal(rt.leases.current, undefined);
     assert.equal(sc.controls['jump'], false);
+    await rt.service.close();
+  });
+
+  it('no supported escape while ORDINARY motion runs: the goal lease is revoked, its controls cleared, no safety action is invented', async () => {
+    const sc = scene({ ceiling: true });
+    const rt = runtime(sc.session, ownerAuthority);
+    // An ordinary goal action is actively moving (e.g. a follow window swimming under a ledge).
+    const goalLease = rt.leases.acquire({ kind: 'goal', goalEpoch: 2, goalId: 'goal-0001', taskId: 'task-0003' });
+    const act = new Actuator(sc.session, goalLease, clock);
+    act.setControl('forward', true);
+    act.setControl('jump', true);
+    assert.equal(sc.controls['forward'], true);
+    rt.service.tick();
+    assert.equal(goalLease.revocation, 'safety_preempt', 'old action cancelled synchronously');
+    assert.throws(() => act.setControl('forward', true), /revoked/, 'the old action cannot issue another command');
+    assert.equal(sc.controls['forward'], false);
+    assert.equal(sc.controls['jump'], false);
+    assert.equal(rt.leases.current, undefined, 'no safety lease: nothing supported to do');
+    assert.equal(rt.service.hold()?.reason, 'blocked', 'dispatch is held with a declarative blocker');
+    await new Promise((r) => setTimeout(r, 400));
+    rt.service.tick();
+    assert.equal(rt.leases.current, undefined, 'no rogue action on later ticks');
+    assert.equal(sc.controls['forward'] || sc.controls['jump'], false);
     await rt.service.close();
   });
 

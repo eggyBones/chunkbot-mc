@@ -83,6 +83,7 @@ function harness(opts: { config?: SafetyConfigInput; basis?: SafetyAuthority['ba
       entities: () => state.entities,
       world: () => state.world,
       visible: () => () => true,
+      position: () => state.self.position,
       reset: () => undefined,
     },
     inTag,
@@ -277,6 +278,59 @@ describe('episodes', () => {
     const w = h.service.waitClear(ac.signal);
     ac.abort();
     assert.equal((await w).status, 'aborted');
+  });
+
+  it('an active hazard with no supported response still preempts ordinary motion and holds dispatch (no rogue action)', () => {
+    const h = harness();
+    const w = flatWorld(30);
+    for (let x = -20; x <= 20; x += 1) for (let z = -20; z <= 20; z += 1) if (Math.abs(x) > 2 || Math.abs(z) > 2) w.fill(x, 0, z, x, 2, z, 'stone');
+    h.state.world = w;
+    h.state.self = self({ equipment: unarmed() });
+    h.state.entities = [mob('zombie', 2, { aggressive: true })];
+    h.service.tick();
+    assert.deepEqual(h.preempts, ['safety_preempt'], 'the old (ordinary) lease is revoked synchronously');
+    assert.equal(h.pending.length, 0, 'no safety action is invented');
+    const hold = h.service.hold();
+    assert.equal(hold?.reason, 'blocked');
+    assert.match(hold?.detail ?? '', /no_retreat_leg/);
+    h.service.tick();
+    assert.equal(h.pending.length, 0, 'still no rogue action on the next tick');
+    h.state.entities = [];
+    h.service.tick();
+    assert.equal(h.service.hold(), null, 'hazard gone: dispatch released');
+  });
+
+  it('the grant is fenced while controls run: displacement and expiry revoke the in-flight step', async () => {
+    const h = harness();
+    h.state.self = self(submerged());
+    h.service.tick();
+    const p = h.pending[0]!;
+    h.state.self = self({ ...submerged(), position: { x: 40, y: 0, z: 0.5 } });
+    assert.equal(h.service.grantCurrent(p.owner.grantId), false, 'displacement fails the lease fence');
+    h.service.tick(); // watchdog
+    assert.equal(p.signal.aborted, true);
+    await h.flush();
+    await h.flush();
+    assert.equal(h.events.find((e) => e['type'] === 'safety_episode_ended')?.['reason'], 'displacement_limit');
+
+    const x = harness();
+    x.state.self = self(submerged());
+    x.service.tick();
+    const q = x.pending[0]!;
+    x.advance(30_000);
+    x.timers.fire(); // the expiry timer, not the next fence
+    assert.equal(q.signal.aborted, true, 'expiry aborts the running step');
+  });
+
+  it('the cumulative attack budget is per episode, reserved before each attack', () => {
+    const h = harness();
+    h.state.entities = [mob('zombie', 2.5, { aggressive: true })];
+    h.service.tick();
+    const g = h.pending[0]!.owner.grantId;
+    const max = h.service.grant(g)!.maxAttacks;
+    for (let i = 0; i < max; i += 1) assert.equal(h.service.reserveAttack(g), true);
+    assert.equal(h.service.reserveAttack(g), false, 'no attack beyond the episode budget');
+    assert.equal(h.service.reserveAttack('sg-forged1'), false, 'a foreign grant reserves nothing');
   });
 
   it('status is bounded, labeled and never includes players/owner as threats', () => {

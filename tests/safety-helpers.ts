@@ -49,7 +49,7 @@ export function self(over: Partial<SafetySelfFacts> = {}): SafetySelfFacts {
 
 let nextId = 100;
 export function mob(key: string, distance: number, over: Partial<SafetyEntityFact> = {}): SafetyEntityFact {
-  const d = dispositionOf(key, key === 'mystery' ? undefined : 'Hostile mobs', over.heldItem ?? null);
+  const d = dispositionOf(key, key === 'mystery' ? undefined : key === 'wolf' || key === 'cow' ? 'Passive mobs' : 'Hostile mobs', over.heldItem ?? null);
   return {
     entityId: nextId++,
     key: `minecraft:${key}`,

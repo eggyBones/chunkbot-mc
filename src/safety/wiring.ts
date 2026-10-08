@@ -12,7 +12,7 @@
 //   onLifecycle (BEFORE lease/ledger invalidation): safety.service.onLifecycle(event)
 //   stop / resume / owner goal admitted / goal terminal: safety.service.onAuthorityChanged(cause)
 //   after composition: safety.service.start(); shutdown: await safety.service.close()
-//   conservativeMovements (navigation): applyDeepWaterAvoidance(movements, () => safety.reader.world())
+//   conservativeMovements (navigation): applyDeepWaterAvoidance(movements, safetyWorld(session))
 //   TaskRuntime/route runner: await safety.service.waitClear(task.signal) before EVERY dispatch;
 //     outcome reason `safety_preempt` = suspension (not a failure; wait, then re-observe).
 import type { ActionCandidate, Clock, IdSource, SkillOutcome } from '../contracts/index.ts';

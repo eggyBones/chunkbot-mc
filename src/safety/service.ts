@@ -54,6 +54,8 @@ export interface SafetyFactsSource {
   world(): SafetyBlockReader | undefined;
   /** Floor-face visibility from the current eye. */
   visible(): ((x: number, y: number, z: number) => boolean) | undefined;
+  /** Current body position (client physics) for the displacement fence. */
+  position?(): { x: number; y: number; z: number } | undefined;
   reset(): void;
 }
 
@@ -160,13 +162,37 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
     return a;
   }
 
+  /**
+   * The grant fence (lease ownerCurrent for safety owners; also checked at every
+   * dispatch and by the monitor watchdog while controls run): not revoked, not
+   * expired, actions within the ceiling, authority basis not `none`, same
+   * connection/dimension, and the body within the displacement bound.
+   */
   grantCurrent(grantId: string): boolean {
+    return this.fenceReason(grantId) === undefined;
+  }
+
+  private fenceReason(grantId: string): string | undefined {
     const e = this.episode;
-    if (!e || e.grant.grantId !== grantId || e.grant.revoked !== undefined) return false;
-    if (this.deps.now() >= e.grant.expiresAtMs) return false;
+    if (!e || e.grant.grantId !== grantId) return 'unknown_grant';
+    if (e.grant.revoked !== undefined) return e.grant.revoked;
+    if (this.deps.now() >= e.grant.expiresAtMs) return 'grant_expired';
+    if (e.grant.actionsUsed > e.grant.maxActions || e.grant.attacksUsed > e.grant.maxAttacks) return 'grant_budget_exceeded';
     const a = this.deps.authority();
-    if (!this.authorized(a)) return false;
-    return a.connection?.connectionEpoch === e.grant.connectionEpoch && a.connection.dimension === e.grant.dimension;
+    if (!this.authorized(a)) return `authority_${a.basis}`;
+    if (a.connection?.connectionEpoch !== e.grant.connectionEpoch || a.connection.dimension !== e.grant.dimension) return 'connection_or_dimension_changed';
+    const p = this.deps.reader.position?.();
+    if (p && Math.hypot(p.x - e.grant.origin.x, p.z - e.grant.origin.z) > e.grant.maxDisplacement + 0.5) return 'displacement_limit';
+    return undefined;
+  }
+
+  reserveAttack(grantId: string): boolean {
+    if (!this.grantCurrent(grantId)) return false;
+    const g = (this.episode as Episode).grant;
+    if (g.attacksUsed >= g.maxAttacks) return false;
+    g.attacksUsed += 1;
+    this.counters.attacksSent += 1;
+    return true;
   }
 
   grant(grantId: string): Readonly<SafetyGrant> | undefined {
@@ -357,7 +383,13 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
         this.notifyWaiters();
         return;
       }
-      if (this.episode) return; // the episode re-plans from fresh facts itself
+      if (this.episode) {
+        // Watchdog while controls run: any fence failure (expiry, displacement,
+        // authority, connection) revokes the grant now (lease revoked, controls cleared).
+        const why = this.fenceReason(this.episode.grant.grantId);
+        if (why) this.revokeEpisode(why);
+        return; // otherwise the episode re-plans from fresh facts itself
+      }
       const r = this.assess();
       if (!r) return;
       if (this.initialHold) {
@@ -380,19 +412,41 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
       this.blocker = undefined;
       return;
     }
+    // An ACTIVE hazard always stops unsafe ordinary motion first, even when no safety
+    // action is possible: the current non-safety lease is revoked synchronously
+    // (controls cleared, its action returns `safety_preempt`) and the blocker hold
+    // keeps new ordinary dispatch out until the hazard changes.
     if (plan.kind === 'blocked') {
       this.setBlocker(plan.reason, plan.detail, plan.hazards.map((h) => h.kind), plan.signature, null);
+      this.preemptOrdinary(plan.reason);
       return;
     }
     // Same unresolved signature in cooldown: stay blocked, no retry loop.
-    if (this.blocker && this.blocker.signature === plan.signature && this.blocker.untilMs !== null && now < this.blocker.untilMs) return;
+    if (this.blocker && this.blocker.signature === plan.signature && this.blocker.untilMs !== null && now < this.blocker.untilMs) {
+      this.preemptOrdinary(this.blocker.reason);
+      return;
+    }
     const ceiling = this.repeatedHazard(now);
     if (ceiling) {
       this.setBlocker('repeated_hazard', ceiling, plan.hazards.map((h) => h.kind), plan.signature, now + this.config.episodes.blockedCooldownMs);
+      this.preemptOrdinary('repeated_hazard');
       return;
     }
     this.blocker = undefined;
     void this.runEpisode(plan, self, a);
+  }
+
+  /** Revokes a current NON-safety lease (no-op otherwise); never starts any motion. */
+  private preemptOrdinary(why: string): void {
+    try {
+      const r = this.deps.actuation.preemptCurrent('safety_preempt');
+      if (r.revoked) {
+        this.counters.preemptions += 1;
+        this.deps.record({ type: 'safety_preempt_blocked', why, holder: r.holder, clearMs: r.clearMs });
+      }
+    } catch (error) {
+      this.deps.record({ type: 'safety_preempt_error', message: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   private setBlocker(reason: string, detail: string, hazards: SafetyHazardKind[], signature: string, untilMs: number | null): void {
@@ -432,6 +486,8 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
       expiresAtMs: now + Math.min(SAFETY_BOUNDS.episodeMsCeiling, water ? this.config.water.maxEpisodeMs : this.config.mobs.maxEpisodeMs),
       maxActions: Math.min(SAFETY_BOUNDS.actionsCeiling, this.config.episodes.maxActions),
       actionsUsed: 0,
+      maxAttacks: Math.min(SAFETY_BOUNDS.attacksCeiling, this.config.mobs.defense.maxAttacks),
+      attacksUsed: 0,
       origin: { ...self.position },
       maxDisplacement: Math.min(SAFETY_BOUNDS.displacementCeiling, water ? this.config.water.maxDisplacement : this.config.mobs.maxDisplacement),
       suspended: a.goal ? { goalId: a.goal.goalId, goalEpoch: a.goal.goalEpoch } : null,
@@ -449,6 +505,10 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
     };
     this.episode = episode;
     this.episodesStarted += 1;
+    // Expiry is enforced while controls run, not only at the next fence.
+    const expiry = this.timers.after(Math.max(0, grant.expiresAtMs - now), () => {
+      if (this.episode === episode) this.revokeEpisode('grant_expired');
+    });
     this.counters.episodes += 1;
     // Synchronous preemption BEFORE any await: the old holder's controls are cleared now.
     let preempt: ReturnType<SafetyActuationPort['preemptCurrent']> = { revoked: false, holder: null, clearMs: null };
@@ -470,8 +530,8 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
       while (true) {
         if (!this.grantCurrent(grant.grantId)) {
           outcome = 'revoked';
-          reason = grant.revoked ?? (this.deps.now() >= grant.expiresAtMs ? 'grant_expired' : 'grant_fenced');
-          if (reason === 'grant_expired') outcome = 'unresolved';
+          reason = grant.revoked ?? this.fenceReason(grant.grantId) ?? 'grant_fenced';
+          if (reason === 'grant_expired' || reason === 'displacement_limit' || reason === 'grant_budget_exceeded') outcome = 'unresolved';
           break;
         }
         if (plan.kind !== 'respond') break;
@@ -528,6 +588,7 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
         if (improvedWater || airRose || separated) outcome = 'improved';
         if (outcome === 'unresolved' && hazardsAfter.length > 0) this.setBlocker('safety_unresolved', `bounded ${episode.response} ended without improvement (${reason}); hazards: ${hazardsAfter.join('+')}`, hazardsAfter, after.plan.kind === 'none' ? 'none' : after.plan.signature, this.deps.now() + this.config.episodes.blockedCooldownMs);
       }
+      this.timers.clear(expiry);
       if (outcome !== 'revoked') grant.revoked ??= 'ended';
       episode.controller.abort();
       const pos = after?.self.position ?? this.lastSelf?.position;
@@ -565,7 +626,6 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
 
   private noteEvidence(o: SkillOutcome): void {
     const ev = o.evidence as Record<string, unknown>;
-    if (typeof ev['attacksSent'] === 'number') this.counters.attacksSent += ev['attacksSent'];
     if (typeof ev['hitsConfirmed'] === 'number') this.counters.hitsConfirmed += ev['hitsConfirmed'];
     if (ev['defeatedByServerStatus'] === true) this.counters.defeatsConfirmed += 1;
   }
@@ -628,7 +688,8 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
       limits: [
         'fluid/ceiling/support are local estimates from the client world model; own air is server metadata or unknown',
         'only visible entities within the scan radius are assessed; no hidden mobs, owner coordinates or global scans',
-        'defense: adult zombie/husk/zombie_villager/drowned(no ranged item)/spider with a verified stone+ sword/axe, armor and health; everything else retreats',
+        'retreat is the default; defense only for one adult zombie/husk/zombie_villager/drowned(no ranged item)/spider already in melee contact and engaging, with verified stone+ sword/axe, armor, health/food and an observed retreat leg; never a cornered fight',
+        'unknown/neutral entities are avoided on established visible danger and never attacked; players and the owner are never targets',
         'no boats, potions, sprint-swimming, block placing/digging, ranged combat, pursuit or gear restoration',
       ],
     };
