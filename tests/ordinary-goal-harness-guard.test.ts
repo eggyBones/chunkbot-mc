@@ -8,7 +8,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { PROJECT_ROOT } from '../src/app/fixture-layout.ts';
-import { LAYOUT, questionLines } from '../scripts/ordinary-goal-live-check.ts';
+import { LAYOUT, questionLines, verifyOrdinaryContinuation } from '../scripts/ordinary-goal-live-check.ts';
 import { SCENE } from '../scripts/lib/scene.ts';
 
 const SCRIPT = join(PROJECT_ROOT, 'scripts', 'ordinary-goal-live-check.ts');
@@ -28,7 +28,7 @@ describe('ordinary-goal live harness guard', () => {
     for (const l of topLevel) assert.ok(!/readRconPassword\(|rconCommand\(|mkdirSync\(|writeFileSync\(|createBot\(|new Harness\(|new CliProcess\(/.test(l), `top-level side effect: ${l}`);
     assert.ok(source.indexOf('this.password = readRconPassword()') > source.indexOf('class Harness'));
     assert.ok(!/process\.kill\(|pkill|killall/.test(source), 'never signals anything but its own child');
-    assert.ok(!/[`'"](gamerule|difficulty|time set|weather)\b/.test(source), 'no settings changes');
+    assert.ok(!/[`'"](gamerule\s+\w+\s+(?:true|false|\d+)|difficulty\s+(?:peaceful|easy|normal|hard)|time\s+(?:set|add)|weather\s+\w+|spawnpoint|setworldspawn)\b/.test(source), 'no settings or respawn changes; read-only preconditions are allowed');
   });
 
   it('refuses to run without a valid lease (exit 2, no report directory)', () => {
@@ -43,7 +43,7 @@ describe('ordinary-goal live harness guard', () => {
 
   it('declared geometry stays inside the reset footprint', () => {
     const inside = (p: { x: number; z: number }) => p.x >= SCENE.area.x1 && p.x <= SCENE.area.x2 && p.z >= SCENE.area.z1 && p.z <= SCENE.area.z2;
-    const points = [LAYOUT.chickenNear, LAYOUT.o2.near, LAYOUT.o2.far, LAYOUT.o2.cow, LAYOUT.houseOwner, LAYOUT.ownerDefault, ...LAYOUT.birchLogs, ...LAYOUT.oakTrees.flatMap((t) => [...t.logs]), ...LAYOUT.gather.trunks, { x: LAYOUT.gather.stone.x1, z: LAYOUT.gather.stone.z1 }, { x: LAYOUT.gather.stone.x2, z: LAYOUT.gather.stone.z2 }];
+    const points = [LAYOUT.chickenNear, LAYOUT.o2.near, LAYOUT.o2.far, LAYOUT.o2.cow, LAYOUT.houseOwner, LAYOUT.ownerDefault, ...LAYOUT.birchLogs, ...LAYOUT.oakTrees.flatMap((t) => [...t.logs]), ...LAYOUT.gather.trunks, { x: LAYOUT.gather.stone.x1, z: LAYOUT.gather.stone.z1 }, { x: LAYOUT.gather.stone.x2, z: LAYOUT.gather.stone.z2 }, LAYOUT.water.bot, LAYOUT.water.owner, LAYOUT.water.submerged, { x: LAYOUT.water.platform.x1, z: LAYOUT.water.platform.z1 }, { x: LAYOUT.water.platform.x2, z: LAYOUT.water.platform.z2 }];
     for (const p of points) assert.ok(inside(p), JSON.stringify(p));
     for (const p of [...LAYOUT.birchLogs]) assert.ok(p.y >= -60 && p.y <= -50);
     assert.ok(LAYOUT.birchLogs[0].y > -60, 'happy-path target remains floating');
@@ -54,5 +54,25 @@ describe('ordinary-goal live harness guard', () => {
   it('question detection on CLI output', () => {
     assert.deepEqual(questionLines(['[chunkbot] Question q1: Which tree? (reply: answer q1 <reply>)', '[chunkbot] Goal goal-1 accepted: "kill that chicken". Planning…', '[status] goal: x?']).length, 1);
     assert.equal(questionLines(['[chunkbot] Reply not applied: no question is pending']).length, 0);
+  });
+
+  it('ordinary recovery oracle permits separate support and rejects authority refills or task replay', () => {
+    const semantic = { outcomeCanonical: 'original', admissionBaseline: { counts: { 'minecraft:oak_log': 8 } }, caps: { plannerTurnsPerGoal: 20 }, deadlineAtMs: 99 };
+    const events = [
+      { type: 'goal_admitted', goalId: 'goal-a', epoch: 1 },
+      { type: 'goal_travel_anchor', goalId: 'goal-a', epoch: 1, admitted: true, anchor: { x: 205, y: -60, z: 205 }, radius: 128 },
+      { type: 'task_admitted', goalId: 'goal-a', epoch: 1, taskId: 'task-old' },
+      { type: 'continuation_checkpoint', goalId: 'goal-a', state: 'held', counters: { plannerTurns: 2 }, ...semantic },
+      { type: 'goal_admitted', goalId: 'goal-recovery', epoch: 3, source: { kind: 'support' } },
+      { type: 'goal_admitted', goalId: 'goal-a', epoch: 5, continuation: { number: 1, counters: { plannerTurns: 2 } } },
+      { type: 'goal_travel_anchor', goalId: 'goal-a', epoch: 5, admitted: true, anchor: { x: 205, y: -60, z: 205 }, radius: 128 },
+      { type: 'goal_continuation_bound', goalId: 'goal-a', epoch: 5, carriedTasks: 0, carriedHandles: 0, ...semantic },
+      { type: 'task_admitted', goalId: 'goal-a', epoch: 5, taskId: 'task-fresh' },
+    ];
+    assert.equal(verifyOrdinaryContinuation(events, 'goal-a').admission.epoch, 5);
+    assert.throws(() => verifyOrdinaryContinuation(events.map((e) => e.type === 'goal_continuation_bound' ? { ...e, deadlineAtMs: 199 } : e), 'goal-a'));
+    assert.throws(() => verifyOrdinaryContinuation(events.map((e) => e.type === 'task_admitted' && e.epoch === 5 ? { ...e, taskId: 'task-old' } : e), 'goal-a'));
+    assert.throws(() => verifyOrdinaryContinuation(events.map((e) => e.continuation ? { ...e, continuation: { number: 1, counters: { plannerTurns: 0 } } } : e), 'goal-a'));
+    assert.throws(() => verifyOrdinaryContinuation(events.map((e) => e.type === 'goal_travel_anchor' && e.epoch === 5 ? { ...e, radius: 512 } : e), 'goal-a'));
   });
 });
