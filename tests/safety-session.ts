@@ -6,10 +6,14 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import type { ActionCandidate, ExecutionOwner, SkillOutcome } from '../src/contracts/index.ts';
+import { SkillOutcomeSchema } from '../src/contracts/index.ts';
 import { sequentialIds } from '../src/contracts/ids.ts';
 import type { SafetyAuthority, SafetyConfigInput, SafetyExecutionOwner } from '../src/contracts/safety.ts';
 import { Actuator } from '../src/execution/actuator.ts';
 import { ActuatorLeases, LeaseRevokedError } from '../src/execution/lease.ts';
+import { SkillExecutorImpl } from '../src/execution/executor.ts';
+import { SkillRegistry } from '../src/execution/registry.ts';
+import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import type { GameSession } from '../src/game/connection.ts';
 import { ServerEvidence } from '../src/game/server-evidence.ts';
 import { createSafetyRuntime } from '../src/safety/wiring.ts';
@@ -78,7 +82,7 @@ export function scene(opts: { ceiling?: boolean; pool?: boolean } = {}) {
 
 export const clock = { now: () => Date.now() };
 
-export function runtime(session: GameSession, authority: () => SafetyAuthority, config: SafetyConfigInput = { tickMs: 200 }) {
+export function runtime(session: GameSession, authority: () => SafetyAuthority, config: SafetyConfigInput = { tickMs: 200 }, opts: { travel?: { anchor: { x: number; y: number; z: number }; radius: number } } = {}) {
   const leases = new ActuatorLeases({
     clock,
     ownerCurrent: (o) => ((o as ExecutionOwner | SafetyExecutionOwner).kind === 'safety' ? rt.service.grantCurrent((o as unknown as SafetyExecutionOwner).grantId) : true),
@@ -90,13 +94,24 @@ export function runtime(session: GameSession, authority: () => SafetyAuthority, 
   });
   const skills = new Map<string, ReturnType<typeof safetySkills>[number]>();
   const services = {
-    perception: { travelBounds: () => undefined, withinTravel: () => true, isOwnerEntity: () => false },
+    perception: {
+      travelBounds: () => opts.travel,
+      travelAnchorGoalEpoch: () => authority().goal?.goalEpoch,
+      withinTravel: (p: { x: number; z: number }) => (opts.travel ? Math.hypot(p.x - opts.travel.anchor.x, p.z - opts.travel.anchor.z) <= opts.travel.radius : true),
+      isOwnerEntity: () => false,
+    },
     clock,
     ledger: { add: () => undefined },
     limits: { observationRadius: 32, travelRadius: 128, ownerLossMs: 10_000 },
   } as unknown as ExecuteContext['services'];
+  const executorKind = SkillOutcomeSchema.safeParse({ actionId: 'act-0001', owner: 'safety', connectionEpoch: 1, goalEpoch: 0, status: 'succeeded', elapsedMs: 0, effect: 'probe' }).success ? 'real' : 'stand_in';
+  let realExecutor: SkillExecutorImpl;
   /** Minimal executor seam: same order as SkillExecutorImpl (acquire, abort->revoke, run, release). */
   const execute = async (candidate: ActionCandidate, signal: AbortSignal, owner: ExecutionOwner | SafetyExecutionOwner): Promise<SkillOutcome & { commands: number }> => {
+    if (executorKind === 'real') {
+      const r = await realExecutor.execute(candidate, signal, owner as ExecutionOwner);
+      return { ...r, commands: typeof r.evidence['commandsIssued'] === 'number' ? r.evidence['commandsIssued'] : 0 };
+    }
     const def = skills.get(candidate.capability)!;
     const lease = leases.acquire(owner as ExecutionOwner);
     const act = new Actuator(session, lease, clock);
@@ -134,7 +149,8 @@ export function runtime(session: GameSession, authority: () => SafetyAuthority, 
     record: () => undefined,
   });
   for (const s of safetySkills(rt.service)) skills.set(s.descriptor.id, s);
-  return { ...rt, leases, execute, skills, services };
+  realExecutor = new SkillExecutorImpl({ registry: new SkillRegistry([...skills.values()]), leases, session: () => session, services, goalEpoch: () => authority().goal?.goalEpoch ?? 0, store: new MemoryRunStore(), settleMs: 0 });
+  return { ...rt, leases, execute, skills, services, executorKind };
 }
 
 export const ownerAuthority = (): SafetyAuthority => ({ basis: 'owner_goal', detail: 'test owner goal', connection: { ready: true, connectionEpoch: 1, dimension: 'overworld' }, alive: true, goal: { goalId: 'goal-0001', goalEpoch: 2, source: 'owner' }, travel: null });
@@ -147,4 +163,3 @@ export const until = async (pred: () => boolean, ms: number) => {
   }
   return pred();
 };
-

@@ -133,6 +133,8 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
   private lastEpoch: number | null = null;
   private episodesStarted = 0;
   private ticking = false;
+  private reassessAfterCleanup = false;
+  private settlement: Promise<void> | undefined;
   readonly counters: SafetyStatus['counters'] = { episodes: 0, resolved: 0, improved: 0, unresolved: 0, blocked: 0, revoked: 0, preemptions: 0, retreats: 0, defenses: 0, attacksSent: 0, hitsConfirmed: 0, defeatsConfirmed: 0 };
 
   constructor(deps: SafetyServiceDeps) {
@@ -300,9 +302,13 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
   onAuthorityChanged(cause: 'owner_stop' | 'resume' | 'owner_goal_admitted' | 'goal_terminal'): void {
     const a = this.authority();
     if (cause === 'owner_stop' || !this.authorized(a)) {
+      this.reassessAfterCleanup = false;
       this.revokeEpisode(cause === 'owner_stop' ? 'owner_stop' : `authority_${a.basis}`);
       if (cause === 'owner_stop') this.blocker = undefined;
     }
+    // A stopped episode retains its hold until the executor's cleanup settles.
+    // A later manual admission may request a fresh grant, never revive that one.
+    if (cause === 'owner_goal_admitted' && this.authorized(a) && this.episode?.grant.revoked) this.reassessAfterCleanup = true;
     this.deps.record({ type: 'safety_authority', cause, basis: a.basis, detail: a.detail });
     this.notifyWaiters();
     if (this.authorized(a)) this.tick();
@@ -320,18 +326,36 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
     this.revokeEpisode('closed');
     this.tracker.detach();
     this.notifyWaiters();
+    const pending = this.settlement;
+    if (pending) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([pending, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('safety executor cleanup did not settle within 5000ms')), 5_000); })]);
+      } finally { if (timer) clearTimeout(timer); }
+    }
   }
 
   // ------------------------------------------------------------ monitor
 
-  /** Policy context over the CURRENT local geometry (lazy checks). */
+  /**
+   * Policy context over the CURRENT local geometry (lazy checks).
+   *
+   * Default bound = the PROSPECTIVE finite safety grant: displacement from the
+   * bot's current position (the grant origin) only, for water exits AND mob
+   * retreat/escape-space readiness alike. It is deliberately independent of the
+   * admitted goal/route travel radius: a bot outside its original anchor after
+   * a route leg ended, exhausted or was withdrawn must still be able to escape
+   * (C13 / L-P5). Executing that escape still requires a genuine current grant
+   * (lease fence), and the goal anchor/route is never moved or refilled.
+   * Goal-owned (planner/Jev) use passes its own `allowed` with the goal's
+   * travel bounds and never borrows this exception.
+   */
   policyContext(self: SafetySelfFacts, allowed?: (x: number, y: number, z: number) => boolean): PolicyContext {
     const cfg = this.config;
     const world = this.deps.reader.world();
     const visible = this.deps.reader.visible();
-    const authority = this.lastAuthority;
-    const travel = authority?.travel ?? null;
-    const origin = self.position;
+    const grant = this.episode?.grant;
+    const origin = grant?.origin ?? self.position;
     const withinDisp = (max: number) => (x: number, _y: number, z: number) => Math.hypot(x + 0.5 - origin.x, z + 0.5 - origin.z) <= max;
     return {
       config: cfg,
@@ -341,14 +365,14 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
         if (!world || !visible) return false;
         const fluid = self.fluid.eyeIn !== 'none' ? self.fluid.eyeIn : self.fluid.feetIn;
         if (fluid === 'none') return false;
-        if (self.fluid.headroom === 'ceiling' && findOpenColumn(world, self.position, fluid, cfg.water.surfaceSearchRadius)) return true;
-        return findFluidExits(world, self.position, fluid, { radius: cfg.water.shoreSearchRadius, visible, allowed: allowed ?? withinDisp(cfg.water.maxDisplacement), max: 1 }).length > 0;
+        const bound = allowed ?? withinDisp(grant?.maxDisplacement ?? cfg.water.maxDisplacement);
+        const col = self.fluid.headroom === 'ceiling' ? findOpenColumn(world, self.position, fluid, cfg.water.surfaceSearchRadius) : undefined;
+        if (col && bound(col.x, col.surfaceY, col.z)) return true;
+        return findFluidExits(world, self.position, fluid, { radius: cfg.water.shoreSearchRadius, visible, allowed: bound, max: 1 }).length > 0;
       },
       retreatAvailable: (threats) => {
         if (!world || !visible || threats.length === 0) return false;
-        const inTravel = travel ? (x: number, _y: number, z: number) => Math.hypot(x + 0.5 - travel.anchor.x, z + 0.5 - travel.anchor.z) <= travel.radius : () => true;
-        const disp = withinDisp(cfg.mobs.maxDisplacement);
-        return findRetreatTargets(world, self.position, { threats: threats.map((t) => t.at), separation: cfg.mobs.retreatSeparation, legMax: cfg.mobs.retreatLegMax, visible, allowed: allowed ?? ((x, y, z) => inTravel(x, y, z) && disp(x, y, z)) }).length > 0;
+        return findRetreatTargets(world, self.position, { threats: threats.map((t) => t.at), separation: cfg.mobs.retreatSeparation, legMax: cfg.mobs.retreatLegMax, visible, allowed: allowed ?? withinDisp(grant?.maxDisplacement ?? cfg.mobs.maxDisplacement) }).length > 0;
       },
       defenseSupported: (fact) => dispositionOf(fact.key, this.deps.category(fact.key.replace(/^minecraft:/, '')), fact.heldItem).defenseSupported,
     };
@@ -433,7 +457,12 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
       return;
     }
     this.blocker = undefined;
-    void this.runEpisode(plan, self, a);
+    const pending = this.runEpisode(plan, self, a);
+    this.settlement = pending;
+    void pending.then(() => { if (this.settlement === pending) this.settlement = undefined; }, (error) => {
+      if (this.settlement === pending) this.settlement = undefined;
+      this.deps.record({ type: 'safety_episode_error', message: error instanceof Error ? error.message.slice(0, 300) : String(error) });
+    });
   }
 
   /** Revokes a current NON-safety lease (no-op otherwise); never starts any motion. */
@@ -525,6 +554,7 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
     let outcome: SafetyEpisodeOutcome = 'unresolved';
     let reason = 'bounds_exhausted';
     let detail = '';
+    let disengaged = false;
     const steps: Array<Record<string, unknown>> = [];
     try {
       while (true) {
@@ -556,6 +586,7 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
         }
         steps.push({ response: plan.response, status: result.status, reason: result.reason ?? null, confirmation: result.confirmation, effect: result.effect.slice(0, 160) });
         this.noteEvidence(result);
+        if (plan.response === 'defend' && result.status !== 'succeeded') disengaged = true;
         this.deps.record({ type: 'safety_step', episodeId: grant.episodeId, actionId: candidate.id, capability: candidate.capability, status: result.status, reason: result.reason ?? null, confirmation: result.confirmation, effect: result.effect.slice(0, 300) });
         if (!this.grantCurrent(grant.grantId)) continue; // classified at the top of the loop
         const fresh = this.assess();
@@ -564,6 +595,10 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
           break;
         }
         plan = fresh.plan;
+        // A local loss threshold, attack cap, missing confirmation or readiness
+        // change cannot start another defense action with a fresh health-loss
+        // baseline. This grant commits to avoidance until it ends.
+        if (disengaged && plan.kind === 'respond' && plan.response === 'defend') plan = { ...plan, response: 'retreat', reason: 'bounded defense ended; disengaging within the existing grant' };
         if (plan.kind === 'none') {
           outcome = 'resolved';
           reason = 'hazard_cleared';
@@ -613,6 +648,10 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
       if (this.episode === episode) this.episode = undefined;
       this.deps.record({ type: 'safety_episode_ended', ...result });
       this.notifyWaiters();
+      if (this.reassessAfterCleanup && !this.episode) {
+        this.reassessAfterCleanup = false;
+        this.tick();
+      }
     }
   }
 

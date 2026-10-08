@@ -321,6 +321,8 @@ export interface SafetyEntityFact {
   /** Server metadata: mob aggressive flag (`mob_flags` bit 0x04), when the type has it. */
   aggressive: boolean | null;
   baby: boolean | null;
+  /** Explicit packet value or a completed spawn bundle's pinned vanilla default; never arbitrary null -> adult. */
+  ageEvidence?: 'server_metadata' | 'vanilla_spawn_default' | 'not_applicable' | 'unknown';
   /** Creeper server metadata: swelling (`swell_dir` > 0) and/or ignited. */
   fuse: { swelling: boolean; ignited: boolean } | null;
   /** Main-hand item stated by the server (entity_equipment), or null when none/unknown. */

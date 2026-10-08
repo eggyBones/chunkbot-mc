@@ -22,6 +22,7 @@ export interface SafetyItemRegistry {
   maxDurability(key: string): number | undefined;
   /** Index of a named metadata key for an entity type (exact version), e.g. ('player','air_supply') -> 1. */
   metadataIndex(entity: string, key: string): number | undefined;
+  entityNameOf?(type: number): string | undefined;
 }
 
 interface RawComponent {
@@ -94,6 +95,8 @@ export class SafetyTracker {
   readonly damage: DamageRecord[] = [];
   /** Entities the server declared dead (entity_status 3) and not yet destroyed: dying bodies are never threats or targets. */
   readonly dying = new Map<number, number>();
+  private bundleOpen = false;
+  private readonly ages = new Map<number, { name: string; complete: boolean; baby: boolean | null | undefined }>();
   /** Counts for evidence/status. */
   readonly counts = { airStatements: 0, otherEntityAirIgnored: 0, damageEvents: 0, slotPackets: 0 };
 
@@ -121,8 +124,28 @@ export class SafetyTracker {
       this.resetLife();
     });
     on('respawn', () => this.resetLife());
+    // Vanilla ServerEntity.addPairing emits spawn + non-default metadata in
+    // one ClientboundBundlePacket. A baby must not briefly appear adult before
+    // its metadata is processed; require the closing delimiter.
+    on('bundle_delimiter', () => {
+      this.bundleOpen = !this.bundleOpen;
+      if (!this.bundleOpen) for (const age of this.ages.values()) age.complete = true;
+    });
+    on('spawn_entity', (p: { entityId?: number; type?: number }) => {
+      if (typeof p.entityId !== 'number' || typeof p.type !== 'number') return;
+      const name = this.registry()?.entityNameOf?.(p.type);
+      this.ages.delete(p.entityId);
+      if (!name || !['zombie', 'husk', 'zombie_villager', 'drowned'].includes(name)) return;
+      this.ages.set(p.entityId, { name, complete: false, baby: this.bundleOpen ? undefined : null });
+      if (this.ages.size > 64) this.ages.delete(this.ages.keys().next().value as number);
+    });
     on('entity_metadata', (p: { entityId?: number; metadata?: Array<{ key: number; value: unknown }> }) => {
       const reg = this.registry();
+      const age = p.entityId === undefined ? undefined : this.ages.get(p.entityId);
+      if (age) {
+        const key = reg?.metadataIndex(age.name, 'baby');
+        for (const m of p.metadata ?? []) if (m.key === key) age.baby = typeof m.value === 'boolean' ? m.value : null;
+      }
       const airKey = reg?.metadataIndex('player', 'air_supply');
       if (airKey === undefined) return;
       for (const m of p.metadata ?? []) {
@@ -155,7 +178,7 @@ export class SafetyTracker {
       if (this.dying.size > 64) this.dying.delete(this.dying.keys().next().value as number);
     });
     on('entity_destroy', (p: { entityIds?: number[] }) => {
-      for (const id of p.entityIds ?? []) this.dying.delete(id);
+      for (const id of p.entityIds ?? []) { this.dying.delete(id); this.ages.delete(id); }
     });
     on('window_items', (p: { windowId?: number; items?: RawSlot[] }) => {
       if (p.windowId !== 0 || !Array.isArray(p.items)) return;
@@ -196,6 +219,8 @@ export class SafetyTracker {
 
   /** New life (login/respawn): air/equipment/damage facts of the previous life are void. */
   resetLife(): void {
+    this.ages.clear();
+    this.bundleOpen = false;
     this.air = null;
     this.slots.clear();
     this.slotsAtMs = null;
@@ -214,6 +239,20 @@ export class SafetyTracker {
       }
     }
     this.source = undefined;
+    this.ages.clear();
+    this.bundleOpen = false;
+  }
+
+  /**
+   * Official 26.1.2 and 26.2 Zombie.defineSynchedData defines DATA_BABY_ID
+   * as false; SynchedEntityData.getNonDefaultValues omits unchanged defaults.
+   * Only a matching species, completed pairing bundle and proven release may
+   * supply that default. Missing spawn, malformed value or incomplete bundle
+   * stays unknown. Explicit metadata remains binding after completion.
+   */
+  adultDefault(entityId: number, name: string, version: string): boolean {
+    const age = this.ages.get(entityId);
+    return (version === '26.1.2' || version === '26.2') && age?.name === name && age.complete && age.baby === undefined;
   }
 
   /** Server-stated item fact for a window-0 slot (only after a full sync of this life). */

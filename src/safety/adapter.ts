@@ -43,6 +43,7 @@ export function registryFactsOf(raw: unknown): SafetyRegistryFacts {
     items: Record<number, { name: string; maxDurability?: number } | undefined>;
     itemsByName: Record<string, { maxDurability?: number } | undefined>;
     entitiesByName: Record<string, { metadataKeys?: string[]; category?: string } | undefined>;
+    entities: Record<number, { name: string } | undefined>;
   };
   return {
     nameOf: (id) => reg.items[id]?.name,
@@ -52,6 +53,7 @@ export function registryFactsOf(raw: unknown): SafetyRegistryFacts {
       return i === undefined || i < 0 ? undefined : i;
     },
     category: (entity) => reg.entitiesByName[entity]?.category,
+    entityNameOf: (type) => reg.entities[type]?.name,
   };
 }
 
@@ -206,6 +208,7 @@ export class SessionSafetyReader {
       };
       const mobFlags = flag('mob_flags');
       const baby = flag('baby');
+      const adultDefault = baby === undefined && this.deps.tracker.adultDefault(raw.id, name, bot.version);
       const swell = flag('swell_dir');
       const ignited = flag('is_ignited');
       const hist = this.history.get(raw.id) ?? [];
@@ -222,7 +225,8 @@ export class SessionSafetyReader {
         height,
         approaching: old ? old.d - distance >= 0.75 : null,
         aggressive: typeof mobFlags === 'number' ? (mobFlags & 0x04) !== 0 : null,
-        baby: typeof baby === 'boolean' ? baby : null,
+        baby: typeof baby === 'boolean' ? baby : adultDefault ? false : null,
+        ageEvidence: typeof baby === 'boolean' ? 'server_metadata' : adultDefault ? 'vanilla_spawn_default' : reg.metadataIndex(name, 'baby') === undefined ? 'not_applicable' : 'unknown',
         fuse: name === 'creeper' ? { swelling: typeof swell === 'number' && swell > 0, ignited: ignited === true } : null,
         heldItem,
         damagedSelfAtMs: recentCause.get(raw.id) ?? null,

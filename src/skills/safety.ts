@@ -44,7 +44,13 @@ interface ExecBounds {
   origin: Vec;
   maxDisplacement: number;
   deadlineMs: number;
-  /** Target admission (displacement + travel bounds where required). */
+  /**
+   * Target admission. Safety owner: the grant's displacement bound ONLY (the
+   * same prospective bound the monitor assessed; never the goal/route radius).
+   * Goal/diagnostic owner: the goal's travel bounds AND a displacement bound
+   * (no safety exception is borrowed). `requireTravel` is accepted for call-site
+   * clarity and ignored by the safety branch.
+   */
   allowed(x: number, y: number, z: number, requireTravel: boolean): boolean;
 }
 
@@ -52,8 +58,6 @@ function boundsFor(ctx: ExecuteContext, service: SafetyService, maxMs: number, k
   const now = ctx.services.clock.now();
   const p = ctx.session.bot.entity.position;
   const cfg = service.config;
-  const travel = ctx.services.perception.travelBounds?.();
-  const inTravel = (x: number, z: number) => (travel ? Math.hypot(x + 0.5 - travel.anchor.x, z + 0.5 - travel.anchor.z) <= travel.radius : true);
   const owner = ownerOf(ctx);
   if (owner.kind === 'safety') {
     const grant = service.grant(owner.grantId);
@@ -64,7 +68,7 @@ function boundsFor(ctx: ExecuteContext, service: SafetyService, maxMs: number, k
       origin,
       maxDisplacement: grant.maxDisplacement,
       deadlineMs: Math.min(grant.expiresAtMs, now + maxMs),
-      allowed: (x, _y, z, requireTravel) => Math.hypot(x + 0.5 - origin.x, z + 0.5 - origin.z) <= grant.maxDisplacement && (!requireTravel || inTravel(x, z)),
+      allowed: (x, _y, z) => Math.hypot(x + 0.5 - origin.x, z + 0.5 - origin.z) <= grant.maxDisplacement,
     };
   }
   // Goal / diagnostic owner: no safety exception; the goal travel bounds always apply.
@@ -209,7 +213,9 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
             })();
             if (!col) return finish(failed('no_reachable_surface', `a solid ceiling is above and no open water column within ${cfg.water.surfaceSearchRadius} blocks (local estimate)`));
             target = col;
-          } else if (fs.eyeIn !== 'none' && (fs.headroom === 'open' || fs.headroom === 'unknown')) {
+          } else if (fs.eyeIn !== 'none' && fs.headroom === 'unknown') {
+            return finish(failed('headroom_unknown', 'cannot verify an open surface above; no blind jump into unknown geometry'));
+          } else if (fs.eyeIn !== 'none' && fs.headroom === 'open') {
             // Open headroom: hold jump straight up (forward toward a known exit only once one is chosen).
             target = target?.kind === 'exit' ? target : undefined;
           } else {
@@ -230,7 +236,7 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
             act.setControl('forward', false);
           }
           act.setControl('sprint', false);
-          act.setControl('jump', true);
+          act.setControl('jump', fs.headroom !== 'ceiling');
           await act.sleep(100);
           if (target) {
             const d = hyp(bot.entity.position, target);
@@ -310,7 +316,8 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
           const t = targets[0];
           if (!t) return failed('no_retreat_leg', 'no observed dry cell farther from the visible threats inside the bounds', evidenceOf());
           tried.add(`${t.x},${t.y},${t.z}`);
-          const { movements, verified } = conservativeMovements(bot, travel && b.grant === undefined ? travel : undefined);
+          const pathBound = b.grant ? { anchor: b.origin, radius: b.maxDisplacement } : travel;
+          const { movements, verified } = conservativeMovements(bot, pathBound);
           assertPolicy(verified);
           applyDeepWaterAvoidance(movements, world);
           const mm = movements as { entitiesToAvoid?: Set<string> };
@@ -392,7 +399,10 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
       const r = service.assess();
       if (!r) return { drafts: [], unavailable: [{ reason: 'not_connected', detail: 'no fresh self state' }] };
       const { hazards, active } = threatHazards(r.entities, cfg, ctx.services.clock.now());
-      const readiness = defenseReadiness(r.self, active, hazards, service.policyContext(r.self), false);
+      // Planner/goal-owned path: the goal's travel bounds apply to escape space too (no safety exception).
+      const goalBound = (x: number, y: number, z: number) => ctx.services.perception.withinTravel({ x: x + 0.5, y, z: z + 0.5 }) && Math.hypot(x + 0.5 - ctx.snapshot.self.at.x, z + 0.5 - ctx.snapshot.self.at.z) <= cfg.mobs.maxDisplacement;
+      const pctx = service.policyContext(r.self, goalBound);
+      const readiness = defenseReadiness(r.self, active, hazards, pctx, !pctx.retreatAvailable(active));
       if (!readiness.admitted || !readiness.target) return { drafts: [], unavailable: [{ reason: 'defense_not_admitted', detail: readiness.refusals.join(', ') || 'no single supported threat' }] };
       const target = readiness.target;
       // Map the code target to THIS snapshot's handle (never an entity id parameter).
@@ -446,11 +456,18 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
           if (!entityVisibleNow(session, entityId, cfg.mobs.scanRadius)) {
             return { status: 'partial', reason: 'target_not_visible', effect: `target is no longer visible after ${attacks} attack(s); not counted as defeated`, confirmation: hits > 0 ? 'server_packet' : 'none', evidence: ev() };
           }
+          // Looking can await library work. Do it BEFORE the final target,
+          // gear, health, terrain and reach checks; attackEntity below has no
+          // look await between those checks and its fenced packet dispatch.
+          const aiming = bot.entities[entityId];
+          if (!aiming) return { status: 'partial', reason: 'target_not_visible', effect: 'target left before aiming', confirmation: 'none', evidence: ev() };
+          await act.lookAt({ x: aiming.position.x, y: aiming.position.y + (aiming.height ?? 1.8) * 0.6, z: aiming.position.z });
+          if (!entityVisibleNow(session, entityId, cfg.mobs.scanRadius)) return { status: 'partial', reason: 'target_not_visible', effect: 'target left during aiming; not counted as defeated', confirmation: 'none', evidence: ev() };
           const r = service.assess();
           if (!r) return failed('not_connected', 'no fresh self state', ev());
           const { hazards, active } = threatHazards(r.entities, cfg, clock.now());
           const fact = r.entities.find((e) => e.entityId === entityId);
-          if (!fact || !dispositionOf(fact.key, undefined, fact.heldItem).defenseSupported) return { status: 'partial', reason: 'target_unsupported', effect: 'the target is no longer a supported matchup', confirmation: 'none', evidence: ev() };
+          if (!fact || fact.key !== targetKey || !dispositionOf(fact.key, undefined, fact.heldItem).defenseSupported) return { status: 'partial', reason: 'target_unsupported', effect: 'the target identity or supported matchup changed', confirmation: 'none', evidence: ev() };
           const others = active.filter((e) => e.entityId !== entityId);
           // Every readiness check again, including escape terrain (an observed retreat leg): never waived mid-fight.
           const pctx = service.policyContext(r.self, (x, y, z) => b.allowed(x, y, z, true));
@@ -481,7 +498,6 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
             // No pursuit: wait (looking at it) for a bounded time, then hand back to the monitor.
             outOfReachSince ??= clock.now();
             if (clock.now() - outOfReachSince > cfg.mobs.defense.reengageWaitMs) return { status: 'partial', reason: 'target_out_of_reach', effect: `target stayed out of reach (${reach.toFixed(1)} blocks); no pursuit`, confirmation: hits > 0 ? 'server_packet' : 'none', evidence: ev() };
-            await act.lookAt({ x: e.position.x, y: e.position.y + h * 0.6, z: e.position.z });
             await act.sleep(100);
             continue;
           }
@@ -496,7 +512,7 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
             return { status: 'partial', reason: 'attack_budget_exhausted', effect: `the episode's cumulative attack budget is used up (${cfg.mobs.defense.maxAttacks}); no further attack`, confirmation: hits > 0 ? 'server_packet' : 'none', evidence: ev() };
           }
           const hitSeq = session.evidence.seq;
-          await act.attackEntity(entityId, { x: e.position.x, y: e.position.y + h * 0.6, z: e.position.z });
+          await act.attackEntity(entityId);
           attacks += 1;
           lastAttackAt = clock.now();
           const dmg = await act.waitServer('damage', (d) => d.entityId === entityId, hitSeq, 800);
