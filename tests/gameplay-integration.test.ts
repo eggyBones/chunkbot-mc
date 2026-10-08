@@ -5,7 +5,7 @@ import { after, describe, it } from 'node:test';
 import { ChunkbotApp } from '../src/app/app.ts';
 import { SkillRuntime } from '../src/app/skill-runtime.ts';
 import { parseConfig } from '../src/config/load.ts';
-import { sequentialIds, systemClock } from '../src/contracts/index.ts';
+import { sequentialIds, systemClock, type TaskSpec } from '../src/contracts/index.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { FakeGame, ScriptedPlanner, until } from './helpers.ts';
 import { scene, stopPhysics } from './safety-session.ts';
@@ -87,6 +87,16 @@ describe('ordinary shared safety composition', () => {
       await app.handleTerminalLine('stop');
       assert.equal(app.safetyAuthority().basis, 'none');
       assert.ok(Object.values(sc.controls).every((on) => !on), 'stop clears actual controls synchronously');
+      const revokedGrant = store.events.find((e) => e['type'] === 'safety_episode_started')!['grantId'];
+      await app.handleTerminalLine('continue working nearby');
+      runtime.safety!.tick();
+      await until(() => store.events.filter((e) => e['type'] === 'safety_episode_started').length === 2);
+      const second = store.events.filter((e) => e['type'] === 'safety_episode_started')[1]!;
+      assert.notEqual(second['grantId'], revokedGrant, 'new manual goal authorizes a fresh finite grant despite automatic pause');
+      assert.notEqual(app.engine.status().goal!.id, id, 'replacement has no old goal authority');
+      assert.equal(runtime.safety!.grantCurrent(String(revokedGrant)), false);
+      await app.handleTerminalLine('stop');
+      assert.ok(Object.values(sc.controls).every((on) => !on));
       await runtime.closeSafety();
       assert.equal(runtime.leases.current, undefined);
       assert.ok(store.events.some((e) => e['type'] === 'safety_cleanup' && e['settled'] === true));
@@ -100,5 +110,21 @@ describe('ordinary shared safety composition', () => {
     assert.ok(guards.some((g) => g({ position: { x: 0, y: 1, z: 0 } }) === 100));
     sc.fake.setBlock(0, 0, 0, 'stone');
     assert.ok(guards.every((g) => g({ position: { x: 0, y: 1, z: 0 } }) === 0));
+  });
+
+  it('an immutable owner-directed outcome fences undirected exploration at candidate and final execution seams', async () => {
+    const sc = scene({ pool: false }); const store = new MemoryRunStore();
+    const runtime = new SkillRuntime({ config, features: { locator: true }, session: () => sc.session, connectionEpoch: () => 1, goalEpoch: () => 1, diagnosticCurrent: () => false, admission: () => ({ serverOnlineMode: false }), store, clock: systemClock, ids: sequentialIds() });
+    runtime.onGoalAdmitted({ goalId: 'goal-0001', epoch: 1, admittedAtMs: Date.now(), source: { kind: 'owner' } });
+    const snapshot = runtime.perception.take(1)!;
+    const task: TaskSpec = { objective: 'Survey nearby.', decisionInstruction: 'Observe from a frontier.', allowedCapabilities: ['explore_frontier'], targetSelectors: [], parameters: {}, completion: { predicate: 'inventory_amount', selector: 'minecraft:oak_log', atLeast: 1, mode: 'possess' } };
+    const choices = runtime.candidates.generate(task, snapshot, undefined, true);
+    assert.equal(choices.candidates.length, 0);
+    assert.ok(choices.unavailable.some((e) => e.reason === 'owner_direction_required'));
+    const writes = sc.client.written.length;
+    const outcome = await runtime.executor.execute({ id: 'act-0001', snapshotId: snapshot.id, connectionEpoch: 1, goalEpoch: 1, capability: 'explore_frontier', parameters: { frontier: { snapshotId: snapshot.id, handle: 'frt-1' } }, description: 'Undirected frontier', criteria: [], preconditions: [], timeoutMs: 1000 }, new AbortController().signal, { kind: 'goal', goalId: 'goal-0001', goalEpoch: 1, taskId: 'task-0001', requiresOwnerDirection: true });
+    assert.equal(outcome.reason, 'owner_direction_required');
+    assert.equal(sc.client.written.length, writes, 'no navigation command or lease before final refusal');
+    assert.equal(runtime.leases.current, undefined);
   });
 });

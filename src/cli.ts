@@ -527,7 +527,7 @@ async function commandRun(loaded: LoadedConfig, noTerminal: boolean, noAutonomy:
   let rl: ReturnType<typeof createInterface> | undefined;
   if (!noTerminal) {
     rl = createInterface({ input: process.stdin, terminal: false });
-    out('[chunkbot] terminal ready: type instructions, stop, status, answer [qN] <reply>, or /help');
+    out('[chunkbot] terminal ready: type instructions, stop, resume, status, or /help');
     rl.on('line', (line) => {
       void app.handleTerminalLine(line);
     });

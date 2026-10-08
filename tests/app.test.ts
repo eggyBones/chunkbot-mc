@@ -187,6 +187,16 @@ describe('lifecycle', () => {
     assert.equal(planner.requests.length, 3);
   });
 
+  it('control cleanup rejection is recorded and fails exit without skipping logout', async () => {
+    const { app, game, store } = makeApp(undefined, false, { closeControl: async () => { throw new Error('owned cleanup exceeded bound'); } });
+    const joining = app.connect(); game.completeJoin(); await joining;
+    assert.equal(await app.shutdown('operator_quit'), 1);
+    assert.equal(await app.closed, 1);
+    assert.deepEqual(game.disconnects, ['operator_stop']);
+    assert.equal(store.ofType('control_cleanup_failed').length, 1);
+    assert.equal(store.summary?.['shutdownReason'], 'operator_quit');
+  });
+
   it('shutdown cancels the goal, disconnects the bot, closes evidence, and resolves closed', async () => {
     const planner = new ScriptedPlanner();
     const { app, game, store } = await readyApp(planner);

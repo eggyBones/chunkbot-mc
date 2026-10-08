@@ -27,13 +27,25 @@
 //       on any other entity, no question
 //   O6  stop during work: "remove that floating tree", owner `stop` after the first goal action
 //       -> goal cancelled (owner_stop), no later goal action, latch paused; no question
+//   O7W manual follow without memory/autonomy: submerged outside an 8-block normal
+//       anchor -> finite safety grant; stop revokes it; a new manual goal grants fresh safety
+//   O8M/O8D ordinary follow with an unarmed/armed bot and one visible adult zombie:
+//       code-owned retreat/defense, server survival/separation/defeat evidence
+//   RC1  partial additional-log job -> death -> actual own recovery -> remaining original job
+//   RC2/RC2H/RC2C persistent follow, partial construction and craft/equipment continuation
+//   RC3/RC3N/RC3D stop/resume/restart, new owner supersession, another recovery death
+//   RC4  no held owner job: actual recovery -> fresh useful progression
+// Recovery uses the fixture's UNCHANGED respawn point and finite own-death route;
+// no spawnpoint/bed/world-spawn mutation, teleport rescue or restored gear.
 //
 // Footprint (complete; restored and verified at cleanup):
 //   blocks    x 196..224, z 190..224, y -63..-50 (the standard skills scene area): reset to
 //             dirt (y -63..-62), grass (y -61), air (y -60..-50) plus the standard oak trunk at
 //             208,-60..-58,202, and per scenario: oak trees (x 198..200, z 196..198 / 214..216),
 //             a floating birch remnant (x 211..213, z 204..206, y -58..-55;
-//             O3u shifts it up one). Cleanup re-applies
+//             O3u shifts it up one); gather sources x 197..213,z 192..199,y -60..-55;
+//             O7W dirt platform x 200..223,z 194..219,y -60..-57, 7x7 water pool.
+//             Cleanup re-applies
 //             the standard reset and verifies sample positions.
 //   entities  kills ONLY inside the box x 196..224, y -64..-24, z 190..224; NoAI chickens/cow
 //             summoned inside it with tags `og_*`.
@@ -44,7 +56,10 @@
 //             this run's additions are removed and verified at the end.
 // No difficulty, gamerule or time change. Independent data directory and a fresh memory/
 // autonomy scope under the report directory. The automatic pause latch is set right after
-// ready (`stop`), so no automatic progression/support runs; manual owner goals still act.
+// ready (`stop`); recovery cases explicitly resume support, and RC4 allows progression.
+// O7W removes memory/autonomy/locator/survival from its generated fixture profile.
+// Dummy player travel for recovery includes the unchanged respawn-to-site path;
+// all block/entity mutations stay in the declared scene. Each operator trigger is recorded.
 //
 //   npm run build && npm run fixture -- status            (under the granted lease)
 //   node scripts/ordinary-goal-live-check.ts --fixture-lease <granted id> [--fixture 26.2] [--jev real|fault]
@@ -109,6 +124,7 @@ export const LAYOUT = {
     trunks: [{ x: 198, z: 193 }, { x: 202, z: 193 }, { x: 206, z: 193 }, { x: 198, z: 198 }, { x: 202, z: 198 }, { x: 206, z: 198 }],
     stone: { x1: 210, x2: 213, z1: 193, z2: 195, y: -60 },
   },
+  water: { platform: { x1: 200, x2: 223, z1: 194, z2: 219, y1: -60, y2: -57 }, pool: { x1: 204, x2: 210, z1: 203, z2: 209 }, bot: { x: 218.5, y: -56, z: 200.5 }, owner: { x: 218.5, y: -56, z: 198.5 }, submerged: { x: 207.5, y: -60, z: 206.5 } },
 } as const;
 
 /** Owner-facing question/answer prompts in CLI output lines (MB-PLAN-006 boundary). */
@@ -122,6 +138,26 @@ export function parseForceloadQuery(reply: string): Set<string> | null {
   if (pairs.length > 0) return new Set(pairs);
   if (/^no\b.*force ?load/i.test(reply.trim())) return new Set();
   return null;
+}
+
+/** Shared ordinary-pipeline continuation oracle; supporting recovery is a separate goal. */
+export function verifyOrdinaryContinuation(events: Json[], goalId: string): { capture: Json; bound: Json; admission: Json } {
+  const capture = events.find((e) => e.type === 'continuation_checkpoint' && e.goalId === goalId && e.state === 'held');
+  const original = events.find((e) => e.type === 'goal_admitted' && e.goalId === goalId);
+  const admission = events.find((e) => e.type === 'goal_admitted' && e.goalId === goalId && e.continuation);
+  const bound = events.find((e) => e.type === 'goal_continuation_bound' && e.goalId === goalId && e.epoch === admission?.epoch);
+  check(capture && original && admission && bound, 'held, original, continued admission and fresh binding are all recorded');
+  check(admission.epoch > original.epoch && admission.continuation.number >= 1, 'same logical goal receives a fresh epoch');
+  for (const field of ['outcomeCanonical', 'caps', 'deadlineAtMs', 'admissionBaseline']) check(capture[field] !== undefined && JSON.stringify(capture[field]) === JSON.stringify(bound[field]), `original ${field} is immutable`);
+  check(bound.carriedTasks === 0 && bound.carriedHandles === 0, 'no executable task/handle replay');
+  const anchors = events.filter((e) => e.type === 'goal_travel_anchor' && e.goalId === goalId);
+  const oldAnchor = anchors.find((e) => e.epoch === original.epoch);
+  const freshAnchor = anchors.find((e) => e.epoch === admission.epoch);
+  check(oldAnchor?.admitted && freshAnchor?.admitted && JSON.stringify(oldAnchor.anchor) === JSON.stringify(freshAnchor.anchor) && oldAnchor.radius === freshAnchor.radius, 'original admission travel anchor/radius preserved');
+  for (const [k, v] of Object.entries(capture.counters)) check(Number(admission.continuation.counters[k]) >= Number(v), `${k} cannot refill`);
+  const oldTasks = new Set(events.filter((e) => e.type === 'task_admitted' && e.goalId === goalId && e.epoch === original.epoch).map((e) => e.taskId));
+  check(events.filter((e) => e.type === 'task_admitted' && e.goalId === goalId && e.epoch === admission.epoch).every((e) => !oldTasks.has(e.taskId)), 'continued tasks have fresh identities');
+  return { capture, bound, admission };
 }
 
 interface Result {
@@ -290,6 +326,34 @@ class Harness {
     return out;
   }
 
+  async position(name = BOT): Promise<V3> {
+    const reply = await this.query(`data get entity ${name} Pos`);
+    const m = /\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]/.exec(reply);
+    check(m, `server position unreadable: ${reply}`);
+    return { x: Number(m[1]), y: Number(m[2]), z: Number(m[3]) };
+  }
+
+  async waitForTruth(label: string, fn: () => Promise<boolean>, timeoutMs = 60_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) { if (await fn()) return; await sleep(200); }
+    throw new Error(`bounded server-truth wait expired: ${label}`);
+  }
+
+  async waterScene(): Promise<void> {
+    const { platform: p, pool } = LAYOUT.water;
+    await this.setup(`fill ${p.x1} ${p.y1} ${p.z1} ${p.x2} ${p.y2} ${p.z2} dirt`);
+    await this.setup(`fill ${pool.x1} ${p.y1} ${pool.z1} ${pool.x2} ${p.y2} ${pool.z2} water`);
+    for (const [name, at] of [[BOT, LAYOUT.water.bot], [OWNER, LAYOUT.water.owner]] as const) await this.setup(`tp ${name} ${at.x} ${at.y} ${at.z}`);
+    await sleep(800);
+  }
+
+  async interruptByDeath(goalId: string): Promise<void> {
+    check(/false\b/.test(await this.query('gamerule keep_inventory')), 'loss recovery requires unchanged keep_inventory=false');
+    await this.setup(`kill ${BOT}`); // Bounded operator trigger, never recovery credit.
+    await this.waitEvent((e) => e.type === 'goal_terminal' && e.goalId === goalId && e.reason === 'death', 20_000, 'owned death revocation');
+    await this.waitEvent((e) => e.type === 'continuation_checkpoint' && e.goalId === goalId && e.state === 'held', 20_000, 'held semantic checkpoint');
+  }
+
   async startJev(): Promise<string> {
     this.jevServer = createServer((req, res) => {
       let body = '';
@@ -333,10 +397,11 @@ class Harness {
   async start(name: string, env: NodeJS.ProcessEnv): Promise<CliProcess> {
     const p = new CliProcess(name, ['run', '--config', this.configPath], env);
     this.cli = p;
+    this.runs.push({ name, pid: p.pid, events: '', exit: null });
     const runLine = await p.waitSince(/\[chunkbot\] run \S+; evidence: /, 0, 40_000);
     this.eventsPath = /evidence: (\S+)$/.exec(runLine)?.[1] ?? '';
+    this.runs.at(-1)!.events = this.eventsPath;
     await p.waitSince(new RegExp(`\\[chunkbot\\] ready: version=${VERSION_RE}`), 0, 60_000);
-    this.runs.push({ name, pid: p.pid, events: this.eventsPath, exit: null });
     return p;
   }
   async quit(): Promise<void> {
@@ -464,10 +529,46 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     models: { ...base.models, planner: { ...base.models.planner, mode: 'codex' }, ...(endpoint ? { decision: { ...base.models.decision, endpoint } } : {}) },
     memory: { worldProfile: h.memoryConfig.worldProfile, worldRevision: h.memoryConfig.worldRevision, botProfile: h.memoryConfig.botProfile },
     autonomy: { ...base.autonomy, startDelayMs: 20_000 },
+    // Recovery may return from the fixture's unchanged respawn point using L's
+    // finite own-death route. No spawnpoint/bed/world-spawn mutation or RCON rescue.
+    locator: { ...base.locator, routes: { ...base.locator?.routes, sources: ['owner', 'support'], destinations: ['owner', 'owner_destination', 'own_death'] } },
   };
   h.configPath = join(outDir, 'ordinary-goals.config.json');
   writeFileSync(h.configPath, `${JSON.stringify(cfg, null, 2)}\n`);
   const env: NodeJS.ProcessEnv = jevMode === 'fault' ? { ...process.env, OPENROUTER_API_KEY: 'fault-fixture-placeholder-key' } : { ...process.env };
+  let activeProfile = cfg;
+
+  const freshCli = async (label: string, freshScope = true, plain = false) => {
+    if (h.cli) {
+      await h.quiesce();
+      await h.setup(`clear ${BOT}`); await h.setup(`effect clear ${BOT}`);
+      check(/\[\]$/.test((await h.query(`data get entity ${BOT} Inventory`)).trim()), 'empty online inventory before CLI replacement');
+      check(/\[\]$|Found no elements matching/i.test(await h.query(`data get entity ${BOT} active_effects`)), 'empty online effects before CLI replacement');
+      await h.quit();
+    }
+    const profile: Json = JSON.parse(JSON.stringify(freshScope || plain ? cfg : activeProfile)) as Json;
+    if (freshScope) profile.memory.worldProfile += `-${label}-${h.runs.length}`;
+    if (plain) {
+      delete profile.memory; delete profile.autonomy; delete profile.survival; delete profile.locator;
+      profile.limits.travelRadius = 8;
+    }
+    h.configPath = join(outDir, `${label}.config.json`);
+    writeFileSync(h.configPath, JSON.stringify(profile, null, 2));
+    activeProfile = profile;
+    await h.start(`run-${label}`, env);
+    await h.quiesce();
+  };
+
+  const startFollowing = async () => {
+    const goal = await h.goal('follow me');
+    await h.waitEvent((e) => e.type === 'task_admitted' && e.goalId === goal.goalId, GOAL_TIMEOUT_MS, 'ordinary follow task');
+    return goal;
+  };
+
+  const waitContinued = async (goalId: string) => {
+    await h.waitEvent((e) => e.type === 'goal_continuation_bound' && e.goalId === goalId, GOAL_TIMEOUT_MS, 'recovery then fresh same-goal binding');
+    return verifyOrdinaryContinuation(h.events(), goalId);
+  };
 
   let report: Json = {};
   try {
@@ -630,6 +731,195 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       check(end.state === 'cancelled' && end.reason === 'owner_stop', 'cancelled by the owner stop');
       check(later.length === 0, 'no goal action after the terminal');
     });
+
+    await h.scenarioRun('O7W', 'ordinary manual follow without memory/autonomy: finite water escape outside the normal anchor; stop and fresh authorization', only, async (ev) => {
+      await freshCli('plain-water', true, true);
+      await h.resetScene(); await h.waterScene();
+      const first = await startFollowing();
+      const before = Date.now();
+      const at = LAYOUT.water.submerged;
+      await h.setup(`tp ${BOT} ${at.x} ${at.y} ${at.z}`);
+      const episode = await h.waitEvent((e) => e.type === 'safety_episode_started' && Date.parse(String(e.t)) >= before, 30_000, 'local water preemption');
+      check(episode.suspended?.goalId === first.goalId, 'safety retains the active owner job');
+      const stopAt = Date.now(); h.say('stop');
+      await h.waitEvent((e) => e.type === 'goal_terminal' && e.goalId === first.goalId && e.reason === 'owner_stop', 15_000, 'stop revocation');
+      const revoked = await h.waitEvent((e) => e.type === 'safety_grant_revoked' && e.grantId === episode.grantId && e.reason === 'owner_stop', 15_000, 'safety stop revoke');
+      check(Date.parse(String(revoked.t)) - stopAt <= 250, 'stop synchronously revokes safety within the target');
+      await sleep(1_000);
+      const p0 = await h.position(); await sleep(1_000); const p1 = await h.position();
+      check(Math.hypot(p1.x-p0.x, p1.z-p0.z) < 0.6, 'no horizontal motion after stop');
+      const second = await h.goal('follow me');
+      const next = await h.waitEvent((e) => e.type === 'safety_episode_started' && e.grantId !== episode.grantId && e.suspended?.goalId === second.goalId, 30_000, 'new manual finite safety grant');
+      await h.waitEvent((e) => e.type === 'safety_episode_ended' && e.episodeId === next.episodeId && ['resolved', 'improved'].includes(e.outcome), 60_000, 'verified water improvement');
+      await h.waitForTruth('dry bank reached without rescue', async () => {
+        const p = await h.position(); const pool = LAYOUT.water.pool;
+        return p.y >= -56.2 && (p.x < pool.x1 || p.x >= pool.x2+1 || p.z < pool.z1 || p.z >= pool.z2+1) && await h.health(BOT) > 0;
+      });
+      const anchor = h.events().find((e) => e.type === 'goal_travel_anchor' && e.goalId === first.goalId)!;
+      check(anchor.radius === 8 && Math.hypot(at.x-anchor.anchor.x,at.z-anchor.anchor.z) > anchor.radius, 'hazard staging really lies outside the original normal bound');
+      check(h.events().filter((e) => e.type === 'goal_travel_anchor' && e.goalId === first.goalId).length === 1, 'safety never reanchors the interrupted job');
+      h.noQuestions(second.goalId, second.from, ev);
+      check(!h.events().some((e) => e.type === 'goal_terminal' && e.goalId === second.goalId && e.reason === 'outcome_verified'), 'water safety never completes persistent follow');
+      ev.push(`no memory/autonomy, original normal radius 8; first grant ${episode.grantId} stopped; fresh grant ${next.grantId}; dry server position ${JSON.stringify(await h.position())}`);
+    });
+
+    for (const armed of [false, true]) await h.scenarioRun(armed ? 'O8D' : 'O8M', `ordinary follow: ${armed ? 'equipped defense of one engaging adult zombie' : 'unarmed avoidance of a visible zombie'} through the single safety actuator`, only, async (ev) => {
+      await freshCli(armed ? 'mob-defense' : 'mob-retreat'); await h.resetScene();
+      check(!/peaceful/i.test(await h.query('difficulty')), 'mob trial needs an unchanged non-peaceful fixture; no automatic settings change');
+      for (const c of [`effect give ${BOT} minecraft:instant_health 1 4 true`, `effect give ${BOT} minecraft:saturation 1 10 true`]) await h.setup(c);
+      if (armed) for (const c of [`item replace entity ${BOT} hotbar.0 with minecraft:iron_sword`, `item replace entity ${BOT} armor.head with minecraft:iron_helmet`, `item replace entity ${BOT} armor.chest with minecraft:iron_chestplate`]) await h.setup(c);
+      const goal = await startFollowing(); const at = await h.position(); const since = Date.now();
+      const tag = armed ? 'og_defense' : 'og_retreat';
+      await h.setup(`summon zombie ${at.x+2.5} ${at.y} ${at.z} {IsBaby:0b,PersistenceRequired:1b,Tags:["${tag}"]}`);
+      await h.setup(`effect give @e[tag=${tag},${ENTITY_BOX}] minecraft:fire_resistance infinite 0 true`);
+      const ep = await h.waitEvent((e) => e.type === 'safety_episode_started' && e.suspended?.goalId === goal.goalId && Date.parse(String(e.t)) >= since, 30_000, 'local mob episode');
+      check(ep.response === (armed ? 'defend' : 'retreat'), `expected code-owned ${armed ? 'defense' : 'retreat'}, got ${ep.response}`);
+      const ended = await h.waitEvent((e) => e.type === 'safety_episode_ended' && e.episodeId === ep.episodeId, 60_000, 'finite mob episode');
+      check(await h.health(BOT) > 0, 'bot survived');
+      const actions = h.events().filter((e) => e.type === 'skill_outcome' && e.owner === 'safety' && Date.parse(String(e.t)) >= since);
+      if (armed) {
+        check(!await h.entityExists(tag), 'server confirms zombie absent');
+        check(actions.some((a) => a.evidence?.defeatedByServerStatus === true), 'defeat requires server status evidence');
+      } else {
+        check(!actions.some((a) => a.evidence?.attacksSent > 0), 'unarmed response sends no attacks');
+        const reply = await h.query(`data get entity @e[tag=${tag},limit=1,${ENTITY_BOX}] Pos`);
+        const m = /\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]/.exec(reply);
+        check(m, 'threat position readable after retreat');
+        const p = await h.position(); check(Math.hypot(p.x-Number(m[1]),p.z-Number(m[3])) >= 4.5, 'server separation increased from initial 2.5');
+      }
+      h.noQuestions(goal.goalId, goal.from, ev);
+      ev.push(`episode ${ep.episodeId}, ${ep.response}->${ended.outcome}; same owner goal ${goal.goalId}; health ${await h.health(BOT)}`);
+    });
+
+    await h.scenarioRun('RC1', 'resource job: partial new logs, death, own recovery, same-goal remaining work without double credit', only, async (ev) => {
+      await freshCli('rc1'); await h.resetScene(); await h.buildGatherSources();
+      await h.setup(`give ${BOT} minecraft:oak_log 8`);
+      const goal = await h.goal('Gather ten additional oak logs.'); h.say('resume');
+      await h.waitForTruth('verified partial acquisition before death', async () => { const n = (await h.inventory())['minecraft:oak_log'] ?? 0; return n > 8 && n < 18; }, GOAL_TIMEOUT_MS);
+      const held = (await h.inventory())['minecraft:oak_log']!;
+      await h.interruptByDeath(goal.goalId);
+      const continued = await waitContinued(goal.goalId);
+      const own = h.events().filter((e) => e.type === 'survival_regained' || e.type === 'survival_incident_return');
+      check(own.some((e) => e.key === 'minecraft:oak_log'), 'actual server-attributed own returns occurred');
+      const line = continued.bound.counts.find((c: Json) => c.basis === 'possession');
+      // The kill may race one last pickup after the pre-death RCON sample.
+      // Use the packet-frozen held count at interruption for exact credit.
+      check(line && line.held > 8 && line.credited > 0 && line.credited <= line.held-8, 'restored credit excludes the eight old logs from the frozen count');
+      const end = await h.waitEvent((e) => e.type === 'goal_terminal' && e.goalId === goal.goalId && Date.parse(String(e.t)) > Date.parse(String(continued.bound.t)), GOAL_TIMEOUT_MS, 'continued original resource outcome');
+      check(end.reason === 'outcome_verified' && end.state === 'completed', 'original resource outcome verified');
+      check((await h.inventory())['minecraft:oak_log']! >= 18, 'server holds original eight plus ten new logs');
+      h.noQuestions(goal.goalId, goal.from, ev);
+      ev.push(`baseline 8, pre-death ${held}, carried credit ${line.credited}; same goal ${goal.goalId}, epoch ${continued.admission.epoch}; final ${JSON.stringify(await h.inventory())}`);
+    });
+
+    await h.scenarioRun('RC2', 'persistent follow: own recovery freshly resumes the same logical job without claiming completion', only, async (ev) => {
+      await freshCli('rc2-follow'); await h.resetScene();
+      const goal = await startFollowing(); h.say('resume');
+      await h.interruptByDeath(goal.goalId);
+      const c = await waitContinued(goal.goalId);
+      await h.waitEvent((e) => e.type === 'task_admitted' && e.goalId === goal.goalId && e.epoch === c.admission.epoch, GOAL_TIMEOUT_MS, 'fresh follow task');
+      await sleep(2_000);
+      check(!h.events().some((e) => e.type === 'goal_terminal' && e.goalId === goal.goalId && e.reason === 'outcome_verified'), 'recovery never completes persistent follow');
+      h.noQuestions(goal.goalId, goal.from, ev);
+      ev.push(`same follow ${goal.goalId} resumed epoch ${c.admission.epoch}; original outcome/baseline/caps/deadline preserved; fresh task identity`);
+    });
+
+    await h.scenarioRun('RC2H', 'partial house: original durable project and verified placements survive death, recovery and fresh continuation', only, async (ev) => {
+      await freshCli('rc2-house'); await h.resetScene();
+      for (const c of [`give ${BOT} minecraft:cobblestone 64`, `give ${BOT} minecraft:crafting_table 1`, `give ${BOT} minecraft:furnace 1`, `give ${BOT} minecraft:chest 1`]) await h.setup(c);
+      const at = LAYOUT.houseOwner; await h.setup(`tp ${OWNER} ${at.x} ${at.y} ${at.z}`);
+      const goal = await h.goal('Set up your house here.'); h.say('resume');
+      const placed = await h.waitEvent((e) => e.type === 'task_action' && e.goalId === goal.goalId && e.evidence?.placed && e.status === 'succeeded', GOAL_TIMEOUT_MS, 'first server-confirmed construction cell');
+      await h.interruptByDeath(goal.goalId);
+      const c = await waitContinued(goal.goalId);
+      const end = await h.waitEvent((e) => e.type === 'goal_terminal' && e.goalId === goal.goalId && Date.parse(String(e.t)) > Date.parse(String(c.bound.t)), 30*60_000, 'remaining original construction');
+      check(end.reason === 'outcome_verified' && end.state === 'completed', 'same home outcome verified');
+      const builds = h.goalActions(goal.goalId).filter((a) => a.evidence?.placed && a.status === 'succeeded');
+      const coordinate = (a: Json) => JSON.stringify(a.evidence.at);
+      check(builds.filter((a) => coordinate(a) === coordinate(placed) && a.evidence.placed === placed.evidence.placed).length === 1, 'verified original cell was not placed again');
+      check(await h.blockIs(placed.evidence.at, placed.evidence.placed), 'original placed cell still agrees with server');
+      h.noQuestions(goal.goalId, goal.from, ev);
+      ev.push(`partial placement ${coordinate(placed)} preserved; same project/outcome/job ${goal.goalId}; ${builds.length} server-confirmed cells; no duplicate original placement`);
+    });
+
+    await h.scenarioRun('RC2C', 'craft/equipment: historical craft credit survives death while current equipment is freshly verified', only, async (ev) => {
+      await freshCli('rc2-craft'); await h.resetScene();
+      await h.setup(`give ${BOT} minecraft:oak_log 6`);
+      const goal = await h.goal('Craft sixteen oak planks and equip a wooden pickaxe.'); h.say('resume');
+      const first = await h.waitEvent((e) => e.type === 'task_action' && e.goalId === goal.goalId && e.capability === 'craft_item' && e.status === 'succeeded', GOAL_TIMEOUT_MS, 'first verified craft');
+      await h.interruptByDeath(goal.goalId);
+      const c = await waitContinued(goal.goalId);
+      const end = await h.waitEvent((e) => e.type === 'goal_terminal' && e.goalId === goal.goalId && Date.parse(String(e.t)) > Date.parse(String(c.bound.t)), GOAL_TIMEOUT_MS, 'remaining craft and current equipment');
+      check(end.state === 'completed' && end.reason === 'outcome_verified', 'original compound outcome verified');
+      check(/minecraft:wooden_pickaxe/.test(await h.query(`data get entity ${BOT} SelectedItem.id`)), 'server confirms currently equipped pickaxe');
+      const originalEffects = c.bound.counts.filter((n: Json) => n.basis === 'effect');
+      check(originalEffects.length > 0 && originalEffects.some((n: Json) => n.credited > 0), 'verified historical craft credit carried rather than replayed');
+      h.noQuestions(goal.goalId, goal.from, ev);
+      ev.push(`first craft ${first.actionId}; original effect credit ${JSON.stringify(originalEffects)}; current server equipment verified`);
+    });
+
+    await h.scenarioRun('RC3', 'held job: stop/resume, new owner intake and process restart never replay the checkpoint', only, async (ev) => {
+      await freshCli('rc3'); await h.resetScene();
+      const goal = await startFollowing();
+      await h.interruptByDeath(goal.goalId); // Automatic latch remains paused: hold recovery for this adverse gate.
+      h.say('stop');
+      await h.waitEvent((e) => e.type === 'continuation_checkpoint' && e.goalId === goal.goalId && e.state === 'stopped_by_owner', 15_000, 'explicit checkpoint fence');
+      h.say('resume'); await sleep(3_000);
+      check(!h.events().some((e) => e.type === 'goal_admitted' && e.goalId === goal.goalId && e.continuation), 'resume cannot revive the stopped job');
+      const replacement = await h.goal('Stand next to me.');
+      check(replacement.goalId !== goal.goalId, 'new owner command has a distinct job');
+      await h.quiesce();
+      h.noQuestions(goal.goalId, goal.from, ev);
+      // Keep the same durable scope, but start an actual new CLI session.
+      const prior = h.events(); await freshCli('rc3-restart', false);
+      h.cli!.send('status'); await sleep(1_000);
+      check(!h.events().some((e) => e.type === 'goal_admitted' && [goal.goalId,replacement.goalId].includes(e.goalId)), 'restart replays neither checkpoint nor replacement');
+      check(prior.some((e) => e.type === 'continuation_checkpoint' && e.goalId === goal.goalId), 'original failed/held evidence retained in the first run');
+      check(questionLines(h.cli!.since(0)).length === 0, 'no question after process restart');
+      ev.push(`stopped ${goal.goalId}; resume did not revive it; new job ${replacement.goalId}; separate CLI process restart has no replay`);
+    });
+
+    await h.scenarioRun('RC3N', 'new owner command synchronously supersedes an unfenced held checkpoint', only, async (ev) => {
+      await freshCli('rc3-new-owner'); await h.resetScene();
+      const old = await startFollowing(); await h.interruptByDeath(old.goalId);
+      const next = await h.goal('Stand next to me.');
+      await h.waitEvent((e) => e.type === 'continuation_checkpoint' && e.goalId === old.goalId && e.state === 'superseded_by_owner', 15_000, 'new intake fences held work');
+      check(next.goalId !== old.goalId && !h.events().some((e) => e.type === 'goal_admitted' && e.goalId === old.goalId && e.continuation), 'held old job never reacquires ownership');
+      h.noQuestions(old.goalId, old.from, ev);
+      ev.push(`held ${old.goalId} superseded by ${next.goalId}, no continuation or old task replay`);
+    });
+
+    await h.scenarioRun('RC3D', 'another death during actual recovery retains the owner checkpoint and bounded recovery allowance', only, async (ev) => {
+      await freshCli('rc3-recovery-death'); await h.resetScene();
+      const old = await startFollowing(); h.say('resume'); await h.interruptByDeath(old.goalId);
+      const recovery = await h.waitEvent((e) => e.type === 'survival_support_admitted' && e.routine === 'death_recovery', GOAL_TIMEOUT_MS, 'first actual supporting recovery');
+      const original = h.events().find((e) => e.type === 'continuation_checkpoint' && e.goalId === old.goalId && e.state === 'held')!;
+      await h.setup(`kill ${BOT}`);
+      await h.waitEvent((e) => e.type === 'goal_terminal' && e.goalId === recovery.goalId && e.reason === 'death', 20_000, 'support death revocation');
+      await sleep(5_000);
+      const linked = h.events().filter((e) => e.type === 'survival_death_captured');
+      check(linked.length >= 2, 'both own deaths were packet-captured');
+      const attempts = h.events().filter((e) => e.type === 'survival_support_admitted' && e.routine === 'death_recovery');
+      for (const id of new Set(attempts.map((e) => e.episodeId ?? h.events().find((a) => a.type === 'goal_admitted' && a.goalId === e.goalId)?.source?.episodeId))) check(attempts.filter((e) => (e.episodeId ?? h.events().find((a) => a.type === 'goal_admitted' && a.goalId === e.goalId)?.source?.episodeId) === id).length <= 2, 'each recovery episode keeps its finite attempt ceiling');
+      for (const cp of h.events().filter((e) => e.type === 'continuation_checkpoint' && e.goalId === old.goalId)) {
+        check(cp.deadlineAtMs === original.deadlineAtMs && cp.outcomeCanonical === original.outcomeCanonical && JSON.stringify(cp.caps) === JSON.stringify(original.caps), 'another recovery death never refills owner authority');
+      }
+      h.noQuestions(old.goalId, old.from, ev);
+      ev.push(`owner ${old.goalId} retained; ${linked.length} actual deaths; ${attempts.length} recovery admissions; original owner deadline/outcome/caps unchanged`);
+    });
+
+    await h.scenarioRun('RC4', 'without a held owner job: actual recovery concludes then fresh useful progression is admitted', only, async (ev) => {
+      await freshCli('rc4'); await h.resetScene(); await h.buildGatherSources();
+      // Fresh process/scope with no manual directive. Death is the only operator
+      // trigger; no old sentence, handle, inventory or task is replayed.
+      await h.setup(`kill ${BOT}`); h.say('resume');
+      const recovery = await h.waitEvent((e) => e.type === 'survival_support_admitted' && e.routine === 'death_recovery', GOAL_TIMEOUT_MS, 'ordinary automatic recovery');
+      const done = await h.waitEvent((e) => e.type === 'survival_support_ended' && e.goalId === recovery.goalId && e.state === 'completed', GOAL_TIMEOUT_MS, 'code-verified recovery conclusion');
+      const next = await h.waitEvent((e) => e.type === 'goal_admitted' && e.source?.kind === 'progression' && Date.parse(String(e.t)) > Date.parse(String(done.t)), GOAL_TIMEOUT_MS, 'fresh progression after recovery');
+      await h.waitEvent((e) => e.type === 'task_action' && e.goalId === next.goalId && e.status === 'succeeded', GOAL_TIMEOUT_MS, 'useful ordinary progression action');
+      check(!h.events().some((e) => e.type === 'goal_continuation_bound'), 'no held owner job invented');
+      ev.push(`support recovery ${recovery.goalId} completed, fresh progression ${next.goalId} performed verified work`);
+    });
   } finally {
     const step = async (name: string, fn: () => Promise<string | void>) => {
       try {
@@ -647,18 +937,24 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       });
     }
     if (h.forceloadBefore) {
-      await step('entities', async () => `kill non-players in the entity box: ${(await h.setup(`kill @e[type=!player,${ENTITY_BOX}]`)).slice(0, 80)}`);
+      await step('entities', async () => {
+        await h.setup(`kill @e[type=!player,${ENTITY_BOX}]`); await sleep(1_600);
+        await h.setup(`kill @e[type=!player,${ENTITY_BOX}]`);
+        check(/Test passed/i.test(await h.query(`execute unless entity @e[type=!player,${ENTITY_BOX}]`)), 'no scene entities after cleanup');
+        return 'bounded non-player removal and server proof of no scene entities';
+      });
       await step('blocks', async () => {
         for (const c of h.blockResetCommands()) await h.setup(c);
-        const samples: V3[] = [...LAYOUT.birchLogs, ...LAYOUT.oakTrees.flatMap((t): V3[] => [...t.logs]), { x: LAYOUT.houseOwner.x - 0.5, y: -60, z: LAYOUT.houseOwner.z - 0.5 }];
+        const samples: V3[] = [...LAYOUT.birchLogs, ...LAYOUT.oakTrees.flatMap((t): V3[] => [...t.logs]), ...LAYOUT.gather.trunks.map((p) => ({ ...p, y: -60 })), LAYOUT.water.submerged, { x: LAYOUT.houseOwner.x - 0.5, y: -60, z: LAYOUT.houseOwner.z - 0.5 }];
         for (const p of samples) if (!(await h.blockIs({ x: Math.floor(p.x), y: p.y, z: Math.floor(p.z) }, 'minecraft:air'))) throw new Error(`area not restored at ${p.x},${p.y},${p.z}`);
         return `standard area reset applied and ${samples.length} sample positions verified air`;
       });
       for (const [name, command] of [['bot-inventory', `clear ${BOT}`], ['owner-inventory', `clear ${OWNER}`], ['bot-effects', `effect clear ${BOT}`]] as const) {
         await step(name, async () => {
+          const player = name === 'owner-inventory' ? OWNER : BOT;
+          check(/Test passed/i.test(await h.query(`execute if entity @a[name=${player}]`)), 'cleanup player is online');
           const r = await h.setup(command);
           check(/^Removed |^No items were found|no effects to remove/i.test(r.trim()), `${command} failed: ${r}`);
-          const player = name === 'owner-inventory' ? OWNER : BOT;
           const field = name === 'bot-effects' ? 'active_effects' : 'Inventory';
           const proof = await h.query(`data get entity ${player} ${field}`);
           check(field === 'Inventory' ? /\[\]$/.test(proof.trim()) : /\[\]$|Found no elements matching/i.test(proof), `server ${field} was not verified empty while ${player} was online: ${proof}`);
@@ -695,7 +991,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     const counted = h.results.filter((r) => r.status !== 'skipped');
     const scenariosPass = counted.length > 0 && counted.every((r) => r.status === 'pass');
     const cleanupFailures = h.cleanup.filter((c) => !c.ok);
-    const ev = readJsonl(h.eventsPath);
+    const ev = h.runs.flatMap((r) => readJsonl(r.events));
     report = {
       check: `MB-PLAN-006 ordinary-goal live check (REAL subscription planner; Jev ${jevMode === 'real' ? 'REAL' : 'LOOPBACK FAULT (harness validation only)'})`,
       fixture: PINS.profile,
