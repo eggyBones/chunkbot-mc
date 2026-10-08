@@ -56,6 +56,54 @@ function treeScene() {
 const signal = () => new AbortController().signal;
 
 describe('MB-PLAN-006 N-G3 observation groups', () => {
+  it('N1-R5: three independent removal completions permit each bound member, while primary, registry, stale and original-goal fences remain binding', async () => {
+    const w = treeScene();
+    const positions = [{x:0,y:1,z:2},{x:1,y:1,z:2},{x:2,y:1,z:2}];
+    const other = {x:-1,y:1,z:2};
+    for (const p of [...positions,other]) w.scene.setBlock(p.x,p.y,p.z,'birch_leaves');
+    const snap = w.perception.take(3)!;
+    const refs = positions.map((p) => {
+      const b = snap.blocks.find((b) => b.at.x===p.x && b.at.y===p.y && b.at.z===p.z);
+      assert.ok(b, 'every member is freshly visible');
+      return {kind:'observed',snapshotId:snap.id,handle:b.handle} as const;
+    });
+    const completion: OutcomePredicate = {predicate:'all',of:refs.map((target)=>({predicate:'blocks_removed',target,selector:'minecraft:birch_leaves'}))};
+    const bound = await w.predicates.bind(completion,signal());
+    const originalScope = w.predicates.captureContinuation(bound).removal;
+    const task: TaskSpec = {objective:'Remove the three shown bound blocks.',decisionInstruction:'Pick a current member.',allowedCapabilities:['mine_block'],targetSelectors:refs,parameters:{},completion};
+    const fresh = w.perception.take(3)!;
+    const offered = w.generator.generate(task,fresh,originalScope);
+    assert.equal(offered.candidates.length,3,JSON.stringify(offered.unavailable));
+    const offeredPositions = offered.candidates.map((c)=>{
+      const t=c.parameters['target'] as {snapshotId:string;handle:string};
+      const r=w.perception.resolve(t.snapshotId,t.handle);
+      assert.ok(!('error' in r) && r.target.kind==='block');
+      return `${r.target.x},${r.target.y},${r.target.z}`;
+    });
+    assert.deepEqual(new Set(offeredPositions),new Set(positions.map(p=>`${p.x},${p.y},${p.z}`)));
+    assert.equal(w.generator.generate({...task,targetSelectors:[refs[0]!] },fresh,originalScope).candidates.length,1,'completion discovery cannot broaden an explicit primary target');
+    const foreign=fresh.blocks.find(b=>b.at.x===other.x && b.at.y===other.y && b.at.z===other.z)!;
+    assert.ok(foreign);
+    const foreignTarget={kind:'observed',snapshotId:fresh.id,handle:foreign.handle} as const;
+    assert.equal(w.generator.generate({...task,targetSelectors:[foreignTarget]},fresh).candidates.length,0,'disjoint task and completion work sets cannot combine');
+    assert.equal(w.generator.generate({...task,targetSelectors:[...refs,{kind:'registry',key:'minecraft:oak_leaves'}]},fresh,originalScope).candidates.length,0,'registry remains binding');
+    const substituted:TaskSpec={...task,targetSelectors:[foreignTarget],completion:{predicate:'blocks_removed',target:foreignTarget,selector:'minecraft:birch_leaves'}};
+    const unfenced=w.generator.generate(substituted,fresh);
+    assert.equal(unfenced.candidates.length,1,'discriminating foreign positive control');
+    assert.equal(w.generator.generate(substituted,fresh,originalScope).candidates.length,0,'fresh sibling work cannot enlarge the original outcome');
+    w.perception.admitTravelAnchor(3);
+    const executor = new SkillExecutorImpl({registry:w.registry,leases:w.leases,session:()=>w.session,services:w.services,goalEpoch:()=>3,store:new MemoryRunStore()});
+    const writes=w.client.written.length;
+    const denied=await executor.execute(unfenced.candidates[0]!,signal(),{kind:'goal',goalId:'goal-0001',goalEpoch:3,taskId:'task-0001',destructiveScope:originalScope});
+    assert.equal(denied.reason,'destructive_target_conflict'); assert.equal(w.client.written.length,writes);
+    for(const p of positions.slice(0,2)) w.scene.setBlock(p.x,p.y,p.z,'air');
+    const later=w.perception.take(3)!;
+    assert.equal(w.generator.generate({...task,targetSelectors:[refs[0]!]},later,originalScope).candidates.length,0,'stale primary admits no substitute remaining member');
+    assert.equal((await w.predicates.evaluate(bound,signal())).status,'unsatisfied','one remaining member cannot credit completion');
+    w.scene.setBlock(positions[2]!.x,positions[2]!.y,positions[2]!.z,'air');
+    assert.equal((await w.predicates.evaluate(bound,signal())).status,'satisfied');
+    assert.equal(w.scene.bot.blockAt({x:other.x,y:other.y,z:other.z})?.name,'birch_leaves','unrelated leaf unchanged');
+  });
   it('N1-R4 keeps only the exact bound outcome after shown-history eviction; new tasks and destructive scope remain fenced', async () => {
     const { perception, predicates, registry, knowledge, generator, scene } = treeScene();
     const initial = perception.take(0)!;

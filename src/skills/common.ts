@@ -179,8 +179,9 @@ export interface TargetScope {
  * members in this snapshot (resolved through perception when available).
  */
 export function targetScope(ctx: Pick<ResolveContext, 'hints' | 'snapshot'> & Partial<Pick<ResolveContext, 'services'>>): TargetScope {
-  const named = ctx.hints.handles.length > 0;
-  const current = new Set(ctx.hints.handles.filter((h) => h.snapshotId === ctx.snapshot.id).map((h) => h.handle));
+  const primary = ctx.hints.primaryHandles ?? ctx.hints.handles;
+  const named = primary.length > 0;
+  const current = new Set(primary.filter((h) => h.snapshotId === ctx.snapshot.id).map((h) => h.handle));
   const groupMembers = new Set<string>();
   const perception = ctx.services?.perception;
   if (perception && typeof perception.groupMembers === 'function') {
@@ -193,11 +194,15 @@ export function targetScope(ctx: Pick<ResolveContext, 'hints' | 'snapshot'> & Pa
     return { handles, members };
   });
   const allows = (handle: string): boolean => {
-    for (const s of removalScopes) {
-      if (s.handles.has(handle)) continue;
+    // Each removal predicate names separate required work. An action may work
+    // on ONE member; it cannot satisfy three distinct handles simultaneously.
+    // This work set still intersects the primary target set below, and the
+    // original code-owned goal removal scope fences candidates and execution.
+    if (removalScopes.length && !removalScopes.some((s) => {
+      if (s.handles.has(handle)) return true;
       const r = perception?.resolve(ctx.snapshot.id, handle);
-      if (!r || 'error' in r || r.target.kind !== 'block' || !s.members.has(`${r.target.x},${r.target.y},${r.target.z}`)) return false;
-    }
+      return r && !('error' in r) && r.target.kind === 'block' && s.members.has(`${r.target.x},${r.target.y},${r.target.z}`);
+    })) return false;
     if (!named || current.has(handle)) return true;
     if (groupMembers.size === 0 || !perception) return false;
     const r = perception.resolve(ctx.snapshot.id, handle);

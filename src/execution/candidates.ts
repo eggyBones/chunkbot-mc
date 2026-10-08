@@ -95,6 +95,7 @@ function addSelector(s: TaskSpec['targetSelectors'][number], hints: TaskHints): 
 export function taskHints(task: TaskSpec): TaskHints {
   const hints: TaskHints = { keys: [], handles: [], wantsOwner: false, anchors: [], destinations: [], priorResults: [], outputs: [], parameters: task.parameters ?? {}, memoryRefs: [] };
   for (const s of task.targetSelectors ?? []) addSelector(s, hints);
+  if (hints.handles.length) hints.primaryHandles = [...hints.handles];
   hints.targetKeys = task.targetSelectors.filter((s) => s.kind === 'registry').map((s) => s.key);
   walkPredicate(task.completion, hints);
   hints.keys = [...new Set(hints.keys)];
@@ -156,6 +157,7 @@ export class TaskCandidateGenerator implements CandidateGenerator {
       return { snapshotId: snapshot.id, handle: translated };
     };
     hints.handles = hints.handles.map(ground);
+    if (hints.primaryHandles) hints.primaryHandles = hints.primaryHandles.map(ground);
     if (hints.removalHandles) hints.removalHandles = hints.removalHandles.map(ground);
     const parameters: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(hints.parameters)) {
@@ -163,11 +165,13 @@ export class TaskCandidateGenerator implements CandidateGenerator {
         const grounded = ground(value);
         parameters[key] = grounded;
         hints.handles.push(grounded);
+        (hints.primaryHandles ??= []).push(grounded);
       } else if (isKindHandleRef(value)) {
         // movement targets {kind:"handle",snapshotId,handle} follow the same authority rule
         const grounded = ground({ snapshotId: value.snapshotId, handle: value.handle });
         parameters[key] = { kind: 'handle', ...grounded };
         hints.handles.push(grounded);
+        (hints.primaryHandles ??= []).push(grounded);
       } else parameters[key] = value;
     }
     hints.parameters = parameters as TaskHints['parameters'];
