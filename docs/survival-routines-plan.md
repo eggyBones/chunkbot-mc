@@ -113,7 +113,7 @@ Required checks when implemented: affected AGENTS.md typecheck/build/test and bo
 
 ## Remaining delivery
 
-Native incident capture, survival policies, durable recovery authority and skills are integrated in development. The second actual module trial passes death capture/canonical dimension/recovery admission but fails post-collection persistence and mixed-pile/full recovery (C9/C10); current server clock-reply parsing also needs a passing rerun. The first slice intentionally holds unsupported owner continuation. Real ordinary planner/Jev recovery, shared supervisor integration, core upkeep and continuation are not accepted. The last live batch001 application has neither these policies nor configured persistent memory. C11/C12 below define the new water and continuation requirements; this intake implements nothing. Review target: docs/reviews/mb-flow-003-survival-routines.md.
+Native incident capture, survival policies, durable recovery authority and skills are integrated in development. The second actual module trial passes death capture/canonical dimension/recovery admission but fails post-collection persistence and mixed-pile/full recovery (C9/C10); current server clock-reply parsing also needs a passing rerun. The first slice intentionally holds unsupported owner continuation. Real ordinary planner/Jev recovery, shared supervisor integration, core upkeep and continuation are not accepted. The last live batch001 application has neither these policies nor configured persistent memory. C11/C12/C13 below define the authorized water, continuation and mob requirements; the parallel implementation has started and acceptance remains open. Review target: docs/reviews/mb-flow-003-survival-routines.md.
 
 ## Batch002 contract review and decisions
 
