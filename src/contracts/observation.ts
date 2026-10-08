@@ -49,13 +49,14 @@ export const FrontierSchema = z
 export type Frontier = z.infer<typeof FrontierSchema>;
 
 /**
- * MB-PLAN-006 N-G3: a bounded group of CONNECTED VISIBLE blocks of one
- * code-owned structure class (e.g. `tree`: logs/stems/wood plus leaves), so a
- * multi-block thing ("that floating tree") can be bound as ONE target. Built
- * only from voxels seen in this snapshot (26-connectivity); hidden members
- * are not reported. `support` comes from loaded collision data directly
- * beneath the visible trunk members only: `grounded` (some member rests on a
- * solid non-member block), `floating` (none does), `unknown` (not loaded).
+ * MB-PLAN-006 N-G3: one OBSERVED structure of a code-owned class (e.g. `tree`),
+ * segmented by its trunk: one 26-connected component of SEEN trunk voxels plus
+ * SEEN non-trunk voxels (e.g. leaves) whose UNIQUE nearest trunk it is, so
+ * touching canopies never merge two trees. Hidden members are never reported.
+ * `support` uses line-of-sight evidence only: `grounded` (the voxel below a
+ * lowest visible trunk voxel is SEEN and solid), `floating` (every lowest trunk
+ * voxel's bottom face is visible, i.e. open space beneath), else `unknown`.
+ * `truncated`: the group hit its member bound.
  */
 export const BlockGroupSchema = z
   .object({

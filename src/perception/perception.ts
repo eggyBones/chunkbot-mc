@@ -14,7 +14,7 @@ import type { Clock, EffectiveTravel, IdSource, ObservationPort, ObservationSnap
 import type { GameSession } from '../game/connection.ts';
 import { isOwnerPlayer, type OwnerPolicy } from '../game/identity.ts';
 import { findFrontiers } from './frontiers.ts';
-import { UNCONFIRMED_BLOCK, discoverVisible, isBlockVisible, isEntityVisible, sphereDirections, type BlockView, type RayHit, type Vec, type WorldView } from './visibility.ts';
+import { UNCONFIRMED_BLOCK, discoverVisible, isBlockVisible, isEntityVisible, sphereDirections, visibleFaces, type BlockView, type RayHit, type Vec, type WorldView } from './visibility.ts';
 
 type Bot = GameSession['bot'];
 type Entity = Bot['entity'];
@@ -24,8 +24,14 @@ export type HandleTarget =
   | { kind: 'entity'; entityId: number; name: string; username?: string; isOwner: boolean }
   | { kind: 'drop'; entityId: number; item: string; count: number }
   | { kind: 'frontier'; at: Vec }
-  /** MB-PLAN-006: a connected visible block group; members are the SEEN voxels (bounded). */
-  | { kind: 'group'; class: string; members: Array<{ x: number; y: number; z: number; name: string }> };
+  /**
+   * MB-PLAN-006: one observed structure (e.g. a tree) segmented by its TRUNK:
+   * `trunk` = one 26-connected component of SEEN trunk voxels; `members` = trunk
+   * plus SEEN non-trunk voxels whose unique nearest trunk is this one (bounded).
+   * `others` = trunk positions of the other groups of the same class in the same
+   * snapshot (lineage exclusion: re-grounding never expands into them).
+   */
+  | { kind: 'group'; class: string; members: Array<{ x: number; y: number; z: number; name: string }>; trunk: Array<{ x: number; y: number; z: number }>; others: Array<{ x: number; y: number; z: number }> };
 
 export interface HandleRecord {
   snapshotId: string;
@@ -94,7 +100,63 @@ export const GROUP_CLASSES: ReadonlyArray<{ class: string; member: RegExp; trunk
 ];
 const GROUP_MAX_MEMBERS = 256;
 const GROUP_MAX = 8;
+/** A non-trunk member joins only the UNIQUE nearest trunk within this Chebyshev distance (ties: no group). */
+const GROUP_LEAF_REACH = 4;
+/** Lineage growth bound around the identity trunk bbox (horizontal / vertical). */
+export const GROUP_LINEAGE_MARGIN = { horizontal: 2, vertical: 8 } as const;
 const NON_SUPPORT = /^(air|cave_air|void_air|water|lava|short_grass|tall_grass|fern|large_fern|snow|vine|glow_lichen|bubble_column)$/;
+
+type P3 = { x: number; y: number; z: number };
+const pk = (p: P3) => `${p.x},${p.y},${p.z}`;
+
+/** Identity of a bound structure for lineage decisions (plain data). */
+export interface GroupIdentity {
+  class: string;
+  /**
+   * Anchor positions: the original OBSERVED members (trunk and non-trunk, e.g.
+   * leaves) plus the trunks admitted to the lineage so far. Removed positions
+   * stay anchors, so a log exposed next to a removed log still joins.
+   */
+  anchors: Set<string>;
+  /** Trunk positions of OTHER groups observed with the identity (never joined). */
+  others: ReadonlySet<string>;
+  /** Original trunk bbox (lineage bound). */
+  min: P3;
+  max: P3;
+}
+
+export function groupIdentity(t: { class: string; trunk: readonly P3[]; members: readonly P3[]; others: readonly P3[] }): GroupIdentity {
+  const xs = t.trunk.map((m) => m.x);
+  const ys = t.trunk.map((m) => m.y);
+  const zs = t.trunk.map((m) => m.z);
+  return { class: t.class, anchors: new Set([...t.trunk.map(pk), ...t.members.map(pk)]), others: new Set(t.others.map(pk)), min: { x: Math.min(...xs), y: Math.min(...ys), z: Math.min(...zs) }, max: { x: Math.max(...xs), y: Math.max(...ys), z: Math.max(...zs) } };
+}
+
+/**
+ * MB-PLAN-006 conservative lineage: a candidate group (same class) continues a
+ * bound identity only when (a) one of its TRUNK voxels equals or touches
+ * (26-neighbourhood) an anchor (an originally observed member, or a trunk
+ * already admitted) — removed anchors count, so a log exposed next to a removed
+ * log joins — (b) its WHOLE trunk stays inside the identity trunk bbox grown by
+ * GROUP_LINEAGE_MARGIN, and (c) it holds no trunk voxel of another group
+ * observed with the identity. Candidates are segmented by trunk (leaves never
+ * merge groups), and the bbox/exclusion bounds keep a touching neighbouring
+ * tree out even when its log touches one of our leaves.
+ * Returns the number of linking trunk voxels (0 = not in the lineage).
+ */
+export function groupLineageScore(id: GroupIdentity, candidate: { class: string; trunk: readonly P3[] }): number {
+  if (candidate.class !== id.class || candidate.trunk.length === 0) return 0;
+  const m = GROUP_LINEAGE_MARGIN;
+  let links = 0;
+  for (const t of candidate.trunk) {
+    if (id.others.has(pk(t))) return 0;
+    if (t.x < id.min.x - m.horizontal || t.x > id.max.x + m.horizontal || t.z < id.min.z - m.horizontal || t.z > id.max.z + m.horizontal || t.y < id.min.y - m.vertical || t.y > id.max.y + m.vertical) return 0;
+    let linked = id.anchors.has(pk(t));
+    for (let dx = -1; !linked && dx <= 1; dx += 1) for (let dy = -1; !linked && dy <= 1; dy += 1) for (let dz = -1; !linked && dz <= 1; dz += 1) if (id.anchors.has(`${t.x + dx},${t.y + dy},${t.z + dz}`)) linked = true;
+    if (linked) links += 1;
+  }
+  return links;
+}
 
 const UNCONFIRMED_VIEW: BlockView = { name: UNCONFIRMED_BLOCK, stateId: -1, shapes: [[0, 0, 0, 1, 1, 1]] };
 
@@ -436,18 +498,17 @@ export class PerceptionService implements ObservationPort {
       for (const [h, rec] of to.handles) if ((rec.target.kind === 'entity' || rec.target.kind === 'drop') && rec.target.entityId === t.entityId) return h;
     }
     if (t.kind === 'group') {
-      // MB-PLAN-006: the SAME group = the target snapshot's group of the same class
-      // sharing the most still-present member positions (deterministic ties:
-      // nearest). No overlap: the group is no longer observed (never another group).
-      const was = new Set(t.members.map((m) => `${m.x},${m.y},${m.z}`));
-      let best: { handle: string; overlap: number; d: number } | undefined;
+      // MB-PLAN-006: the SAME structure = the target snapshot's group in the bound
+      // lineage (trunk-linked, bounded, never another observed group's trunk);
+      // most links wins, ties: nearest. No lineage: no longer observed (no fallback).
+      const id = groupIdentity(t);
+      let best: { handle: string; links: number; d: number } | undefined;
       for (const [h, rec] of to.handles) {
-        if (rec.target.kind !== 'group' || rec.target.class !== t.class) continue;
-        const overlap = rec.target.members.filter((m) => was.has(`${m.x},${m.y},${m.z}`)).length;
-        if (overlap === 0) continue;
-        const g = to.snapshot.groups?.find((x) => x.handle === h);
-        const d = g?.distance ?? Number.POSITIVE_INFINITY;
-        if (!best || overlap > best.overlap || (overlap === best.overlap && d < best.d)) best = { handle: h, overlap, d };
+        if (rec.target.kind !== 'group') continue;
+        const links = groupLineageScore(id, rec.target);
+        if (links === 0) continue;
+        const d = to.snapshot.groups?.find((x) => x.handle === h)?.distance ?? Number.POSITIVE_INFINITY;
+        if (!best || links > best.links || (links === best.links && d < best.d)) best = { handle: h, links, d };
       }
       return best?.handle;
     }
@@ -494,48 +555,96 @@ export class PerceptionService implements ObservationPort {
    * connection/dimension only), or undefined. Used by skills to scope work to
    * one bound group (e.g. mine only that tree's blocks).
    */
+  /** The group record (class, members, trunk, others) of a group handle in ITS snapshot (current connection/dimension only). */
+  groupTarget(snapshotId: string, handle: string): Extract<HandleTarget, { kind: 'group' }> | undefined {
+    const r = this.resolve(snapshotId, handle);
+    return 'error' in r || r.target.kind !== 'group' ? undefined : r.target;
+  }
+
   groupMembers(snapshotId: string, handle: string): ReadonlyArray<{ x: number; y: number; z: number; name: string }> | undefined {
     const r = this.resolve(snapshotId, handle);
     if ('error' in r || r.target.kind !== 'group') return undefined;
     return r.target.members;
   }
 
-  /** Connected visible block groups of the code-owned structure classes (bounded; nearest first). */
+  /**
+   * Observed structure groups of the code-owned classes (bounded; nearest first).
+   * Segmented by TRUNK: each 26-connected component of SEEN trunk voxels is one
+   * group; a SEEN non-trunk voxel (e.g. leaves) joins only its UNIQUE nearest
+   * trunk within GROUP_LEAF_REACH (ties join nothing), so touching canopies never
+   * merge two trees. Only seen voxels are reported. Support comes only from
+   * line-of-sight evidence beneath the lowest visible trunk voxels: `grounded`
+   * when the voxel below is SEEN, solid and not a member; `floating` when every
+   * lowest trunk voxel's bottom face is visible (open space beneath); otherwise
+   * `unknown` (hidden or unloaded data is never used or surfaced).
+   */
   private findGroups(rec: SnapshotRecord, world: WorldView, eye: Vec): { groups: NonNullable<ObservationSnapshot['groups']>; truncated: boolean } {
     const out: NonNullable<ObservationSnapshot['groups']> = [];
     let truncated = false;
-    const found: Array<{ cls: (typeof GROUP_CLASSES)[number]; members: RayHit[]; d: number; nearest: RayHit; cut: boolean }> = [];
+    type Found = { cls: (typeof GROUP_CLASSES)[number]; trunk: RayHit[]; members: RayHit[]; d: number; nearest: RayHit; cut: boolean };
+    const found: Found[] = [];
     for (const cls of GROUP_CLASSES) {
-      const candidates = new Map<string, RayHit>();
-      for (const [k, hit] of rec.seen) if (cls.member.test(hit.block.name)) candidates.set(k, hit);
+      const trunkVox = new Map<string, RayHit>();
+      const leafVox: RayHit[] = [];
+      for (const [k, hit] of rec.seen) {
+        if (cls.trunk.test(hit.block.name)) trunkVox.set(k, hit);
+        else if (cls.member.test(hit.block.name)) leafVox.push(hit);
+      }
+      const comps: Array<{ trunk: RayHit[]; cut: boolean }> = [];
       const done = new Set<string>();
-      for (const [k0, h0] of candidates) {
+      for (const [k0, h0] of trunkVox) {
         if (done.has(k0)) continue;
-        const members: RayHit[] = [];
+        const trunk: RayHit[] = [];
         let cut = false;
         const queue = [h0];
         done.add(k0);
         while (queue.length > 0) {
           const h = queue.shift()!;
-          if (members.length >= GROUP_MAX_MEMBERS) {
+          if (trunk.length >= GROUP_MAX_MEMBERS) {
             cut = true;
             continue;
           }
-          members.push(h);
+          trunk.push(h);
           for (let dx = -1; dx <= 1; dx += 1)
             for (let dy = -1; dy <= 1; dy += 1)
               for (let dz = -1; dz <= 1; dz += 1) {
                 if (!dx && !dy && !dz) continue;
                 const k = `${h.x + dx},${h.y + dy},${h.z + dz}`;
-                const n = candidates.get(k);
+                const n = trunkVox.get(k);
                 if (n && !done.has(k)) {
                   done.add(k);
                   queue.push(n);
                 }
               }
         }
-        // A tree needs a trunk member; loose leaves alone are not a group.
-        if (!members.some((m) => cls.trunk.test(m.block.name))) continue;
+        comps.push({ trunk, cut });
+      }
+      const extra: RayHit[][] = comps.map(() => []);
+      for (const leaf of leafVox) {
+        let bestD = Number.POSITIVE_INFINITY;
+        let bestI = -1;
+        let tie = false;
+        comps.forEach((c, i) => {
+          let d = Number.POSITIVE_INFINITY;
+          for (const t of c.trunk) d = Math.min(d, Math.max(Math.abs(t.x - leaf.x), Math.abs(t.y - leaf.y), Math.abs(t.z - leaf.z)));
+          if (d < bestD) {
+            bestD = d;
+            bestI = i;
+            tie = false;
+          } else if (d === bestD) tie = true;
+        });
+        if (bestI >= 0 && !tie && bestD <= GROUP_LEAF_REACH) extra[bestI]!.push(leaf);
+      }
+      comps.forEach((c, i) => {
+        const members = [...c.trunk];
+        let cut = c.cut;
+        for (const l of extra[i]!) {
+          if (members.length >= GROUP_MAX_MEMBERS) {
+            cut = true;
+            break;
+          }
+          members.push(l);
+        }
         let nearest = members[0]!;
         let d = Number.POSITIVE_INFINITY;
         for (const m of members) {
@@ -545,31 +654,33 @@ export class PerceptionService implements ObservationPort {
             nearest = m;
           }
         }
-        found.push({ cls, members, d, nearest, cut });
-      }
+        found.push({ cls, trunk: c.trunk, members, d, nearest, cut });
+      });
     }
     found.sort((a, b) => a.d - b.d || a.nearest.x - b.nearest.x || a.nearest.y - b.nearest.y || a.nearest.z - b.nearest.z);
     if (found.length > GROUP_MAX) truncated = true;
-    for (const g of found.slice(0, GROUP_MAX)) {
+    const kept = found.slice(0, GROUP_MAX);
+    for (const g of kept) {
       const keys = new Map<string, number>();
       for (const m of g.members) keys.set(`minecraft:${m.block.name}`, (keys.get(`minecraft:${m.block.name}`) ?? 0) + 1);
-      const memberSet = new Set(g.members.map((m) => `${m.x},${m.y},${m.z}`));
-      // Support: loaded collision data directly beneath visible trunk members only.
-      let support: 'grounded' | 'floating' | 'unknown' = 'floating';
-      for (const m of g.members) {
-        if (!g.cls.trunk.test(m.block.name) || memberSet.has(`${m.x},${m.y - 1},${m.z}`)) continue;
-        const below = world.blockAt(m.x, m.y - 1, m.z);
-        if (!below || below.name === UNCONFIRMED_BLOCK) {
-          if (support === 'floating') support = 'unknown';
-          continue;
-        }
-        if (!NON_SUPPORT.test(below.name) && below.shapes.length > 0) {
-          support = 'grounded';
+      const memberSet = new Set(g.members.map((m) => pk(m)));
+      const trunkSet = new Set(g.trunk.map((m) => pk(m)));
+      // Support from line-of-sight evidence only (see the method comment).
+      const lowest = g.trunk.filter((t) => !trunkSet.has(`${t.x},${t.y - 1},${t.z}`));
+      let grounded = false;
+      let openBelow = 0;
+      for (const t of lowest) {
+        const below = rec.seen.get(`${t.x},${t.y - 1},${t.z}`);
+        if (below && !memberSet.has(`${t.x},${t.y - 1},${t.z}`) && below.block.name !== UNCONFIRMED_BLOCK && !NON_SUPPORT.test(below.block.name) && below.block.shapes.length > 0) {
+          grounded = true;
           break;
         }
+        if (visibleFaces(world, eye, t.x, t.y, t.z).includes('down')) openBelow += 1;
       }
+      const support: 'grounded' | 'floating' | 'unknown' = grounded ? 'grounded' : lowest.length > 0 && openBelow === lowest.length ? 'floating' : 'unknown';
+      const others = kept.filter((o) => o !== g && o.cls === g.cls).flatMap((o) => o.trunk.map((t) => ({ x: t.x, y: t.y, z: t.z }))).slice(0, 512);
       const handle = this.nextHandle('grp');
-      rec.handles.set(handle, { snapshotId: rec.id, connectionEpoch: rec.connectionEpoch, dimension: rec.dimension, observedAtMs: rec.takenAtMs, target: { kind: 'group', class: g.cls.class, members: g.members.map((m) => ({ x: m.x, y: m.y, z: m.z, name: m.block.name })) } });
+      rec.handles.set(handle, { snapshotId: rec.id, connectionEpoch: rec.connectionEpoch, dimension: rec.dimension, observedAtMs: rec.takenAtMs, target: { kind: 'group', class: g.cls.class, members: g.members.map((m) => ({ x: m.x, y: m.y, z: m.z, name: m.block.name })), trunk: g.trunk.map((m) => ({ x: m.x, y: m.y, z: m.z })), others } });
       const xs = g.members.map((m) => m.x);
       const ys = g.members.map((m) => m.y);
       const zs = g.members.map((m) => m.z);

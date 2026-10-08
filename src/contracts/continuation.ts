@@ -82,7 +82,8 @@ export interface RemovalCarry {
   dimension: string;
   /** Bounded (<= 256) positions still bound at the interruption ("x,y,z" -> key at binding). */
   members: Array<{ x: number; y: number; z: number; key: string }>;
-  group?: { class: string; min: Vec3; max: Vec3 };
+  /** Semantic component identity (perception GroupIdentity as plain data): observed anchors, other observed trunks, trunk bbox. */
+  identity?: { class: string; anchors: Vec3[]; others: Vec3[]; min: Vec3; max: Vec3 };
 }
 
 /** Route allowance lineage (L's RouteController copies it into the continuation epoch's grant). */

@@ -62,12 +62,12 @@ describe('MB-PLAN-006 N-G3 observation groups', () => {
     const birch = groups.find((g) => g.keys.some((k) => k.key === 'minecraft:birch_log'))!;
     const oak = groups.find((g) => g.keys.some((k) => k.key === 'minecraft:oak_log'))!;
     assert.equal(birch.support, 'floating');
-    assert.equal(oak.support, 'grounded');
+    assert.equal(oak.support, 'unknown', 'the soil under the trunk is not visible: hidden data never proves ground');
     assert.ok(!birch.keys.some((k) => k.key.startsWith('minecraft:oak')), 'unrelated tree not merged');
     assert.equal(birch.class, 'tree');
     // The planner sees the groups (bounded rendering) and can reference their handles.
     const rendered = renderObservation(snap) as { groups: Array<{ handle: string; support: string }> };
-    assert.deepEqual(rendered.groups.map((g) => g.support).sort(), ['floating', 'grounded']);
+    assert.deepEqual(rendered.groups.map((g) => g.support).sort(), ['floating', 'unknown']);
   });
 
   it('a group handle re-grounds to the SAME group in a fresh snapshot, and not after it is gone', () => {
@@ -222,5 +222,87 @@ describe('MB-PLAN-006 "here" home site (fresh visible owner, never hidden)', () 
     assert.equal(r.drafts.length, 0);
     assert.equal(r.unavailable?.[0]?.reason, 'owner_not_visible');
     assert.equal(ownerQuestionIn(r.unavailable?.[0]?.detail), undefined, 'the blocker is declarative');
+  });
+});
+
+
+describe('MB-PLAN-006 N-G3 review corrections: trunk segmentation, lineage, line-of-sight support', () => {
+  function touchingScene() {
+    const t = treeScene();
+    // Clear the default trees; build a floating birch (trunk x=-3 y=2..4, canopy y=5) next to an
+    // ordinary oak (trunk x=0 y=0..4, canopy y=5) whose canopies TOUCH (x=-2 and x=-1 at y=5).
+    t.scene.fill(-6, 0, -3, 6, 8, 3, 'air');
+    t.scene.fill(-3, 2, 0, -3, 4, 0, 'birch_log');
+    t.scene.fill(-4, 5, -1, -2, 5, 1, 'birch_leaves');
+    t.scene.fill(0, 0, 3, 0, 4, 3, 'oak_log');
+    t.scene.fill(-1, 5, 2, 1, 5, 4, 'oak_leaves');
+    t.scene.fill(-2, 5, 2, -2, 5, 2, 'oak_leaves'); // touches the birch canopy at (-2,5,1)
+    return t;
+  }
+
+  it('touching canopies never merge two trees; unrelated logs never enter scope or the removal proof', async () => {
+    const { perception, generator, predicates, scene } = touchingScene();
+    const snap = perception.take(0)!;
+    const groups = snap.groups ?? [];
+    const birch = groups.find((g) => g.keys.some((k) => k.key === 'minecraft:birch_log'))!;
+    const oak = groups.find((g) => g.keys.some((k) => k.key === 'minecraft:oak_log'))!;
+    assert.ok(birch && oak && birch.handle !== oak.handle, JSON.stringify(groups));
+    assert.ok(!birch.keys.some((k) => k.key === 'minecraft:oak_log'), 'no oak log in the birch group');
+    assert.equal(birch.support, 'floating');
+    const sel = { kind: 'observed' as const, snapshotId: snap.id, handle: birch.handle };
+    const set = generator.generate({ objective: 'remove the floating tree', decisionInstruction: 'mine it', allowedCapabilities: ['mine_block'], targetSelectors: [sel], parameters: {}, completion: { predicate: 'blocks_removed', target: sel, selector: '#minecraft:logs' } }, perception.take(0)!);
+    for (const c of set.candidates) assert.doesNotMatch(c.description, /oak_log/, `out of scope: ${c.description}`);
+    const bound = await predicates.bind({ predicate: 'blocks_removed', target: sel, selector: '#minecraft:logs' }, signal());
+    scene.fill(-3, 2, 0, -3, 4, 0, 'air');
+    perception.take(0);
+    const e = await predicates.evaluate(bound, signal());
+    assert.equal(e.status, 'satisfied', `${e.detail} (the oak's logs are not part of the proof)`);
+    assert.equal(e.evidence['bound'], 3);
+  });
+
+  it('re-grounding never expands into a neighbouring tree even if the neighbour shares a leaf', () => {
+    const { perception, scene } = touchingScene();
+    const first = perception.take(0)!;
+    const birch = first.groups!.find((g) => g.keys.some((k) => k.key === 'minecraft:birch_log'))!;
+    // Remove the birch trunk: only the oak (whose leaf touches the birch canopy) remains with a trunk.
+    scene.fill(-3, 2, 0, -3, 4, 0, 'air');
+    const second = perception.take(0)!;
+    assert.equal(perception.translateHandle(first.id, birch.handle, second.id), undefined, 'no lineage into the oak');
+  });
+
+  it('incrementally revealed logs of the SAME tree join the removal proof (no premature satisfaction)', async () => {
+    const { perception, predicates, scene } = treeScene();
+    // Birch trunk y=2..4 visible; y=5,6 logs enclosed by leaves (hidden until the logs below are removed).
+    scene.fill(-5, 5, -2, -1, 7, 2, 'birch_leaves');
+    scene.fill(-3, 5, 0, -3, 6, 0, 'birch_log');
+    const snap = perception.take(0)!;
+    const birch = snap.groups!.find((g) => g.keys.some((k) => k.key === 'minecraft:birch_log'))!;
+    assert.equal(birch.keys.find((k) => k.key === 'minecraft:birch_log')?.count, 3, 'the enclosed logs are not reported');
+    const bound = await predicates.bind({ predicate: 'blocks_removed', target: { kind: 'observed', snapshotId: snap.id, handle: birch.handle }, selector: 'minecraft:birch_log' }, signal());
+    scene.fill(-3, 2, 0, -3, 4, 0, 'air'); // every originally seen log removed
+    perception.take(0); // the y=5 log is now visible from below
+    let e = await predicates.evaluate(bound, signal());
+    assert.equal(e.status, 'unsatisfied', `${e.detail}: the newly exposed connected log joins`);
+    scene.setBlock(-3, 5, 0, 'air');
+    perception.take(0);
+    e = await predicates.evaluate(bound, signal());
+    assert.equal(e.status, 'unsatisfied', `${e.detail}: the next revealed log joins through the removed one`);
+    scene.setBlock(-3, 6, 0, 'air');
+    perception.take(0);
+    e = await predicates.evaluate(bound, signal());
+    assert.equal(e.status, 'satisfied', e.detail);
+    assert.equal(e.evidence['bound'], 5);
+  });
+
+  it('support: grounded only from a SEEN solid block below; hidden roots stay unknown', () => {
+    const { perception, scene } = treeScene();
+    scene.fill(-6, 0, -3, 6, 8, 3, 'air');
+    // A trunk on a visible stone pedestal (the pedestal's sides are seen).
+    scene.setBlock(2, 0, 0, 'stone');
+    scene.fill(2, 1, 0, 2, 3, 0, 'oak_log');
+    const snap = perception.take(0)!;
+    const g = snap.groups!.find((x) => x.keys.some((k) => k.key === 'minecraft:oak_log'))!;
+    assert.equal(g.support, 'grounded');
+    assert.ok(!g.keys.some((k) => k.key === 'minecraft:stone'), 'the support block is never reported as a member');
   });
 });

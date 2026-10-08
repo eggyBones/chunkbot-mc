@@ -28,6 +28,7 @@ import type { GameSession } from '../game/connection.ts';
 import type { SkillServices } from '../skills/definition.ts';
 import { countMatching } from '../skills/common.ts';
 import { UNCONFIRMED_BLOCK } from '../perception/visibility.ts';
+import { groupIdentity, groupLineageScore, type GroupIdentity } from '../perception/perception.ts';
 import { correlatedResync } from './actuator.ts';
 import { inventoryFromConfirmed, type InventoryView } from './ledger.ts';
 import type { ActuatorLeases } from './lease.ts';
@@ -42,7 +43,7 @@ interface Bound extends BoundPredicate {
    * ("x,y,z" -> key at binding), the bound area (for bounded growth) and why a
    * binding failed. Never exposed to models.
    */
-  removal?: Map<string, { members: Map<string, string>; group?: { class: string; min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } }; issue?: string }>;
+  removal?: Map<string, { members: Map<string, string>; identity?: GroupIdentity; issue?: string }>;
   /** Lifecycle interruptions recorded by the ledger when the baselines were bound. */
   lifecycleMark?: number;
   connectionEpoch?: number;
@@ -383,11 +384,9 @@ export class PredicateEngine implements PredicateEvaluator {
     }
     if (t.kind !== 'group') return { members, issue: `${p.target.handle} is a ${t.kind}, not a block group or block` };
     for (const m of t.members) if (matches(m.name)) members.set(`${m.x},${m.y},${m.z}`, `minecraft:${m.name}`);
-    const xs = t.members.map((m) => m.x);
-    const ys = t.members.map((m) => m.y);
-    const zs = t.members.map((m) => m.z);
-    const group = { class: t.class, min: { x: Math.min(...xs), y: Math.min(...ys), z: Math.min(...zs) }, max: { x: Math.max(...xs), y: Math.max(...ys), z: Math.max(...zs) } };
-    return members.size ? { members, group } : { members, group, issue: `group ${p.target.handle} has no visible ${p.selector} member` };
+    // Semantic component identity: observed members (incl. non-selector anchors such as leaves), trunk bbox, other observed trunks.
+    const identity = groupIdentity(t);
+    return members.size ? { members, identity } : { members, identity, issue: `group ${p.target.handle} has no visible ${p.selector} member` };
   }
 
   private keyMatches(selector: string, key: string): boolean {
@@ -404,17 +403,18 @@ export class PredicateEngine implements PredicateEvaluator {
     const { services } = this.deps;
     const interrupted = (bound.lifecycleMark !== undefined && services.ledger.invalidations.length !== bound.lifecycleMark) || (bound.connectionEpoch !== undefined && s.connectionEpoch !== bound.connectionEpoch);
     if (interrupted) return result('unknown', 'a lifecycle interruption happened since binding; the bound positions must be re-observed', { lifecycleInterrupted: true });
-    // Bounded growth: newly SEEN members of the same group (connected, of the bound class, near the bound area).
-    if (b.group && b.members.size < 256) {
+    // Bounded growth (MB-PLAN-006): groups of the latest observation in the bound LINEAGE (trunk linked to
+    // an anchor incl. removed positions and observed leaves; inside the bounded trunk area; never another
+    // observed tree's trunk) add their matching members, and their trunks become anchors (incremental reveal).
+    if (b.identity && b.members.size < 256) {
       const snap = services.perception.latest();
       for (const g of snap?.groups ?? []) {
-        if (g.class !== b.group.class) continue;
-        const members = services.perception.groupMembers(snap!.id, g.handle) ?? [];
-        if (!members.some((m) => b.members.has(`${m.x},${m.y},${m.z}`))) continue;
-        for (const m of members) {
+        const target = services.perception.groupTarget(snap!.id, g.handle);
+        if (!target || groupLineageScore(b.identity, target) === 0) continue;
+        for (const t of target.trunk) if (b.identity.anchors.size < 1_024) b.identity.anchors.add(`${t.x},${t.y},${t.z}`);
+        for (const m of target.members) {
           const k = `${m.x},${m.y},${m.z}`;
-          const near = m.x >= b.group.min.x - 2 && m.x <= b.group.max.x + 2 && m.y >= b.group.min.y - 2 && m.y <= b.group.max.y + 2 && m.z >= b.group.min.z - 2 && m.z <= b.group.max.z + 2;
-          if (near && !b.members.has(k) && this.keyMatches(p.selector, `minecraft:${m.name}`) && b.members.size < 256) b.members.set(k, `minecraft:${m.name}`);
+          if (!b.members.has(k) && this.keyMatches(p.selector, `minecraft:${m.name}`) && b.members.size < 256) b.members.set(k, `minecraft:${m.name}`);
         }
       }
     }
