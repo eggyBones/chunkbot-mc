@@ -6,12 +6,71 @@ import { existsSync,readFileSync,readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PROJECT_ROOT } from '../src/app/fixture-layout.ts';
-import { entityTest,parseSkillsForceload,proveChestStage,requireCleanCliExit,safePlacement,skillsSceneClearCommands,validFillReply } from '../scripts/skills-live-check.ts';
+import { assertSkillsSceneReply,entityTest,parseSkillsForceload,proveChestStage,proveFurnaceStage,requireCleanCliExit,safePlacement,skillsSceneClearCommands,skillsSceneSelector,validFillReply } from '../scripts/skills-live-check.ts';
 import type { CliProcess } from '../scripts/lib/cli-process.ts';
 
 const script=join(PROJECT_ROOT,'scripts/skills-live-check.ts');
 const source=readFileSync(script,'utf8');
 describe('N1-H6 independent staging and truthful skills harness cleanup',()=>{
+  it('furnace staging proves the actual workstation, a free supported sight lane and no player/nonplayer occupant without changing blocks',async()=>{
+    const furnace={x:201,y:-60,z:205};
+    const run=(opts:{eastOccupied?:boolean;allOccupied?:boolean;floor?:string;entityOccupied?:boolean;unknown?:boolean;missingFurnace?:boolean}={})=>{
+      const commands:string[]=[];
+      const promise=proveFurnaceStage(async c=>{
+        commands.push(c);
+        if(opts.unknown) return "Option 'type' isn't applicable here";
+        if(c.startsWith('execute unless entity')) return opts.entityOccupied?'Test failed':'Test passed. Count: 1';
+        const m=/^execute if block (-?\d+) (-?\d+) (-?\d+) (\w+)$/.exec(c)!;
+        const x=Number(m[1]),y=Number(m[2]),z=Number(m[3]),material=m[4];
+        let actual='air';
+        if(y===-61) actual=opts.floor??'dirt';
+        if(x===201&&y===-60&&z===205&&!opts.missingFurnace) actual='furnace';
+        if(y>=-60&&y<=-59&&opts.allOccupied&&!(x===201&&z===205)) actual='crafting_table';
+        if(opts.eastOccupied&&x>201&&y===-60) actual='crafting_table';
+        return material===actual?'Test passed. Count: 1':'Test failed';
+      },furnace);
+      return {commands,promise};
+    };
+    for(const floor of ['grass_block','dirt','stone','cobblestone','stone_bricks']) {
+      const r=run({floor}); assert.deepEqual(await r.promise,{at:{x:203.5,y:-60,z:205.5},floors:[floor,floor]});
+      assert.ok(r.commands.every(c=>c.startsWith('execute ')));
+      assert.ok(r.commands.some(c=>c.includes('@a[name=!Chunkbot,')));
+      assert.ok(r.commands.some(c=>c.includes('@e[type=!player,')));
+    }
+    const occupied=run({eastOccupied:true}); assert.deepEqual((await occupied.promise).at,{x:199.5,y:-60,z:205.5});
+    for(const opts of [{allOccupied:true},{floor:'water'},{entityOccupied:true},{unknown:true},{missingFurnace:true}]) {
+      const r=run(opts); await assert.rejects(r.promise);
+      assert.ok(r.commands.every(c=>!/^setblock|^fill|^tp|^kill/.test(c)));
+    }
+    await assert.rejects(proveFurnaceStage(async()=>{throw new Error('must not query');},{x:195,y:-60,z:205}),/original standard scene/);
+    for(const id of ['PL1','PL2']) assert.ok(source.includes(`stageVisibleFurnace(ev, '${id}', furnaceAt)`));
+    assert.ok(source.includes('assert(rawDistance <= 1'));
+    assert.ok(source.includes('visible?.inReach === true'));
+    assert.ok(!source.includes('1.25 arrival tolerance'));
+  });
+  it('setup/cleanup categories use one applicable type with exact original bounds, tags cannot match players, and unknown categories/replies fail closed',()=>{
+    const box='x=196,y=-64,z=190,dx=28,dy=40,dz=34';
+    const expected=[...['hidden','front','animal'].map(tag=>`kill @e[type=!player,tag=chunkbot_${tag},${box}]`),`kill @e[type=item,${box}]`,`kill @e[type=experience_orb,${box}]`];
+    assert.deepEqual(skillsSceneClearCommands(),expected);
+    for(const c of skillsSceneClearCommands()) {
+      const args=c.slice(c.indexOf('[')+1,-1).split(',');
+      const types=args.filter(a=>a.startsWith('type='));
+      assert.equal(types.length,1,'no inverse type followed by positive type');
+      if(types[0]==='type=!player') assert.equal(args.filter(a=>a.startsWith('tag=')).length,1);
+      else assert.ok(['type=item','type=experience_orb'].includes(types[0]!),'no foreign category');
+    }
+    for(const c of ['player','zombie','chunkbot_safety','item,type=!player','']) assert.throws(()=>skillsSceneSelector(c as never),/unknown/);
+    for(const reply of ["Option 'type' isn't applicable here",'Test passed. Count: 0','Unknown entity','Test passed. Count: unknown']) assert.throws(()=>entityTest(reply));
+    for(const c of [...skillsSceneClearCommands(),'fill 196 -60 190 224 -50 224 air','setblock 208 -60 202 oak_log',`execute unless entity ${skillsSceneSelector('item')}`]) {
+      for(const reply of ["Option 'type' isn't applicable here",'unknown reply','', 'Test passed maybe']) assert.throws(()=>assertSkillsSceneReply(c,reply));
+    }
+    assert.doesNotThrow(()=>assertSkillsSceneReply(skillsSceneClearCommands()[0]!,'Killed 2 entities'));
+    assert.doesNotThrow(()=>assertSkillsSceneReply(skillsSceneClearCommands()[3]!,'No entity was found'));
+    assert.doesNotThrow(()=>assertSkillsSceneReply('setblock 208 -60 202 oak_log','Changed the block at 208, -60, 202'));
+    assert.throws(()=>assertSkillsSceneReply('setblock 208 -60 202 oak_log','Changed the block at 203, -60, 205'));
+    assert.equal((source.match(/for \(const c of skillsSceneClearCommands\(\)\)/g)??[]).length,3,'initial setup and both cleanup passes share the tested builder');
+    assert.ok(source.includes('for (const s of SKILLS_SCENE_SELECTORS) assert(entityTest'));
+  });
   it('west chest stage proves dirt as well as grass, refuses occupied cells and unknown/unsupported floor without mutation',async()=>{
     const run=async(floor:string,occupied=false,unknown=false)=>{
       const commands:string[]=[];
