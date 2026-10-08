@@ -6,16 +6,16 @@ Read [agent-workflow.md](agent-workflow.md) before planning, implementing, fixin
 
 - Jake owns product direction.
 - Codex coordinates planning, worker prompts, supervision, review, and acceptance.
-- Claude Code workers perform the main implementation through a local DSH instance using Jake's subscription. The requested model is Claude Opus 5.5; verify actual resolution before launching, as described in the workflow.
+- Native Codex workers perform the main implementation through a local DSH instance using Jake's personal ChatGPT account. Jake changed the development route on 2026-10-07 Arizona: use exactly `gpt-6.1-sol`, extra-high (`xhigh`) reasoning, and full permissions (`danger-full-access`, approval policy `never`). Verify the account, native backend, model catalog and effective turn settings before launching, as described in the workflow. Preserve the earlier Claude sessions and drafts.
 - Run independent authorized implementation assignments in parallel by default. Codex assigns disjoint ownership and, once Git is set up, separate branches/worktrees; coordinate shared files and fixture access as described in the workflow.
-- Claude workers follow the worker-specific instructions and their assigned brief. They do not take over coordination or launch other workers.
+- Implementation workers follow the worker-specific instructions and their assigned brief. They do not take over coordination or launch other workers.
 - A planning-only or documentation-only request does not authorize implementation, runtime setup, or roadmap work.
 
 ## Project purpose and architecture
 
 Build a system that lets AI models join Minecraft and play with Jake. Development workers and gameplay agents are separate roles.
 
-Jake has selected Java Edition, a bot that joins as its own player with player-like visibility, Jev through OpenRouter for small decisions, and his Codex subscription for the gameplay planner. Claude development workers continue to use the local DSH subscription route.
+Jake has selected Java Edition, a bot that joins as its own player with player-like visibility, Jev through OpenRouter for small decisions, and his Codex subscription for the gameplay planner. Development workers use the separately authorized native Codex route in local DSH; changing the development route does not change the isolated gameplay planner's model, effort or tools.
 
 Start with [feature-plans.md](feature-plans.md), then read the [V1 architecture](docs/v1-architecture-plan.md), [shared contracts](docs/v1-contracts.md), and the assigned implementation plan. [README.md](README.md) is the operator guide.
 

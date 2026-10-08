@@ -1,12 +1,14 @@
 # Chunkbot agent workflow
 
-Jake supplies product direction, Codex coordinates and reviews, and Claude implements through a **local DSH (DeepSeek Harness) instance** using Jake's Claude Code subscription.
+Jake supplies product direction, Codex coordinates and reviews, and implementation workers run through a **local DSH (DeepSeek Harness) instance** using Jake's subscription.
 
-The project goal is to let AI models join Minecraft and play with Jake. Claude development workers build that system; they are separate from the AI players the system will eventually run. This workflow does not choose the gameplay models, Minecraft edition, control library, or deployment architecture.
+**Current development route — Jake's 2026-10-07 Arizona instruction:** native Codex harness, personal ChatGPT account, exactly `gpt-6.1-sol`, extra-high reasoning (`xhigh`), and full permissions (`danger-full-access` with approval policy `never`). This supersedes the earlier Claude Opus 5.5 worker requirement. Preserve earlier Claude sessions, source commits and unfinished drafts; hand them to new native Codex sessions through complete coordinator briefs. Verify the installed Codex integration's account and model catalog, session-local selection, effective access mapping and actual native turn before claiming a worker is running. Historical Claude SDK verification applies only to those earlier sessions. The gameplay planner remains a separate runtime with its own pinned settings.
+
+The project goal is to let AI models join Minecraft and play with Jake. Development workers build that system; they are separate from the AI players the system will eventually run. This workflow does not choose the gameplay models, Minecraft edition, control library, or deployment architecture.
 
 Apply this workflow when Jake asks to plan, build, fix, or continue project behavior. A planning request stays planning-only. Reading this document does not authorize starting DSH, launching workers, implementing the roadmap, or connecting agents to a Minecraft world.
 
-## If you are the Claude worker
+## If you are the implementation worker
 
 Follow your coordinator's current brief, `AGENTS.md`, and the assigned feature plan. Implement, validate, and report questions and results to Codex in your DSH chat. The planning, launch, and supervision instructions below belong to Codex. Do not question Jake directly, start unassigned work, take over coordination, or recursively launch workers.
 
@@ -15,14 +17,14 @@ Continue after Codex answers a question until the assigned outcome is complete. 
 ## Roles and decisions
 
 - **Jake owns product direction.** Ask a small number of useful questions about what the player experiences: what triggers a behavior, how Jake controls or talks to an agent, what the agent does, what persists, and what completion looks like. Recommend a default and explain meaningful tradeoffs. Ask in small batches and continue independent inspection while waiting.
-- **Codex owns scope, plans, prompts, decisions, supervision, and acceptance.** Turn the discussion into concrete behavior and testable outcomes. Answer routine implementation questions using the repository, Jake's preferences, and reasonable judgment. Record assumptions so Jake can refine them later. Codex may handle documentation, investigation, review, and scoped operational work directly; Claude does the main implementation work.
-- **Claude owns implementation of the assigned scope.** Launch or resume Claude Code through the local DSH subscription integration. The requested default is **Claude Opus 5.5**, with high effort when supported. Verify the exact model before launching. Codex internal subagents, a stock DSH model loop, and API billing are not substitutes for this route.
+- **The coordinating Codex owns scope, plans, prompts, decisions, supervision, and acceptance.** Turn the discussion into concrete behavior and testable outcomes. Answer routine implementation questions using the repository, Jake's preferences, and reasonable judgment. Record assumptions so Jake can refine them later. The coordinator may handle documentation, investigation, review, and scoped operational work directly; DSH workers do the main implementation work.
+- **DSH workers own implementation of the assigned scope.** Launch or resume native Codex through local DSH using Jake's personal ChatGPT account and the exact settings above. Verify the account, model and effort before launching. Internal Codex subagents, a stock DSH model loop, another account and API billing are not substitutes for this route.
 
 Before implementation, resolve choices that materially change the intended experience. During implementation, Codex decides ordinary details such as implementation order, copy, layout, routine edge cases, and fixes required to meet the plan. When uncertain, choose a reversible option consistent with the project and label it a **coordinator assumption**. Do not invent extra features.
 
 Escalate only when a real prerequisite or authority is missing: login or MFA, unavailable external access, incompatible requirements with no reasonable default, or work beyond the authorized scope. Prepare everything independently possible, describe the exact dependency, and continue other ready work. Existing authorization carries forward; do not request it again.
 
-Jake's standing preference is **parallel Claude Code Opus 5.5 workers whenever useful independent work is ready**. Once implementation is authorized, Codex should proactively split separable feature work and run workers concurrently through local DSH using Jake's subscription, high effort where supported, and the verified full-access settings. Do not ask again merely to use parallel workers within that scope. Codex remains the supervisor and controls shared contracts, manifests, lockfiles, integration, deployment, and plan reconciliation. Serialize genuine dependencies, overlapping edits, shared runtime resources or capacity limits; record the reason and keep other ready work moving. This preference does not turn a documentation/planning request into implementation authorization.
+Jake's standing preference is **parallel native DSH workers whenever useful independent work is ready**. Once implementation is authorized, Codex should proactively split separable feature work and run workers concurrently through local DSH using the current authorized subscription, model, effort and full-access settings. Do not ask again merely to use parallel workers within that scope. Codex remains the supervisor and controls shared contracts, manifests/lockfiles, integration, deployment, and plan reconciliation. Serialize genuine dependencies, overlapping edits, shared runtime resources or capacity limits; record the reason and keep other ready work moving. This preference does not turn a documentation/planning request into implementation authorization.
 
 ## Local runtime boundaries
 
@@ -30,7 +32,7 @@ DSH should run on the same local machine as this project. The existing work-serv
 
 Keep three runtimes distinct:
 
-1. **Development orchestration:** local DSH and its Claude Code worker sessions.
+1. **Development orchestration:** local DSH and its native implementation-worker sessions.
 2. **Chunkbot:** this project's application and any gameplay-agent processes.
 3. **Minecraft:** the client, server, and world those agents use.
 
@@ -40,11 +42,11 @@ If local DSH setup is assigned, make it a bounded setup task with its own valida
 
 ## Parallel assignments and Git isolation
 
-Codex owns the work split, dependency order and integration. Prefer a small group of productive workers over a single worker covering unrelated ready features. Size concurrency to actual local resources, Claude subscription capacity and supervision capacity; no fixed worker count or API fallback is implied.
+Codex owns the work split, dependency order and integration. Prefer a small group of productive workers over a single worker covering unrelated ready features. Size concurrency to actual local resources, the authorized subscription capacity and supervision capacity; no fixed worker count or API fallback is implied.
 
 ### Before launching concurrent work
 
-1. Give each worker a complete feature outcome or bounded dependency milestone, stable issue IDs, explicit owned paths and acceptance criteria. Verify the native Opus 5.5 resolution, subscription route, effort and effective permissions for its DSH session.
+1. Give each worker a complete feature outcome or bounded dependency milestone, stable issue IDs, explicit owned paths and acceptance criteria. Verify the native Codex backend, personal subscription account, exact `gpt-6.1-sol` model, `xhigh` effort and effective full permissions for its DSH session.
 2. Define shared interfaces early. Use a single designated writer for shared contracts, manifests/lockfiles, CLI/config, composition and roadmap/supervision. Workers propose needed shared changes to Codex instead of independently editing incompatible versions.
 3. Record each worker's DSH session/workspace, exact checkout, branch/base when applicable, dependencies and shared-resource leases in supervision. Check old queues before reuse.
 4. Reserve integration ownership for Codex. A worker does not coordinate other workers or expand its scope because another branch has unfinished work.
@@ -85,7 +87,7 @@ Create supporting documents as tasks need them. Missing roadmap or supervision f
 | `feature-plans.md` | Feature roadmap, links to detailed plans, and summary status. Codex owns scope and acceptance. |
 | `docs/*-plan.md` | Feature behavior, dependencies, milestones, decisions, acceptance criteria, and remaining work. Extend a relevant existing plan instead of creating a competing one. |
 | `docs/agent-supervision.md` | Coordinator handoff: local runtime, worker IDs and ownership, decisions sent, queues and pending questions, evidence, deployment state, and next action. |
-| `docs/reviews/` | Delivery evidence and known gaps. Claude reports evidence; Codex independently checks acceptance. |
+| `docs/reviews/` | Delivery evidence and known gaps. Workers report evidence; the coordinator independently checks acceptance. |
 
 At the beginning of a task, inspect Git status when the directory is a Git repository, relevant plans, and the latest supervision checkpoint if present. Preserve unrelated dirty work. For implementation or live investigation, also inspect the local runtimes and existing worker sessions. Planning-only intake and documentation edits do not require runtime access.
 
@@ -124,19 +126,19 @@ For gameplay features, specify relevant join/disconnect behavior, player identit
 
 Keep scope and status synchronized after material decisions. A milestone is an implementation checkpoint, not permission to abandon the rest of the assigned outcome. If a capability is proved unsupported, document the evidence, choose a supported fallback within scope when possible, and continue independent work.
 
-## Launching the Claude implementer
+## Launching the native implementer
 
-Use the authenticated **local DSH** profile and its **Claude Code subscription preset**. Resume a worker when its context and assignment remain useful. Start a new session for a separate feature, polluted context, or a bounded probe. Inspect queued messages before resuming so an old assignment is not accidentally activated.
+Use the authenticated **local DSH** profile and its **native Codex preset**, selecting Jake's personal ChatGPT account per session. Resume a worker when its context and assignment remain useful. Start a new session for a different native backend, a separate feature, polluted context, or a bounded probe. Inspect queued messages before resuming so an old assignment is not accidentally activated. When changing backend, preserve the old session and drafts, transfer the complete brief and review, and withdraw old pending execution queues before giving its worktree to the new worker.
 
 Before sending work:
 
-1. Confirm the local DSH instance, absolute project directory, registered workspace, session ID, Claude Code preset, subscription route/account, selected model, effort, and effective permissions. Attach the worker to this project's workspace through the installed supported mechanism; a matching working directory alone is not proof of project membership.
-2. Verify model resolution through the **Agent SDK loaded by that integration**. When available, inspect `supportedModels()` and its `resolvedModel` values. A UI label, an Opus alias, or `claude --version` is insufficient. Confirm the selected model resolves to the requested Claude Opus 5.5; do not invent a model identifier or assume it is installed.
-3. If availability or model naming needs clarification, consult current official Anthropic information. Do not silently substitute an older or different model, a remote worker, or API billing. If the requested model is unavailable, report the exact limitation and continue planning/review work. A different-model fallback requires Jake's decision.
-4. Prefer high effort for substantial implementation when supported. Preserve Jake's selected permissions and account. Inspect effective integration settings and actual pending approvals instead of assuming a “Full access” label guarantees tool access.
+1. Confirm the local DSH instance, absolute project directory, registered workspace, session ID, native Codex preset, personal subscription route/account, selected model, effort, and effective permissions. Attach the worker to this project's workspace through the installed supported mechanism; a matching working directory alone is not proof of project membership.
+2. Verify the **native App Server used by the installed integration**: `initialize`, a read-only `account/read` selecting the intended home, and `model/list` showing exactly `gpt-6.1-sol` and supported `xhigh` effort. A UI label or `codex --version` alone is insufficient. Check the session-local selection and actual native thread/turn evidence after launch; do not invent a model identifier or assume it is installed. These metadata probes do not start inference or refresh login.
+3. If availability or model naming needs clarification, consult current official OpenAI information. Do not silently substitute another model, account, remote worker, or API billing. If the requested model is unavailable, report the exact limitation and continue planning/review work. A different-model fallback requires Jake's decision.
+4. Use `xhigh` effort and preserve Jake's personal account. Set full native access to `danger-full-access` and approval policy `never`; inspect the effective integration settings and actual pending approvals instead of assuming a “Full access” label guarantees tool access. Keep selection session-local rather than changing global provider defaults.
 5. Send a complete, bounded brief. Record the session and verified configuration in `docs/agent-supervision.md`, then confirm the turn actually starts.
 
-If the alias is stale, check whether the integration can select the requested model explicitly. Any necessary SDK update must be a deliberate, scoped runtime change with pinning, build, and validation appropriate to the installed DSH repository. Changing the CLI or adding a top-level dependency does not prove what the integration resolves. Do not incidentally upgrade the harness, and coordinate any restart around active workers.
+If the catalog is stale, check the installed integration's native catalog before changing runtime dependencies. Any necessary CLI/integration update must be a deliberate, scoped runtime change with pinning, build, and validation appropriate to the installed DSH repository. Changing the CLI alone does not prove what the running integration resolves. Do not incidentally upgrade the harness, and coordinate any restart around active workers.
 
 Use the supported local UI, tools, or installed public API. Prefer T3's collaborative preview tools when available; follow their availability and fallback rules. Inspect the current API schemas before using RPC recipes from another project. Do not expose authentication cookies, tokens, or private profile data in logs or documentation.
 
@@ -147,12 +149,12 @@ Prompt acceptance or queue insertion is not proof of execution. On a transport t
 Fill every placeholder with concrete paths and outcomes. Put essential instructions in the prompt itself; a temporary file path is insufficient if the worker cannot read it.
 
 ```text
-You are the Claude implementation worker. I am Codex, your coordinator and reviewer.
+You are the native DSH implementation worker. I am Codex, your coordinator and reviewer.
 Jake owns product direction; send implementation questions to me in this DSH chat.
 
 Task: [feature and complete assigned outcome].
 Repository: [absolute assigned checkout/worktree]. Read AGENTS.md and the "If you are the
-Claude worker" section of agent-workflow.md, then [plan path and specific sections].
+implementation worker" section of agent-workflow.md, then [plan path and specific sections].
 This assignment limits scope. Do not start unrelated roadmap work or launch workers.
 
 Behavior and acceptance criteria:
@@ -207,7 +209,7 @@ Continue in this session and finish [concrete remaining work], then run
 If one part is externally blocked, provide exact evidence and finish the rest.
 ```
 
-Do not assume a queued or steered message reached a running native Claude query. Deliver at a turn boundary and verify the response reflects it. For an urgent correction, cancel only the affected worker at a safe checkpoint, verify it is idle, inspect the queue, and send one consolidated continuation. Do not flood it with duplicate prompts or kill DSH to interrupt a worker.
+Do not assume a queued or steered message reached a running native query. Deliver at a turn boundary and verify the response reflects it. For an urgent correction, cancel only the affected worker at a safe checkpoint, verify it is idle, inspect the queue, and send one consolidated continuation. Do not flood it with duplicate prompts or kill DSH to interrupt a worker.
 
 For a suspected stall, inspect activity and the exact subprocess first. A long test or reasoning interval can be healthy. Diagnose boundedly, stop only a confirmed stuck turn/process when needed, preserve edits, and resume with the finding. Repeating an unchanged failing test or already-passing full suite is not progress.
 
@@ -251,6 +253,6 @@ Next concrete action:
 
 ### Validate local orchestration when setup is assigned
 
-Use a separate test session on the verified Claude Code subscription route and requested model. Ask a bounded no-tool question that makes the worker request a coordinator decision; answer it and verify a second turn completes. Follow with a narrowly scoped read-only repository task to check native tool access.
+Use a separate test session on the verified native subscription route and requested model. Ask a bounded no-tool question that makes the worker request a coordinator decision; answer it and verify a second turn completes. Follow with a narrowly scoped read-only repository task to check native tool access.
 
 Inspect full responses, confirm idle state and an empty queue, then settle/archive the test chat through supported controls. Record session IDs, model resolution, continuation delivery, and tool results in the supervision note. This validates local orchestration; it does not establish that Chunkbot features are implemented.
