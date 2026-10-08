@@ -27,6 +27,7 @@ import type { AutonomyControl } from '../autonomy/control.ts';
 import { HomeProjectService } from '../autonomy/home.ts';
 import { ShelterInspector, constructionSkills, evaluateStructure } from '../skills/construction.ts';
 import type { GoalSource, RouteAdmission, RouteCarry, RouteGoalSource, SurvivalConfigInput } from '../contracts/index.ts';
+import type { SafetyActuationPort } from '../contracts/safety.ts';
 import { DEFAULT_LOCATOR_CONFIG, LocatorConfigSchema } from '../contracts/locator.ts';
 import { LocatorService } from '../locator/service.ts';
 import { RouteController } from '../locator/routes.ts';
@@ -376,7 +377,7 @@ export class SkillRuntime {
    * controller): synchronous preemption of a non-safety lease (the goal stays
    * admitted) and execution of ONE code-built safety candidate.
    */
-  safetyActuation(): { preemptCurrent(reason: 'safety_preempt'): { revoked: boolean; holder: string | null; clearMs: number | null }; execute(candidate: Parameters<SkillExecutorImpl['execute']>[0], signal: AbortSignal, owner: Extract<ExecutionOwner, { kind: 'safety' }>): ReturnType<SkillExecutorImpl['execute']> } {
+  safetyActuation(): SafetyActuationPort {
     return {
       preemptCurrent: (reason) => this.leases.preemptForSafety(reason),
       execute: (candidate, signal, owner) => this.executor.execute(candidate, signal, owner),

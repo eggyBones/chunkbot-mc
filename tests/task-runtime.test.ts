@@ -464,18 +464,18 @@ describe('task runtime: stable sustained waiting', () => {
 
 describe('task runtime: immediate-safety hold seam (MB-FLOW-003-C11/C13 shared wiring)', () => {
   class FakeSafety {
-    held: { reason: string; detail: string; episodeId: string | null } | null = null;
+    held: { reason: 'episode' | 'blocked'; detail: string; episodeId: string | null } | null = null;
     waits = 0;
     next: 'clear' | 'blocked' = 'clear';
     hold() {
-      return this.held;
+      return this.held ? { ...this.held, response: null, hazards: [], sinceMs: 0 } : null;
     }
     async waitClear(_signal: AbortSignal) {
       this.waits += 1;
       await new Promise((r) => setTimeout(r, 5));
-      if (this.next === 'blocked') return { status: 'blocked' as const, waitedMs: 5, reason: 'no_exit', detail: 'no observed shore' };
+      if (this.next === 'blocked') return { status: 'blocked' as const, waitedMs: 5, reason: 'no_exit', detail: 'no observed shore', hazards: [] };
       this.held = null;
-      return { status: 'clear' as const, waitedMs: 5 };
+      return { status: 'clear' as const, waitedMs: 5, episodes: 1 };
     }
   }
 

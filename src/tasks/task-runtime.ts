@@ -51,6 +51,7 @@ import { buildState, describePredicate, requestBytes } from '../decision/context
 import { LIMIT_KINDS, NOT_READY_KINDS, isDecisionError } from '../decision/errors.ts';
 import { MAX_REQUEST_BYTES } from '../decision/pricing.ts';
 import { publicTaskLabel } from '../goals/public-text.ts';
+import type { SafetyPort } from '../contracts/safety.ts';
 
 /** Skill-owned continuation policy (see SkillDefinition.sustained). */
 export interface SustainPolicy {
@@ -117,11 +118,8 @@ export interface TaskRuntimeDeps {
   safety?: TaskSafetyGate;
 }
 
-/** Structural consumer subset of the immediate-safety port (see TaskRuntimeDeps.safety). */
-export interface TaskSafetyGate {
-  hold(): { reason: string; detail: string; episodeId: string | null } | null;
-  waitClear(signal: AbortSignal, maxWaitMs?: number): Promise<{ status: 'clear' | 'blocked' | 'aborted' | 'timeout'; waitedMs: number; reason?: string; detail?: string }>;
-}
+/** Consumer subset of the reviewed immediate-safety contract (src/contracts/safety.ts SafetyPort). */
+export type TaskSafetyGate = Pick<SafetyPort, 'hold' | 'waitClear'>;
 
 /** Bound on one safety wait before ownership/currentness is re-checked. */
 const SAFETY_WAIT_SLICE_MS = 30_000;
@@ -482,8 +480,8 @@ export class TaskRuntime implements TaskExecutionPort {
       waited += r.waitedMs;
       if (!task.isCurrent() || task.signal.aborted) throw new Revoked();
       if (r.status === 'blocked') {
-        emit('task_safety_blocked', { round, waitedMs: waited, reason: r.reason ?? null, detail: clip(r.detail ?? '', 200) });
-        return { kind: 'blocked', detail: `immediate safety has no supported response (${r.reason ?? 'blocked'}): ${clip(r.detail ?? '', 200)}` };
+        emit('task_safety_blocked', { round, waitedMs: waited, reason: r.reason, detail: clip(r.detail, 200), hazards: r.hazards });
+        return { kind: 'blocked', detail: `immediate safety has no supported response (${r.reason}): ${clip(r.detail, 200)}` };
       }
       if (r.status === 'clear' || (r.status !== 'timeout' && !gate.hold())) {
         emit('task_safety_clear', { round, waitedMs: waited });

@@ -10,6 +10,7 @@ import type { ObservationSnapshot } from './observation.ts';
 import type { PlannerProposal, PlannerRequest } from './planner.ts';
 import type { GoalOutcomeContract, OutcomePredicate, PredicateEvaluation } from './predicate.ts';
 import type { ContinuationCapture, CountLineage, RemovalCarry } from './continuation.ts';
+import type { SafetyExecutionOwner } from './safety.ts';
 import type { TaskMode, TaskResult, TaskSpec } from './task.ts';
 import type { JsonValue } from './common.ts';
 import type { ConnectionEndReason, ConnectionState } from './states.ts';
@@ -118,7 +119,7 @@ export type ExecutionOwner =
    * dispatch never carries it). The lease fence checks the grant on every
    * command (expiry, epoch, authority, alive) through the same single lease.
    */
-  | { kind: 'safety'; grantId: string; episodeId: string; connectionEpoch: number };
+  | SafetyExecutionOwner;
 
 export interface SkillExecutor {
   readiness(): Readiness;

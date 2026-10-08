@@ -30,6 +30,7 @@ import { routeCommand, type CommandTarget } from '../commands/router.ts';
 import { evaluateOwner, ownerPolicyFromConfig, type OwnerPolicy } from '../game/identity.ts';
 import { GoalEngine, type ContinuationDeps, type GoalEngineDeps, type GoalTerminalEvent } from '../goals/goal-engine.ts';
 import { ContinuationScheduler } from './continuation-scheduler.ts';
+import type { SafetyAuthority } from '../contracts/safety.ts';
 import {
   NotReadyDecision,
   NotReadyKnowledge,
@@ -111,15 +112,8 @@ export interface AppExtensions {
   travelBounds?(): { anchor: { x: number; y: number; z: number }; radius: number } | undefined;
 }
 
-/** Fresh explicit immediate-safety authority (W's SafetyAuthority shape), computed synchronously on every call. */
-export interface AppSafetyAuthority {
-  basis: 'owner_goal' | 'unpaused' | 'none';
-  detail: string;
-  connection: { ready: boolean; connectionEpoch: number; dimension: string } | null;
-  alive: boolean;
-  goal: { goalId: string; goalEpoch: number; source: 'owner' | 'support' | 'progression' | 'diagnostic' | 'unknown' } | null;
-  travel: { anchor: { x: number; y: number; z: number }; radius: number } | null;
-}
+/** Fresh explicit immediate-safety authority (the reviewed contract's SafetyAuthority), computed synchronously on every call. */
+export type AppSafetyAuthority = SafetyAuthority;
 
 /** Exit code used when Chunkbot shuts down because its connection ended (no operator terminal). */
 export const EXIT_CONNECTION_ENDED = 3;
