@@ -15,10 +15,13 @@
 //   2. Count accounting follows the CURRENT code-verified lineage (B0 stays
 //      immutable provenance). At interruption k with held count H_k and verified
 //      progress C_k, the non-credit part is N_k = H_k - C_k. In the next segment:
-//        restored(now) = min(C_k, max(0, X(now) - N_k))
+//        eligible      = min(C_k, max(0, X(now) - N_k))
 //          X = server-attributed own-incident returns (regained + retained) when
 //              the interruption had an item-loss incident; else the fresh count F
-//        new(now)      = max(0, now - F - ownReturnedSinceF(now)) [+ consumption since rebind]
+//        Q             = current count + verified allowed consumption since rebind
+//        R             = F + ownReturnedSinceF(now)
+//        restored(now) = max(0, eligible - max(0, R - Q))
+//        new(now)      = max(0, Q - R)
 //        progress      = restored + new
 //      so returned own belongings never become new acquisition, incidental
 //      pickups never restore credit, and genuinely new resources after a lossy

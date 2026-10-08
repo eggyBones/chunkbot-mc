@@ -81,14 +81,22 @@ export function countFor(counts: Readonly<Record<string, number>>, selector: str
 
 /**
  * Rule 2 progress of one possession count atom in a continuation segment.
- *   restored = min(C, max(0, X - N)), X = own-incident returns now (incident) or F (no incident)
- *   new      = max(0, now - F - (returnsNow - returnsAtF)) + consumedSinceRebind
+ * X = own-incident returns now (incident) or F (no incident).
+ * Q = current possession + code-verified allowed consumption since rebind.
+ * R = F + own returns since rebind. A decline below R invalidates carried
+ * possession credit first; a surplus above R is genuinely new acquisition.
+ * Consumption offsets a decline INSIDE these clamps. Consuming returned
+ * baseline supplies cannot manufacture credit. Callers pass zero consumption
+ * when the predicate requires current possession; latched/effect atoms bypass
+ * this calculation in the PredicateEngine.
  */
 export function segmentProgress(s: { credited: number; nonCredit: number; fresh: number; incident: boolean; returnsAtF: number }, now: { count: number; returns: number; consumed: number }): { restored: number; acquiredNew: number; progress: number } {
   const x = s.incident ? now.returns : s.fresh;
-  const restored = Math.min(s.credited, Math.max(0, x - s.nonCredit));
   const ownSinceF = s.incident ? Math.max(0, now.returns - s.returnsAtF) : 0;
-  const acquiredNew = Math.max(0, now.count - s.fresh - ownSinceF) + Math.max(0, now.consumed);
+  const available = Math.max(0, now.count) + Math.max(0, now.consumed);
+  const reference = s.fresh + ownSinceF;
+  const restored = Math.max(0, Math.min(s.credited, Math.max(0, x - s.nonCredit)) - Math.max(0, reference - available));
+  const acquiredNew = Math.max(0, available - reference);
   return { restored, acquiredNew, progress: restored + acquiredNew };
 }
 

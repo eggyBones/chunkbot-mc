@@ -80,6 +80,19 @@ describe('C12 count lineage arithmetic (coordinator scenarios)', () => {
     assert.equal(segmentProgress(seg(4, 12, 10, false), { count: 10, returns: 0, consumed: 0 }).progress, 2, 'two eaten meanwhile');
   });
 
+  it('P-C12-R3: consuming returned old baseline supplies produces zero acquisition', () => {
+    assert.deepEqual(segmentProgress(seg(0, 8, 8, true, 8), { count: 0, returns: 8, consumed: 8 }), { restored: 0, acquiredNew: 0, progress: 0 });
+    assert.deepEqual(segmentProgress(seg(0, 8, 8, true, 8), { count: 3, returns: 8, consumed: 8 }), { restored: 0, acquiredNew: 3, progress: 3 });
+  });
+
+  it('P-C12-R4: a possession decline invalidates carried credit; allowed consumption offsets only that decline', () => {
+    const s = seg(4, 12, 12, true, 12);
+    assert.deepEqual(segmentProgress(s, { count: 8, returns: 12, consumed: 0 }), { restored: 0, acquiredNew: 0, progress: 0 });
+    assert.equal(segmentProgress(s, { count: 10, returns: 12, consumed: 0 }).progress, 2);
+    assert.equal(segmentProgress(s, { count: 8, returns: 12, consumed: 4 }).progress, 4);
+    assert.equal(segmentProgress(s, { count: 8, returns: 12, consumed: 6 }).progress, 6);
+  });
+
   it('groundability is derived from predicate semantics', () => {
     const c: GoalOutcomeContract = {
       kind: 'finite',
@@ -127,6 +140,26 @@ const CONTRACT: GoalOutcomeContract = { kind: 'finite', outcome: COBBLE };
 const owner = { goalId: 'goal-0001', goalEpoch: 1 };
 
 describe('C12 PredicateEngine: repeated lossy deaths keep only code-verified lineage credit', () => {
+  it('R3/R4 use the same corrected accounting in live evaluation and interruption capture', async () => {
+    for (const mayConsume of [false, true]) {
+      const w = world();
+      const predicate: OutcomePredicate = { predicate: 'inventory_delta', selector: 'minecraft:cobblestone', atLeast: 10, mayBeConsumedLater: mayConsume };
+      const contract: GoalOutcomeContract = { kind: 'finite', outcome: predicate };
+      const original: InventoryBaseline = { capturedAtMs: Date.now() - 20, counts: { 'minecraft:cobblestone': 8 }, detail: 'original', lifecycleMark: 0, connectionEpoch: 1 };
+      const lin: CountLineage = { path: 'root', basis: 'possession', predicate: 'inventory_delta', selector: 'minecraft:cobblestone', atLeast: 10, admissionCount: 8, credited: mayConsume ? 0 : 4, heldAtInterruption: mayConsume ? 8 : 12, evidence: 'last_alive_server_packets', latched: false, incidentId: 'inc', segments: 1 };
+      const full = mayConsume ? 8 : 12;
+      w.returns.set('inc', full);
+      const bound = await w.engine.rebindContinuation(contract, { counts: [lin], removal: [], fresh: { capturedAtMs: Date.now(), counts: { 'minecraft:cobblestone': full }, detail: 'full return', lifecycleMark: 0, connectionEpoch: 1 }, original, owner }, sig());
+      const remaining = mayConsume ? 0 : 8;
+      w.hold(remaining);
+      if (mayConsume) w.ledger.add({ kind: 'consumed', item: 'minecraft:cobblestone', count: 8, atMs: Date.now() + 1, via: 'craft' });
+      const verdict = await w.engine.evaluate(bound, sig());
+      assert.equal(verdict.evidence['acquired'], 0, JSON.stringify(verdict));
+      const cap = w.engine.captureContinuation(bound);
+      assert.equal(w.engine.progressAt(cap, contract, { 'minecraft:cobblestone': remaining }, () => full)['root'], 0);
+    }
+  });
+
   it('B0 8, +4, death (nothing recovered), +3 new, death, recover those 3, then +7 -> satisfied; returned items never double count', async () => {
     const w = world();
     const original: InventoryBaseline = { capturedAtMs: Date.now(), counts: { 'minecraft:cobblestone': 8 }, detail: 'admission', lifecycleMark: 0, connectionEpoch: 1 };
