@@ -506,6 +506,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
 
     // Immediate safety: running work that is not an admitted eat/rest task is unsafe at low health.
     const lowNow = vitals !== null && vitals.connectionEpoch === input.connection.connectionEpoch && vitals.health > 0 && vitals.health <= this.options.limits.lowHealth;
+    const healthSupportMeal = vitals !== null && vitals.connectionEpoch === input.connection.connectionEpoch && vitals.health > 0 && vitals.health <= cfg.health.restAtOrBelow && vitals.food < 18;
     const a = input.active;
     if (lowNow && a.kind !== 'none' && !(a.kind === 'support' && (a.routine === 'eat' || a.routine === 'rest')) && a.goalEpoch !== undefined && !this.revokedEpochs.has(a.goalEpoch)) {
       this.revokedEpochs.add(a.goalEpoch);
@@ -550,8 +551,11 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     let firstBlocked: (RoutineEval & { blocked: object }) | undefined;
     for (const routine of ROUTINE_ORDER) {
       if (interrupted && !(NECESSARY_ROUTINES as readonly string[]).includes(routine)) continue;
-      // A routine cooldown never suppresses a NECESSARY low-health eat/rest (safety).
-      if (this.onCooldown(routine, now) && !(lowNow && (routine === 'eat' || routine === 'rest'))) continue;
+      // A routine cooldown never suppresses a NECESSARY low-health eat/rest (safety), nor a HEALTH-SUPPORT meal:
+      // health at/below restAtOrBelow with food below 18 means regeneration needs food (G3 trial 8e87ec3: health
+      // 11.67, food 17, 6 s after a completed eat -> eat cooled down, rest blocked). The ordinary hunger meal keeps
+      // its cooldown; evalEat still checks fresh food, owned safe food and visible threats.
+      if (this.onCooldown(routine, now) && !(lowNow && (routine === 'eat' || routine === 'rest')) && !(routine === 'eat' && healthSupportMeal)) continue;
       const ev = this.evaluate(routine, ctx, now);
       if (!ev.need) {
         this.blocks.delete(routine);

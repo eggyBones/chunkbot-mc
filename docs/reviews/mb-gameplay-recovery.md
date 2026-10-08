@@ -16,6 +16,8 @@ Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree
 | `d3b3e9f` | C12 proposal revision 2 after the joint review (declarations only) |
 | `f55329a` | v1 `regained` label without a recorded regain → explicit `unknown` (no invented regains); no-recorded-regain regression |
 | `8e87ec3` | Bed correction: G4/G4n removed from the leased run (always SKIPPED with the R8/respawn reason); no bed, respawn-point or clock write; guard tests. **Frozen C8/C9/C10 candidate for the 26.1.2 module lease.** |
+| `07a3b65` | Docs: first leased 26.1.2 trial record and corrected build provenance |
+| (this commit) | G3 correction: health-support meal exempt from the ordinary eat cooldown (fresh vitals/food/threat checks kept); harness decision evidence and drift-free low-health staging; discriminating tests. **Frozen candidate for a 26.1.2 rerun.** |
 
 Owned paths changed:
 - `src/contracts/survival.ts`
@@ -151,14 +153,15 @@ Official sources: the 26.1.2 and 26.2 `server.jar` files, read from the coordina
 
 ## Checks (Node 24.21.0, this worktree's own `npm ci`)
 
-Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the frozen candidate (the bed-correction commit):
+Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the frozen candidate (the G3-correction commit):
 
 | Command | Exit | Log summary |
 | --- | --- | --- |
 | `npm run typecheck` | 0 | — |
 | `npm run build` | 0 | — |
-| `npm test` | 0 | 791 tests, 791 pass, 0 fail |
-| `node --test tests/survival-*.test.ts` | 0 | 134 tests, 134 pass, 0 fail |
+| `npm test` | 0 | 793 tests, 793 pass, 0 fail |
+| `node --test tests/survival-*.test.ts` | 0 | 136 tests, 136 pass, 0 fail |
+| adverse: health-support exemption removed, `node --test tests/survival-upkeep.test.ts` | 1 (expected) | only the G3 trial-state test fails; source restored |
 | adverse: v1 migration disabled, `node --test tests/survival-persistence.test.ts` | 1 (expected) | only the v1 migration test fails; source restored |
 | adverse: old `regained`-label promotion restored, same command | 1 (expected) | only the no-recorded-regain regression fails; source restored |
 
@@ -219,7 +222,7 @@ Survival adapts its durable/service bookkeeping after P's concrete shared API is
   | Blocks (writes) | `clone 196 -61 190 224 -50 224 196 200 190` (backup); `fill 196 -60 190 224 -50 224 air`; `fill 196 -61 190 224 -61 224 grass_block`; restore `clone 196 200 190 224 211 224 196 -61 190 replace force`; `fill 196 200 190 224 211 224 air` | scene x 196..224, y −61..−50, z 190..224; backup y 200..211 (verified empty first by a masked self-clone count) |
   | Entities (writes) | `kill @e[type=item,${ITEM_AREA}]`, `kill @e[type=experience_orb,${ITEM_AREA}]`, `kill @e[type=item,tag=cbsurv_<run>,${ITEM_AREA}]`; `summon item` ×3 at (215.5,−60,208.5) bread 64, (209.5,−60,208.5) dirt 3, (212.5,−60,201.5) diamond sword sharpness 1, tagged `cbsurv_<run>` + `_bread`/`_dirt`/`_sword` | inside the scene only |
   | Forceload | `forceload query`; `forceload add` only for scene chunks reported "not marked"; `forceload remove` only for those | chunks (12..14, 11..14) |
-  | Fixture bot only (writes) | `clear Chunkbot`, `effect clear Chunkbot [minecraft:hunger]`, `give Chunkbot` iron_pickaxe[damage=200] 1 / bread 4 / cobblestone 20 / diamond_sword[sharpness 3] 1 / bread 12, `kill Chunkbot`, `damage Chunkbot 13` and `4 minecraft:generic`, `effect give Chunkbot minecraft:hunger 30 120` and `10 60`, `tp Chunkbot` to (205.5,−60,205.5), (212.5,−60,205.5) and finally (205.5,−49,205.5) | the bot's own state; **no bed interaction and no respawn-point change** (the bot respawns at its existing respawn point, which is only read) |
+  | Fixture bot only (writes) | `clear Chunkbot`, `effect clear Chunkbot [minecraft:hunger]`, `give Chunkbot` iron_pickaxe[damage=200] 1 / bread 4 / cobblestone 20 / diamond_sword[sharpness 3] 1 / bread 12, `kill Chunkbot`, `damage Chunkbot 13` (G3 b1), one computed `damage Chunkbot <health−7>` (G3 b2) and `damage Chunkbot 4` (regen-off trial), all `minecraft:generic`, `effect give Chunkbot minecraft:hunger 30 120` and `10 60`, `tp Chunkbot` to (205.5,−60,205.5), (212.5,−60,205.5) and finally (205.5,−49,205.5) | the bot's own state; **no bed interaction and no respawn-point change** (the bot respawns at its existing respawn point, which is only read) |
   | Settings (writes, `--with-settings` only) | `difficulty easy`; `gamerule keep_inventory true` (G1k only); `gamerule natural_health_regeneration true` / `false` | world settings, each restored in `finally`; no clock/time write |
   | Restoration (writes) | `difficulty <original>`; `gamerule keep_inventory <original>`; `gamerule natural_health_regeneration <original>`; plus the block/entity/forceload/bot cleanup above | every step verified; any failure fails the report |
   | Reads only | `difficulty`; `gamerule keep_inventory` / `natural_health_regeneration`; `time query time` (twice, 1 s apart, for the clock rate); `time query minecraft:day`; `clear Chunkbot minecraft:<item> 0` (counts); `data get entity Chunkbot LastDeathLocation` / `Pos`; `execute as Chunkbot at @s if entity @e[type=item,distance=..6]` (count only, at the respawn point); `data get entity @e[type=item,tag=cbsurv_<run>_<pile>,limit=1,${ITEM_AREA}] Item`; `execute if entity @e[…]` counts; `execute if block`/`if blocks … all`; `list` | read-only anywhere listed; the respawn-point read changes nothing |
@@ -250,12 +253,20 @@ Survival adapts its durable/service bookkeeping after P's concrete shared API is
 | G4 / G4n | SKIPPED | The R8 bed/respawn reason (no bed interaction, respawn mutation or clock write). |
 | RESTORE | PASS | Difficulty (peaceful), `keep_inventory` (false) and `natural_health_regeneration` (true) restored and re-verified. Tagged piles and scene item/XP entities removed. Scene restored from the backup and verified identical; backup cleared and verified empty. Bot cleared. No forceload was added (`addedForceload: []`). The clock was read only: `minecraft:overworld` 3626077, rate 19.94 ticks/s; day timeline 2097. |
 
-### Findings from the trial (not corrected; the trial source stays frozen)
+### Findings from the trial (the trial source and report stay frozen; corrections are later commits)
 
-- **T1 (G3, product/harness):** the harness waited up to 40 s for food < 18 under a hunger effect with regeneration on, so health can rise back above `lowHealth` 8 before the assessment. The evidence shows the decision but not the health at that moment, which is a harness gap. Hypothesis to verify, not proven: health was 9–12. Then the routine's 60 s post-completion eat cooldown (bypassed only at health ≤ 8) suppressed eating while `rest` was blocked by food < 18, giving a bounded (≤ 60 s) stall. The candidate fix is to treat eating as necessary whenever health ≤ `restAtOrBelow` and food < 18 (regeneration needs it), and to record health/food at every harness decision. This needs review before any change.
+- **T1 (G3) — diagnosed from the retained packets; corrected (see "G3 correction" below).** Timeline relative to `difficulty easy` (server `update_health` packets and recorded commands): `damage 13` at +11.87 s → health 7; with food still 20, health regenerated 8 → 9 → 10 → 10.83 → 11.33 → 11.67 by +14.86 s while the hunger effect drained food 20 → 17 by +17.21 s; the decision at ≈ +17.3 s therefore saw **health 11.67, food 17**. Two separate faults:
+  - **Staging (harness):** the intended precondition (health ≤ `lowHealth` 8 at the decision) did not hold, because damage came before starvation and regeneration ran meanwhile; the harness did not record vitals at the decision.
+  - **Policy (source):** health 11.67 ≤ `restAtOrBelow` 12 with food 17 < 18 means regeneration needs a meal (`evalEat` marks it `healthNeedsFood`), but the ordinary eat cooldown (60 s, from the meal completed ≈ 6 s earlier) was exempt only at health ≤ 8, so the meal was suppressed and `rest` was blocked (`regeneration_needs_food`): a bounded stall with no recovery action.
 - **T2 (incidental attribution):** walking collected entity 39 "stack never stated" ×1. It was reported as incidental `unplanned_collect` with no key (never regained) and did not appear in the five tracked item counts. It is most likely an experience orb from the death; `collect` is also sent for orbs, but this is not proven. Candidate correction: count only server-announced ITEM entities as loot in the pickup plan and report orb collects separately.
 - **T3 (authority gaps between pickups):** after the passive sword regain, the memory update made the death fact `pending`, so the resolver briefly offered nothing (`incident_write_pending`) and the G2 loop ended. In the integrated runtime this would be a transient no-candidate round, not a blocker. It is conservative and correct under C5, but recorded.
 - **T4 (outcome text):** the G2b effect "collected iron_pickaxe x1 … counted 25" is accurate, because the planned neighbours were collected in the same action, but the text could name them.
+
+## G3 correction (after the first 26.1.2 trial)
+
+- **Source (`src/survival/service.ts`, `policy.ts`):** the ordinary eat cooldown now also exempts a **health-support meal**: fresh server health ≤ `restAtOrBelow` and food < 18 (regeneration needs food). It is not deleted: an ordinary hunger meal with healthy vitals still waits it out. `evalEat` still requires fresh server vitals, a full inventory sync and owned safe food, and its visible-threat block now also covers the health-support meal (previously only ≤ `lowHealth`). The low-health allowance is unchanged (granted only at health ≤ `lowHealth`; same action/time bounds), as are the admission cap and blocked-signature rules.
+- **Discriminating offline test (`tests/survival-upkeep.test.ts`):** replays the trial's exact server state (eat completed, then health 11.666666030883789, food 17): on `8e87ec3` it returns `blocked rest regeneration_needs_food` (the trial decision); corrected, it proposes `eat` (support priority, no allowance, reason "health 11.67 needs food to regenerate"). The same test proves the ordinary cooldown still suppresses a healthy hunger meal, a visible zombie blocks the meal (`eat`/`threat_nearby`), and with no owned safe food nothing is eaten (bounded `resupply` instead). Adverse: removing the exemption fails exactly this test.
+- **Harness G3:** every decision line records server health, food, saturation, vitals age, `lowHealth`/`restAtOrBelow`/`eatAtOrBelow`/`eatUntil` and running cooldowns. (b1) keeps the trial's staging and now requires the health-support meal, asserting the staged precondition from server values. (b2) stages the allowance case so it cannot drift: starve to food < 18 first (stops regeneration), then ONE computed `damage` to health 7, decide immediately and assert health ≤ `lowHealth` and food < 18 from server values. No repeated or rescue damage; the oracle is unchanged.
 
 ## Known gaps and honest limits
 

@@ -114,7 +114,8 @@ export function evalEat(ctx: PolicyContext): RoutineEval {
   if (foods.length === 0) return blocked('eat', `eat:none:${v.food}`, 'no_safe_food', `food ${v.food}/20 and no suitable owned food (risky and precious foods are never eaten automatically)`);
   if (ctx.snapshot) {
     const threat = visibleThreat(ctx.snapshot, ctx.cfg.lowHealthAllowance.threatRadius);
-    if (threat && v.health <= ctx.lowHealth) return blocked('eat', `eat:threat:${threat.key}:${Math.round(threat.distance)}`, 'threat_nearby', `visible ${threat.key} ${threat.distance} blocks away at low health; eating here is unsafe and no escape capability is supported`, true);
+    // Eating in place is unsafe near a visible hostile at low health AND for a health-support meal (it may run inside the ordinary cooldown).
+    if (threat && (v.health <= ctx.lowHealth || healthNeedsFood)) return blocked('eat', `eat:threat:${threat.key}:${Math.round(threat.distance)}`, 'threat_nearby', `visible ${threat.key} ${threat.distance} blocks away at health ${v.health}; eating here is unsafe and no escape capability is supported`, true);
   }
   const low = v.health <= ctx.lowHealth;
   const priority: SurvivalPriority = low || v.food <= 6 ? 'safety' : 'support';

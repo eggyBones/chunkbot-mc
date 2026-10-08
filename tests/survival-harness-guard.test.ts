@@ -114,6 +114,18 @@ describe('survival gate harness guard', () => {
     for (const what of ["what: 'difficulty'", 'what: RULE_KEEP', 'what: RULE_REGEN']) assert.ok(code.includes(what), `restoration entry ${what}`);
   });
 
+  it('G3 (trial 8e87ec3 finding T1): decisions record server vitals + cutoffs; staged preconditions are asserted; one computed damage, no rescue damage', () => {
+    const code = source.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    for (const label of ['(a) ordinary hunger decision', '(b1) health-support decision', '(b2) low-health decision']) assert.ok(code.includes(`g.decisionLine('${label}', d)`), `decision evidence for ${label}`);
+    assert.match(code, /server health=\$\{v\?\.health \?\? 'unknown'\} food=\$\{v\?\.food \?\? 'unknown'\}/, 'decision lines carry server health and food');
+    assert.match(code, /cutoffs lowHealth=\$\{this\.lowHealth\} restAtOrBelow=/, 'decision lines carry every cutoff');
+    assert.match(code, /staged precondition holds at the decision \(server health \$\{v1\?\.health\} <= \$\{cfg\.health\.restAtOrBelow\}/, 'b1 precondition is checked, not assumed');
+    assert.match(code, /staged precondition holds at the decision \(server health \$\{v2\?\.health\} <= lowHealth \$\{g\.lowHealth\}/, 'b2 precondition is checked, not assumed');
+    const g3 = code.slice(code.indexOf("await g.gate('G3'"), code.indexOf("await g.gate('G3'") + 9_000);
+    assert.equal([...g3.matchAll(/damage \$\{BOT\}/g)].length, 3, 'exactly three damage commands in G3: b1 staging, b2 single computed damage, regen-off trial');
+    assert.match(g3, /damage \$\{BOT\} \$\{Math\.round\(\(hBefore - 7\) \* 100\) \/ 100\} minecraft:generic/, 'b2 uses ONE computed damage to health 7');
+  });
+
   it('C10: the delta oracle reproduces the batch002-2472442 report as a mismatch and accepts truthful accounting', () => {
     // Trial 2: RCON bread 5 / cobblestone 84 at the end; survival counted cobblestone 20 and reported nothing else.
     const legacyBaseline = { bread: 0, cobblestone: 0, iron_pickaxe: 0, diamond_sword: 0, dirt: 0 };

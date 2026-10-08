@@ -30,8 +30,12 @@
 //   [--with-settings only]
 //   G1k keep_inventory=true death: retained inventory, no trip
 //   G3  Easy difficulty: eating completes ONLY at the admitted threshold
-//       (survival_state eat satisfied, food >= eatUntil); a necessary low-health
-//       eat runs through the allowance (check, reserve-before-dispatch); with
+//       (survival_state eat satisfied, food >= eatUntil); (b1) inside the eat
+//       cooldown, health <= restAtOrBelow with food < 18 gets a HEALTH-SUPPORT
+//       meal (not a blocked rest; trial 8e87ec3 finding T1); (b2) a necessary
+//       low-health eat (health <= lowHealth, staged by starving first and ONE
+//       computed damage) runs through the allowance (check, reserve-before-
+//       dispatch). Every decision records server health/food and cutoffs; with
 //       natural_health_regeneration verified TRUE rest must raise server health by >= 1;
 //       with it verified FALSE rest must end `no_regeneration` (bounded)
 //   G4/G4n R8 bed observations: NOT RUN, always reported SKIPPED. Using a bed
@@ -202,8 +206,23 @@ class Gate {
   readonly outcomes: SkillOutcome[] = [];
   epoch = 0;
   goalId = '';
+  /** Task-runtime low-health cutoff (config limits.lowHealth), for decision evidence. */
+  lowHealth = 0;
   /** The recovery proposal admitted in G2 (continued in G2b). */
   recovery: SurvivalProposal | undefined;
+  /**
+   * Evidence of one survival decision (G3 finding T1): the server health/food/saturation the decision used, its
+   * age, every cutoff it compared with, and any routine cooldown still running. Never derived from the decision.
+   */
+  decisionLine(label: string, d: ReturnType<SurvivalService['assess']>): string {
+    const v = this.survival.vitals(this.game.connectionEpoch);
+    const cfg = this.survival.config();
+    const st = this.survival.status(Date.now());
+    const cd = st.cooldowns.map((c) => `${c.routine}${c.key ? `:${c.key}` : ''} ${c.remainingS}s`).join(',') || 'none';
+    const what = d.kind === 'propose' ? `propose ${d.proposal.routine} priority=${d.proposal.priority} allowance=${d.proposal.lowHealthAllowance ? `${d.proposal.lowHealthAllowance.maxActions} actions` : 'none'} reason="${d.proposal.reason}"` : `${d.kind}${'routine' in d ? ` ${d.routine}` : ''} ${'reason' in d ? d.reason : ''}`;
+    return `${label}: ${what} | server health=${v?.health ?? 'unknown'} food=${v?.food ?? 'unknown'} saturation=${v?.saturation ?? 'unknown'} age=${v ? Date.now() - v.atMs : -1}ms | cutoffs lowHealth=${this.lowHealth} restAtOrBelow=${cfg?.health.restAtOrBelow} eatAtOrBelow=${cfg?.food.eatAtOrBelow} eatUntil=${cfg?.food.eatUntil} | cooldowns ${cd}`;
+  }
+
   /** C10: RCON inventory immediately before the recovery admission (the delta oracle's baseline). */
   baseline: Record<string, number> | undefined;
   private readonly password: string;
@@ -249,6 +268,7 @@ class Gate {
       latestSnapshot: () => this.runtime.perception.latest(),
     });
     check(survival, 'survival service could not be created');
+    this.lowHealth = config.limits.lowHealth;
     this.survival = survival;
     // Approved onBotCreated hook through the existing createBot seam: attach BEFORE login.
     this.game = new MineflayerConnection({
@@ -746,7 +766,7 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         const cfg = g.survival.config();
         check(cfg, 'survival config');
         let d = g.survival.assess(g.assessInput());
-        ev.push(`food ${g.survival.vitals(g.game.connectionEpoch)?.food}: decision ${d.kind} ${d.kind === 'propose' ? d.proposal.routine : 'reason' in d ? d.reason : ''}`);
+        ev.push(g.decisionLine('(a) ordinary hunger decision', d));
         check(d.kind === 'propose' && d.proposal.routine === 'eat', 'eat proposed at low food');
         g.admitProposal(d.proposal);
         const owner = { goalId: g.goalId, goalEpoch: g.epoch };
@@ -759,14 +779,45 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         }
         g.endSupport(d.proposal, eatState.status === 'satisfied' ? 'outcome_verified' : 'no_progress');
         check(eatState.status === 'satisfied' && (g.survival.vitals(g.game.connectionEpoch)?.food ?? 0) >= cfg.food.eatUntil, `eat completed only at the admitted threshold (food >= ${cfg.food.eatUntil})`);
-        // (b) necessary low-health eat right after (the ordinary eat cooldown must NOT suppress it).
+        // (b1) HEALTH-SUPPORT meal inside the ordinary eat cooldown: the first trial's exact staging (damage, then
+        // hunger while regeneration runs; trial 8e87ec3 reached health 11.67 / food 17). Whatever health the server
+        // reaches, health <= restAtOrBelow with food < 18 needs a meal to regenerate; the cooldown must not block it.
         await g.rcon(`damage ${BOT} 13 minecraft:generic`);
         await g.waitFor('health <= 8', () => (g.survival.vitals(g.game.connectionEpoch)?.health ?? 20) <= 8, 10_000);
         await g.rcon(`effect give ${BOT} minecraft:hunger 10 60 true`);
         await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 40_000);
         await g.rcon(`effect clear ${BOT} minecraft:hunger`);
         d = g.survival.assess(g.assessInput());
-        ev.push(`low health decision: ${d.kind} ${d.kind === 'propose' ? `${d.proposal.routine} allowance=${JSON.stringify(d.proposal.lowHealthAllowance)}` : 'reason' in d ? d.reason : ''}`);
+        ev.push(g.decisionLine('(b1) health-support decision', d));
+        const v1 = g.survival.vitals(g.game.connectionEpoch);
+        check(v1 && v1.health <= cfg.health.restAtOrBelow && v1.food < 18, `staged precondition holds at the decision (server health ${v1?.health} <= ${cfg.health.restAtOrBelow}, food ${v1?.food} < 18)`);
+        check(d.kind === 'propose' && d.proposal.routine === 'eat', 'a health-support meal is proposed despite the ordinary eat cooldown (not blocked rest)');
+        g.admitProposal(d.proposal);
+        const supportOwner = { goalId: g.goalId, goalEpoch: g.epoch };
+        let supportState = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'eat', expect: 'satisfied' }, supportOwner);
+        for (let i = 0; i < 4 && supportState.status !== 'satisfied'; i += 1) {
+          const o = await g.act('eat_safe_food');
+          await sleep(600);
+          supportState = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'eat', expect: 'satisfied' }, supportOwner);
+          ev.push(`health-support eat ${i + 1}: ${o?.status} ${o?.effect.slice(0, 120)}; server food ${g.survival.vitals(g.game.connectionEpoch)?.food}; eat state ${supportState.status}`);
+        }
+        g.endSupport(d.proposal, supportState.status === 'satisfied' ? 'outcome_verified' : 'no_progress');
+        check(supportState.status === 'satisfied', `the health-support meal reached the admitted threshold (food >= ${cfg.food.eatUntil})`);
+        // (b2) NECESSARY low-health eat with the narrow allowance (health <= lowHealth), again inside the cooldown.
+        // Staging that cannot drift: starve FIRST (food < 18 stops natural regeneration), then ONE computed damage to
+        // health 7, then decide immediately on the server values (no repeated or rescue damage).
+        await g.rcon(`effect give ${BOT} minecraft:hunger 10 60 true`);
+        await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 40_000);
+        await g.rcon(`effect clear ${BOT} minecraft:hunger`);
+        await sleep(500);
+        const hBefore = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
+        check(hBefore > 7, `health ${hBefore} above the staged 7 before the single damage`);
+        await g.rcon(`damage ${BOT} ${Math.round((hBefore - 7) * 100) / 100} minecraft:generic`);
+        await g.waitFor('health <= lowHealth', () => (g.survival.vitals(g.game.connectionEpoch)?.health ?? 20) <= g.lowHealth, 10_000);
+        d = g.survival.assess(g.assessInput());
+        ev.push(g.decisionLine('(b2) low-health decision', d));
+        const v2 = g.survival.vitals(g.game.connectionEpoch);
+        check(v2 && v2.health <= g.lowHealth && v2.food < 18, `staged precondition holds at the decision (server health ${v2?.health} <= lowHealth ${g.lowHealth}, food ${v2?.food} < 18)`);
         check(d.kind === 'propose' && d.proposal.routine === 'eat' && d.proposal.lowHealthAllowance, 'a necessary low-health eat with a narrow allowance is proposed despite the earlier eat cooldown');
         const grant = g.admitProposal(d.proposal);
         check(grant, 'grant issued once for the admitted support epoch');
