@@ -2,7 +2,7 @@
 
 Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree `/Users/jakewilcox/code/worktrees/chunkbot-mc/gameplay-recovery`, branch `chunkbot/gameplay-recovery`, common base `37c4c170199b4c9d867f720e64561a63a816d14c`. Plans: [survival-routines-plan.md](../survival-routines-plan.md) (C7–C12, R1–R10) and [live-gameplay-fixes-plan.md](../live-gameplay-fixes-plan.md).
 
-**Delivery state: offline corrections are complete and verified. No fixture lease was granted, so there is no new live evidence.** The bot stayed logged out. There was no join, password read, RCON command, world or settings change, provider call or model inference. Accepted C12 continuation is not delivered: this document proposes its typed seam, which waits for approval by Codex and P before implementation. The module trials and real ordinary continuation are coordinator-run acceptance, and none of them has run on this source.
+**Delivery state: offline corrections are complete and verified. One leased 26.1.2 module trial ran on frozen `8e87ec3` and FAILED (exit 1) on G3 only; G1, G2, G2b and G1k passed and every restoration step verified** (see [Leased trial 26.1.2](#leased-trial-2612-gameplay-s-261-c8910-01)). There was no provider call or model inference, and nothing touched the 26.2 fixture. Accepted C12 continuation is not delivered: this document proposes its typed seam, which waits for approval by Codex and P before implementation. The module trials and real ordinary continuation are coordinator-run acceptance, and none of them has run on this source.
 
 ## Commits
 
@@ -15,7 +15,7 @@ Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree
 | `eb4456b` | Review doc commit id |
 | `d3b3e9f` | C12 proposal revision 2 after the joint review (declarations only) |
 | `f55329a` | v1 `regained` label without a recorded regain → explicit `unknown` (no invented regains); no-recorded-regain regression |
-| (this commit) | Bed correction: G4/G4n removed from the leased run (always SKIPPED with the R8/respawn reason); no bed, respawn-point or clock write; guard tests. **Frozen C8/C9/C10 candidate for the 26.1.2 module lease.** |
+| `8e87ec3` | Bed correction: G4/G4n removed from the leased run (always SKIPPED with the R8/respawn reason); no bed, respawn-point or clock write; guard tests. **Frozen C8/C9/C10 candidate for the 26.1.2 module lease.** |
 
 Owned paths changed:
 - `src/contracts/survival.ts`
@@ -175,7 +175,7 @@ Earlier rounds (before the schema review):
   - `doctor` (not touched by this change);
   - live, skills, Jev, planner and handoff checks (no lease, and no shared or planner code changed).
 
-Source, build and running versions: source is HEAD of this branch, `dist/` was built from `2ffdf10`, and no process runs it. The harness imports `src` directly.
+Source, build and running versions (corrected; the earlier "dist from `2ffdf10`" line was stale): `dist/` was built by `npm run build` from the working tree that was committed as `8e87ec3` (dist/cli.js 2026-10-07T19:06:52−07:00; commit 19:07:28−07:00). After the trial, compiling `8e87ec3` into a temp directory gave byte-identical JavaScript (150 `.js` files, combined sha256 `efbbed50d05df683b3eb4fd87217b46a7287a1ba02953351a246074956ed3835`); only the 150 `.js.map` files differ, by their output-directory-relative source paths. The whole `dist/` tree digest is `8e4b92f75b3f6a6e8497d007f841a0584da2a29186e0cde105717c27664605e5`. No process runs `dist/`; the survival harness imports `src` directly.
 
 ## C12: proposed seam, revision 2 (after the joint review; awaiting P's shared API and Codex approval; not implemented)
 
@@ -232,6 +232,30 @@ Survival adapts its durable/service bookkeeping after P's concrete shared API is
   - incidental effects reported;
   - settings gates G1k and G3 reached after parsed original settings and clock reads; G4/G4n reported SKIPPED (R8 reason).
 - **Note:** respawn-point pickups depend on loose items outside the scene, which the harness never removes. A clean respawn area is not required, because those gains are now reported and the oracle is a delta. They are recorded either way.
+
+## Leased trial 26.1.2 (gameplay-S-261-c8910-01)
+
+- **Lease:** `gameplay-S-261-c8910-01`, exclusive, vanilla 26.1.2 fixture only (25566 / RCON 25576), granted 2026-10-08T02:09:26Z for 30 minutes. Pre-flight: HEAD `8e87ec3`, 0 dirty paths, `var/fixture` linked to the root fixture store, lease record active. **Released** at 02:10:52Z, right after the post-trial checks.
+- **Command (exactly as approved):** `node scripts/survival-live-check.ts --fixture-lease gameplay-S-261-c8910-01 --with-settings`, Node 24.21.0, output redirected to a file. **Exit 1**, read directly from `$?`. Ran 02:09:35Z–02:10:11Z.
+- **Report:** `var/live-check/2026-10-08T02-09-35-290Z-survival/report.json` (sha256 `431430477fa838162521ada21526ab21f60ac308e9791f406a377dce74aaee0c`), preserved unchanged. It records source `{head: 8e87ec3…, dirty: 0}` and every RCON setup, intervention and restore command with its reply.
+- **After the run:** HEAD still `8e87ec3`, 0 dirty paths; no harness, bot or `dist/cli.js` process remained.
+
+| Gate | Result | Key evidence |
+| --- | --- | --- |
+| G1 | PASS | Wire order `death_combat_event > set_slot ×4 (clearing) > update_health 0 > respawn > window_items (empty) > update_health 20`. Frozen at the kill packet with server digests. The server GlobalPos 212.5,−60,205.5 overworld equals RCON `LastDeathLocation`. Memory fact `mf-0001` linked exactly. Respawned at (−9.5,−60,3.5) with no item entities within 6 blocks and an empty RCON inventory, so this run had **no respawn-point pickups**. |
+| G2 | PASS | RCON pile data: bread count 64, dirt 3, sword sharpness 1. The bot's packet-stated stacks match, each with its own digest (the foreign sword's digest differs from the lost one). Authority was refused (`attempt_write_pending`) until the attempt was durable. Walking regained the lost sword passively (digest-matched). The foreign piles (3) and the wrong sword stayed on the ground. Server delta = regained, with nothing unexplained. |
+| G2b | PASS | One `recover_lost_items` action collected the target pickaxe plus the planned own bread 4 and cobblestone 20 (counted 25). The server gained exactly bread 4, cobblestone 20, iron_pickaxe 1 and diamond_sword 1 since the baseline. Sword digest equal. `recovered` is satisfied and the episode is `recovered`. Durable writes passed throughout (the C9 failure did not recur). |
+| G1k | PASS | `keep_inventory` set true and verified. The respawn sync held the kit, giving `no_loss`. Memory fact `mf-0002` has recovery `no_loss`, regained `[]`, retained 4 kinds. |
+| G3 | **FAIL** | Ordinary eat completed at the threshold (food 10 → 15 → 20, satisfied). After `damage 13` and a hunger effect the decision was `blocked regeneration_needs_food`, not the necessary low-health eat, so the gate stopped. |
+| G4 / G4n | SKIPPED | The R8 bed/respawn reason (no bed interaction, respawn mutation or clock write). |
+| RESTORE | PASS | Difficulty (peaceful), `keep_inventory` (false) and `natural_health_regeneration` (true) restored and re-verified. Tagged piles and scene item/XP entities removed. Scene restored from the backup and verified identical; backup cleared and verified empty. Bot cleared. No forceload was added (`addedForceload: []`). The clock was read only: `minecraft:overworld` 3626077, rate 19.94 ticks/s; day timeline 2097. |
+
+### Findings from the trial (not corrected; the trial source stays frozen)
+
+- **T1 (G3, product/harness):** the harness waited up to 40 s for food < 18 under a hunger effect with regeneration on, so health can rise back above `lowHealth` 8 before the assessment. The evidence shows the decision but not the health at that moment, which is a harness gap. Hypothesis to verify, not proven: health was 9–12. Then the routine's 60 s post-completion eat cooldown (bypassed only at health ≤ 8) suppressed eating while `rest` was blocked by food < 18, giving a bounded (≤ 60 s) stall. The candidate fix is to treat eating as necessary whenever health ≤ `restAtOrBelow` and food < 18 (regeneration needs it), and to record health/food at every harness decision. This needs review before any change.
+- **T2 (incidental attribution):** walking collected entity 39 "stack never stated" ×1. It was reported as incidental `unplanned_collect` with no key (never regained) and did not appear in the five tracked item counts. It is most likely an experience orb from the death; `collect` is also sent for orbs, but this is not proven. Candidate correction: count only server-announced ITEM entities as loot in the pickup plan and report orb collects separately.
+- **T3 (authority gaps between pickups):** after the passive sword regain, the memory update made the death fact `pending`, so the resolver briefly offered nothing (`incident_write_pending`) and the G2 loop ended. In the integrated runtime this would be a transient no-candidate round, not a blocker. It is conservative and correct under C5, but recorded.
+- **T4 (outcome text):** the G2b effect "collected iron_pickaxe x1 … counted 25" is accurate, because the planned neighbours were collected in the same action, but the text could name them.
 
 ## Known gaps and honest limits
 
