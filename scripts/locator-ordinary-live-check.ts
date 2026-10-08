@@ -64,6 +64,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { insideBox, isEntryPoint, type Box } from './locator-live-check.ts';
 import type { FaultTurn } from './lib/fault-codex.ts';
 import { actionIntervals, parseOwnerServerRead, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, type ObserverSample } from './lib/locator-ordinary-oracles.ts';
+import { captureStationaryPosition, originalPositionTarget, POSITION_SETTLE, type PlayerPositionRead, type PositionScope, type PositionTarget, type StationaryPositionProof } from './lib/locator-ordinary-origin.ts';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type P = { x: number; y: number; z: number };
@@ -238,9 +239,9 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   const ownerScript: Array<{ atMs: number; scenario: string; action: string }> = [];
   let scenario = 'preflight';
   let rconQueue: Promise<unknown> = Promise.resolve();
-  const rcon = async (command: string, record = true): Promise<string> => {
+  const rcon = async (command: string, record = true, timeoutMs = 5_000): Promise<string> => {
     if (record) appendFileSync(join(outDir, 'commands.jsonl'), `${JSON.stringify({ atMs: Date.now(), scenario, phase: 'intent', command })}\n`);
-    const job = rconQueue.then(() => rconCommand(PINS.host, PINS.rconPort, password, command));
+    const job = rconQueue.then(() => rconCommand(PINS.host, PINS.rconPort, password, command, timeoutMs));
     rconQueue = job.catch(() => undefined);
     const reply = await job;
     if (record) {
@@ -369,6 +370,51 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   };
   const events = () => readJsonl(eventsPath);
   const tOf = (e: Json) => Date.parse(String(e.t));
+  const positionChecks: Json[] = [];
+  const positionScope = (): PositionScope => {
+    const ev = events(), ready = ev.filter((e) => e.type === 'connection_ready').at(-1);
+    assert(ready && !ev.some((e) => e.type === 'connection_ended' && e.connectionEpoch === ready.connectionEpoch && tOf(e) >= tOf(ready)), 'position capture requires a current owned ready connection');
+    return { runId: basename(dirname(eventsPath)), connectionEpoch: ready.connectionEpoch };
+  };
+  // Dedicated server evidence only: no diagnostic snapshot, memory/handle refresh or app/model input.
+  const captureBotPosition = async (phase: 'pre-staging origin' | 'original restoration', target?: PositionTarget) => {
+    const scope = positionScope(), identity = { name: BOT, uuid: offlinePlayerUuid(BOT) };
+    const evidence: Json = { phase, scope, identity, target: target ?? null, startedAtMs: Date.now(), reads: [], pass: false };
+    positionChecks.push(evidence);
+    try {
+      const proof = await captureStationaryPosition({
+        now: Date.now, wait: (ms) => sleep(ms),
+        read: async (deadlineMs): Promise<PlayerPositionRead> => {
+          const scopeBefore = positionScope(), fromMs = Date.now();
+          const readField = (field: 'Pos' | 'Dimension' | 'UUID' | 'OnGround') => {
+            const remainingMs = Math.min(deadlineMs, fromMs + POSITION_SETTLE.maxReadMs) - Date.now();
+            assert(remainingMs > 0, 'bot position read exceeded its bounded interval');
+            return rcon(`data get entity ${BOT} ${field}`, true, remainingMs);
+          };
+          const positionBefore = await readField('Pos');
+          const dimensionBefore = await readField('Dimension');
+          const uuid = await readField('UUID');
+          const onGround = await readField('OnGround');
+          const dimensionAfter = await readField('Dimension');
+          const positionAfter = await readField('Pos');
+          return { scopeBefore, scopeAfter: positionScope(), fromMs, toMs: Date.now(), replies: { positionBefore, positionAfter, dimensionBefore, dimensionAfter, uuid, onGround } };
+        },
+        record: (read) => {
+          evidence.reads.push(read);
+          appendFileSync(join(outDir, 'position-reads.jsonl'), `${JSON.stringify({ phase, scenario, ...read })}\n`);
+        },
+      }, identity, scope, target);
+      evidence.pass = true;
+      evidence.proof = proof;
+      return proof;
+    } catch (error) {
+      evidence.error = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      evidence.finishedAtMs = Date.now();
+      appendFileSync(join(outDir, 'position-reads.jsonl'), `${JSON.stringify({ phase, scenario, result: evidence })}\n`);
+    }
+  };
   const startCli = async (name: string, configPath: string) => {
     const p = new CliProcess(name, ['run', '--no-autonomy', '--config', configPath], env);
     cli = p; // owned immediately: a failed start is still stopped in finally
@@ -594,7 +640,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   };
   let owner: Bot | undefined;
   let guest: Bot | undefined;
-  let botStart: { x: number; y: number; z: number; dimension: string } | undefined;
+  let botStart: StationaryPositionProof | undefined;
   process.stdout.write(`locator ordinary live check (${PINS.profile}, lease ${lease}; PLANNER FAULT FIXTURE + loopback first-option Jev; harness validation) -> ${outDir}\n`);
   try {
     assert(/^There are 0 of /i.test(await rcon('list')), 'exclusive fixture must have zero players before joining');
@@ -603,11 +649,9 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     exhaustConfig = makeConfig('exhaust', { routes: { maxTotalDistance: 192, maxLegs: 3 } });
     turnsFor([]);
     await startCli('run-locator-ordinary', normalConfig);
-    {
-      const p = await serverPos(BOT);
-      const dim = /"([a-z_:]+)"/.exec(await rcon(`data get entity ${BOT} Dimension`, false))?.[1] ?? 'minecraft:overworld';
-      botStart = { ...p, dimension: dim };
-    }
+    assert(!events().some((e) => ['goal_admitted', 'skill_started', 'planner_turn_started', 'route_authorized'].includes(e.type)), 'origin must precede any gameplay work');
+    botStart = await captureBotPosition('pre-staging origin');
+    assert(!events().some((e) => ['goal_admitted', 'skill_started', 'planner_turn_started', 'route_authorized'].includes(e.type)), 'gameplay work started during origin capture');
     owner = await fixturePlayer(OWNER);
     const o = () => owner as Bot;
 
@@ -1024,13 +1068,11 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         await cleanupPlayer(BOT);
         assert(botStart, 'original bot position was not recorded');
         // Exact recorded origin is the existing restoration exception, never a new destination.
-        await rcon(`execute in ${botStart.dimension} run tp ${BOT} ${botStart.x} ${botStart.y} ${botStart.z}`);
-        await sleep(1_000);
-        const at = await serverPos(BOT);
-        const dimension = await rcon(`data get entity ${BOT} Dimension`);
-        assert(Math.hypot(at.x - botStart.x, at.y - botStart.y, at.z - botStart.z) <= 1.5 && dimension.includes(`"${botStart.dimension}"`), 'Chunkbot original final position/dimension not verified');
-        finalPositions.push({ player: BOT, at, dimension: botStart.dimension, phase: 'final cleanup' });
-        return at;
+        const target = originalPositionTarget(botStart);
+        await rcon(`execute in ${target.dimension} run tp ${BOT} ${target.at.x} ${target.at.y} ${target.at.z}`);
+        const restored = await captureBotPosition('original restoration', target);
+        finalPositions.push({ player: BOT, at: restored.at, dimension: restored.dimension, phase: 'final cleanup', proof: restored });
+        return restored;
       });
       await step('ordinary CLI complete graceful shutdown/exit 0', stopCli);
     }
@@ -1069,6 +1111,10 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         privacyFindings,
         retainedFailure: { report: 'acceptance-native/var/live-check/2026-10-08T06-09-31-852Z-locator-ordinary/report.json', sha256: 'a2d00c656945a63eb083e170668f536f44cae08b29dcf94ecebb81f1fb255e6c', result: 'exit 1; 10/14; original evidence unchanged' },
         retainedLH9Failure: { report: 'acceptance-planner/var/live-check/2026-10-08T07-37-15-110Z-locator-ordinary/report.json', sha256: '3c76d9f6d18036dc802e1f9f46170d07247793857aa668a7de246a1d368074c3', result: '17d0c08; exit 1; 7/14; original evidence unchanged' },
+        retainedLH10Failures: [
+          { report: 'acceptance-native/var/live-check/2026-10-08T16-29-13-690Z-locator-ordinary/report.json', sha256: '747f92e663d6a5eefaa20757271c40e098b05c6303ffc9307acacfc97517b5ba', result: 'a0ae3f8; 26.1.2; exit 1; thirteen behavior gates pass, RESTORE fails; original evidence unchanged' },
+          { report: 'acceptance-planner/var/live-check/2026-10-08T16-29-13-689Z-26.2-locator-ordinary/report.json', sha256: '0e39aa4353ce6476206d180253f42af19b4821725cbd23c6764c3cba79f52001', result: 'a0ae3f8; 26.2; exit 1; thirteen behavior gates pass, RESTORE fails; original evidence unchanged' },
+        ],
         privacyScans,
         restoreFailures,
         results,
@@ -1080,6 +1126,8 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         cliExits,
         cleanup,
         finalPositions,
+        botOrigin: botStart ?? null,
+        positionChecks,
         observations,
       },
       null,

@@ -155,6 +155,26 @@ describe('MB-LOC-002 ordinary harness scripted planner turns and privacy helper'
     assert.match(code, /forcedKill: false/);
     assert.ok(!code.includes('cliExitSaved: true'));
   });
+  it('captures grounded stationary server origin before staging and retains exact restoration proof even on failure', () => {
+    const origin = code.indexOf("botStart = await captureBotPosition('pre-staging origin')");
+    assert.ok(origin > code.indexOf("await startCli('run-locator-ordinary', normalConfig)"));
+    assert.ok(origin < code.indexOf('owner = await fixturePlayer(OWNER)'));
+    const capture = code.slice(code.indexOf('const captureBotPosition = async'), code.indexOf('const startCli = async'));
+    assert.match(capture, /await readField\('OnGround'\)/);
+    assert.match(capture, /await readField\('UUID'\)/);
+    assert.match(capture, /Math\.min\(deadlineMs, fromMs \+ POSITION_SETTLE\.maxReadMs\)/);
+    assert.match(capture, /scopeBefore, scopeAfter: positionScope\(\)/);
+    assert.match(capture, /appendFileSync\(join\(outDir, 'position-reads.jsonl'\)/);
+    assert.match(capture, /evidence\.error =/);
+    assert.ok(!/serverPos\(|cli\.send\(|run tp|rcon\([^`]/.test(capture), 'origin capture has only independent server reads');
+    assert.ok(!/Dimension.*\?\? 'minecraft:overworld'/.test(code), 'no guessed original dimension');
+    assert.match(code, /const target = originalPositionTarget\(botStart\)/);
+    assert.match(code, /const restored = await captureBotPosition\('original restoration', target\)/);
+    assert.match(code, /botOrigin: botStart \?\? null/);
+    assert.match(code, /retainedLH10Failures:/);
+    assert.match(code, /'origin must precede any gameplay work'/);
+    assert.match(code, /'gameplay work started during origin capture'/);
+  });
 });
 
 describe('MB-LOC-002 ordinary harness prompt capture (offline: stub real CLI, shared fault fixture, temp dir)', () => {
