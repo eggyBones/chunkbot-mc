@@ -34,8 +34,10 @@ export function survivalScopeDirectory(root: string, scope: MemoryScope): string
  *   lost = v1 remaining + recorded regains of that key, regained = recorded regains,
  * with the state derived from those counters. Nothing is invented: no regain
  * that was not recorded, no item that was not in the manifest. A v1 `regained`
- * label (only possible at count 0, which v1 could never write) keeps its
- * recorded regains as both lost and regained. If v1's bounded regain list
+ * label (code-generated only at count 0, which v1 could never write) keeps its
+ * recorded regains as both lost and regained; WITHOUT a recorded regain it
+ * becomes an explicit `unknown` remainder (never recovered evidence), and an
+ * episode `recovered` status is downgraded unless every item is regained. If v1's bounded regain list
  * dropped old entries, the reconstructed lost count is LOWER than the truth,
  * never higher, and the episode detail says the record was migrated.
  */
@@ -53,14 +55,27 @@ export function migrateV1Body(body: unknown): unknown {
       const v1Count = typeof m['count'] === 'number' ? m['count'] : 0;
       const recorded = regainedByKey.get(key) ?? 0;
       if (m['state'] === 'regained') {
-        const lost = recorded > 0 ? recorded : v1Count;
-        m['count'] = lost;
-        m['regained'] = lost;
+        if (recorded > 0) {
+          // Only server-confirmed regains recorded in the episode count as regained evidence.
+          m['count'] = recorded;
+          m['regained'] = recorded;
+        } else {
+          // Inconsistent legacy label (code-generated v1 whole-key regains had count 0 and never persisted) with
+          // NO recorded server regain: kept as an explicit unknown remainder, never promoted to recovered evidence.
+          m['count'] = Math.max(1, v1Count);
+          m['regained'] = 0;
+          m['state'] = 'unknown';
+        }
         continue;
       }
       m['count'] = v1Count + recorded;
       m['regained'] = recorded;
       if (m['state'] === 'missing' && recorded > 0) m['state'] = v1Count > 0 ? 'partially_regained' : 'regained';
+    }
+    // An episode labeled `recovered` is only kept when every migrated item is actually regained (no false full success).
+    const items = manifest?.missing ?? [];
+    if (e['status'] === 'recovered' && items.some((m) => m['state'] !== 'regained')) {
+      e['status'] = items.some((m) => typeof m['regained'] === 'number' && m['regained'] > 0) ? 'partially_recovered' : 'unknown';
     }
     if (typeof e['detail'] === 'string' && (manifest?.missing?.length ?? 0) > 0) e['detail'] = `${e['detail'] ? `${e['detail']}; ` : ''}migrated from survival schema v1`.slice(0, 200);
   }

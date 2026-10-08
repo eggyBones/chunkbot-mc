@@ -13,7 +13,8 @@ Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree
 | `41733b2` | The status projection enforces the declared 4,000-character bound (C10 added fields) |
 | `08c9d89` | Coordinator schema review: state/count consistency invariants, v1 migration that reconstructs the original lost count from recorded regains, old-revision fallback tests |
 | `eb4456b` | Review doc commit id |
-| (this commit) | C12 proposal revision 2 after the joint review (declarations only) |
+| `d3b3e9f` | C12 proposal revision 2 after the joint review (declarations only) |
+| (this commit) | v1 `regained` label without a recorded regain → explicit `unknown` (no invented regains); no-recorded-regain regression. **Frozen C8/C9/C10 candidate for the 26.1.2 module lease.** |
 
 Owned paths changed:
 - `src/contracts/survival.ts`
@@ -102,7 +103,7 @@ Official sources: the 26.1.2 and 26.2 `server.jar` files, read from the coordina
   - **v1 migration** (`migrateV1Body`, pure, applied after the raw checksum and before the v2 schema). v1 stored the REMAINING amount in `count` and listed regains in the episode's `regained` entries. So:
     - `lost = v1 remaining + recorded regains of that key`, `regained = recorded regains`, and the state is derived from those counters (a sought item with recorded regains becomes `partially_regained`);
     - `unknown` and `likely_destroyed` keep their remainder and are never re-sought;
-    - a v1 `regained` label keeps its recorded regains as both lost and regained;
+    - a v1 `regained` label keeps its recorded regains as both lost and regained. **Without any recorded server regain** (an inconsistent legacy label; code-generated v1 whole-key regains had count 0 and never persisted) the item becomes an explicit `unknown` remainder with nothing regained, and an episode labeled `recovered` is downgraded (`partially_recovered` when some regain is recorded, else `unknown`) unless every item is regained, so there is no false full success;
     - nothing is invented. If v1's 32-entry regain list had dropped old entries, the reconstructed lost count is lower than the truth, never higher. The historical remaining count is never treated as the original lost count once regains are recorded.
   - It writes v2. A newer schema stays read-only and is never overwritten.
   - The load detail states the migration. A rejected body names the exact field (e.g. `at episodes.0.manifest.missing.0.regained: regained exceeds the lost count`).
@@ -149,15 +150,16 @@ Official sources: the 26.1.2 and 26.2 `server.jar` files, read from the coordina
 
 ## Checks (Node 24.21.0, this worktree's own `npm ci`)
 
-Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the schema-review commit:
+Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the frozen candidate (the commit that adds the no-recorded-regain regression):
 
 | Command | Exit | Log summary |
 | --- | --- | --- |
 | `npm run typecheck` | 0 | — |
 | `npm run build` | 0 | — |
-| `npm test` | 0 | 790 tests, 790 pass, 0 fail |
-| `node --test tests/survival-*.test.ts` | 0 | 133 tests, 133 pass, 0 fail |
+| `npm test` | 0 | 791 tests, 791 pass, 0 fail |
+| `node --test tests/survival-*.test.ts` | 0 | 134 tests, 134 pass, 0 fail |
 | adverse: v1 migration disabled, `node --test tests/survival-persistence.test.ts` | 1 (expected) | only the v1 migration test fails; source restored |
+| adverse: old `regained`-label promotion restored, same command | 1 (expected) | only the no-recorded-regain regression fails; source restored |
 
 Earlier rounds (before the schema review):
 

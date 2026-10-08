@@ -184,6 +184,35 @@ describe('post-collection persistence (C9)', () => {
     await h.service.close();
   });
 
+  it('v1 migration: an inconsistent `regained` label with NO recorded server regain is an explicit unknown, never recovered evidence', async () => {
+    const root = tempRoot();
+    const dir = survivalScopeDirectory(root, SCOPE);
+    mkdirSync(dir, { recursive: true });
+    const ep = {
+      ...sampleEpisode({ phase: 'concluded', status: 'recovered', site: { source: 'server_death_location', dimension: 'overworld', at: { x: 30.5, y: 64, z: 10.5 }, observedAtMs: NOW0 } }),
+      manifest: { assessedAtMs: NOW0, freshInventorySource: 'server_packets', lastAliveSource: 'server_packets', missing: [{ key: 'minecraft:iron_pickaxe', count: 1, valuable: false, metadata: 'server_slot', state: 'regained' }], retained: [], partial: false, detail: 'v1' },
+      regained: [],
+    } as Record<string, unknown>;
+    delete ep['incidental'];
+    const body = { scope: SCOPE, createdAtMs: NOW0, episodes: [ep], interrupted: [], nextEpisode: 2, evicted: 0 };
+    writeFileSync(`${dir}/survival-00000001.json`, JSON.stringify({ format: 'chunkbot-survival', schemaVersion: 1, revision: 1, writtenAtMs: NOW0, checksum: checksum(body), body }));
+    const h = harness({ root, pid: 7110 });
+    const st = h.service.status(h.clock.now());
+    assert.equal(st.store.state, 'ready', st.store.detail);
+    const inc = st.incidents[0];
+    assert.equal(inc?.status, 'unknown', 'a `recovered` episode without recorded regains is not a full success');
+    const pick = inc?.missing.find((m) => m.key === 'minecraft:iron_pickaxe');
+    assert.deepEqual([pick?.lost, pick?.regained, pick?.count, pick?.state], [1, 0, 1, 'unknown'], 'no regain invented');
+    assert.equal(inc?.regained.length, 0);
+    // Not re-sought either (the concluded remainder stays unaccounted for).
+    h.packets.inventory({});
+    h.packets.health(20, 20);
+    await settle(h);
+    const d = h.service.assess(assessInput(h));
+    assert.notEqual(d.kind === 'propose' ? d.proposal.routine : null, 'death_recovery');
+    await h.service.close();
+  });
+
   it('old revisions load: a corrupt or tampered newest revision falls back to the last verified v1 revision (never replaced)', async () => {
     const root = tempRoot();
     const dir = survivalScopeDirectory(root, SCOPE);
