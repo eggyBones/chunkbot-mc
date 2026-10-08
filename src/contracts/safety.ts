@@ -345,7 +345,7 @@ export interface SafetyEntityFact {
 export const SAFETY_HAZARD_KINDS = [
   /** Eyes in water. */
   'submerged',
-  /** Feet in water without solid support (swimming depth) while not submerged. */
+  /** Water in or immediately under the body without a shallow supporting floor, even during a surface bob. */
   'deep_water',
   /** Server air at/below the low threshold or unknown while submerged. */
   'low_air',

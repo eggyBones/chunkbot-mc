@@ -10,7 +10,9 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
 import { Vec3 } from 'vec3';
-import { fluidState } from '../src/safety/geometry.ts';
+import { fluidState, hasSafeFluidSupport } from '../src/safety/geometry.ts';
+import { fluidHazards } from '../src/safety/policy.ts';
+import { config, self } from './safety-helpers.ts';
 
 const require = createRequire(import.meta.url);
 const { Physics, PlayerState } = require('prismarine-physics') as {
@@ -66,6 +68,33 @@ function rig(version: string, depth: number, ceilingAt?: number) {
 
 for (const version of ['26.1.2', '26.2']) {
   describe(`installed physics, ${version}`, () => {
+    it('W-C11-R7: near-surface body samples are dry, but released controls sink and held jump never proves an exit', () => {
+      const { run, view, bot } = rig(version, 4);
+      bot.entity.position.set(0.8762083584, 3.73802231455, 0.5);
+      bot.entity.onGround = false;
+      const fact = () => ({ ...fluidState(view, bot.entity.position), onGround: bot.entity.onGround, source: 'local_estimate' as const });
+      assert.equal(fact().feetIn, 'none');
+      assert.deepEqual(fluidHazards(self({ fluid: fact() }), config()).map((h) => h.kind), ['deep_water']);
+      for (let t = 0; t < 160; t += 1) {
+        run(1, { jump: true });
+        assert.equal(hasSafeFluidSupport(fact()), false, `a bob is not a grounded exit at tick ${t}`);
+        assert.ok(fluidHazards(self({ fluid: fact() }), config()).length > 0, 'no hazard-free surface frame');
+      }
+      run(160, {});
+      assert.equal(fact().eyeIn, 'water', 'release inside the pool re-submerges');
+    });
+
+    it('released controls settle on dry land or genuine one-block wading', () => {
+      for (const dry of [true, false]) {
+        const { run, view, bot } = rig(version, 1);
+        bot.entity.position.set(dry ? 8.5 : 0.5, 0, 0.5);
+        run(40, {});
+        const f = { ...fluidState(view, bot.entity.position), onGround: bot.entity.onGround };
+        assert.equal(hasSafeFluidSupport(f), true);
+        assert.equal(f.columnFluid, dry ? 'none' : 'water');
+        assert.equal(fluidHazards(self({ fluid: { ...f, source: 'local_estimate' } }), config()).length, 0);
+      }
+    });
     it('held jump surfaces from the floor of 5-deep water within 60 ticks (3 s)', () => {
       const { run, view, bot } = rig(version, 5);
       assert.equal(fluidState(view, bot.entity.position).eyeIn, 'water', 'starts submerged');

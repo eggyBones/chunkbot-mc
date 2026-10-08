@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 import type { ActionCandidate } from '../src/contracts/index.ts';
 import type { SafetyExecutionOwner } from '../src/contracts/safety.ts';
-import { fluidState } from '../src/safety/geometry.ts';
+import { fluidState, hasSafeFluidSupport } from '../src/safety/geometry.ts';
 import { Actuator } from '../src/execution/actuator.ts';
 import { clock } from './safety-session.ts';
 import { ownerAuthority, runtime, scene, stopPhysics, until } from './safety-session.ts';
@@ -15,6 +15,108 @@ import { ownerAuthority, runtime, scene, stopPhysics, until } from './safety-ses
 after(stopPhysics);
 
 describe('safety skills over the installed physics (client-physics evidence)', () => {
+  for (const y of [3.73802231455, 3.8394]) {
+    it(`W-C11-R7: starting at the observed near-surface height ${y}, escapes to settled shore without episode churn`, async () => {
+      const sc = scene();
+      sc.bot.entity.position.y = y;
+      sc.bot.entity.position.x = 0.8762083584;
+      sc.bot.entity['onGround'] = false;
+      let auth = ownerAuthority();
+      const rt = runtime(sc.session, () => auth);
+      const before = rt.reader.self()!.fluid;
+      assert.equal(before.feetIn, 'none');
+      assert.equal(before.eyeIn, 'none');
+      assert.equal(before.columnFluid, 'water');
+      rt.service.start();
+      rt.service.tick();
+      assert.ok(await until(() => sc.controls['forward'] === true, 1_000), 'steers toward shore instead of claiming the bob safe');
+      assert.equal(rt.service.counters.resolved, 0);
+      assert.ok(await until(() => rt.service.episodes().length > 0 && rt.service.hold() === null, 15_000));
+      const ep = rt.service.episodes().at(-1)!;
+      assert.equal(ep.outcome, 'resolved', ep.detail);
+      assert.equal(ep.actions, 1, 'same dispatch covers surfacing, exit and release settlement');
+      assert.ok(ep.displacement > 2.5 && ep.displacement <= 24, 'actual horizontal shore travel within the original bound');
+      assert.ok(hasSafeFluidSupport(rt.reader.self()!.fluid));
+      assert.equal(sc.controls['jump'] || sc.controls['forward'], false);
+      for (let n = 0; n < 6; n += 1) {
+        await new Promise((r) => setTimeout(r, 250));
+        assert.ok(hasSafeFluidSupport(rt.reader.self()!.fluid), 'does not re-sink after controls release');
+        assert.equal(rt.service.counters.episodes, 1, 'monitor never starts another water episode');
+        assert.equal(rt.leases.current, undefined);
+      }
+      auth = { ...auth, basis: 'none' };
+      await rt.service.close();
+    });
+  }
+
+  it('stop during a near-surface escape clears every control and never holds the bob up', async () => {
+    const sc = scene();
+    sc.bot.entity.position.y = 3.73802231455;
+    sc.bot.entity['onGround'] = false;
+    let auth = ownerAuthority();
+    const rt = runtime(sc.session, () => auth);
+    rt.service.start();
+    rt.service.tick();
+    assert.ok(await until(() => sc.controls['jump'] === true, 1_000));
+    const grant = (rt.leases.current!.owner as unknown as SafetyExecutionOwner).grantId;
+    auth = { ...auth, basis: 'none', goal: null };
+    rt.service.onAuthorityChanged('owner_stop');
+    assert.equal(sc.controls['jump'] || sc.controls['forward'], false);
+    await new Promise((r) => setTimeout(r, 800));
+    assert.equal(sc.controls['jump'] || sc.controls['forward'], false);
+    assert.equal(rt.service.grantCurrent(grant), false);
+    assert.equal(rt.leases.current, undefined);
+    assert.equal(rt.service.counters.resolved, 0);
+    await rt.service.close();
+  });
+
+  it('stop during the released-control settlement revokes the old grant before success', async () => {
+    const sc = scene();
+    sc.bot.entity.position.y = 3.73802231455;
+    sc.bot.entity['onGround'] = false;
+    let auth = ownerAuthority();
+    const rt = runtime(sc.session, () => auth);
+    rt.service.tick();
+    assert.ok(await until(() => hasSafeFluidSupport(rt.reader.self()!.fluid) && sc.controls['jump'] === false && rt.service.hold()?.reason === 'episode', 15_000));
+    const grant = (rt.leases.current!.owner as unknown as SafetyExecutionOwner).grantId;
+    auth = { ...auth, basis: 'none', goal: null };
+    rt.service.onAuthorityChanged('owner_stop');
+    assert.equal(rt.service.grantCurrent(grant), false);
+    assert.equal(sc.controls['jump'] || sc.controls['forward'], false);
+    assert.ok(await until(() => rt.leases.current === undefined && rt.service.episodes().length > 0, 1_000));
+    assert.equal(rt.service.episodes().at(-1)?.outcome, 'revoked');
+    assert.equal(rt.service.counters.resolved, 0);
+    await rt.service.close();
+  });
+
+  it('ordinary goal bounds still refuse a shore outside the admitted radius', async () => {
+    const sc = scene();
+    sc.bot.entity.position.y = 3.73802231455;
+    sc.bot.entity['onGround'] = false;
+    const rt = runtime(sc.session, ownerAuthority, { tickMs: 200 }, { travel: { anchor: { x: 0.5, y: 0, z: 0.5 }, radius: 1 } });
+    const cand: ActionCandidate = { id: 'act-8002', capability: 'escape_water', parameters: { maxMs: 5_000 }, snapshotId: 'snap-8002', connectionEpoch: 1, goalEpoch: 2, description: 'bounded', criteria: [], preconditions: [], timeoutMs: 6_000 };
+    const r = await rt.execute(cand, new AbortController().signal, { kind: 'goal', goalEpoch: 2, goalId: 'goal-0001', taskId: 'task-8002' });
+    assert.notEqual(r.status, 'succeeded');
+    assert.equal(r.reason, 'no_reachable_exit');
+    assert.equal(sc.controls['jump'] || sc.controls['forward'], false);
+    assert.equal(rt.service.counters.episodes, 0, 'ordinary work never manufactures a grant');
+    await rt.service.close();
+  });
+
+  it('dry ground and genuine shallow grounded wading settle with controls released', async () => {
+    for (const shallow of [false, true]) {
+      const sc = scene({ pool: shallow });
+      if (shallow) sc.fake.fill(-3, 1, -3, 3, 3, 3, 'air');
+      const rt = runtime(sc.session, ownerAuthority);
+      const cand: ActionCandidate = { id: 'act-8001', capability: 'escape_water', parameters: { maxMs: 5_000 }, snapshotId: 'snap-8001', connectionEpoch: 1, goalEpoch: 2, description: 'settle', criteria: [], preconditions: [], timeoutMs: 6_000 };
+      const r = await rt.execute(cand, new AbortController().signal, { kind: 'goal', goalEpoch: 2, goalId: 'goal-0001', taskId: 'task-8001' });
+      assert.equal(r.status, 'succeeded', r.effect);
+      assert.ok(hasSafeFluidSupport(rt.reader.self()!.fluid));
+      assert.equal(rt.reader.self()!.fluid.columnFluid, shallow ? 'water' : 'none');
+      assert.equal(sc.controls['jump'] || sc.controls['forward'], false);
+      await rt.service.close();
+    }
+  });
   it('the safety service surfaces and exits a 4-deep pool through one fenced lease, preempting the goal lease', async () => {
     const sc = scene();
     let auth = ownerAuthority();
@@ -30,6 +132,7 @@ describe('safety skills over the installed physics (client-physics evidence)', (
     const p = sc.bot.entity.position;
     const f = fluidState(rt.service.world()!, { x: p.x, y: p.y, z: p.z });
     assert.equal(f.feetIn, 'none', `on dry ground (pos ${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}; ${ep.outcome}/${ep.reason}: ${ep.detail})`);
+    assert.ok(hasSafeFluidSupport({ ...f, onGround: Boolean(sc.bot.entity['onGround']) }), 'actual grounded shore, not an above-surface bob');
     assert.equal(ep.outcome, 'resolved');
     assert.ok(ep.displacement <= 24);
     assert.equal(sc.controls['jump'], false, 'controls released after the episode');
@@ -78,7 +181,7 @@ describe('safety skills over the installed physics (client-physics evidence)', (
     assert.ok(await until(() => rt.service.episodes().length >= 2 && rt.service.hold() === null, 25_000));
     const ep = rt.service.episodes().at(-1)!;
     assert.equal(ep.outcome, 'resolved', ep.detail);
-    assert.equal(fluidState(rt.service.world()!, sc.bot.entity.position).feetIn, 'none');
+    assert.ok(hasSafeFluidSupport(rt.reader.self()!.fluid), 'NEW grant exits to stable solid support');
     assert.equal(rt.service.counters.episodes, 2, 'prior episode history retained');
     assert.equal(rt.service.grantCurrent(oldGrant), false);
     await rt.service.close();
