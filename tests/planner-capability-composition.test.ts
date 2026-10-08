@@ -21,7 +21,7 @@ import { PLANNER_INSTRUCTIONS, PLANNER_INSTRUCTIONS_VERSION, renderRequest } fro
 import { proposalFromWire } from '../src/planner/wire.ts';
 import { allSkills } from '../src/skills/index.ts';
 import { locatorSkills } from '../src/skills/locator.ts';
-import { survivalSkills } from '../src/skills/survival.ts';
+import { navigateRecoveryTravel, survivalSkills } from '../src/skills/survival.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { evidenceFor, fakeClient, fakeMineflayerBot } from './skill-fakes.ts';
 import { OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, settle, slot } from './survival-helpers.ts';
@@ -57,7 +57,7 @@ async function recovery(version: string) {
   const ids = sequentialIds();
   const perception = new PerceptionService({ session: () => session, clock: h.clock, ids, observationRadius: 32, travelRadius: 128, rays: 100, ownerPolicy: { mode: 'offline_name', ownerName: 'FixtureOwner' }, admission: () => ({ serverOnlineMode: false }), effectiveTravel: (p) => routes.effectiveTravel(p) });
   perception.admitTravelAnchor(5);
-  const registry = new SkillRegistry([...allSkills(), ...survivalSkills(h.service), ...locatorSkills({ routes })]);
+  const registry = new SkillRegistry([...allSkills(), ...survivalSkills(h.service), ...locatorSkills({ routes, recoveryTravel: (ctx, options) => navigateRecoveryTravel(h.service, ctx, options) })]);
   const knowledge = new VersionKnowledge({ version, catalog: () => registry.catalog() });
   const services = { perception, knowledge, ledger: new EvidenceLedger(h.clock), clock: h.clock, limits: { observationRadius: 32, travelRadius: 128, ownerLossMs: 10_000 } };
   const candidates = new TaskCandidateGenerator({ registry, services, session: () => session, ids });
