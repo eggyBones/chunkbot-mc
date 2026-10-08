@@ -2,7 +2,38 @@
 
 Updated 2026-10-08 UTC, native DSH implementation session. **Reviewed dependencies are composed, the latest P corrections are implemented and all combined offline gates pass; complete ordinary provider/world acceptance remains pending.** An earlier parallel defense timeout is retained; its cause was not established. This is not a release or deployment. The accepted live artifact remains `d348d58`, logged out; this worker performed no live operation.
 
-## Current continuation handoff — N1-C12-R5 guidance and approved W pairing correction
+## Latest reviewed dependency extension — approved W raised staging
+
+Application/harness endpoint **`641b0a47db72e539a812dacd18e4127fa5eea312`**, clean before this documentation-only update; incoming P handoff `39c8e3c41e6a913b9e99223d7d69c03ff51aa72c`. Actual staged/unstaged status, AGENTS/workflow and the coordinator's 15:30 UTC checkpoint were inspected before imports. This is the same authorized native P session and original ownership; existing drafts/history/dependencies and all prior P shared source are preserved. No runtime, provider, credential, other worker or root checkout was operated.
+
+| Exact approved W commit | Focused local import |
+| --- | --- |
+| `3bdda28e7d4ee5f7efbe96087be8dc3d1fbdac13` | Already imported as `be3e2e9b3a7d5f9b4613a2304bd232d9a8dd7ffe`; not duplicated |
+| `684536fb07a91250b40f875cb62d682e02f5f1eb` | `a629f4a810818e94b1617854783716ae8cfc69a3` |
+| `21dc53b6e9e9d7a6ab4ebabd66d0f5a64641d372` | Exact role handoff `c7aec34ae9df5ae648613f6385d2eb1a138cc51a` |
+| `c228b10a27bbb469a01eabec3b956a0f49727f60` | `641b0a47db72e539a812dacd18e4127fa5eea312` |
+
+The six-path imported delta contains only W's reviewed trial-arena/harness, three associated test files and its exact role review. P authored no W/S/L edits. Raised staging remains opt-in via `--raised-stage`, within the original x240..270/y−61..−48/z190..220 full 13,454-block clone. It partitions 7,250 staging cells and preserves 6,204 originals; complete clone/backup restoration remains mandatory. The relative four-deep pool, dry bank, six-block retreat leg, twelve-block grant and product limits/history are unchanged. Each serialized staging mutation rechecks the full selected volume for foreign-body overlap; unknown replies or a newly arriving body refuse. Restoration remains separately bounded and is not claimed to use per-staging guards. No foreign entity exception, removal, relocation, footprint expansion, clock/settings change or new gameplay authority was introduced.
+
+**Retracted finding preserved accurately:** ROOT retracted W-H7a's suspected metadata mismatch after identifying the existing local alias `SAFETY_MUTATION_BOX = LAYOUT.mutation`. `c228b10` explicitly names the selected layout in report/journal/trace fields and clarifies original eight-high versus raised four-high interior comments and the approved label. It is a clarity change, not a demonstrated geometry/guard/policy/restoration correction. Prior original world failures and all cleanup evidence remain untouched. ROOT's reported private `39aeee3` typecheck/build/1271 tests and its second built copy are independent source evidence; no new world acceptance is inferred.
+
+**Own complete offline gates**, Node `/opt/homebrew/Cellar/node@24/24.21.0/bin` first, all settled direct exits **0**:
+
+| Command / scope | Result / own evidence |
+| --- | --- |
+| `npm run typecheck` | [log](../../var/native-checks/p-approved-raised-typecheck.log) |
+| `npm run build` | [log](../../var/native-checks/p-approved-raised-build.log) |
+| `npm test` | **1281/1281**, 290 suites, zero failures/skips/cancellations; [log](../../var/native-checks/p-approved-raised-full-tests.log) |
+| Focused raised/original arena, full-body/unknown guards, harness guard, installed pairing and C12 composition suite | **60/60**; [log](../../var/native-checks/p-approved-raised-focused.log) |
+| Read-only fixture doctors, both exact release configs | [26.1.2 log](../../var/native-checks/p-approved-raised-doctor-261.log), [26.2 log](../../var/native-checks/p-approved-raised-doctor-262.log) |
+
+[Direct receipts](../../var/native-checks/p-approved-raised-direct-check-receipts.json) retain commands, log hashes and settled codes; [source/build manifest](../../var/native-checks/p-approved-raised-source-build-manifest.json) uses sorted UTF-8 relative path + NUL + raw bytes. Source: 173 files, SHA256 **`c3215c5a818539f975a6be5807316d9ca0dedf136ed45860aac83745410782c8`**. Own development build: 346 files, SHA256 **`1f1ff7441d439a69fe7c0dd5465f57cf382a359f801f528bf44ad681d4b067c3`**. This build was not deployed or run in a world; accepted live `d348d58` remains logged out. Doctor readiness warnings are unchanged and caused no setup/auth/provider action.
+
+**C12 shared boundary remains explicit.** Committed P `2f3bf5e` generic composition/continuation guidance and its ten production regressions remain in this tested build; no duplicate fix or forced plan was added. They require no shared contract/API change. S is independently tracing actual RC2C return provenance and preparing accurate local/support guidance and a typed route guard. No new approved S commit was supplied, so no S draft or wording was copied. The local primitive stays local; finite `route_travel` authority and whole own-incident identity remain binding. Full recovery remains unproved by the scoped 26.1.2 compound pass, and original 26.2 RC2C remains failed.
+
+The further P-only motion seam proposal below remains unimplemented: extend the private `guidance(task, candidate, sample): {authorityId, bearingRad} | undefined` branch using existing typed route destination verification and S's current incident provider, retaining exact identity per sample and client-only progress with all existing high-water/gap/lease/safety/allowance fences. ROOT mediates that seam and any stable S/L guard integration; no competing dedicated implementation or invented server credit was added. Original shared app/gather/continuation obligations remain composed and open for ROOT's frozen both-version/provider/browser acceptance. No worker world lease or deployment authorization exists.
+
+## C12 guidance handoff preceding the approved raised extension
 
 Tested application/harness endpoint **`be3e2e9b3a7d5f9b4613a2304bd232d9a8dd7ffe`**, clean before this documentation-only update. Base is the preserved clean `352f4154d71d73eae0f09400a6f76267f0cffe7c` handoff. Existing P-LOC-R2/H7/H8, canonical continuation/accounting, no-question/destructive target corrections, dashboard integration and reviewed companion chains remain composed. No previous correction was reimplemented. Same authorized personal native session/settings, own Node 24 PATH and dependencies; no worker, credential, inference, world, root mutation or deployment operation.
 
