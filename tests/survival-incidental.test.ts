@@ -15,6 +15,7 @@
 //     before foreign loot comes within pickup range, and reports any unplanned
 //     collect as incidental (partial), never as regained.
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { after, describe, it } from 'node:test';
 import type { ObservationSnapshot } from '../src/contracts/observation.ts';
 import type { SurvivalProposal } from '../src/contracts/survival.ts';
@@ -133,6 +134,8 @@ interface Loot {
 async function walk(h: Harness, loot: Loot[], opts: { unannouncedCollect?: { entityId: number; count: number; atX: number }; orbCollect?: { entityId: number; atX: number } } = {}) {
   const client = h.packets.client as unknown as FakeClient;
   const fake = fakeMineflayerBot(client, { dimension: SESSION_OW, at: { x: 18.5, y: 0, z: 10.5 } });
+  const events = new EventEmitter();
+  Object.assign(fake.bot, { on: events.on.bind(events), off: events.off.bind(events), prependListener: events.prependListener.bind(events) });
   fake.fill(0, -1, 0, 40, -1, 20, 'grass_block');
   const bot = fake.bot as unknown as { entity: { position: ReturnType<typeof vec3> }; entities: Record<number, unknown>; game: { dimension: string } };
   bot.game.dimension = SESSION_OW;
@@ -152,6 +155,7 @@ async function walk(h: Harness, loot: Loot[], opts: { unannouncedCollect?: { ent
     bot: fake.bot,
     session,
     fence: () => undefined,
+    confirmWindow: async () => undefined,
     setPathGoal: (g: { x: number; y: number; z: number }) => {
       goal = { x: g.x, y: g.y, z: g.z };
       moving = true;

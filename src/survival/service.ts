@@ -1023,12 +1023,13 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
    * pickup). Reported truthfully; never counted as regained. Fenced like
    * recordRegain; stale goals record nothing.
    */
-  recordIncidental(fence: { goalId: string; goalEpoch: number; connectionEpoch: number }, effect: { key?: string; count: number; detail: string }): boolean {
+  recordIncidental(fence: { goalId: string; goalEpoch: number; connectionEpoch: number }, effect: { key?: string; count: number; detail: string; uncertainReturn?: boolean }): boolean {
     const a = this.active;
     if (!a || a.routine !== 'death_recovery' || a.goalId !== fence.goalId || a.goalEpoch !== fence.goalEpoch || a.connectionEpoch !== fence.connectionEpoch || this.tracker.connectionEpoch !== fence.connectionEpoch) return false;
     const e = a.episodeId ? this.book?.get(a.episodeId) : undefined;
     if (!e || !this.book || !Number.isInteger(effect.count) || effect.count <= 0) return false;
     const key = effect.key && /^[a-z0-9_.-]+:[a-z0-9_./-]+$/.test(effect.key) ? effect.key : undefined;
+    if (effect.uncertainReturn) this.incidents.markEpisodeAmbiguous(e.episodeId, 'planned_drop_changed_at_collection');
     this.book.addIncidental(e, { source: 'unplanned_collect', ...(key ? { key } : {}), count: effect.count, atMs: this.options.now(), goalId: a.goalId, detail: clip(effect.detail) }, this.options.now());
     this.record({ type: 'survival_incidental', episodeId: e.episodeId, source: 'unplanned_collect', key: key ?? null, count: effect.count });
     this.persistSoon();
