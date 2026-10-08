@@ -24,13 +24,14 @@
 import { z } from 'zod';
 import type { JsonValue, SkillOutcome } from '../contracts/index.ts';
 import { SURVIVAL_CAPABILITIES, type DropStackFacts } from '../contracts/survival.ts';
+import type { Actuator } from '../execution/actuator.ts';
 import { HOSTILE_ENTITIES, visibleThreat } from '../survival/allowance.ts';
 import { isSafeFood, isValuable, nearlyWorn, remainingUses, safeFoods, toolTier } from '../survival/items.ts';
 import type { SurvivalService } from '../survival/service.ts';
 import { confirmInventory, liveEntity, mk, namedTargetUnavailable, pos3, targetScope } from './common.ts';
 import { failed, precondition, type AnySkill, type CandidateDraft, type SkillDefinition, type Unavailable } from './definition.ts';
 import { equipItem } from './inventory.ts';
-import { distanceTo, goals, navigate } from './navigation.ts';
+import { distanceTo, goals, navigate, type NavigateOptions, type NavigateResult } from './navigation.ts';
 import { useHeldItem } from './placement.ts';
 import { HandleRefSchema, ItemKeySchema } from './refs.ts';
 
@@ -38,6 +39,32 @@ import { HandleRefSchema, ItemKeySchema } from './refs.ts';
 const PICKUP_GUARD = 2.5;
 
 const dist = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+
+/** Recovery's pickup veto stops the existing fenced path; it never starts or owns a second movement loop. */
+async function recoveryNavigate(act: Actuator, options: NavigateOptions): Promise<NavigateResult & { aborted?: string }> {
+  let blocked: string | undefined;
+  const check = () => (blocked ??= options.abortIf?.());
+  const stop = () => {
+    if (check()) act.clearPathGoal(); // inactive leases cannot clear a replacement's controls
+  };
+  const bot = act.bot;
+  const events = ['entityMoved', 'entitySpawn', 'entityUpdate'] as const;
+  for (const e of events) bot.on(e, stop);
+  // Run before pathfinder's next monitorMovement: a moving foreign pile must revoke approach immediately,
+  // including between navigate's 100ms polls. This is a conservative refusal over loaded entities only.
+  bot.prependListener('physicsTick', stop);
+  try {
+    const abort = check(); // includes changes during the preceding inventory resync; before ANY path dispatch
+    if (abort) return { status: 'stuck', aborted: abort, finalDistance: distanceToResult(options.distance()), elapsedMs: 0, pathUpdates: 0, corrections: 0 };
+    return await navigate(act, { ...options, abortIf: check });
+  } finally {
+    for (const e of events) bot.off(e, stop);
+    bot.off('physicsTick', stop);
+    act.clearPathGoal();
+  }
+}
+
+const distanceToResult = (n: number) => Math.round(n * 100) / 100;
 
 export function survivalSkills(service: SurvivalService | undefined): AnySkill[] {
   if (!service || !service.enabled) return [];
@@ -190,7 +217,7 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
       const self = service.selfEntityId(owner.connectionEpoch) ?? bot.entity.id;
       const startSeq = session.evidence.seq;
       let guard: string | undefined;
-      const r = await navigate(ctx.act, {
+      const r = await recoveryNavigate(ctx.act, {
         goal: new goals.GoalNear(site.x, site.y, site.z, Math.max(1, t.arrivalWithin - 0.5)),
         arrived: () => distanceTo(bot, site) <= t.arrivalWithin + 0.25,
         distance: () => distanceTo(bot, site),
@@ -207,6 +234,8 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
         },
       });
       services.perception.recordVisited();
+      // Include passive collects while the stopped path settles and the server answers the ordered resync.
+      await confirmInventory(ctx.act, services);
       const settled = plan.settle(session.evidence.since(startSeq, 'collect', (e) => e.collectorEntityId === self), owner, ctx);
       const evidence: Record<string, JsonValue> = { finalDistance: r.finalDistance, position: pos3(bot.entity.position), site: pos3(site), elapsedMs: r.elapsedMs, serverCorrections: r.corrections, plannedEntities: plan.size, countedRegained: settled.counted, incidentalCollected: settled.incidental, nonItemCollected: settled.nonItem };
       const extra = `${settled.counted ? `; regained ${settled.counted} own item(s) on the way (server collect packets)` : ''}${settled.incidental.length ? `; ALSO passively collected loot that is NOT this incident's (${settled.incidental.join(', ')}), not counted` : ''}`;
@@ -265,8 +294,6 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
   const svc = service;
   function pickupPlan(fence: { goalEpoch: number; connectionEpoch: number; dimension: string }, remaining: Map<string, number>) {
     const plan = new Map<number, DropStackFacts>();
-    /** Server facts of entities seen near the bot (an unplanned collect is reported with its key when known). */
-    const seen = new Map<number, DropStackFacts>();
     const freeze = (id: number, facts: DropStackFacts): void => {
       plan.set(id, facts);
       remaining.set(facts.key, (remaining.get(facts.key) ?? 0) - facts.count);
@@ -280,7 +307,6 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
       /** undefined when the entity is (now) planned and unchanged; else why the action must stop. */
       admit(id: number): string | undefined {
         const now = svc.dropFacts(fence.connectionEpoch, id);
-        if (now) seen.set(id, now);
         if (plan.has(id)) {
           const was = plan.get(id) as DropStackFacts;
           if (now && (now.count !== was.count || now.key !== was.key || now.meta.digest !== was.meta.digest)) return 'target_changed';
@@ -296,6 +322,7 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
         const incidental: string[] = [];
         const nonItem: string[] = [];
         const byKey: Record<string, number> = {};
+        const takenByEntity = new Map<number, number>();
         for (const c of collects) {
           const f = plan.get(c.collectedEntityId);
           if (!f && svc.collectedKind(owner.connectionEpoch, c.collectedEntityId) === 'non_item') {
@@ -303,11 +330,14 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
             nonItem.push(`entity ${c.collectedEntityId} x${c.count}`);
             continue;
           }
-          if (!f) {
-            const key = seen.get(c.collectedEntityId)?.key ?? svc.dropFacts(owner.connectionEpoch, c.collectedEntityId)?.key;
+          const taken = svc.collectedFacts(owner.connectionEpoch, c.collectedEntityId);
+          const total = (takenByEntity.get(c.collectedEntityId) ?? 0) + c.count;
+          const exact = f && taken && taken.key === f.key && taken.meta.digest === f.meta.digest && taken.count <= f.count && c.count <= taken.count && total <= f.count;
+          takenByEntity.set(c.collectedEntityId, total);
+          if (!exact) {
+            const key = taken?.key;
             incidental.push(`${key ?? `entity ${c.collectedEntityId} (stack never stated)`} x${c.count}`);
-            if (key) ctx.services.ledger.add({ kind: 'picked_up', item: key, count: c.count, atMs: c.atMs });
-            svc.recordIncidental(owner, { ...(key ? { key } : {}), count: c.count, detail: `server collect packet of an item entity outside the frozen recovery plan${key ? '' : ' (its stack was never stated)'}` });
+            svc.recordIncidental(owner, { ...(key ? { key } : {}), count: c.count, uncertainReturn: Boolean(f), detail: `server collect packet outside the unchanged frozen recovery plan${key ? '' : ' (its stack was never stated)'}` });
             continue;
           }
           ctx.services.ledger.add({ kind: 'picked_up', item: f.key, count: c.count, atMs: c.atMs });
@@ -426,7 +456,8 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
       const destroyed = () => session.evidence.since(startSeq, 'entity_destroy', (e) => e.entityIds.includes(targetId))[0];
       const position = () => bot.entities[targetId]?.position ?? live.position;
       let guard: string | undefined;
-      const r = await navigate(act, {
+      let destination = { ...position() };
+      const r = await recoveryNavigate(act, {
         goal: new goals.GoalNear(live.position.x, live.position.y, live.position.z, 0),
         arrived: () => Boolean(collectedTarget()),
         distance: () => distanceTo(bot, position()),
@@ -435,9 +466,18 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
         searchRadius: Math.min(services.limits.travelRadius, Math.ceil(distanceTo(bot, live.position)) + 16),
         ...(services.perception.travelBounds() ? { bounds: services.perception.travelBounds()! } : {}),
         inBounds: () => services.perception.withinTravel(bot.entity.position),
+        retarget: () => {
+          const now = position();
+          if (dist(now, destination) < 0.5) return undefined;
+          destination = { ...now };
+          return new goals.GoalNear(now.x, now.y, now.z, 0);
+        },
         abortIf: () => {
-          // Revalidate through movement: anything newly within pickup range must be acceptable; the target must not change.
-          for (const id of itemsNear(bot as never, bot.entity.position, PICKUP_GUARD)) {
+          // Recheck both the bot AND the moving target's pickup area, not only the frozen candidate position.
+          // A foreign pile approaching the destination blocks intentional approach before passive pickup.
+          const at = position();
+          if (dist(at, t.site.at) > t.searchRadius || !services.perception.withinTravel(at)) return (guard = 'target_out_of_bounds');
+          for (const id of new Set([...itemsNear(bot as never, bot.entity.position, PICKUP_GUARD), ...itemsNear(bot as never, at, PICKUP_GUARD)])) {
             const why = admit(id);
             if (why) return (guard = why);
           }
@@ -449,15 +489,16 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
           return undefined;
         },
       });
+      const after = await confirmInventory(act, services);
       const collects = session.evidence.since(startSeq, 'collect', (e) => e.collectorEntityId === self);
       const { counted, incidental: unscoped, nonItem, byKey } = plan.settle(collects, owner, ctx);
-      const after = await confirmInventory(act, services);
       const delta = before && after ? (after.counts.get(own.facts.key) ?? 0) - (before.counts.get(own.facts.key) ?? 0) : null;
       const evidence: Record<string, JsonValue> = { target: { key: own.facts.key, count: own.facts.count, digest: own.facts.meta.digest ?? null }, plannedEntities: plan.size, collects: collects.length, countedRegained: counted, unscopedCollected: unscoped, nonItemCollected: nonItem, countedByKey: byKey, confirmedDelta: delta, position: pos3(bot.entity.position) };
       const target = collectedTarget();
       if (!target || target.collectorEntityId !== self) {
         if (guard === 'unrelated_loot_nearby') return failed('unrelated_loot_nearby', 'stopped: other loot came within pickup range on the way (nothing unrelated was intentionally collected)', evidence, collects.length ? 'server_packet' : 'none');
         if (guard === 'target_changed') return failed('target_changed', 'stopped: the server-stated pile changed (merged/split) before collection', evidence, collects.length ? 'server_packet' : 'none');
+        if (guard === 'target_out_of_bounds') return failed('outside_search_radius', 'stopped: the moving drop left its admitted search/travel bounds', evidence);
         if (r.aborted === 'item_vanished') return failed('item_vanished', `${own.facts.key} disappeared without being collected by the bot (merged, despawned or taken)`, evidence);
         if (r.aborted === 'collected_by_other') return failed('collected_by_other', `${own.facts.key} was collected by another entity`, evidence, 'server_packet');
         if (r.status === 'out_of_bounds') return failed('outside_travel_bounds', 'stopped at the travel radius before collecting', evidence);

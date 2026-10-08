@@ -38,6 +38,9 @@
 //       dispatch). Every decision records server health/food and cutoffs; with
 //       natural_health_regeneration verified TRUE rest must raise server health by >= 1;
 //       with it verified FALSE rest must end `no_regeneration` (bounded)
+//       R4: staged inside verified glass walls/roof and a sea-lantern floor,
+//       within the existing scene clone. Existing occupants refuse staging;
+//       an intervening death fails immediately with its recorded cause.
 //   G4/G4n R8 bed observations: NOT RUN, always reported SKIPPED. Using a bed
 //       changes the fixture bot's respawn point (official 26.1.2/26.2 command
 //       reports include `spawnpoint`, but this harness has no verified way to
@@ -50,6 +53,8 @@
 //
 // OWNED WRITE FOOTPRINT (C6) — every block/entity write stays inside these:
 //   scene   x 196..224, y -61..-50, z 190..224 (blocks and item/xp entities)
+//           G3 enclosure only: x/z 196..214, y -61..-51 (glass + sea_lantern);
+//           no mob removal, and the SAME scene clone restores every block
 //   backup  x 196..224, y 200..211, z 190..224 (pre-trial scene copy; must be
 //           verified EMPTY before use, else the trial refuses to start;
 //           restored/cleared and re-verified at the end)
@@ -108,6 +113,33 @@ const BACKUP_Y = { y1: 200, y2: 211 };
 const ITEM_AREA = `x=${AREA.x1},y=${SCENE_Y.y1},z=${AREA.z1},dx=${AREA.x2 - AREA.x1},dy=${SCENE_Y.y2 - SCENE_Y.y1},dz=${AREA.z2 - AREA.z1}`;
 const SCENE_BOX = `${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} ${AREA.x2} ${SCENE_Y.y2} ${AREA.z2}`;
 const BACKUP_BOX = `${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2}`;
+
+/** Bounded G3 enclosure: transparent walls/roof, lighted floor, entirely within the existing cloned scene.
+ * Exterior mobs are also outside the unchanged 8-block visible-threat guard from START. No mob removals.
+ */
+export const PHYSIOLOGY_ENCLOSURE = { x1: 196, y1: -61, z1: 196, x2: 214, y2: -51, z2: 214 } as const;
+export function physiologyEnclosurePlan(): { writes: string[]; probes: string[]; interior: string } {
+  const b = PHYSIOLOGY_ENCLOSURE;
+  check(b.x1 >= AREA.x1 && b.x2 <= AREA.x2 && b.z1 >= AREA.z1 && b.z2 <= AREA.z2 && b.y1 >= SCENE_Y.y1 && b.y2 <= SCENE_Y.y2, 'physiology enclosure outside the cloned scene');
+  return {
+    writes: [`fill ${b.x1} ${b.y1} ${b.z1} ${b.x2} ${b.y2} ${b.z2} glass hollow`, `fill ${b.x1} ${b.y1} ${b.z1} ${b.x2} ${b.y1} ${b.z2} sea_lantern`],
+    probes: [
+      `execute if block 205 -61 205 sea_lantern`, `execute if block 205 -51 205 glass`,
+      `execute if block 196 -60 205 glass`, `execute if block 214 -60 205 glass`,
+      `execute if block 205 -60 196 glass`, `execute if block 205 -60 214 glass`,
+      `execute if block 205 -60 205 air`, `execute if block 205 -59 205 air`,
+    ],
+    interior: `x=${b.x1 + 1},y=${b.y1 + 1},z=${b.z1 + 1},dx=${b.x2 - b.x1 - 2},dy=${b.y2 - b.y1 - 2},dz=${b.z2 - b.z1 - 2}`,
+  };
+}
+
+/** Pure staging assertion: even a completed automatic respawn cannot conceal an intervening death. */
+export function assertPhysiologyLife(expectedCaptureId: string | undefined, actual: { captureId?: string | undefined; life: string; health?: number | undefined; cause?: string | undefined }): void {
+  check(actual.captureId === expectedCaptureId && actual.life === 'alive' && actual.health !== undefined && actual.health > 0,
+    `physiology_staging_interrupted: life=${actual.life} health=${actual.health ?? 'unknown'} capture=${actual.captureId ?? 'none'} cause=${actual.cause ?? 'unknown'} (staged capture=${expectedCaptureId ?? 'none'})`);
+}
+
+export const physiologyEnclosureEmpty = (reply: string): boolean => /^Test failed(?:\. Count: 0)?$/.test(reply.trim());
 /** Unique per-run tag for foreign test piles (never matches another run's or harness's entities). */
 // MB-FLOW-003-C8: settings command names for 26.1.2 AND 26.2, checked against
 // the official server command reports (generated commands.json): gamerules are
@@ -385,13 +417,25 @@ class Gate {
     await sleep(1_500);
   }
 
-  async waitFor(what: string, cond: () => boolean | Promise<boolean>, ms = 10_000): Promise<void> {
+  async waitFor(what: string, cond: () => boolean | Promise<boolean>, ms = 10_000, stagingGuard?: () => void): Promise<void> {
     const until = Date.now() + ms;
     while (Date.now() < until) {
+      stagingGuard?.();
       if (await cond()) return;
       await sleep(200);
     }
-    throw new Error(`timed out waiting for ${what}`);
+    throw new Error(`${stagingGuard ? 'physiology_staging_failed: ' : ''}timed out waiting for ${what}`);
+  }
+
+  async enclosePhysiology(ev: string[]): Promise<void> {
+    const plan = physiologyEnclosurePlan();
+    for (const command of plan.writes) check(/^Successfully filled [1-9]\d* block\(s\)$/.test((await this.rcon(command)).trim()), `physiology_staging_failed: enclosure write failed (${command})`);
+    for (const command of plan.probes) check((await this.rcon(command)).trim() === 'Test passed', `physiology_staging_failed: enclosure verification failed (${command})`);
+    const occupants = await this.rcon(`execute if entity @e[type=!player,type=!item,type=!experience_orb,${plan.interior}]`);
+    check(physiologyEnclosureEmpty(occupants), `physiology_staging_failed: existing non-player entities inside the enclosure (${occupants}); no mobs are removed by this harness`);
+    const centered = await this.rcon(`execute positioned ${START.x} ${START.y} ${START.z} if entity @a[name=${BOT},distance=..0.5]`);
+    check(/^Test passed(?:\. Count: 1)?$/.test(centered.trim()), `physiology_staging_failed: bot is not at the enclosure center (${centered})`);
+    ev.push(`G3 enclosure verified: glass walls/roof, sea_lantern floor, ${JSON.stringify(PHYSIOLOGY_ENCLOSURE)} inside unchanged scene/clone restoration; no mob, clock, bed, respawn or additional gamerule mutation`);
   }
 
   /** Trial scene inside the owned footprint (blocks + item/xp entities only); the pre-trial copy is in the backup volume. */
@@ -753,15 +797,23 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
 
       await g.gate('G3', 'Easy: eat to the admitted threshold; necessary low-health eat; verified regeneration on/off', async (ev) => {
         await g.scene();
+        await g.enclosePhysiology(ev);
+        const stagedCapture = g.survival.tracker.latest()?.captureId;
+        const sameLife = () => {
+          const latest = g.survival.tracker.latest();
+          assertPhysiologyLife(stagedCapture, { captureId: latest?.captureId, life: g.survival.tracker.life, health: g.survival.vitals(g.game.connectionEpoch)?.health, cause: latest?.cause.translationKey ?? latest?.cause.kind });
+        };
+        sameLife();
         await g.rcon('difficulty easy');
         check(parseDifficultyReply(await g.rcon('difficulty')) === 'easy', 'difficulty verified easy');
         await g.rcon(`gamerule ${RULE_REGEN} true`);
         check(parseRuleReply(await g.rcon(`gamerule ${RULE_REGEN}`), RULE_REGEN) === 'true', `${RULE_REGEN} verified true`);
         await g.rcon(`give ${BOT} minecraft:bread 12`);
         await g.rcon(`effect give ${BOT} minecraft:hunger 30 120 true`);
-        await g.waitFor('food at or below 10', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) <= 10, 40_000);
+        await g.waitFor('food at or below 10', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) <= 10, 40_000, sameLife);
         await g.rcon(`effect clear ${BOT} minecraft:hunger`);
         await sleep(500);
+        sameLife();
         // (a) ordinary eat: complete ONLY when survival_state eat is satisfied (food >= eatUntil).
         const cfg = g.survival.config();
         check(cfg, 'survival config');
@@ -783,9 +835,9 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         // hunger while regeneration runs; trial 8e87ec3 reached health 11.67 / food 17). Whatever health the server
         // reaches, health <= restAtOrBelow with food < 18 needs a meal to regenerate; the cooldown must not block it.
         await g.rcon(`damage ${BOT} 13 minecraft:generic`);
-        await g.waitFor('health <= 8', () => (g.survival.vitals(g.game.connectionEpoch)?.health ?? 20) <= 8, 10_000);
+        await g.waitFor('health <= 8', () => (g.survival.vitals(g.game.connectionEpoch)?.health ?? 20) <= 8, 10_000, sameLife);
         await g.rcon(`effect give ${BOT} minecraft:hunger 10 60 true`);
-        await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 40_000);
+        await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 40_000, sameLife);
         await g.rcon(`effect clear ${BOT} minecraft:hunger`);
         d = g.survival.assess(g.assessInput());
         ev.push(g.decisionLine('(b1) health-support decision', d));
@@ -807,13 +859,14 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         // Staging that cannot drift: starve FIRST (food < 18 stops natural regeneration), then ONE computed damage to
         // health 7, then decide immediately on the server values (no repeated or rescue damage).
         await g.rcon(`effect give ${BOT} minecraft:hunger 10 60 true`);
-        await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 40_000);
+        await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 40_000, sameLife);
         await g.rcon(`effect clear ${BOT} minecraft:hunger`);
         await sleep(500);
+        sameLife();
         const hBefore = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
         check(hBefore > 7, `health ${hBefore} above the staged 7 before the single damage`);
         await g.rcon(`damage ${BOT} ${Math.round((hBefore - 7) * 100) / 100} minecraft:generic`);
-        await g.waitFor('health <= lowHealth', () => (g.survival.vitals(g.game.connectionEpoch)?.health ?? 20) <= g.lowHealth, 10_000);
+        await g.waitFor('health <= lowHealth', () => (g.survival.vitals(g.game.connectionEpoch)?.health ?? 20) <= g.lowHealth, 10_000, sameLife);
         d = g.survival.assess(g.assessInput());
         ev.push(g.decisionLine('(b2) low-health decision', d));
         const v2 = g.survival.vitals(g.game.connectionEpoch);
@@ -861,6 +914,7 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         g.admit(randomIds.next('goal'));
         const restOff = await g.act('rest_in_place', [], 20_000);
         const h3 = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
+        sameLife();
         ev.push(`rest (regen verified off): ${restOff?.status} ${restOff?.reason ?? ''} after ${Date.now() - t0}ms; server health ${h2} -> ${h3}`);
         await g.rcon(`gamerule ${RULE_REGEN} ${regen}`);
         check(restOff?.status === 'failed' && restOff.reason === 'no_regeneration' && h3 <= h2 && Date.now() - t0 < 20_000, 'no regeneration ends honestly within the bounded window');
