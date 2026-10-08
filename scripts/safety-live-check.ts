@@ -110,7 +110,16 @@ function check(cond: unknown, message: string): asserts cond {
 
 class Gate {
   readonly results: Result[] = [];
-  readonly setup: Array<{ atMs: number; command: string; reply: string }> = [];
+  readonly setup: Array<{ atMs: number; phase: string; command: string; reply: string }> = [];
+  /**
+   * Every state-changing operator command issued INSIDE a gate (scene build,
+   * positioning, damage, effects, equipment, summons). These are recorded
+   * operator interventions: they set up a condition and NEVER earn autonomous
+   * pass credit; gate verdicts rest only on what the bot did afterwards
+   * (server-read RCON facts and safety episode results).
+   */
+  readonly interventions: Array<{ atMs: number; gate: string; command: string }> = [];
+  phase = 'setup';
   readonly written: Array<{ atMs: number; name: string; entityId?: number }> = [];
   readonly store = new MemoryRunStore();
   readonly game: MineflayerConnection;
@@ -282,14 +291,20 @@ class Gate {
     const run = this.rconQueue.then(() => rconCommand(PINS.host, PINS.rconPort, this.password, command));
     this.rconQueue = run.catch(() => undefined);
     const reply = await run;
-    if (record) this.setup.push({ atMs: Date.now(), command, reply: reply.slice(0, 300) });
+    if (record) this.setup.push({ atMs: Date.now(), phase: this.phase, command, reply: reply.slice(0, 300) });
+    if (record && this.phase !== 'setup' && this.phase !== 'restore' && /^(tp|damage|effect give|effect clear|item replace|summon|fill|clear|kill)\b/.test(command)) {
+      this.interventions.push({ atMs: Date.now(), gate: this.phase, command });
+    }
     return reply;
   }
 
   async gate(id: string, title: string, fn: (ev: string[]) => Promise<void>): Promise<void> {
     const evidence: string[] = [];
+    this.phase = id;
+    const mark = this.interventions.length;
     try {
       await fn(evidence);
+      evidence.push(`operator interventions (setup only, no pass credit): ${this.interventions.slice(mark).map((i) => i.command.split(' ').slice(0, 2).join(' ')).join('; ') || 'none'}`);
       this.results.push({ id, title, status: 'pass', evidence });
       process.stdout.write(`PASS ${id} ${title}\n`);
     } catch (error) {
@@ -298,6 +313,7 @@ class Gate {
       process.stdout.write(`FAIL ${id} ${title}\n  ${evidence.at(-1)?.slice(0, 500)}\n`);
     } finally {
       this.stop();
+      this.phase = 'setup';
       await sleep(300);
     }
   }
@@ -647,6 +663,7 @@ async function run(): Promise<Json> {
     });
   } finally {
     g.stop();
+    g.phase = 'restore';
     const step = async (what: string, fn: () => Promise<boolean | string>) => {
       try {
         const r = await fn();
@@ -659,10 +676,11 @@ async function run(): Promise<Json> {
       await g.rcon(`kill @e[tag=${MOB_TAG},${ENTITY_AREA}]`);
       return !(await g.entityExists(MOB_TAG)) || 'tagged mobs remain';
     });
-    if (difficulty.changed && difficulty.original) {
-      await step(`difficulty restored to ${difficulty.original}`, async () => {
-        await g.rcon(`difficulty ${difficulty.original}`);
-        return DIFF_REPLY.exec(await g.rcon('difficulty', false))?.[1]?.toLowerCase() === difficulty.original || 'difficulty differs';
+    if (difficulty.original) {
+      // Always verified: restored when this trial changed it, otherwise proven unchanged.
+      await step(`difficulty ${difficulty.changed ? 'restored to' : 'unchanged at'} ${difficulty.original}`, async () => {
+        if (difficulty.changed) await g.rcon(`difficulty ${difficulty.original}`);
+        return DIFF_REPLY.exec(await g.rcon('difficulty', false))?.[1]?.toLowerCase() === difficulty.original || 'difficulty differs from the original';
       });
     }
     await step('bot state cleared', async () => {
@@ -702,6 +720,9 @@ async function run(): Promise<Json> {
   const counted = g.results.filter((r) => r.status !== 'skipped');
   return {
     check: 'MB-FLOW-003-C11/C13 immediate-safety mechanics gate (pre-integration module harness with a labeled safety-executor stand-in; no model calls; NOT integrated-application or real-provider acceptance)',
+    credit: 'module mechanics only; operator interventions (positioning, damage, effects, equipment, summons) never earn autonomous pass credit',
+    standIn: 'safety owners run through a labeled pre-integration stand-in executor until the shared ExecutionOwner `safety` variant exists',
+    interventions: g.interventions,
     fixture: PINS.profile,
     source,
     footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, mobTag: MOB_TAG, addedForceload, difficulty },

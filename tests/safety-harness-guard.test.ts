@@ -46,6 +46,13 @@ describe('safety gate harness guard', () => {
     for (const m of code.matchAll(/`fill ([^`]*)`/g)) assert.match(m[1] as string, /^\$\{(AREA|POOL|BACKUP_BOX)|^\$\{BACKUP_BOX\}/, `fill outside the declared boxes: ${m[1]}`);
   });
 
+  it('interventions are recorded per gate and labeled as never earning pass credit; difficulty is always verified', () => {
+    assert.match(code, /this\.interventions\.push\(\{ atMs: Date\.now\(\), gate: this\.phase, command \}\)/);
+    assert.match(code, /credit: 'module mechanics only; operator interventions/);
+    assert.match(code, /standIn: 'safety owners run through a labeled pre-integration stand-in executor/);
+    assert.match(code, /difficulty \$\{difficulty\.changed \? 'restored to' : 'unchanged at'\}/);
+  });
+
   it('W1 forbids an RCON rescue: no teleport between admission and the W1 verdict', () => {
     const w1 = code.slice(code.indexOf("g.gate('W1',"), code.indexOf("g.gate('W1s',"));
     const admit = w1.indexOf('g.admit(');

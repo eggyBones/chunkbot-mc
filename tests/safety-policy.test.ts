@@ -104,6 +104,9 @@ describe('mob threats', () => {
     assert.equal(p.defense?.admitted, true, 'readiness passed, still retreat');
     assert.match(p.reason, /retreat default/);
     assert.equal(respond(planSafety(self(), [mob('zombie', 6, { aggressive: true })], policyCtx())).response, 'retreat', 'engaging but not in melee contact');
+    const wide = policyCtx({ config: config({ mobs: { closeRadius: 6 } }) });
+    assert.equal(respond(planSafety(self(), [mob('zombie', 5, { aggressive: true })], wide)).response, 'retreat', 'a wider closeRadius never extends melee contact: no approach to start a fight');
+    assert.equal(respond(planSafety(self(), [mob('zombie', 2.5, { damagedSelfAtMs: 900 })], policyCtx())).response, 'defend', 'recent server-attributed attack in melee contact');
   });
 
   it('armed, armored and healthy: a single supported zombie in melee contact and engaging is defended', () => {

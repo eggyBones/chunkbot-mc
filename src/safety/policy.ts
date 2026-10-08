@@ -14,7 +14,7 @@
 //      sword/axe with durability margin (held, or one hotbar switch); verified
 //      armor points; AND an observed retreat leg exists (escape terrain is
 //      required, never waived);
-//   2. that target is already in melee contact (<= closeRadius) and engaging
+//   2. that target is already in melee contact (<= min(closeRadius, 3.5)) and engaging
 //      (server aggressive flag, or server-attributed damage within the
 //      provoked window).
 // Otherwise: retreat when a leg exists; with no leg a declarative blocker
@@ -35,6 +35,9 @@ export interface PolicyContext {
   /** Entity type supports defense (dispositions.ts) — supplied with the fact's held item. */
   defenseSupported(fact: SafetyEntityFact): boolean;
 }
+
+/** Melee contact distance: survival entity_interaction_range 3.0 + 0.5 body margin (feet-to-feet). */
+export const MELEE_CONTACT = 3.5;
 
 const sev = (h: SafetyHazard) => (h.severity === 'critical' ? 3 : h.severity === 'high' ? 2 : 1);
 
@@ -209,7 +212,9 @@ export function planSafety(self: SafetySelfFacts, entities: readonly SafetyEntit
   // Escape terrain is a readiness requirement (never waived): no leg -> `no_retreat_space` refusal.
   const readiness = defenseReadiness(self, active, hazards, ctx, !retreat);
   const target = active.length === 1 ? (active[0] as SafetyEntityFact) : undefined;
-  const engaging = target !== undefined && target.distance <= ctx.config.mobs.closeRadius && (target.aggressive === true || (target.damagedSelfAtMs !== null && ctx.nowMs - target.damagedSelfAtMs <= ctx.config.mobs.provokedWindowMs));
+  // Melee contact is capped at the verified entity reach (3.0) + body margin, whatever closeRadius is configured to:
+  // a mob is never approached to start a fight.
+  const engaging = target !== undefined && target.distance <= Math.min(ctx.config.mobs.closeRadius, MELEE_CONTACT) && (target.aggressive === true || (target.damagedSelfAtMs !== null && ctx.nowMs - target.damagedSelfAtMs <= ctx.config.mobs.provokedWindowMs));
   if (readiness.admitted && engaging) {
     return { kind: 'respond', response: 'defend', hazards, reason: `defend against ${readiness.target?.key ?? 'threat'} (in melee contact and engaging; every readiness check passed)`, defense: readiness, signature };
   }
