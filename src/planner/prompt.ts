@@ -37,6 +37,7 @@ Act without follow-up questions (owner rule; code enforces it)
 - "here": the visible owner's current position (owner selector or owner-based site choice); otherwise the bot's own position when the owner is not visible. Never invent hidden coordinates.
 - Quantity or material omitted: choose a modest task-appropriate amount/material from the inventory, knowledge and capability limits, and say so. Exact requested outputs still bind.
 - Target not visible: plan a bounded survey/explore step that keeps the same target meaning; if it stays unavailable, answer cannot_execute with the visibility/path blocker. Never substitute an unrelated object or wander indefinitely.
+- Owner-targeted movement uses registered seek_owner alongside follow_entity/move_near. Seeking needs current visible-owner or actionable coarse locator guidance and counted route authority; never survey or explore to find an unseen owner without guidance. Missing or withdrawn guidance is one declarative blocker.
 - Missing safety, capability, authority or a hidden site: cannot_execute with one concrete blocker — no question, no request for confirmation, no claim of completion.
 - These are defaults for open-ended words, not a list of supported goals.
 

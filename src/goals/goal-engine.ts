@@ -111,6 +111,7 @@ import {
 import { countFor, groundOutcome, initialCountLineage, outcomeAtoms } from './continuation.ts';
 import { isOwnerQuestionProblem, questionBlockerText } from './declarative.ts';
 import { checkProposal, type ShownSnapshot } from './proposal.ts';
+import { predicateTargetsOwner } from './owner-navigation.ts';
 import { publicBlocker, publicOutcome, publicTaskLabel } from './public-text.ts';
 import { ownerCoordinates } from './owner-coordinates.ts';
 import { PlannerSlot, type PlannerSlotKind } from './planner-slot.ts';
@@ -2534,6 +2535,20 @@ export class GoalEngine {
               this.deps.journal?.record({ type: 'goal_final_evidence', goalId: active.record.id, status: verdict.status, detail: verdict.detail, evaluation: verdict as unknown as Record<string, unknown>, counters: { ...c } });
               await this.finishIfCurrent(active, 'outcome_verified', `goal outcome verified by code: ${verdict.detail}; ${this.progressSummary(active)}`);
               return;
+            }
+            const ownerOutcome = active.outcome.contract.kind === 'finite' ? active.outcome.contract.outcome : active.outcome.contract.maintain;
+            const guidanceFailure = last?.status === 'blocked' && last.feedback.unavailable.find((u) => u.capability === 'seek_owner' && ['no_locator_hint', 'hint_withdrawn', 'no_actionable_hint'].includes(u.reason));
+            if (guidanceFailure && predicateTargetsOwner(ownerOutcome)) {
+              const fresh = await raceAbort(observation.snapshot(active.epoch), active.abort.signal);
+              this.assertCurrent(active);
+              const hint = this.deps.locatorHint?.();
+              if (!fresh?.owner.visible && !hint?.actionable) {
+                this.dropLookahead(active, 'owner guidance is unavailable');
+                const reason = hint?.reason ?? guidanceFailure.reason;
+                this.deps.store.record({ type: 'owner_guidance_blocked', goalId: active.record.id, reason, counters: { ...c } });
+                await this.finishIfCurrent(active, 'cannot_execute', `Owner guidance is unavailable (${reason}); ${this.progressSummary(active)}`);
+                return;
+              }
             }
             if (c.replans >= maxReplans) {
               this.dropLookahead(active, 'replan limit reached');

@@ -26,8 +26,15 @@ export function autonomyStatusLines(s: AutonomyStatus, extra: { locator?: Locato
     for (const i of v.incidents.slice(0, 2)) lines.push(`death incident ${i.episodeId}: ${i.status}/${i.phase}; site ${i.site.source}${i.site.at ? ` ${Math.round(i.site.at.x)},${Math.round(i.site.at.y)},${Math.round(i.site.at.z)}` : ''}; missing ${i.missing.reduce((n, m) => n + m.count, 0)}, regained ${i.regained.reduce((n, m) => n + m.count, 0)}; attempts ${i.attempts.used}/${i.attempts.max}${i.blocker ? `; blocked ${i.blocker.reason}` : ''}`);
     for (const b of v.blocked.slice(0, 2)) lines.push(`survival blocked: ${b.routine} ${b.reason} — ${clip(b.detail, 140)}`);
   }
-  if (s.route) {
-    const r = s.route;
+  lines.push(...navigationStatusLines(s.route, extra));
+  return lines;
+}
+
+/** Ordinary manual route/locator status also works without a supervisor. */
+export function navigationStatusLines(route: AutonomyStatus['route'], extra: { locator?: LocatorHint | null; admission?: { anchor: { x: number; y: number; z: number }; radius: number } | null } = {}): string[] {
+  const lines: string[] = [];
+  if (route) {
+    const r = route;
     lines.push(`route: ${r.state} (${r.destinations.join('/')}); legs ${r.legsUsed}/${r.maxLegs}; moved ${Math.round(r.distanceUsed)}/${r.maxTotalDistance} blocks (corrections ${r.distanceSources.correctionCount}); ${Math.round(r.remainingMs / 1000)}s left${r.blocker ? `; blocker ${r.blocker.reason}` : ''}${extra.admission ? `; admission anchor ${Math.round(extra.admission.anchor.x)},${Math.round(extra.admission.anchor.y)},${Math.round(extra.admission.anchor.z)} r${extra.admission.radius} (unchanged)` : ''}`);
   }
   if (extra.locator) {

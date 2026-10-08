@@ -49,7 +49,7 @@ import { AutonomyControl } from './autonomy/control.ts';
 import { AutonomySupervisor } from './autonomy/supervisor.ts';
 import { recoveryAdmissionBarrier } from './autonomy/barrier.ts';
 import { resolveAutonomyScope, type ScopeResolution } from './autonomy/scope.ts';
-import { autonomyStatusChat, autonomyStatusLines } from './autonomy/status-text.ts';
+import { autonomyStatusChat, autonomyStatusLines, navigationStatusLines } from './autonomy/status-text.ts';
 import { JEV_CONTEXT_TOKENS, PROMPT_USD_PER_TOKEN } from './decision/pricing.ts';
 import { createHash } from 'node:crypto';
 
@@ -364,6 +364,8 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
         const s = runtime.safety.status(systemClock.now());
         lines.push(`safety: ${s.enabled ? runtime.safety.hold()?.detail ?? 'clear' : 'disabled'}; episodes ${s.counters.episodes}, retreats ${s.counters.retreats}, defenses ${s.counters.defenses}`);
       }
+      const navigation = runtime.routeView(appRef?.engine.currentEpoch ?? 0);
+      lines.push(...navigationStatusLines(navigation?.status ?? null, { locator: runtime.locator?.ownerHint() ?? null, admission: navigation?.admission ?? null }));
       if (codex) {
         const t = codex.totals;
         const cov = (known: number) => (known === t.completedTurns ? '' : ` [reported for ${known}/${t.completedTurns} completed turns]`);
@@ -412,7 +414,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
         const s = supervisor.status();
         const epoch = appRef?.engine.currentEpoch;
         const view = epoch !== undefined ? runtime.routeView(epoch) : undefined;
-        return { lines: autonomyStatusLines(s, { locator: runtime.locator?.ownerHint() ?? null, admission: view?.admission ?? null }), chat: autonomyStatusChat(s), automatic: s.mode !== 'disabled' && s.mode !== 'scope_blocked' };
+        return { lines: autonomyStatusLines(s, { admission: view?.admission ?? null }).filter((line) => !line.startsWith('route: ') && !line.startsWith('locator: ')), chat: autonomyStatusChat(s), automatic: s.mode !== 'disabled' && s.mode !== 'scope_blocked' };
       },
       diagnostic: (args) => diagnostics!.handle(args),
       // MB-FLOW-003-C12 same-session continuation of held owner jobs. In memory and independent of
@@ -609,9 +611,10 @@ function commandCatalog(configPath: string, json: boolean): void {
   const registry = new SkillRegistry(allSkills());
   const catalog = registry.catalog();
   if (json) {
+    err('foundation catalog only; use /diag catalog in a run for its configured locator, safety, survival, memory and construction capabilities');
     out(JSON.stringify(catalog, null, 2));
   } else {
-    out(`catalog ${catalog.catalogVersion} (${catalog.capabilities.length} capabilities, generated from registered skill definitions; version ${version})`);
+    out(`foundation catalog ${catalog.catalogVersion} (${catalog.capabilities.length} capabilities, generated from foundation skill definitions; version ${version}; /diag catalog shows configured run capabilities)`);
     for (const c of catalog.capabilities) {
       out(`- ${c.id} [${c.family}] ${c.purpose}`);
       out(`    params: ${c.parameters.map((p) => `${p.name}${p.required ? '' : '?'}:${p.type}`).join(', ') || '(none)'}; predicates: ${c.supportedPredicates.join(', ') || '(none)'}`);
