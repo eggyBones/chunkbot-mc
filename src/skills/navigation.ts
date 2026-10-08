@@ -38,6 +38,29 @@ const { Movements, goals } = pathfinderPkg as unknown as {
 };
 export { goals };
 
+/** Approach an exact position using the feet centers that the installed
+ * pathfinder actually walks to. Its GoalNear floors fractional targets and
+ * tests integer nodes; that can finish outside an exact admitted radius. */
+export class GoalNearPosition {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  private readonly range: number;
+  constructor(x: number, y: number, z: number, within: number) {
+    this.x = x; this.y = y; this.z = z;
+    // Routing stays inside the requested radius; arrival still checks the
+    // original unrounded predicate/parameter. Keep a margin for physical stop.
+    this.range = Math.max(Math.min(0.75, within), within - 0.5);
+  }
+  private distance(node: { x: number; y: number; z: number }): number {
+    return Math.hypot(this.x - (node.x + 0.5), this.y - node.y, this.z - (node.z + 0.5));
+  }
+  heuristic(node: { x: number; y: number; z: number }): number { return Math.max(0, this.distance(node) - this.range); }
+  isEnd(node: { x: number; y: number; z: number }): boolean { return this.distance(node) <= this.range; }
+  hasChanged(): boolean { return false; }
+  isValid(): boolean { return true; }
+}
+
 /**
  * Within `range` of a block but never standing on top of it (pathfinder's
  * GoalNear and GoalGetToBlock both accept standing on the target, which hides
