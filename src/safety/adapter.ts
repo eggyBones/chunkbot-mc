@@ -21,6 +21,7 @@ type Bot = GameSession['bot'];
 
 interface RawEntity {
   id: number;
+  uuid?: string;
   name?: string;
   type?: string;
   position?: { x: number; y: number; z: number };
@@ -33,6 +34,20 @@ interface RawEntity {
 /** Exact-version registry facts the tracker/adapter need (installed minecraft-data via bot.registry). */
 export function registryFacts(bot: Bot): SafetyRegistryFacts {
   return registryFactsOf(bot.registry);
+}
+
+/** Mineflayer's loader normalizes 26.1.2 to bot.version="26.1". The
+ * protocol Client retains the exact requested/admitted release. An alias by
+ * itself is insufficient; require that exact release and matching registry.
+ * Exact bot.version remains the fallback for structural adapters without a
+ * client version (never upgrades a protocol alias to an exact release). */
+export function exactSafetyVersion(bot: Bot): string | undefined {
+  const version = bot._client.version ?? bot.version;
+  const canonical = version === '26.1.2' ? '26.1' : version === '26.2' ? '26.2' : undefined;
+  const registry = bot.registry as unknown as { version?: { minecraftVersion?: string; version?: number } };
+  if (!canonical || (bot.version !== version && bot.version !== canonical)) return undefined;
+  if (registry.version?.minecraftVersion !== canonical || registry.version.version !== (version === '26.1.2' ? 775 : 776)) return undefined;
+  return version;
 }
 
 export type SafetyRegistryFacts = SafetyItemRegistry & { category(entity: string): string | undefined };
@@ -208,7 +223,8 @@ export class SessionSafetyReader {
       };
       const mobFlags = flag('mob_flags');
       const baby = flag('baby');
-      const adultDefault = baby === undefined && this.deps.tracker.adultDefault(raw.id, name, bot.version);
+      const version = exactSafetyVersion(bot);
+      const adultDefault = baby === undefined && version !== undefined && this.deps.tracker.adultDefault(raw.id, name, version, { connectionEpoch: s.connectionEpoch, uuid: raw.uuid });
       const swell = flag('swell_dir');
       const ignited = flag('is_ignited');
       const hist = this.history.get(raw.id) ?? [];
