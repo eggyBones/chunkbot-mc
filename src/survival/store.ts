@@ -186,7 +186,7 @@ export class SurvivalFileStore {
     this.revision = Math.max(0, ...revisions);
     if (newerSchema) return { body: undefined, state: 'read_only', detail: `survival store was written by a newer schema; read-only (not overwritten)`, revision: this.revision, corrupt, discardedPartialWrites: discarded };
     if (!body && revisions.length > 0) return { body: undefined, state: 'read_only', detail: `no survival store revision verifies (${corrupt.length} unreadable); read-only, nothing replaced`, revision: this.revision, corrupt, discardedPartialWrites: discarded };
-    const migrated = body && loadedSchema < SURVIVAL_SCHEMA_VERSION ? ` (schema v${loadedSchema} migrated to v${SURVIVAL_SCHEMA_VERSION}: lost = v1 remaining + recorded regains; nothing invented)` : '';
+    const migrated = !body || loadedSchema >= SURVIVAL_SCHEMA_VERSION ? '' : loadedSchema === 1 ? ` (schema v1 migrated to v${SURVIVAL_SCHEMA_VERSION}: lost = v1 remaining + recorded regains; nothing invented)` : ` (schema v${loadedSchema} read as v${SURVIVAL_SCHEMA_VERSION}: no checkpoint records)`;
     this.writable = this.lock();
     const state = !body ? 'empty' : corrupt.length > 0 ? 'recovered' : 'ready';
     const detail = !this.writable

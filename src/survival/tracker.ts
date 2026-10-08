@@ -67,6 +67,13 @@ export type TrackerEvent =
    */
   | { type: 'respawn_ready'; connectionEpoch: number; inventory: InventoryFacts; current: InventoryFacts; packetsAfterSync: number; vitals: Vitals | null }
   | { type: 'inventory_changed' }
+  /**
+   * C12: the server says THIS bot collected an ITEM entity (other collectors and
+   * non-item entities such as experience orbs are not reported). `facts` is the
+   * entity's own server-stated stack (absent when never stated); `firstSeenAt`
+   * is the position where the server first announced the entity to this client.
+   */
+  | { type: 'own_item_collect'; connectionEpoch: number; entityId: number; count: number; facts: DropStackFacts | undefined; firstSeenAt: { x: number; y: number; z: number } | undefined; atMs: number }
   | { type: 'vitals_changed'; vitals: Vitals };
 
 interface RawGlobalPos {
@@ -107,6 +114,8 @@ export class SurvivalTracker {
   private readonly itemEntities = new Set<number>();
   /** Server-stated stack of each item entity (its own metadata packet; C3 authority, never a label). */
   private readonly drops = new Map<number, DropStackFacts>();
+  /** First-announced position of each item entity (spawn_entity) on this connection/life. */
+  private readonly firstSeen = new Map<number, { x: number; y: number; z: number }>();
 
   /** Subscribes to tracker events (synchronous, in packet order). */
   subscribe(listener: (e: TrackerEvent) => void): () => void {
@@ -150,6 +159,7 @@ export class SurvivalTracker {
     this.openWindowId = undefined;
     this.itemEntities.clear();
     this.drops.clear();
+    this.firstSeen.clear();
     if (opts.seed) {
       for (const s of opts.seed.stacks) this.slots.set(s.slot, { ...s, meta: { ...s.meta } });
       this.invSource = 'ready_seed';
@@ -163,11 +173,24 @@ export class SurvivalTracker {
       source.on(name, fn);
       this.listeners.push([name, fn]);
     };
-    on('spawn_entity', (p: { entityId: number; type: number }) => {
+    on('spawn_entity', (p: { entityId: number; type: number; x?: number; y?: number; z?: number }) => {
       const itemType = this.opts?.registry.itemEntityTypeId;
       if (itemType === undefined || p.type !== itemType) return;
       this.itemEntities.add(p.entityId);
       if (this.itemEntities.size > 4_000) this.itemEntities.delete(this.itemEntities.values().next().value as number);
+      if (Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)) {
+        this.firstSeen.set(p.entityId, { x: p.x as number, y: p.y as number, z: p.z as number });
+        if (this.firstSeen.size > 4_000) this.firstSeen.delete(this.firstSeen.keys().next().value as number);
+      }
+    });
+    on('collect', (p: { collectedEntityId: number; collectorEntityId: number; pickupItemCount?: number }) => {
+      const self = this.self();
+      if (!this.opts || self === undefined || p.collectorEntityId !== self || !this.itemEntities.has(p.collectedEntityId)) return;
+      const count = Number(p.pickupItemCount);
+      if (!Number.isInteger(count) || count <= 0) return;
+      const facts = this.drops.get(p.collectedEntityId);
+      const at = this.firstSeen.get(p.collectedEntityId);
+      this.emit({ type: 'own_item_collect', connectionEpoch: this.opts.connectionEpoch, entityId: p.collectedEntityId, count, facts: facts ? { ...facts, meta: { ...facts.meta } } : undefined, firstSeenAt: at ? { ...at } : undefined, atMs: this.now() });
     });
     on('entity_metadata', (p: { entityId: number; metadata?: Array<{ key: number; type: string; value: unknown }> }) => {
       if (!this.itemEntities.has(p.entityId) || !this.opts) return;
@@ -183,11 +206,13 @@ export class SurvivalTracker {
       for (const id of p.entityIds ?? []) {
         this.itemEntities.delete(id);
         this.drops.delete(id);
+        this.firstSeen.delete(id);
       }
     });
     on('login', (p: { entityId?: number; worldState?: { death?: RawGlobalPos } }) => {
       this.itemEntities.clear();
       this.drops.clear();
+      this.firstSeen.clear();
       if (typeof p.entityId === 'number') this.selfId = p.entityId;
       if (p.worldState?.death) this.loginDeath = p.worldState.death;
     });
@@ -411,6 +436,7 @@ export class SurvivalTracker {
     // A respawn (death or dimension travel) restarts the client's entity space.
     this.itemEntities.clear();
     this.drops.clear();
+    this.firstSeen.clear();
     if (this.state === 'alive' && !this.latestDeath) {
       // A respawn without a death (dimension travel) is not a death; inventory continues.
       return;

@@ -10,6 +10,7 @@ import type { MemoryScope } from '../contracts/memory.ts';
 import {
   SURVIVAL_BOUNDS,
   type Blocker,
+  type CheckpointRecord,
   type DeathCause,
   type HazardRecord,
   type IncidentalEffect,
@@ -51,7 +52,7 @@ export class EpisodeBook {
   private readonly relatedLoss = new Map<string, TrackedStack[]>();
 
   constructor(scope: MemoryScope, nowMs: number, body?: SurvivalStoreBody) {
-    this.body = body ? structuredClone(body) : { scope, createdAtMs: nowMs, episodes: [], interrupted: [], nextEpisode: 1, evicted: 0 };
+    this.body = body ? structuredClone(body) : { scope, createdAtMs: nowMs, episodes: [], interrupted: [], nextEpisode: 1, evicted: 0, checkpoints: [] };
   }
 
   snapshot(): SurvivalStoreBody {
@@ -354,6 +355,16 @@ export class EpisodeBook {
 
   interrupted(): InterruptedDirective[] {
     return this.body.interrupted;
+  }
+
+  /** C12 display-only checkpoint records (upsert by goal id; newest 4 kept). */
+  checkpointRecords(): CheckpointRecord[] {
+    return this.body.checkpoints ?? [];
+  }
+
+  putCheckpointRecord(r: CheckpointRecord): void {
+    this.body.checkpoints = [r, ...(this.body.checkpoints ?? []).filter((x) => x.goalId !== r.goalId)].sort((a, b) => b.savedAtMs - a.savedAtMs).slice(0, 4);
+    this.version += 1;
   }
 
   addInterrupted(d: InterruptedDirective): void {

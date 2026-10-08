@@ -51,7 +51,10 @@ import {
   type Vitals,
   manifestRemaining,
 } from '../contracts/survival.ts';
+import type { ContinuationCheckpoint, ContinuationSurvivalPort, IncidentReturns } from '../contracts/continuation.ts';
+import { CheckpointRecordSchema, type CheckpointRecord } from '../contracts/survival.ts';
 import { AllowanceBook } from './allowance.ts';
+import { IncidentLedgerBook } from './continuation.ts';
 import { EpisodeBook, countedAttempts, distance, isOpen, preparationSignature, UNCOUNTED_OUTCOMES } from './episodes.ts';
 import { counts, safeFoods, sameDimension, sessionDimension, type SurvivalItemRegistry } from './items.ts';
 import { ROUTINE_ORDER, evalEat, evalInventoryRoom, evalRecovery, evalResupply, evalRest, evalToolUpkeep, freeSlots, reserveCount, wornTools, type DesignatedStorage, type PolicyContext, type RoutineEval } from './policy.ts';
@@ -94,6 +97,8 @@ export interface SurvivalServiceOptions {
   farRoute?: () => string | undefined;
   /** Store test seams. */
   store?: { pid?: number; isAlive?: (pid: number) => boolean; beforeRename?: (tmp: string) => void | Promise<void> };
+  /** C12: this application session (checkpoint records of other sessions display as `restart_held`). */
+  sessionId?: string;
 }
 
 export type FactDurability = 'durable' | 'pending' | 'failed' | 'unknown';
@@ -154,10 +159,12 @@ const INTERRUPT_REASONS = new Set(['death', 'low_health', 'dimension_change', 'd
 const TRANSIENT_END = new Set(['planner_not_ready', 'decision_not_ready', 'planner_error', 'decision_error', 'runtime_error', 'limit_exhausted']);
 const clip = (s: string, n = 200) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
-export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePort, SurvivalPredicatePort, SurvivalLifecyclePort, OwnDeathDestinationProvider {
+export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePort, SurvivalPredicatePort, SurvivalLifecyclePort, OwnDeathDestinationProvider, ContinuationSurvivalPort {
   readonly enabled: boolean;
   readonly kind = 'own_death' as const;
   readonly tracker = new SurvivalTracker();
+  /** C12: in-memory, server-attributed own-incident return lineage (works without a durable store). */
+  readonly incidents = new IncidentLedgerBook();
   private readonly options: SurvivalServiceOptions;
   private readonly cfg: SurvivalConfig | undefined;
   private store: SurvivalFileStore | undefined;
@@ -375,7 +382,9 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (!this.cfg) return;
     const now = this.options.now();
     if (e.type === 'death_captured') return this.onDeath(e.death, now);
+    if (e.type === 'own_item_collect') return this.onOwnItemCollect(e);
     if (e.type === 'death_location_refined') {
+      this.incidents.refineSite(e.captureId, e.site);
       const c = this.captures.get(e.captureId);
       const ep = c && !c.related ? this.book?.get(c.episodeId) : undefined;
       const d = this.tracker.latest();
@@ -386,6 +395,8 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       return;
     }
     if (e.type === 'respawn_ready') {
+      const latest = this.tracker.latest();
+      if (latest && latest.connectionEpoch === e.connectionEpoch) this.incidents.assess(latest.captureId, e.inventory, Math.max(this.cfg.recovery.searchRadius, this.cfg.recovery.sameHazardRadius));
       const open = this.book?.open();
       if (open && (open.phase === 'awaiting_respawn' || open.phase === 'assessing')) {
         // C10: the loss is assessed against the FIRST full respawn sync, never a later inventory with pickups in it.
@@ -413,12 +424,16 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   private onDeath(d: CapturedDeathRecord, now: number): void {
     if (this.captures.has(d.captureId)) return;
     if (!this.book) {
+      this.incidents.capture({ incidentId: d.captureId, connectionEpoch: d.connectionEpoch, lastAlive: d.lastAlive, site: d.site, related: false });
       this.captures.set(d.captureId, { episodeId: 'unscoped', related: false });
       this.lastCapture = { captureId: d.captureId, episodeId: 'unscoped', atMs: now };
       this.record({ type: 'survival_death_unscoped', captureId: d.captureId, detail: this.storeDetail });
       return;
     }
+    const prior = this.book.open();
     const { episode, related } = this.book.recordDeath(d, undefined, this.cfg as SurvivalConfig, now);
+    const merged = related && Boolean(prior?.site.at && d.site.at && sameDimension(prior.site.dimension, d.site.dimension) && distance(prior.site.at, d.site.at) <= (this.cfg as SurvivalConfig).recovery.sameHazardRadius);
+    this.incidents.capture({ incidentId: d.captureId, connectionEpoch: d.connectionEpoch, lastAlive: d.lastAlive, site: d.site, episodeId: episode.episodeId, related, mergedIntoEpisode: merged });
     this.captures.set(d.captureId, { episodeId: episode.episodeId, related });
     this.lastCapture = { captureId: d.captureId, episodeId: episode.episodeId, atMs: now };
     this.record({ type: 'survival_death_captured', captureId: d.captureId, episodeId: episode.episodeId, related, frozenAt: d.lastAlive.frozenAt, inventorySource: d.lastAlive.source, stacks: d.lastAlive.stacks.length, clearingPacketsAfterFreeze: d.lastAlive.clearingPacketsAfterFreeze, siteSource: d.site.source, cause: d.cause.translationKey ?? d.cause.kind });
@@ -1019,11 +1034,91 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (!e || !this.book) return 0;
     const counted = this.book.regain(e, key, count, this.options.now(), meta);
     if (counted > 0) {
+      this.incidents.recoveryRegain(e.episodeId, key, counted, meta?.digest);
       this.record({ type: 'survival_regained', episodeId: e.episodeId, key, counted, offered: count, status: e.status });
       if (e.incidentFactId) this.memoryUpdate(e.incidentFactId, { regained: [{ key, count: counted }] }, `server-confirmed pickup of ${counted} ${key} near the own death site`, actionId);
       this.persistSoon();
     }
     return counted;
+  }
+
+  // ------------------------------------------------------------ C12 ContinuationSurvivalPort (approved, P 4409ba1)
+
+  /** Own item collected OUTSIDE the recovery plan: a return only with exact server evidence, else the incident becomes unknown. */
+  private onOwnItemCollect(e: Extract<TrackerEvent, { type: 'own_item_collect' }>): void {
+    const cfg = this.cfg;
+    if (!cfg) return;
+    // While the bound recovery goal runs, its frozen C3 plan counts planned pickups (recordRegain) and reports the rest as incidental.
+    if (this.active?.routine === 'death_recovery' && this.active.connectionEpoch === e.connectionEpoch) return;
+    const r = this.incidents.ownCollect({ connectionEpoch: e.connectionEpoch, count: e.count, facts: e.facts, firstSeenAt: e.firstSeenAt }, this.dimensionValue, cfg.recovery.searchRadius);
+    if (r.attributed) this.record({ type: 'survival_incident_return', incidentId: r.attributed.incidentId, key: r.attributed.key, count: r.attributed.count, collector: 'outside_recovery' });
+    if (r.ambiguous?.length) this.record({ type: 'survival_incident_attribution_unknown', incidents: r.ambiguous, entityId: e.entityId, key: e.facts?.key ?? null, count: e.count });
+  }
+
+  frozenInventory(connectionEpoch: number): { incidentId: string; counts: Record<string, number>; evidence: 'last_alive_server_packets' } | null {
+    if (!this.cfg) return null;
+    return this.incidents.frozen(connectionEpoch);
+  }
+
+  incidentReturns(incidentId: string): IncidentReturns | null {
+    if (!this.cfg) return null;
+    return this.incidents.returns(incidentId);
+  }
+
+  /**
+   * Necessary recovery/support first (finite, code-owned). `wait` while the bot
+   * is not alive, a support routine runs, health is at/below the low-health
+   * cutoff, or an own-death recovery episode can still act; `clear` when there
+   * is none or recovery is blocked by a non-transient condition it cannot clear
+   * itself (continuation then proceeds with its own provenance rules).
+   */
+  continuationGate(nowMs: number): { kind: 'clear' } | { kind: 'wait'; reason: 'recovery_open' | 'support_running' | 'not_alive'; detail: string } | { kind: 'blocked'; reason: string; detail: string } {
+    const cfg = this.cfg;
+    if (!cfg) return { kind: 'clear' };
+    if (this.tracker.life !== 'alive') return { kind: 'wait', reason: 'not_alive', detail: `awaiting fresh respawn state (${this.tracker.life})` };
+    if (this.active) return { kind: 'wait', reason: this.active.routine === 'death_recovery' ? 'recovery_open' : 'support_running', detail: `${this.active.routine} support goal ${this.active.goalId} is running` };
+    const v = this.tracker.vitals();
+    if (v && v.connectionEpoch === this.tracker.connectionEpoch && v.health > 0 && v.health <= this.options.limits.lowHealth) return { kind: 'wait', reason: 'support_running', detail: `health ${v.health} is at or below ${this.options.limits.lowHealth}: necessary eat/rest first` };
+    const e = this.book?.open();
+    if (e && isOpen(e)) {
+      const b = this.blocks.get('death_recovery');
+      if (b && !b.transient && (b.untilMs === undefined || b.untilMs > nowMs)) return { kind: 'clear' };
+      return { kind: 'wait', reason: 'recovery_open', detail: `own-death recovery ${e.episodeId} is ${e.phase} (${e.status})` };
+    }
+    return { kind: 'clear' };
+  }
+
+  /** Display-only persistence of a held checkpoint (a bounded projection; nothing executable is stored). */
+  persistCheckpoint(checkpoint: ContinuationCheckpoint): void {
+    if (!this.cfg || !this.book || !this.storeWritable) return;
+    const clipText = (t: string, n: number) => (t.length <= n ? t : `${t.slice(0, n - 1)}…`);
+    const record: CheckpointRecord = {
+      goalId: checkpoint.goalId,
+      sessionId: clipText(checkpoint.sessionId, 64),
+      instruction: clipText(checkpoint.instruction, 1_000),
+      publicOutcome: clipText(checkpoint.publicOutcome, 1_000),
+      state: checkpoint.state,
+      stateReason: clipText(checkpoint.stateReason, 200),
+      stateAtMs: checkpoint.stateAtMs,
+      deadlineAtMs: checkpoint.deadlineAtMs,
+      continuations: { used: checkpoint.continuations.used, max: checkpoint.continuations.max },
+      interruptions: checkpoint.interruptions.slice(-8).map((i) => ({ reason: i.reason, atMs: i.atMs })),
+      counters: { plannerTurns: checkpoint.counters.plannerTurns, tasksAdmitted: checkpoint.counters.tasksAdmitted, replans: checkpoint.counters.replans },
+      savedAtMs: this.options.now(),
+    };
+    const parsed = CheckpointRecordSchema.safeParse(record);
+    if (!parsed.success) {
+      this.record({ type: 'survival_checkpoint_rejected', goalId: checkpoint.goalId, issue: clip(parsed.error.issues[0]?.message ?? 'invalid') });
+      return;
+    }
+    this.book.putCheckpointRecord(parsed.data);
+    this.persistSoon();
+  }
+
+  /** Stored checkpoint records; other application sessions (or an unknown session) display as `restart_held`. */
+  checkpointRecords(): CheckpointRecord[] {
+    const session = this.options.sessionId;
+    return (this.book?.checkpointRecords() ?? []).map((r) => (session !== undefined && r.sessionId === session ? { ...r } : { ...r, state: 'restart_held' as const, stateReason: r.state === 'restart_held' ? r.stateReason : clip(`stored by another application session (was ${r.state}: ${r.stateReason}); shown only, never continued`) }));
   }
 
   // ------------------------------------------------------------ status
@@ -1065,6 +1160,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
         ...(e.blocker ? { blocker: { reason: e.blocker.reason, detail: e.blocker.detail } } : {}),
         relatedDeaths: e.relatedIncidentFactIds.length,
       })),
+      ...(this.book?.checkpointRecords().length ? { checkpoints: this.checkpointRecords().map((r) => ({ goalId: r.goalId, instruction: clip(r.instruction, 120), state: r.state, stateReason: r.stateReason, continuations: { ...r.continuations }, ageS: Math.round((nowMs - r.stateAtMs) / 1000) })) } : {}),
       interrupted: this.allInterrupted()
         .slice(0, 4)
         .map((d) => ({ goalId: d.goalId, instruction: clip(d.instruction, 120), reason: d.reason, continuation: d.continuation, state: d.state, ageS: Math.round((nowMs - d.interruptedAtMs) / 1000) })),

@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { after, describe, it } from 'node:test';
-import { ManifestItemSchema, SurvivalStoreBodySchema, type SurvivalProposal } from '../src/contracts/survival.ts';
+import { ManifestItemSchema, SURVIVAL_SCHEMA_VERSION, SurvivalStoreBodySchema, type SurvivalProposal } from '../src/contracts/survival.ts';
 import { checksum, survivalScopeDirectory } from '../src/survival/store.ts';
 import { NOW0, OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, sampleEpisode, settle, slot, tempRoot, type Harness } from './survival-helpers.ts';
 
@@ -125,7 +125,7 @@ describe('post-collection persistence (C9)', () => {
     await h.service.close();
   });
 
-  it('v1 migration: lost = v1 remaining + recorded regains; sought, partial, regained and unknown records stay truthful; next write is v2', async () => {
+  it('v1 migration: lost = v1 remaining + recorded regains; sought, partial, regained and unknown records stay truthful; next write is the current schema', async () => {
     const root = tempRoot();
     const dir = survivalScopeDirectory(root, SCOPE);
     mkdirSync(dir, { recursive: true });
@@ -155,7 +155,7 @@ describe('post-collection persistence (C9)', () => {
     const h = harness({ root, pid: 7105 });
     const st = h.service.status(h.clock.now());
     assert.equal(st.store.state, 'ready', st.store.detail);
-    assert.match(st.store.detail, /schema v1 migrated to v2/);
+    assert.match(st.store.detail, new RegExp(`schema v1 migrated to v${SURVIVAL_SCHEMA_VERSION}`));
     const row = (key: string) => {
       const m = st.incidents[0]?.missing.find((x) => x.key === key);
       return m ? [m.lost, m.regained, m.count, m.state] : undefined;
@@ -177,9 +177,9 @@ describe('post-collection persistence (C9)', () => {
     assert.doesNotMatch(facts, /iron_pickaxe|oak_log|4 bread/);
     h.service.abandonRecovery('test write', h.clock.now());
     await settle(h);
-    assert.equal(h.events.filter((e) => e['type'] === 'survival_write_failed').length, 0, 'the migrated body writes as valid v2');
+    assert.equal(h.events.filter((e) => e['type'] === 'survival_write_failed').length, 0, 'the migrated body writes as valid current schema');
     const file = JSON.parse(readFileSync(`${dir}/${readdirSync(dir).filter((n) => /^survival-\d{8}\.json$/.test(n)).sort().at(-1)}`, 'utf8')) as { schemaVersion: number; body: unknown };
-    assert.equal(file.schemaVersion, 2);
+    assert.equal(file.schemaVersion, SURVIVAL_SCHEMA_VERSION);
     SurvivalStoreBodySchema.parse(file.body);
     await h.service.close();
   });
@@ -228,7 +228,7 @@ describe('post-collection persistence (C9)', () => {
     const h = harness({ root, pid: 7109 });
     const st = h.service.status(h.clock.now());
     assert.equal(st.store.state, 'recovered', st.store.detail);
-    assert.match(st.store.detail, /loaded revision 1 \(schema v1 migrated to v2.*newer unreadable revision\(s\) 2/);
+    assert.match(st.store.detail, new RegExp(`loaded revision 1 \\(schema v1 migrated to v${SURVIVAL_SCHEMA_VERSION}.*newer unreadable revision\\(s\\) 2`));
     assert.equal(st.incidents[0]?.missing[0]?.count, 2, 'the tampered 64 was never used');
     await h.service.close();
   });

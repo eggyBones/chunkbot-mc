@@ -36,10 +36,12 @@ import type { TaskMode, TaskSpec } from './task.ts';
  * whose effects became unknown. v1 files are read (checksum on the raw body)
  * and migrated by `migrateV1Body`: lost = v1 remaining + the episode's recorded
  * regains of that key, regained = those recorded regains, state derived;
- * nothing is invented. A newer schema is read-only, never overwritten.
+ * nothing is invented. v3 (MB-FLOW-003-C12) adds display-only continuation
+ * checkpoint records (v2 bodies read with none). A newer schema is read-only,
+ * never overwritten.
  */
-export const SURVIVAL_SCHEMA_VERSION = 2 as const;
-export const SURVIVAL_READABLE_SCHEMA_VERSIONS: readonly number[] = [1, 2];
+export const SURVIVAL_SCHEMA_VERSION = 3 as const;
+export const SURVIVAL_READABLE_SCHEMA_VERSIONS: readonly number[] = [1, 2, 3];
 export const SURVIVAL_FILE_FORMAT = 'chunkbot-survival' as const;
 
 const atMs = z.number().int().nonnegative();
@@ -635,6 +637,31 @@ export const RecoveryEpisodeSchema = z
   .strict();
 export type RecoveryEpisode = z.infer<typeof RecoveryEpisodeSchema>;
 
+/**
+ * MB-FLOW-003-C12: DISPLAY-ONLY projection of a held continuation checkpoint
+ * (src/contracts/continuation.ts). Deliberately not the executable checkpoint:
+ * no outcome contract, lineage, route carry, epochs or handles are stored, so a
+ * restart can only show it (`restart_held`), never continue it.
+ */
+export const CHECKPOINT_RECORD_STATES = ['capturing', 'held', 'continuing', 'completed', 'superseded_by_owner', 'stopped_by_owner', 'blocked', 'restart_held'] as const;
+export const CheckpointRecordSchema = z
+  .object({
+    goalId: z.string().regex(/^goal-[a-z0-9]{4,32}$/),
+    sessionId: z.string().min(1).max(64),
+    instruction: z.string().max(BOUNDS.text),
+    publicOutcome: z.string().max(BOUNDS.text),
+    state: z.enum(CHECKPOINT_RECORD_STATES),
+    stateReason: shortText,
+    stateAtMs: atMs,
+    deadlineAtMs: atMs,
+    continuations: z.object({ used: z.number().int().nonnegative(), max: z.number().int().nonnegative() }).strict(),
+    interruptions: z.array(z.object({ reason: z.string().regex(/^[a-z_]{1,48}$/), atMs }).strict()).max(8),
+    counters: z.object({ plannerTurns: z.number().int().nonnegative(), tasksAdmitted: z.number().int().nonnegative(), replans: z.number().int().nonnegative() }).strict(),
+    savedAtMs: atMs,
+  })
+  .strict();
+export type CheckpointRecord = z.infer<typeof CheckpointRecordSchema>;
+
 export const SurvivalStoreBodySchema = z
   .object({
     scope: MemoryScopeSchema,
@@ -644,6 +671,8 @@ export const SurvivalStoreBodySchema = z
     interrupted: z.array(InterruptedDirectiveSchema).max(4),
     nextEpisode: z.number().int().positive(),
     evicted: z.number().int().nonnegative(),
+    /** C12 display-only checkpoint projections (newest kept). */
+    checkpoints: z.array(CheckpointRecordSchema).max(4).default([]),
   })
   .strict();
 export type SurvivalStoreBody = z.infer<typeof SurvivalStoreBodySchema>;
@@ -652,7 +681,7 @@ export const SurvivalStoreFileSchema = z
   .object({
     format: z.literal(SURVIVAL_FILE_FORMAT),
     /** v1 is read and migrated (see SURVIVAL_SCHEMA_VERSION); every new write is v2. */
-    schemaVersion: z.union([z.literal(1), z.literal(SURVIVAL_SCHEMA_VERSION)]),
+    schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(SURVIVAL_SCHEMA_VERSION)]),
     revision: z.number().int().positive(),
     writtenAtMs: atMs,
     checksum: z.string().regex(/^sha256:[0-9a-f]{64}$/),
@@ -1026,6 +1055,8 @@ export interface SurvivalStatus {
   vitals?: { health: number; food: number; saturation: number; ageS: number };
   incidents: SurvivalIncidentStatus[];
   interrupted: Array<{ goalId: string; instruction: string; reason: string; continuation: InterruptedDirective['continuation']; state: InterruptedDirective['state']; ageS: number }>;
+  /** C12 display-only checkpoint records (other application sessions show as `restart_held`). */
+  checkpoints?: Array<{ goalId: string; instruction: string; state: CheckpointRecord['state']; stateReason: string; continuations: { used: number; max: number }; ageS: number }>;
   blocked: Array<{ routine: SurvivalRoutine; reason: string; detail: string; retryInS?: number }>;
   cooldowns: Array<{ routine: SurvivalRoutine; key?: string; remainingS: number }>;
   admissionsLastHour: number;
@@ -1043,153 +1074,3 @@ export const SURVIVAL_CAPABILITIES = {
 } as const satisfies Record<string, string>;
 
 export const SurvivalCapabilityIdSchema = CapabilityIdSchema;
-
-// ================================================================ MB-FLOW-003-C12 (PROPOSED r2 — NOT CONSUMED)
-//
-// Revision 2 after the coordinator's joint review (points 1-5). Declarations
-// only; nothing consumes them. P (single shared writer) proposes the concrete
-// shared continuation API; survival adapts its bookkeeping after approval.
-// Division of ownership proposed here:
-//   - P holds the SAME-SESSION semantic checkpoint in memory (works with
-//     survival/memory/autonomy disabled) and re-admits the SAME logical goal id
-//     at a fresh epoch through the single admission path.
-//   - Survival supplies PURE accounting/grounding helpers (usable without a
-//     survival service), the packet-frozen last-alive evidence when enabled,
-//     a recovery-priority gate, and OPTIONAL durable persistence of the plain
-//     checkpoint for display after a restart (never executed).
-// Nothing executable is captured: no snapshot handles, prior-result action ids,
-// remembered-anchor/memory refs, tasks, actions, leases or epochs.
-
-/** Interruptions that ENDED goal ownership and may hold a checkpoint. Immediate W preemption keeps the goal admitted and is NOT a checkpoint. */
-export const CHECKPOINT_INTERRUPTIONS = ['death', 'low_health', 'safety_interrupted', 'dimension_change', 'disconnected', 'kicked'] as const;
-export type CheckpointInterruption = (typeof CHECKPOINT_INTERRUPTIONS)[number];
-
-/**
- * Point 3: an atom of the immutable outcome is continuable only when it can be
- * freshly grounded from SEMANTIC identity. Selector kinds `registry`, `owner`
- * and `owner_destination` are semantic; `observed` (snapshot handle),
- * `prior_result` (connection-scoped action id), `remembered_anchor` and memory
- * refs are request/goal/connection-bound and are NOT re-grounded. An outcome
- * containing a non-groundable atom stays held with ONE declarative reason; it
- * is never rewritten into new instruction semantics or a new outcome.
- */
-export interface AtomGrounding {
-  /** Path inside the outcome tree, as PredicateEngine evaluation paths ("0", "0.1"). */
-  path: string;
-  predicate: string;
-  status: 'groundable' | 'not_groundable';
-  /** e.g. `observed_handle`, `prior_result_action`, `memory_ref`, `count_under_any_or_not`, `baseline_unknown`. */
-  reason?: string;
-}
-
-/**
- * Code-confirmed acquisition accounting of one count atom (point 2).
- * `admissionCount`: count matching `selector` in the ORIGINAL admission
- * baseline (null when that baseline was unknown -> not continuable).
- * `verifiedAcquired`: prior verified progress, never planner text — for the
- * possession basis, the server inventory frozen at the interruption (death:
- * survival's packet-frozen last-alive copy; else current server inventory, or
- * the last code evaluation when no server copy exists) minus `admissionCount`,
- * plus ledger-confirmed consumption when mayBeConsumedLater; for the effect
- * basis (crafting/smelting), skill-confirmed outputs since admission.
- * Repeated interruptions accumulate: each new interruption's verified value is
- * computed against the ORIGINAL admission count, never a later resync.
- */
-export interface AcquisitionEntry {
-  path: string;
-  basis: 'possession' | 'effect';
-  predicate: 'inventory_delta' | 'inventory_amount' | 'crafting_result' | 'smelting_result';
-  selector: string;
-  atLeast: number;
-  admissionCount: number | null;
-  verifiedAcquired: number;
-  /** Where verifiedAcquired came from (uncertain data is labeled, never upgraded). */
-  evidence: 'last_alive_server_packets' | 'current_server_inventory' | 'last_code_evaluation' | 'skill_confirmed_outputs' | 'unavailable';
-  latched: boolean;
-  consumedSinceAdmission: number;
-}
-
-/**
- * The plain semantic checkpoint (P holds it in memory; survival may persist
- * it). Point 1: SAME logical goal id (the Jev per-goal attempt budget and every
- * per-goal accounting stay keyed by it), the FULL shared GoalCounters carried
- * cumulatively against the ORIGINAL ceilings, and the ORIGINAL absolute
- * deadline. Point 2: immutable original admission baseline (with its
- * provenance detail), accepted outcome, original anchor.
- */
-export interface ContinuationCheckpoint {
-  goalId: string;
-  /** Application session allowed to continue it (a restart only displays it). */
-  sessionId: string;
-  instruction: string;
-  interpretation?: string;
-  outcome: import('./predicate.ts').GoalOutcomeContract;
-  admissionBaseline: { capturedAtMs: number; counts: Record<string, number> | null; detail: string };
-  anchor: { dimension: string; at: { x: number; y: number; z: number }; radius: number };
-  counters: import('./planner.ts').GoalCounters;
-  /** ORIGINAL per-goal ceilings (admission compares cumulative counters to these; nothing is refilled). */
-  caps: { plannerTurns: number; tasks: number; replans: number };
-  /** ORIGINAL absolute deadline; continuation never starts a fresh goalDeadlineMs. Past it -> blocked `deadline_passed`. */
-  deadlineAtMs: number;
-  grounding: AtomGrounding[];
-  accounting: AcquisitionEntry[];
-  /** Historical labels only (e.g. "crafted 1 crafting_table"); never action ids or handles. */
-  verifiedEffects: string[];
-  interruptions: Array<{ reason: CheckpointInterruption; atMs: number; epoch: number }>;
-  state: 'held' | 'continuing' | 'completed' | 'superseded_by_owner' | 'dismissed_by_owner' | 'stopped_by_owner' | 'blocked' | 'restart_held';
-  stateDetail: string;
-  stateAtMs: number;
-}
-
-/**
- * Credit re-bound at a continuation admission from CURRENT evidence (the
- * fresh resync is evidence for re-binding, never a replacement acquisition
- * baseline). Possession basis, with B0 = admissionCount, V = verifiedAcquired,
- * F = fresh count at the continuation admission:
- *   carried = min(V, max(0, F - B0))      (bounded by prior verified progress;
- *                                          returned belongings restore at most V,
- *                                          incidental gains never add credit)
- *   acquired(now) = carried + max(0, now - F) [+ consumption since continuation]
- * Worked cases: B0 8, +4 (V 4), death, recovery to 12 -> carried 4, a goal of
- * 10 completes at 18; partial recovery to 9 -> carried 1, completes at 18;
- * nothing recovered (0) -> carried 0, completes at 10 new; respawn pickups to
- * 17 -> carried 4, completes at 23. Effect basis: carried = V. A latched
- * consumed milestone stays satisfied.
- */
-export interface ContinuationCarry {
-  path: string;
-  basis: AcquisitionEntry['basis'];
-  selector: string;
-  atLeast: number;
-  carried: number;
-  /** Fresh count at the continuation admission (possession basis). */
-  freshCount?: number;
-  latched: boolean;
-  detail: string;
-}
-
-/** Survival's contribution to P's readiness decision (recovery priority; no inference). */
-export type ContinuationGate =
-  | { kind: 'clear' }
-  | { kind: 'wait'; reason: 'recovery_open' | 'support_running' | 'not_alive'; detail: string }
-  | { kind: 'blocked'; reason: string; detail: string };
-
-/**
- * Proposed survival-side API (pure helpers + optional service). P owns the
- * checkpoint lifecycle, admission, counters, deadline, Jev identity and status.
- */
-export interface ContinuationSupport {
-  /** Pure: groundable subset of an outcome (point 3). */
-  groundOutcome(outcome: import('./predicate.ts').GoalOutcomeContract, admissionBaselineKnown: boolean): AtomGrounding[];
-  /** Pure: verified accounting at an interruption (repeated interruptions pass the previous entries). */
-  accountAtInterruption(input: { outcome: import('./predicate.ts').GoalOutcomeContract; admissionCounts: Record<string, number> | null; frozenInventory: { counts: Record<string, number>; evidence: AcquisitionEntry['evidence'] } | null; lastEvaluation?: { acquiredByPath: Record<string, number>; latchedPaths: string[] }; ledger: { consumed: Record<string, number>; crafted: Record<string, number>; smelted: Record<string, number> }; previous?: AcquisitionEntry[]; matches: (itemKey: string, selector: string) => boolean }): AcquisitionEntry[];
-  /** Pure: carry re-bound from the fresh inventory at the continuation admission. */
-  carryAt(entries: readonly AcquisitionEntry[], freshCounts: Record<string, number>, matches: (itemKey: string, selector: string) => boolean): ContinuationCarry[];
-  /** Service (when survival is enabled): packet-frozen last-alive counts of the latest own death on this connection. */
-  frozenInventory?(connectionEpoch: number): { counts: Record<string, number>; evidence: 'last_alive_server_packets' } | null;
-  /** Service: recovery has priority over continuation (open episode / running support -> wait). Absent service -> clear. */
-  continuationGate?(nowMs: number): ContinuationGate;
-  /** Service, OPTIONAL persistence for display after a restart (loaded as `restart_held`, never executed). */
-  persistCheckpoint?(checkpoint: ContinuationCheckpoint): void;
-  heldCheckpoints?(nowMs: number): readonly ContinuationCheckpoint[];
-}

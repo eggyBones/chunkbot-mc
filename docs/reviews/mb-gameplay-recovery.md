@@ -17,7 +17,8 @@ Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree
 | `f55329a` | v1 `regained` label without a recorded regain → explicit `unknown` (no invented regains); no-recorded-regain regression |
 | `8e87ec3` | Bed correction: G4/G4n removed from the leased run (always SKIPPED with the R8/respawn reason); no bed, respawn-point or clock write; guard tests. **Frozen C8/C9/C10 candidate for the 26.1.2 module lease.** |
 | `07a3b65` | Docs: first leased 26.1.2 trial record and corrected build provenance |
-| (this commit) | G3 correction: health-support meal exempt from the ordinary eat cooldown (fresh vitals/food/threat checks kept); harness decision evidence and drift-free low-health staging; discriminating tests. **Frozen candidate for a 26.1.2 rerun.** |
+| `ac5da9b` | G3 correction: health-support meal exempt from the ordinary eat cooldown (fresh vitals/food/threat checks kept); harness decision evidence and drift-free low-health staging; discriminating tests. **Frozen candidate for a 26.1.2 rerun.** |
+| (this commit) | C12: P's continuation contract restored verbatim from `4409ba1`; duplicate S declarations removed; `ContinuationSurvivalPort` implemented (in-memory incident return ledger, gate, display-only checkpoint records, store schema v3) with tests |
 
 Owned paths changed:
 - `src/contracts/survival.ts`
@@ -153,14 +154,15 @@ Official sources: the 26.1.2 and 26.2 `server.jar` files, read from the coordina
 
 ## Checks (Node 24.21.0, this worktree's own `npm ci`)
 
-Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the frozen candidate (the G3-correction commit):
+Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the C12 commit (G3 candidate `ac5da9b` ran the same checks: typecheck 0, build 0, `npm test` 0 with 793/793, survival 0 with 136/136):
 
 | Command | Exit | Log summary |
 | --- | --- | --- |
 | `npm run typecheck` | 0 | — |
 | `npm run build` | 0 | — |
-| `npm test` | 0 | 793 tests, 793 pass, 0 fail |
-| `node --test tests/survival-*.test.ts` | 0 | 136 tests, 136 pass, 0 fail |
+| `npm test` | 1, then 0 | first run 806/807: `tests/connection.test.ts` "profile lookup … join timeout" wall-clock assertion under full-suite load (file and `src/game` unchanged since base; the file alone passes 15/15); re-run 807/807 |
+| `node --test tests/survival-*.test.ts` | 0 | 150 tests, 150 pass, 0 fail |
+| adverse: oversized-pile guard removed, `node --test tests/survival-continuation.test.ts` | 1 (expected) | only the unplaceable-collect test fails; source restored |
 | adverse: health-support exemption removed, `node --test tests/survival-upkeep.test.ts` | 1 (expected) | only the G3 trial-state test fails; source restored |
 | adverse: v1 migration disabled, `node --test tests/survival-persistence.test.ts` | 1 (expected) | only the v1 migration test fails; source restored |
 | adverse: old `regained`-label promotion restored, same command | 1 (expected) | only the no-recorded-regain regression fails; source restored |
@@ -180,31 +182,24 @@ Earlier rounds (before the schema review):
 
 Source, build and running versions (corrected; the earlier "dist from `2ffdf10`" line was stale): `dist/` was built by `npm run build` from the working tree that was committed as `8e87ec3` (dist/cli.js 2026-10-07T19:06:52−07:00; commit 19:07:28−07:00). After the trial, compiling `8e87ec3` into a temp directory gave byte-identical JavaScript (150 `.js` files, combined sha256 `efbbed50d05df683b3eb4fd87217b46a7287a1ba02953351a246074956ed3835`); only the 150 `.js.map` files differ, by their output-directory-relative source paths. The whole `dist/` tree digest is `8e4b92f75b3f6a6e8497d007f841a0584da2a29186e0cde105717c27664605e5`. No process runs `dist/`; the survival harness imports `src` directly.
 
-## C12: proposed seam, revision 2 (after the joint review; awaiting P's shared API and Codex approval; not implemented)
+## C12: S implementation of the approved ContinuationSurvivalPort
 
-Declarations: the end of `src/contracts/survival.ts`, `MB-FLOW-003-C12 (PROPOSED r2 — NOT CONSUMED)`. Revision 1 (`549ce47`) is superseded. Changes per review point:
+The common contract is P's `4409ba1` (`src/contracts/continuation.ts`), restored verbatim as a read-only dependency (`git restore --source=4409ba1 -- src/contracts/continuation.ts`; byte-identical). My duplicate PROPOSED r1/r2 declarations were deleted from `src/contracts/survival.ts`; no continuation type is exported by S. No shared file (contract index, goal schema, engine, app, predicates) was edited. P implements the checkpoint, accounting helpers, engine bindings and status; L the route carry.
 
-1. **Same logical goal id.** Continuation re-admits the **same goal id** at a fresh epoch, so `JevDecisionAdapter.perGoal` (keyed by `goalId`, confirmed in `src/decision/jev-adapter.ts`) and every per-goal account keep one identity. The checkpoint carries the **full shared `GoalCounters`** type (imported from `planner.ts`, not a subset), the **original** ceilings (cumulative counters are compared with them; nothing is refilled or double-charged) and the **original absolute `deadlineAtMs`**. A past deadline holds the checkpoint with `deadline_passed`. Revision 1's "remaining ceilings" and "deadline minus active time" are withdrawn (old decision C is withdrawn).
-2. **Immutable original evidence.** The checkpoint and admission carry the original admission baseline with its provenance `detail` (unknown counts stay unknown and make count atoms not continuable), the immutable accepted outcome, the original anchor and code-confirmed `AcquisitionEntry` accounting (labeled evidence source; never planner text). The fresh resync at continuation is **current evidence for re-binding**, not a new acquisition baseline:
-   - `carried = min(V, max(0, F − B0))` (possession basis), so credit is bounded by prior verified progress and returned belongings restore at most V; incidental gains never add credit.
-   - `acquired(now) = carried + max(0, now − F)` (+ consumption since continuation); a latched consumed milestone stays satisfied; effect basis (crafting/smelting) carries V.
-   - Repeated interruptions recompute V against the ORIGINAL B0.
+`SurvivalService implements ContinuationSurvivalPort`:
 
-   | Case (goal: 10 beyond B0 = 8; +4 verified before death) | Fresh F | Carried | Completes at |
-   | --- | --- | --- | --- |
-   | full recovery | 12 | 4 | 18 |
-   | partial recovery | 9 | 1 | 18 |
-   | nothing recovered (originals lost too) | 0 | 0 | 10 (new acquisitions only) |
-   | respawn-point pickups | 17 | 4 | 23 |
-   | second death after +3 more (held 15), recovered 15 | 15 | 7 | 18 |
+- **`frozenInventory(connectionEpoch)`:** the packet-frozen last-alive counts of the latest own death on that connection, `incidentId` = capture id (`dcap-<connection>-<n>`), only when the copy is server-stated (`ready_seed` → `null`).
+- **`incidentReturns(incidentId)`:** an in-memory per-capture ledger (`src/survival/continuation.ts`) that works with or without the durable store and with memory disabled.
+  - `retained` = min(last-alive, FIRST full respawn sync) per key; `regained` = server-attributed own returns by ANY collector: C3-planned recovery pickups (`recordRegain`), and later ordinary/passive collectors via the tracker's own `collect` packets.
+  - A later collect is a return only when the item entity's own server-stated stack identity (key + component digest) matches a still-unreturned lost identity, its count fits that remainder, and the server first announced it within the recovery search radius of the incident's server site in the current dimension. Regained is never above the loss.
+  - Never returns: C10 incidental gains (no collect packet), other identities, items outside every site radius, other collectors, non-item entities (orbs), other connections.
+  - `attribution: 'unknown'` (P holds the count atoms) until the respawn sync, and whenever a collect cannot be placed: a stack never stated near the site, a pile larger than the remainder, a match for several incidents, a lost stack without server metadata, or a related death whose losses are merged or whose SERVER site lies near the original site (the book's merge decision uses the related death's client estimate, so the ledger re-checks after refinement).
+  - While the bound recovery goal runs, its frozen C3 plan does the counting (planned pickups) and reporting (incidental); the passive path is skipped, so nothing is counted twice.
+- **`continuationGate(nowMs)`:** finite and code-owned: `wait not_alive` before fresh respawn state; `wait support_running` while a support goal runs or health ≤ `lowHealth`; `wait recovery_open` while the recovery goal runs or an open episode can still act; `clear` with no open episode or when recovery is blocked by a non-transient condition it cannot clear (e.g. other dimension). Survival disabled → `clear`.
+- **`persistCheckpoint(checkpoint)`:** stores a bounded DISPLAY-ONLY projection (`CheckpointRecordSchema`: goal id, session, clipped instruction/public outcome, state and reason, deadline, continuations, interruption reasons, three counters). No outcome contract, lineage, route carry, anchor, epochs or handles are written. The newest 4 are kept; records from another application session (or an unknown session) are shown as `restart_held`, "never continued". No durable store → no-op (P's in-memory checkpoint remains authoritative). The store schema is v3 (reads v1 with migration, v2 as-is).
+- `SurvivalServiceOptions.sessionId` (new, optional) identifies the application session for that display.
 
-   Planned tests: repeated interrupts, the baseline 8 / +4 / death / recovery 12 case, partial recovery, consumed-latched progress and uncertain data (unknown baseline, no frozen inventory → last code evaluation or not continuable).
-   **Residual for decision:** own drops that a NON-recovery skill picks up during the continuation would count as new (`now − F`). Option: survival reports server collects of item entities first seen inside an incident's search radius for a still-unaccounted lost key, and P subtracts them up to that remainder.
-3. **No executable data; groundable subset.** Atoms whose selectors are `registry`, `owner` or `owner_destination` (and inventory/equipment/crafting/smelting/structure atoms) are re-grounded freshly. `observed` handles, `prior_result` action ids, `remembered_anchor` and memory refs are not re-grounded: the checkpoint is held with one declarative reason (`AtomGrounding.reason`); the outcome is never rewritten. Count atoms under `any`/`not`, and count atoms with an unknown admission baseline, are not continuable either.
-4. **Not dependent on configured autonomy/memory/survival.** P holds the same-session checkpoint in memory. Survival supplies pure helpers (`groundOutcome`, `accountAtInterruption`, `carryAt`) usable with survival disabled, plus, when enabled: packet-frozen last-alive counts, a recovery-priority `continuationGate` (open recovery or running support → wait; absent service → clear), and OPTIONAL persistence of the plain checkpoint, loaded after a restart as `restart_held` (shown, never run). A new manual owner admission is not gated by the automatic progression latch; stop/supersession fences existing held work; nothing moves after stop.
-5. **Preemption is not a checkpoint.** Immediate W water/mob holds keep the goal admitted and TaskRuntime re-observes locally after the hold clears (no end, resubmission or action replay). Only interruptions that actually ended ownership (`CHECKPOINT_INTERRUPTIONS`) produce a checkpoint.
-
-Survival adapts its durable/service bookkeeping after P's concrete shared API is approved. Until then nothing here is consumed, and survival still holds interrupted directives as `requires_owner_decision`.
+**P integration notes:** construct the service with `sessionId: <app run id>` (via `createSurvivalService` options once P adds the pass-through; until then all records display as `restart_held`). Pass the service as the optional `ContinuationSurvivalPort`. Call `persistCheckpoint` on checkpoint state changes (optional). `incidentId` from `frozenInventory` is the key for `incidentReturns`. P's `src/dashboard/viewmodel.ts:372` and `src/autonomy/status-text.ts:14` still print "needs your decision".
 
 ## Lease request (after review): module gate, no model calls
 
