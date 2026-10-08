@@ -21,6 +21,7 @@ import {
   type InterruptedDirective,
   type DropIdentity,
   type DropStackFacts,
+  type IncidentalEffect,
   type InventoryFacts,
   type ItemMetadata,
   type LowHealthAllowanceGrant,
@@ -47,10 +48,11 @@ import {
   type SurvivalStatus,
   type SurvivalStoreState,
   type Vitals,
+  manifestRemaining,
 } from '../contracts/survival.ts';
 import { AllowanceBook } from './allowance.ts';
 import { EpisodeBook, countedAttempts, distance, isOpen, preparationSignature, UNCOUNTED_OUTCOMES } from './episodes.ts';
-import { safeFoods, sameDimension, sessionDimension, type SurvivalItemRegistry } from './items.ts';
+import { counts, safeFoods, sameDimension, sessionDimension, type SurvivalItemRegistry } from './items.ts';
 import { ROUTINE_ORDER, evalEat, evalInventoryRoom, evalRecovery, evalResupply, evalRest, evalToolUpkeep, freeSlots, reserveCount, wornTools, type DesignatedStorage, type PolicyContext, type RoutineEval } from './policy.ts';
 import { SurvivalFileStore, survivalScopeDirectory } from './store.ts';
 import { SurvivalTracker, type CapturedDeathRecord, type TrackerEvent } from './tracker.ts';
@@ -181,6 +183,13 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   private readonly transientInterrupted: InterruptedDirective[] = [];
   private readonly revokedEpochs = new Set<number>();
   private proposalCounter = 0;
+  /**
+   * C10 (in-process only): per open episode, the fresh respawn SYNC inventory
+   * and the gains already reported as incidental. Inventory gained after that
+   * sync and before the first recovery action is NOT this incident's retained
+   * or regained property (e.g. passive pickup at the respawn point).
+   */
+  private readonly syncBaselines = new Map<string, { connectionEpoch: number; counts: Map<string, number>; reported: Map<string, number> }>();
   private dimensionValue: string | undefined;
   private unsubscribeTracker: (() => void) | undefined;
 
@@ -353,6 +362,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       case 'ended':
         this.allowances.revokeFor(undefined, 'connection_ended');
         this.pending.clear();
+        this.syncBaselines.clear();
         this.tracker.detach();
         return;
       default:
@@ -377,8 +387,13 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (e.type === 'respawn_ready') {
       const open = this.book?.open();
       if (open && (open.phase === 'awaiting_respawn' || open.phase === 'assessing')) {
+        // C10: the loss is assessed against the FIRST full respawn sync, never a later inventory with pickups in it.
         const manifest = this.book?.assess(open, e.inventory, this.options.registry, this.cfg, now);
-        this.record({ type: 'survival_loss_assessed', episodeId: open.episodeId, status: open.status, missing: manifest?.missing.length ?? 0, retained: manifest?.retained.length ?? 0, partial: manifest?.partial ?? true });
+        this.record({ type: 'survival_loss_assessed', episodeId: open.episodeId, status: open.status, missing: manifest?.missing.length ?? 0, retained: manifest?.retained.length ?? 0, partial: manifest?.partial ?? true, packetsAfterSync: e.packetsAfterSync });
+        if (isOpen(open)) {
+          this.syncBaselines.set(open.episodeId, { connectionEpoch: e.connectionEpoch, counts: counts(e.inventory.stacks), reported: new Map() });
+          this.noteIncidentalSinceSync(open, e.current, now);
+        } else this.syncBaselines.delete(open.episodeId);
         // C1: items kept through respawn are `retained`, never reported as regained/recovered.
         const retained = manifest?.retained ?? [];
         const concludedNoTrip = (open.phase as RecoveryEpisode['phase']) === 'concluded' && open.status !== 'no_loss';
@@ -625,6 +640,11 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     this.admissions.push(now);
     if (active.routine === 'death_recovery' && this.book && active.episodeId) {
       const e = this.book.get(active.episodeId);
+      // C10: anything gained since the respawn sync and before the first recovery action is incidental (reported, never counted).
+      if (e) {
+        this.noteIncidentalSinceSync(e, this.tracker.inventory(), now);
+        this.syncBaselines.delete(e.episodeId);
+      }
       const prep = p.preparation;
       const linked = e && e.incidentFactId && e.site.at && e.site.dimension ? e : undefined;
       const attempt = linked && prep ? this.book.beginAttempt(linked, adm.goalId, prep, now) : undefined;
@@ -944,6 +964,41 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     return true;
   }
 
+  /** C10: positive inventory gains since the respawn sync not yet reported become incidental effects (bounded). */
+  private noteIncidentalSinceSync(e: RecoveryEpisode, inv: InventoryFacts | null, now: number): void {
+    const b = this.syncBaselines.get(e.episodeId);
+    if (!b || !this.book || !inv || inv.source !== 'server_packets' || !inv.fullSync || inv.connectionEpoch !== b.connectionEpoch) return;
+    let n = 0;
+    for (const [key, have] of counts(inv.stacks)) {
+      const gain = have - (b.counts.get(key) ?? 0) - (b.reported.get(key) ?? 0);
+      if (gain <= 0 || n >= 8) continue;
+      n += 1;
+      b.reported.set(key, (b.reported.get(key) ?? 0) + gain);
+      const effect: IncidentalEffect = { source: 'after_respawn_sync', key, count: gain, atMs: now, detail: 'gained after the fresh respawn inventory sync and before any recovery action (e.g. passive pickup at the respawn point); NOT this incident\'s retained or regained property' };
+      this.book.addIncidental(e, effect, now);
+      this.record({ type: 'survival_incidental', episodeId: e.episodeId, source: effect.source, key, count: gain });
+    }
+    if (n > 0) this.persistSoon();
+  }
+
+  /**
+   * C10: an inventory effect of the bound recovery goal that is NOT this
+   * incident's loot (an unplanned item entity collected during travel or
+   * pickup). Reported truthfully; never counted as regained. Fenced like
+   * recordRegain; stale goals record nothing.
+   */
+  recordIncidental(fence: { goalId: string; goalEpoch: number; connectionEpoch: number }, effect: { key?: string; count: number; detail: string }): boolean {
+    const a = this.active;
+    if (!a || a.routine !== 'death_recovery' || a.goalId !== fence.goalId || a.goalEpoch !== fence.goalEpoch || a.connectionEpoch !== fence.connectionEpoch || this.tracker.connectionEpoch !== fence.connectionEpoch) return false;
+    const e = a.episodeId ? this.book?.get(a.episodeId) : undefined;
+    if (!e || !this.book || !Number.isInteger(effect.count) || effect.count <= 0) return false;
+    const key = effect.key && /^[a-z0-9_.-]+:[a-z0-9_./-]+$/.test(effect.key) ? effect.key : undefined;
+    this.book.addIncidental(e, { source: 'unplanned_collect', ...(key ? { key } : {}), count: effect.count, atMs: this.options.now(), goalId: a.goalId, detail: clip(effect.detail) }, this.options.now());
+    this.record({ type: 'survival_incidental', episodeId: e.episodeId, source: 'unplanned_collect', key: key ?? null, count: effect.count });
+    this.persistSoon();
+    return true;
+  }
+
   /**
    * A server-confirmed pickup of a scoped drop by the bound recovery goal.
    * Counts only still-sought keys up to the missing amount (prior possessions,
@@ -988,7 +1043,11 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
         cause: { hazard: e.cause.hazard, ...(e.cause.translationKey ? { translationKey: e.cause.translationKey } : {}) },
         phase: e.phase,
         status: e.status,
-        missing: (e.manifest?.missing ?? []).filter((m) => m.state !== 'regained').slice(0, 12).map((m) => ({ key: m.key, count: m.count, state: m.state })),
+        // `count` = units still unaccounted for (lost minus server-confirmed regains); `lost`/`regained` stay distinct (C9/C10).
+        missing: (e.manifest?.missing ?? []).filter((m) => m.state !== 'regained').slice(0, 12).map((m) => ({ key: m.key, count: manifestRemaining(m), state: m.state, lost: m.count, regained: m.regained ?? 0 })),
+        retained: (e.manifest?.retained ?? []).slice(0, 12).map((r) => ({ key: r.key, count: r.count })),
+        incidental: (e.incidental ?? []).slice(-8).map((x) => ({ source: x.source, ...(x.key ? { key: x.key } : {}), count: x.count })),
+        effectsUnknown: e.attempts.some((x) => x.effectsUnknown),
         regained: e.regained.slice(-12).map((r) => ({ key: r.key, count: r.count })),
         manifestPartial: e.manifest?.partial ?? true,
         attempts: { used: countedAttempts(e), max: e.maxAttempts },
@@ -1016,7 +1075,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     const lines = [`survival: store ${s.store.state}${s.activeRoutine ? `; active ${s.activeRoutine.routine} (${s.activeRoutine.goalId})` : ''}${s.vitals ? `; health ${s.vitals.health} food ${s.vitals.food}` : ''}${s.lastDecision ? `; last ${s.lastDecision.kind}${s.lastDecision.routine ? ` ${s.lastDecision.routine}` : ''}: ${clip(s.lastDecision.reason, 100)}` : ''}`];
     if (s.store.state === 'unscoped' || s.store.state === 'read_only') lines.push(`survival store: ${clip(s.store.detail, 200)}`);
     for (const i of s.incidents) {
-      lines.push(`death ${i.episodeId}${i.incidentFactId ? `/${i.incidentFactId}` : ' (not linked to memory)'}: ${i.status} (${i.phase}), ${i.cause.translationKey ?? 'cause unknown'}, site ${i.site.at ? `${i.site.at.x},${i.site.at.y},${i.site.at.z} ${i.site.dimension}` : 'unknown'} [${i.site.source}]${i.site.distance !== undefined ? ` ${i.site.distance} blocks away` : ''}; attempts ${i.attempts.used}/${i.attempts.max}; missing ${i.missing.map((m) => `${m.count} ${m.key.replace('minecraft:', '')}${m.state !== 'missing' ? ` (${m.state})` : ''}`).join(', ') || 'none'}; regained ${i.regained.reduce((n, r) => n + r.count, 0)}${i.blocker ? `; blocker ${i.blocker.reason}: ${clip(i.blocker.detail, 120)}` : ''}`);
+      lines.push(`death ${i.episodeId}${i.incidentFactId ? `/${i.incidentFactId}` : ' (not linked to memory)'}: ${i.status} (${i.phase}), ${i.cause.translationKey ?? 'cause unknown'}, site ${i.site.at ? `${i.site.at.x},${i.site.at.y},${i.site.at.z} ${i.site.dimension}` : 'unknown'} [${i.site.source}]${i.site.distance !== undefined ? ` ${i.site.distance} blocks away` : ''}; attempts ${i.attempts.used}/${i.attempts.max}; missing ${i.missing.map((m) => `${m.count} ${m.key.replace('minecraft:', '')}${m.state !== 'missing' ? ` (${m.state})` : ''}`).join(', ') || 'none'}; regained ${i.regained.reduce((n, r) => n + r.count, 0)}${i.retained?.length ? `; retained ${i.retained.reduce((n, r) => n + r.count, 0)} (kept, not regained)` : ''}${i.incidental?.length ? `; incidental ${i.incidental.reduce((n, r) => n + r.count, 0)} (not this incident's)` : ''}${i.effectsUnknown ? '; some attempt effects unknown (process ended mid-attempt)' : ''}${i.blocker ? `; blocker ${i.blocker.reason}: ${clip(i.blocker.detail, 120)}` : ''}`);
     }
     for (const d of s.interrupted.filter((x) => x.state === 'awaiting_owner')) lines.push(`interrupted owner goal ${d.goalId} (${d.reason}): "${d.instruction}" — needs your decision (a new instruction replaces it; nothing is replayed)`);
     for (const b of s.blocked) lines.push(`survival blocked ${b.routine}: ${b.reason} — ${clip(b.detail, 160)}`);

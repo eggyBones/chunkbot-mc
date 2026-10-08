@@ -103,6 +103,7 @@ export class SurvivalFileStore {
     const corrupt: number[] = [];
     let body: SurvivalStoreBody | undefined;
     let loaded = 0;
+    let loadedSchema = SURVIVAL_SCHEMA_VERSION as number;
     let newerSchema = false;
     for (const rev of revisions) {
       try {
@@ -111,13 +112,15 @@ export class SurvivalFileStore {
           newerSchema = true;
           break;
         }
+        // The checksum covers the body exactly as written (a v1 body has no v2 defaults yet).
+        if (typeof raw['checksum'] !== 'string' || raw['checksum'] !== checksum(raw['body'])) throw new Error('checksum mismatch');
         const file = SurvivalStoreFileSchema.parse(raw);
-        if (file.checksum !== checksum(file.body)) throw new Error('checksum mismatch');
         const s = file.body.scope;
         const want = this.options.scope;
         if (s.worldProfile !== want.worldProfile || s.worldRevision !== want.worldRevision || s.botProfile !== want.botProfile) throw new Error('scope mismatch');
         body = file.body;
         loaded = rev;
+        loadedSchema = file.schemaVersion;
         break;
       } catch {
         corrupt.push(rev);
@@ -134,7 +137,7 @@ export class SurvivalFileStore {
         ? 'no survival episodes recorded yet'
         : corrupt.length > 0
           ? `loaded revision ${loaded}; newer unreadable revision(s) ${corrupt.join(', ')} kept for inspection`
-          : `loaded revision ${loaded}`;
+          : `loaded revision ${loaded}${loadedSchema < SURVIVAL_SCHEMA_VERSION ? ` (schema v${loadedSchema} migrated to v${SURVIVAL_SCHEMA_VERSION}: its remaining counts are kept as lost counts with nothing assumed regained)` : ''}`;
     return { body, state: this.writable ? state : 'read_only', detail, revision: this.revision, corrupt, discardedPartialWrites: discarded };
   }
 
@@ -169,7 +172,9 @@ export class SurvivalFileStore {
     if (!this.writable) return Promise.resolve(undefined);
     const parsed = SurvivalStoreBodySchema.safeParse(body);
     if (!parsed.success) {
-      this.lastError = `invalid survival body: ${parsed.error.issues[0]?.message ?? 'invalid'}`;
+      // C9: name the exact invalid field so a rejected revision is diagnosable from the event alone.
+      const issue = parsed.error.issues[0];
+      this.lastError = `invalid survival body${issue?.path.length ? ` at ${issue.path.join('.')}` : ''}: ${issue?.message ?? 'invalid'}`;
       return Promise.resolve(undefined);
     }
     this.pendingCount += 1;

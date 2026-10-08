@@ -110,11 +110,74 @@ const BACKUP_BOX = `${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y
 const RULE_KEEP = 'keep_inventory';
 const RULE_REGEN = 'natural_health_regeneration';
 const TIME_QUERY = 'time query time';
-const RULE_REPLY = /currently set to: (\w+)/;
-const TIME_REPLY = /The time is (\d+)/;
+/** The overworld day timeline (26.1.2/26.2 `data/minecraft/timeline/day.json`: clock minecraft:overworld, period 24000). */
+const DAY_TIMELINE = 'minecraft:day';
+const DAY_QUERY = `time query ${DAY_TIMELINE}`;
 const DAY_TICKS = 24_000;
+
+// ---- MB-FLOW-003-C8: official reply forms (26.1.2 and 26.2 server.jar en_us.json; identical in both) ----
+//   commands.time.query.absolute  "Clock %s is at %s tick(s)"      (time query time; trial 2 got exactly this)
+//   commands.time.query           "The time is %s"                 (legacy form, still accepted)
+//   commands.time.query.timeline  "Timeline %s is at %s tick(s)"   (time query <timeline>)
+//   commands.time.set.absolute    "Set %s to %s tick(s)"           (time of <clock> set <time>)
+//   commands.time.set             "Set the time to %s"
+//   commands.gamerule.query       "Gamerule %s is currently set to: %s"
+//   commands.difficulty.query     "The difficulty is %s"
+/** `time query time` reply -> absolute clock ticks (and the clock id when stated). */
+export function parseClockReply(reply: string): { clock?: string; ticks: number } | undefined {
+  const abs = /^Clock (\S+) is at (\d+) tick\(s\)\s*$/.exec(reply.trim());
+  if (abs) return { clock: abs[1] as string, ticks: Number(abs[2]) };
+  const legacy = /^The time is (\d+)\s*$/.exec(reply.trim());
+  return legacy ? { ticks: Number(legacy[1]) } : undefined;
+}
+/** `time query <timeline>` reply -> position in that timeline (only for the named timeline). */
+export function parseTimelineReply(reply: string, timeline: string): number | undefined {
+  const m = /^Timeline (\S+) is at (\d+) tick\(s\)\s*$/.exec(reply.trim());
+  return m && m[1] === timeline ? Number(m[2]) : undefined;
+}
+/** `time [of <clock>] set` reply -> the ticks the server says it set (absolute form names the clock). */
+export function parseClockSetReply(reply: string): { clock?: string; ticks: number } | undefined {
+  const abs = /^Set (\S+) to (\d+) tick\(s\)\s*$/.exec(reply.trim());
+  if (abs) return { clock: abs[1] as string, ticks: Number(abs[2]) };
+  const plain = /^Set the time to (\d+)\s*$/.exec(reply.trim());
+  return plain ? { ticks: Number(plain[1]) } : undefined;
+}
+export function parseRuleReply(reply: string, rule: string): string | undefined {
+  const m = /^Gamerule (\S+) is currently set to: (\S+)\s*$/.exec(reply.trim());
+  return m && m[1] === rule ? (m[2] as string) : undefined;
+}
+export function parseDifficultyReply(reply: string): string | undefined {
+  return /^The difficulty is (\w+)\s*$/.exec(reply.trim())?.[1]?.toLowerCase();
+}
+/**
+ * Clock restoration target: the original absolute ticks advanced by the clock's
+ * MEASURED rate over the elapsed wall time (a paused clock has rate 0), so a
+ * restored world neither rewinds nor skips the time that passed in the trial.
+ */
+export function clockRestoreTarget(original: { ticks: number; atMs: number; ticksPerMs: number }, nowMs: number): number {
+  return Math.max(0, Math.round(original.ticks + Math.max(0, original.ticksPerMs) * Math.max(0, nowMs - original.atMs)));
+}
 const FOREIGN_TAG = `cbsurv_${Date.now().toString(36)}_${process.pid.toString(36)}`;
 const BED = { foot: { x: 208, y: -60, z: 208 }, head: { x: 208, y: -60, z: 209 } };
+/** Items whose server counts the C10 oracle compares (kit + foreign piles). */
+const TRACKED_ITEMS = ['bread', 'cobblestone', 'iron_pickaxe', 'diamond_sword', 'dirt'] as const;
+const LOST_KIT: Record<string, number> = { bread: 4, cobblestone: 20, iron_pickaxe: 1, diamond_sword: 1 };
+
+/**
+ * C10 truthfulness oracle (pure): the server inventory change since the
+ * pre-recovery baseline must equal what survival COUNTED as regained plus what
+ * it REPORTED as incidental during the attempt, key by key. Anything else is an
+ * unreported or misattributed effect.
+ */
+export function deltaMismatches(baseline: Record<string, number>, now: Record<string, number>, regained: Record<string, number>, incidental: Record<string, number>): string[] {
+  const out: string[] = [];
+  for (const k of new Set([...Object.keys(baseline), ...Object.keys(now)])) {
+    const delta = (now[k] ?? 0) - (baseline[k] ?? 0);
+    const explained = (regained[k] ?? 0) + (incidental[k] ?? 0);
+    if (delta !== explained) out.push(`${k}: server delta ${delta} != regained ${regained[k] ?? 0} + incidental ${incidental[k] ?? 0}`);
+  }
+  return out;
+}
 
 interface Result {
   id: string;
@@ -131,6 +194,8 @@ class Gate {
   readonly results: Result[] = [];
   readonly setup: Array<{ atMs: number; command: string; reply: string }> = [];
   readonly packets: Array<{ atMs: number; name: string; detail?: string }> = [];
+  /** Settings/clock/inventory observations that are not gate results (recorded in the report). */
+  readonly notes: string[] = [];
   readonly store = new MemoryRunStore();
   readonly game: MineflayerConnection;
   readonly runtime: SkillRuntime;
@@ -143,6 +208,8 @@ class Gate {
   goalId = '';
   /** The recovery proposal admitted in G2 (continued in G2b). */
   recovery: SurvivalProposal | undefined;
+  /** C10: RCON inventory immediately before the recovery admission (the delta oracle's baseline). */
+  baseline: Record<string, number> | undefined;
   private readonly password: string;
   private rconQueue: Promise<unknown> = Promise.resolve();
 
@@ -208,7 +275,21 @@ class Gate {
         const interesting = new Set(['death_combat_event', 'update_health', 'set_slot', 'window_items', 'respawn', 'collect', 'set_player_inventory']);
         bot._client.on('packet', (data: Json, meta: { name: string }) => {
           if (!interesting.has(meta.name)) return;
-          const detail = meta.name === 'update_health' ? `health=${String(data['health'])} food=${String(data['food'])}` : meta.name === 'set_slot' ? `w=${String(data['windowId'])} slot=${String(data['slot'])}` : undefined;
+          // C10: slot packets carry the server-stated item and count; collect packets their entity ids and count.
+          const item = (raw: unknown) => {
+            const it = raw as { itemCount?: number; itemId?: number } | undefined;
+            return it && it.itemCount ? `${this.survival.registry().nameOf(it.itemId as number) ?? `id${String(it.itemId)}`}x${it.itemCount}` : 'empty';
+          };
+          const detail =
+            meta.name === 'update_health'
+              ? `health=${String(data['health'])} food=${String(data['food'])}`
+              : meta.name === 'set_slot'
+                ? `w=${String(data['windowId'])} slot=${String(data['slot'])} ${item(data['item'])}`
+                : meta.name === 'collect'
+                  ? `entity=${String(data['collectedEntityId'])} collector=${String(data['collectorEntityId'])} count=${String(data['pickupItemCount'])}`
+                  : meta.name === 'window_items' && data['windowId'] === 0
+                    ? `w=0 nonEmpty=${(Array.isArray(data['items']) ? (data['items'] as unknown[]) : []).filter((x) => (x as { itemCount?: number })?.itemCount).map(item).join(',') || 'none'}`
+                    : undefined;
           this.packets.push({ atMs: Date.now(), name: meta.name, ...(detail ? { detail } : {}) });
           if (this.packets.length > 4_000) this.packets.splice(0, 1_000);
         });
@@ -373,6 +454,13 @@ class Gate {
     this.survival.onSupportTerminal({ proposalId: p.proposalId, goalId: this.goalId, goalEpoch: this.epoch, state: reason === 'outcome_verified' ? 'completed' : 'blocked', reason, detail: reason, counters: { plannerTurns: 0, tasksAdmitted: 1, replans: 0 }, endedAtMs: Date.now() });
   }
 
+  /** RCON `clear <bot> <item> 0` counts of every kit / foreign-pile item (read-only). */
+  async inventoryCounts(): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    for (const k of TRACKED_ITEMS) out[k] = await this.count(k);
+    return out;
+  }
+
   async count(item: string): Promise<number> {
     const r = await this.rcon(`clear ${BOT} minecraft:${item} 0`, false);
     const m = /Found (\d+) matching item/.exec(r);
@@ -382,6 +470,19 @@ class Gate {
   async lastDeathLocation(): Promise<string> {
     return this.rcon(`data get entity ${BOT} LastDeathLocation`, false);
   }
+}
+
+/** Survival's own accounting for the current episode, in RCON item names (no namespace). */
+function recoveryAccounting(g: Gate): { regained: Record<string, number>; duringAttempt: Record<string, number>; afterSync: Record<string, number> } {
+  const inc = g.survival.status(Date.now()).incidents.at(-1);
+  const bare = (k: string) => k.replace(/^minecraft:/, '');
+  const sum = (rows: Array<{ key?: string; count: number }>) => {
+    const out: Record<string, number> = {};
+    for (const r of rows) if (r.key) out[bare(r.key)] = (out[bare(r.key)] ?? 0) + r.count;
+    return out;
+  };
+  const incidental = inc?.incidental ?? [];
+  return { regained: sum(inc?.regained ?? []), duringAttempt: sum(incidental.filter((x) => x.source === 'unplanned_collect')), afterSync: sum(incidental.filter((x) => x.source === 'after_respawn_sync')) };
 }
 
 function readRconPassword(): string {
@@ -406,6 +507,10 @@ async function killWithKit(g: Gate, ev: string[]): Promise<{ captureId: string |
   await g.rcon(`kill ${BOT}`);
   await g.waitFor('respawn ready', () => g.survival.tracker.life === 'alive' && g.packets.slice(mark).some((p) => p.name === 'respawn'), 15_000);
   await sleep(1_000);
+  // C10 (read-only): where the bot respawned and what loose items lie around it there (passive pickup source).
+  ev.push(`respawned at (RCON): ${(await g.rcon(`data get entity ${BOT} Pos`, false)).slice(0, 160)}`);
+  ev.push(`item entities within 6 blocks of the respawn point (RCON, read-only): ${(await g.rcon(`execute as ${BOT} at @s if entity @e[type=item,distance=..6]`, false)).slice(0, 80)}`);
+  ev.push(`inventory right after respawn (RCON, before any recovery): ${JSON.stringify(await g.inventoryCounts())}`);
   // No spawnpoint change: return the respawned bot to the scene start (its own position only).
   await g.rcon(`tp ${BOT} ${START.x} ${START.y} ${START.z} 0 20`);
   await sleep(1_000);
@@ -429,21 +534,24 @@ function sceneChunks(): Array<{ cx: number; cz: number }> {
   return out;
 }
 
-/** A read-only settings query; the reply is RECORDED (C8) so a failed parse is diagnosable. */
-async function query(g: Gate, cmd: string, re: RegExp): Promise<string | undefined> {
-  return re.exec(await g.rcon(cmd))?.[1];
+/** Time of day: the day timeline position when stated, else the absolute overworld clock modulo one day. */
+async function timeOfDay(g: Gate): Promise<number | undefined> {
+  const day = parseTimelineReply(await g.rcon(DAY_QUERY), DAY_TIMELINE);
+  if (day !== undefined) return day % DAY_TICKS;
+  const abs = parseClockReply(await g.rcon(TIME_QUERY));
+  return abs === undefined ? undefined : abs.ticks % DAY_TICKS;
 }
 
-/** Time of day from the default clock's `time query time` (modulo one day, whatever the clock's absolute count). */
-async function timeOfDay(g: Gate): Promise<number | undefined> {
-  const t = await query(g, TIME_QUERY, TIME_REPLY);
-  return t === undefined ? undefined : Number(t) % DAY_TICKS;
+/** Absolute clock read (recorded) with its local receive time. */
+async function readClock(g: Gate): Promise<{ clock?: string; ticks: number; atMs: number } | undefined> {
+  const r = parseClockReply(await g.rcon(TIME_QUERY));
+  return r ? { ...r, atMs: Date.now() } : undefined;
 }
 
 async function run(outDir: string, withSettings: boolean): Promise<Json> {
   const g = new Gate(outDir);
   /** Settings to restore in `finally` (command, and how to verify it). */
-  const restore: Array<{ what: string; command: string; verify: () => Promise<boolean> }> = [];
+  const restore: Array<{ what: string; command: string | (() => string); verify: () => Promise<boolean> }> = [];
   const restoreChecks: RestoreCheck[] = [];
   const addedForceload: Array<{ cx: number; cz: number }> = [];
   let backupTaken = false;
@@ -496,16 +604,23 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
     });
 
     await g.gate('G2', 'C3 mixed piles: oversized pile, unrelated loot and a different-identity valuable are refused before collection', async (ev) => {
-      await g.rcon(`summon item ${DEATH_AT.x + 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:bread",count:64},PickupDelay:0s,Tags:["${FOREIGN_TAG}"]}`);
-      await g.rcon(`summon item ${DEATH_AT.x - 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:dirt",count:3},PickupDelay:0s,Tags:["${FOREIGN_TAG}"]}`);
-      await g.rcon(`summon item ${DEATH_AT.x} ${DEATH_AT.y} ${DEATH_AT.z - 4} {Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":1}}},PickupDelay:0s,Tags:["${FOREIGN_TAG}"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x + 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:bread",count:64},PickupDelay:0s,Tags:["${FOREIGN_TAG}","${FOREIGN_TAG}_bread"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x - 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:dirt",count:3},PickupDelay:0s,Tags:["${FOREIGN_TAG}","${FOREIGN_TAG}_dirt"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x} ${DEATH_AT.y} ${DEATH_AT.z - 4} {Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":1}}},PickupDelay:0s,Tags:["${FOREIGN_TAG}","${FOREIGN_TAG}_sword"]}`);
       await sleep(1_500);
+      // C10: what the SERVER states for each pile (RCON entity data) and what the bot's packets state (tracker drop facts).
+      for (const pile of ['bread', 'dirt', 'sword']) ev.push(`foreign ${pile} pile (RCON entity data): ${(await g.rcon(`data get entity @e[type=item,tag=${FOREIGN_TAG}_${pile},limit=1,${ITEM_AREA}] Item`, false)).slice(0, 200)}`);
+      const drops = g.survival.tracker.dropStacks().filter((d) => d.atMs > 0);
+      ev.push(`server-stated drop stacks seen by the bot (packets): ${drops.map((d) => `#${d.entityId} ${d.key}x${d.count}${d.meta.digest ? ` ${d.meta.digest}` : ''}`).join(', ') || 'none'}`);
       await g.durable();
       ev.push(`durability before recovery: survival=${g.survival.durability()}`);
       const decision = g.survival.assess(g.assessInput());
       ev.push(`decision: ${decision.kind} ${decision.kind === 'propose' ? decision.proposal.routine : 'reason' in decision ? decision.reason : ''}`);
       check(decision.kind === 'propose' && decision.proposal.routine === 'death_recovery', 'recovery proposed');
       g.recovery = decision.proposal;
+      // C10 baseline: the server inventory right before the recovery admission (respawn-point pickups are already in it).
+      g.baseline = await g.inventoryCounts();
+      ev.push(`pre-recovery server inventory baseline (RCON): ${JSON.stringify(g.baseline)}`);
       g.admitProposal(decision.proposal);
       const before = g.survival.recoveryTarget({ goalEpoch: g.epoch, connectionEpoch: g.game.connectionEpoch, dimension: g.snapshot().dimension });
       ev.push(`authority before the attempt is durable: ${'error' in before ? before.error : 'authorized'}`);
@@ -523,11 +638,16 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         await sleep(300);
       }
       ev.push(`resolver refusals now: ${g.unavailable('recover_lost_items').join(' | ').slice(0, 600)}`);
-      const counts = { bread: await g.count('bread'), dirt: await g.count('dirt'), diamond_sword: await g.count('diamond_sword') };
+      const counts = await g.inventoryCounts();
       ev.push(`server inventory (RCON clear 0): ${JSON.stringify(counts)}`);
       ev.push(`foreign piles still on the ground (RCON): ${(await g.rcon(`execute if entity @e[type=item,tag=${FOREIGN_TAG},${ITEM_AREA}]`, false)).slice(0, 120)}`);
-      check(counts.dirt === 0, 'no unrelated dirt was collected');
-      check(counts.bread <= 4, 'the oversized 64-bread pile was not collected');
+      const acc = recoveryAccounting(g);
+      ev.push(`survival accounting: regained ${JSON.stringify(acc.regained)}; incidental during the attempt ${JSON.stringify(acc.duringAttempt)}; incidental after the respawn sync ${JSON.stringify(acc.afterSync)}`);
+      const base = g.baseline as Record<string, number>;
+      check((counts['dirt'] ?? 0) === (base['dirt'] ?? 0), 'no unrelated dirt was collected (server delta 0)');
+      check((counts['bread'] ?? 0) - (base['bread'] ?? 0) <= 4, 'the oversized 64-bread pile was not collected (bread delta <= the 4 lost)');
+      const mismatch = deltaMismatches(base, counts, acc.regained, acc.duringAttempt);
+      check(mismatch.length === 0, `every server inventory change is reported truthfully (regained or incidental): ${mismatch.join('; ')}`);
       const foreignSword = await g.rcon(`execute if entity @e[type=item,tag=${FOREIGN_TAG},nbt={Item:{id:"minecraft:diamond_sword"}},${ITEM_AREA}]`, false);
       ev.push(`foreign (wrong-identity) sword on the ground (RCON): ${foreignSword.slice(0, 80)}`);
       check(/passed/i.test(foreignSword), 'the wrong-identity foreign sword is still on the ground (not collected)');
@@ -553,8 +673,11 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       const recovered = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'death_recovery', expect: 'recovered' }, owner);
       const concluded = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'death_recovery', expect: 'concluded' }, owner);
       ev.push(`recovered: ${recovered.status} ${recovered.detail}; concluded: ${concluded.status} ${concluded.detail}`);
-      const counts = { bread: await g.count('bread'), cobblestone: await g.count('cobblestone'), iron_pickaxe: await g.count('iron_pickaxe'), diamond_sword: await g.count('diamond_sword') };
-      ev.push(`server inventory (RCON clear 0): ${JSON.stringify(counts)}`);
+      const counts = await g.inventoryCounts();
+      const base = g.baseline ?? {};
+      const acc = recoveryAccounting(g);
+      ev.push(`server inventory (RCON clear 0): ${JSON.stringify(counts)}; pre-recovery baseline ${JSON.stringify(base)}`);
+      ev.push(`survival accounting: regained ${JSON.stringify(acc.regained)}; incidental during the attempt ${JSON.stringify(acc.duringAttempt)}; incidental after the respawn sync ${JSON.stringify(acc.afterSync)}`);
       g.endSupport(g.recovery, recovered.status === 'satisfied' || concluded.status === 'satisfied' ? 'outcome_verified' : 'no_progress');
       const inc = g.survival.status(Date.now()).incidents.at(-1);
       ev.push(`episode: ${inc?.status} regained=${JSON.stringify(inc?.regained)} missing=${JSON.stringify(inc?.missing)}`);
@@ -567,7 +690,12 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       check(lostSword.meta.metadata === 'server_slot' && lostSword.meta.digest, `the lost sword has no server identity metadata (${JSON.stringify(lostSword.meta)}) — identity-matched recovery unsupported, not a full recovery`);
       const heldSword = (g.survival.inventory(g.game.connectionEpoch)?.stacks ?? []).find((x) => x.key === 'minecraft:diamond_sword');
       ev.push(`held sword digest ${heldSword?.meta.digest ?? 'none'} vs lost ${lostSword.meta.digest}`);
-      check(counts.bread === 4 && counts.cobblestone === 20 && counts.iron_pickaxe === 1 && counts.diamond_sword === 1, `full recovery requires bread 4, cobblestone 20, iron_pickaxe 1, diamond_sword 1 on the server (got ${JSON.stringify(counts)}); a partial collection is NOT a full trial`);
+      const gained = Object.fromEntries(Object.keys(LOST_KIT).map((k) => [k, (counts[k] ?? 0) - (base[k] ?? 0)]));
+      const mismatch = deltaMismatches(base, counts, acc.regained, acc.duringAttempt);
+      check(mismatch.length === 0, `every server inventory change since the baseline is reported truthfully: ${mismatch.join('; ')}`);
+      check(Object.entries(LOST_KIT).every(([k, n]) => gained[k] === n && acc.regained[k] === n), `full recovery requires the server to gain exactly the lost kit since the pre-recovery baseline (bread 4, cobblestone 20, iron_pickaxe 1, diamond_sword 1; got ${JSON.stringify(gained)}, counted ${JSON.stringify(acc.regained)}); a partial collection is NOT a full trial`);
+      // The respawn-point pickups (if any) were reported as incidental, never retained/regained.
+      check(Object.keys(base).every((k) => (base[k] ?? 0) === (acc.afterSync[k] ?? 0)), `pre-recovery inventory equals the reported after-respawn-sync incidental effects (respawn sync was empty): baseline ${JSON.stringify(base)} vs reported ${JSON.stringify(acc.afterSync)}`);
       check(heldSword?.meta.digest === lostSword.meta.digest, 'the recovered sword is the lost one (same server identity digest)');
       check(recovered.status === 'satisfied' && inc?.status === 'recovered', `survival_state recovered satisfied and episode recovered (got ${recovered.status}/${inc?.status})`);
     });
@@ -575,22 +703,43 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
     if (!withSettings) {
       for (const [id, title] of [['G1k', 'keep_inventory death'], ['G3', 'food/health on Easy'], ['G4', 'R8 day bed observation'], ['G4n', 'R8 night bed observation']] as const) g.skip(id, title, 'requires --with-settings (difficulty, gamerules, time of day)');
     } else {
-      const difficulty = (await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase();
-      const keep = await query(g, `gamerule ${RULE_KEEP}`, RULE_REPLY);
-      const regen = await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY);
-      const day = await query(g, TIME_QUERY, TIME_REPLY);
-      check(difficulty && keep && regen && day, `could not read original settings (difficulty=${difficulty} ${RULE_KEEP}=${keep} ${RULE_REGEN}=${regen} time=${day}); nothing changed; replies: ${JSON.stringify(g.setup.slice(-4).map((r) => `${r.command} -> ${r.reply.slice(0, 120)}`))}`);
+      // C8: every original is read with the CURRENT official reply forms BEFORE any write; a failed read changes nothing.
+      const difficulty = parseDifficultyReply(await g.rcon('difficulty'));
+      const keep = parseRuleReply(await g.rcon(`gamerule ${RULE_KEEP}`), RULE_KEEP);
+      const regen = parseRuleReply(await g.rcon(`gamerule ${RULE_REGEN}`), RULE_REGEN);
+      const clock0 = await readClock(g);
+      await sleep(1_000);
+      const clock1 = await readClock(g);
+      const clockId = clock0?.clock ?? clock1?.clock;
+      check(difficulty && keep && regen && clock0 && clock1 && clockId, `could not read original settings (difficulty=${difficulty} ${RULE_KEEP}=${keep} ${RULE_REGEN}=${regen} clock=${clock0 ? `${clock0.clock ?? '?'}@${clock0.ticks}` : 'undefined'}); nothing changed; replies: ${JSON.stringify(g.setup.slice(-5).map((r) => `${r.command} -> ${r.reply.slice(0, 120)}`))}`);
+      // Measured clock rate (ticks per ms; 0 when the clock is paused or advance_time is off).
+      const original = { ticks: clock0.ticks, atMs: clock0.atMs, ticksPerMs: clock1.atMs > clock0.atMs ? Math.max(0, (clock1.ticks - clock0.ticks) / (clock1.atMs - clock0.atMs)) : 0 };
+      g.notes.push(`original settings: difficulty=${difficulty} ${RULE_KEEP}=${keep} ${RULE_REGEN}=${regen} clock ${clockId}=${clock0.ticks} (rate ${(original.ticksPerMs * 1000).toFixed(2)} ticks/s measured over ${clock1.atMs - clock0.atMs} ms)`);
+      let clockTarget = clock0.ticks;
       restore.push(
-        { what: 'difficulty', command: `difficulty ${difficulty}`, verify: async () => (await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase() === difficulty },
-        { what: RULE_KEEP, command: `gamerule ${RULE_KEEP} ${keep}`, verify: async () => (await query(g, `gamerule ${RULE_KEEP}`, RULE_REPLY)) === keep },
-        { what: RULE_REGEN, command: `gamerule ${RULE_REGEN} ${regen}`, verify: async () => (await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY)) === regen },
-        { what: 'time', command: `time set ${day}`, verify: async () => Math.abs(Number(await query(g, TIME_QUERY, TIME_REPLY)) - Number(day)) <= 100 },
+        { what: 'difficulty', command: `difficulty ${difficulty}`, verify: async () => parseDifficultyReply(await g.rcon('difficulty')) === difficulty },
+        { what: RULE_KEEP, command: `gamerule ${RULE_KEEP} ${keep}`, verify: async () => parseRuleReply(await g.rcon(`gamerule ${RULE_KEEP}`), RULE_KEEP) === keep },
+        { what: RULE_REGEN, command: `gamerule ${RULE_REGEN} ${regen}`, verify: async () => parseRuleReply(await g.rcon(`gamerule ${RULE_REGEN}`), RULE_REGEN) === regen },
+        {
+          what: `clock ${clockId}`,
+          command: () => {
+            clockTarget = clockRestoreTarget(original, Date.now());
+            return `time of ${clockId} set ${clockTarget}`;
+          },
+          verify: async () => {
+            const set = parseClockSetReply(g.setup.at(-1)?.reply ?? '');
+            const now = await readClock(g);
+            const drift = now ? Math.abs(now.ticks - clockTarget) : Number.POSITIVE_INFINITY;
+            g.notes.push(`clock restore: target ${clockTarget} (original ${original.ticks} + measured elapsed), server set reply ${set ? `${set.clock ?? ''} ${set.ticks}` : 'unparsed'}, re-read ${now?.ticks ?? 'unreadable'} (drift ${drift})`);
+            return set !== undefined && set.ticks === clockTarget && drift <= 100;
+          },
+        },
       );
 
       await g.gate('G1k', 'keep_inventory death retains inventory (no trip)', async (ev) => {
         await g.scene();
         await g.rcon(`gamerule ${RULE_KEEP} true`);
-        check((await query(g, `gamerule ${RULE_KEEP}`, RULE_REPLY)) === 'true', `${RULE_KEEP} verified true for the trial`);
+        check(parseRuleReply(await g.rcon(`gamerule ${RULE_KEEP}`), RULE_KEEP) === 'true', `${RULE_KEEP} verified true for the trial`);
         const { factId } = await killWithKit(g, ev);
         const inc = g.survival.status(Date.now()).incidents.at(-1);
         ev.push(`incident ${factId}: ${inc?.status} missing=${JSON.stringify(inc?.missing)}`);
@@ -609,9 +758,9 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       await g.gate('G3', 'Easy: eat to the admitted threshold; necessary low-health eat; verified regeneration on/off', async (ev) => {
         await g.scene();
         await g.rcon('difficulty easy');
-        check((await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase() === 'easy', 'difficulty verified easy');
+        check(parseDifficultyReply(await g.rcon('difficulty')) === 'easy', 'difficulty verified easy');
         await g.rcon(`gamerule ${RULE_REGEN} true`);
-        check((await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY)) === 'true', `${RULE_REGEN} verified true`);
+        check(parseRuleReply(await g.rcon(`gamerule ${RULE_REGEN}`), RULE_REGEN) === 'true', `${RULE_REGEN} verified true`);
         await g.rcon(`give ${BOT} minecraft:bread 12`);
         await g.rcon(`effect give ${BOT} minecraft:hunger 30 120 true`);
         await g.waitFor('food at or below 10', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) <= 10, 40_000);
@@ -678,7 +827,7 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         // (d) regeneration OFF (verified): bounded honest failure, no gain.
         await g.rcon(`damage ${BOT} 4 minecraft:generic`);
         await g.rcon(`gamerule ${RULE_REGEN} false`);
-        check((await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY)) === 'false', `${RULE_REGEN} verified false`);
+        check(parseRuleReply(await g.rcon(`gamerule ${RULE_REGEN}`), RULE_REGEN) === 'false', `${RULE_REGEN} verified false`);
         await sleep(500);
         const h2 = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
         const t0 = Date.now();
@@ -746,7 +895,12 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         restoreChecks.push({ what, ok: false, detail: error instanceof Error ? error.message : String(error) });
       }
     };
-    for (const r of restore) await step(`setting ${r.what}`, async () => ((await g.rcon(r.command)) !== undefined && (await r.verify()) ? true : `not restored (${r.command})`));
+    for (const r of restore) {
+      await step(`setting ${r.what}`, async () => {
+        const command = typeof r.command === 'function' ? r.command() : r.command;
+        return (await g.rcon(command)) !== undefined && (await r.verify()) ? true : `not restored (${command})`;
+      });
+    }
     await step('foreign test piles removed', async () => {
       await g.rcon(`kill @e[type=item,tag=${FOREIGN_TAG},${ITEM_AREA}]`);
       return /failed|no entity|0/i.test(await g.rcon(`execute if entity @e[type=item,tag=${FOREIGN_TAG}]`, false)) || 'tagged piles remain';
@@ -797,6 +951,7 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
     pass: counted.length > 0 && counted.every((r) => r.status === 'pass'),
     results: g.results,
     setup: g.setup,
+    notes: g.notes,
     packets: g.packets.slice(-600),
     outcomes: g.outcomes.map((o) => ({ capability: o.capability, status: o.status, reason: o.reason ?? null, confirmation: o.confirmation, effect: o.effect.slice(0, 300) })),
     survivalEvents: g.store.events.filter((e) => String(e.type).startsWith('survival_')).slice(-150),

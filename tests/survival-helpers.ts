@@ -228,6 +228,7 @@ export function sampleEpisode(over: Partial<RecoveryEpisode> = {}): RecoveryEpis
     cause: { kind: 'unknown', hazard: 'unknown' },
     lastAlive: { source: 'server_packets', frozenAt: 'combat_kill_packet', capturedAtMs: NOW, ageMsAtDeath: 5, stacks: [], clearingPacketsAfterFreeze: 0 },
     regained: [],
+    incidental: [],
     attempts: [],
     maxAttempts: 2,
     budget: { plannerTurns: 0, tasks: 0, replans: 0, admissions: 0, activeMs: 0 },

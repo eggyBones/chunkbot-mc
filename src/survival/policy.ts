@@ -18,6 +18,8 @@ import {
   type SurvivalStatePredicate,
   type TrackedStack,
   type Vitals,
+  manifestRemaining,
+  manifestSought,
 } from '../contracts/survival.ts';
 import { visibleThreat } from './allowance.ts';
 import { siteIsHazard } from './death-cause.ts';
@@ -239,9 +241,9 @@ export function evalRecovery(ctx: PolicyContext): RoutineEval {
     if (!imp.improved) return blocked('death_recovery', sig(`prep:${prep.armorPoints}:${prep.routePolicy}:${Math.floor(self.x / 16)},${Math.floor(self.z / 16)}`), 'no_material_improvement', `attempt ${used + 1} needs a materially better preparation or route: ${imp.why}`);
   }
   const sought = new Map<string, number>();
-  for (const m of e.manifest?.missing ?? []) if (m.state === 'missing' && m.count > 0) sought.set(m.key, m.count);
+  for (const m of e.manifest?.missing ?? []) if (manifestSought(m)) sought.set(m.key, manifestRemaining(m));
   if (sought.size === 0) return conclude(e.regained.length ? 'recovered' : 'no_loss', 'nothing_sought', 'nothing remains to recover');
-  const valuables = (e.manifest?.missing ?? []).filter((m) => m.state === 'missing' && m.valuable).map((m) => strip(m.key));
+  const valuables = (e.manifest?.missing ?? []).filter((m) => manifestSought(m) && m.valuable).map((m) => strip(m.key));
   const dir = compass(self, site.at);
   const signature = sig(`attempt:${used + 1}:${prep.armorPoints}:${prep.routePolicy}`);
   const facts = [

@@ -58,7 +58,14 @@ export interface CapturedDeathRecord {
 export type TrackerEvent =
   | { type: 'death_captured'; death: CapturedDeathRecord }
   | { type: 'death_location_refined'; captureId: string; site: DeathSite }
-  | { type: 'respawn_ready'; connectionEpoch: number; inventory: InventoryFacts; vitals: Vitals | null }
+  /**
+   * Fresh respawn state. `inventory` is the FIRST full window-0 sync after the
+   * respawn packet (the authoritative respawn inventory, C10); `current` is the
+   * inventory when fresh state was reached and `packetsAfterSync` counts the
+   * inventory packets in between (e.g. passive pickups at the respawn point,
+   * which are never part of the respawn inventory).
+   */
+  | { type: 'respawn_ready'; connectionEpoch: number; inventory: InventoryFacts; current: InventoryFacts; packetsAfterSync: number; vitals: Vitals | null }
   | { type: 'inventory_changed' }
   | { type: 'vitals_changed'; vitals: Vitals };
 
@@ -93,6 +100,8 @@ export class SurvivalTracker {
   private readonly unconsumed: CapturedDeathRecord[] = [];
   private loginDeath: RawGlobalPos | undefined;
   private respawnSeen = false;
+  /** C10: the first full window-0 sync after the respawn packet, and inventory packets applied after it. */
+  private respawnSync: { inv: InventoryFacts; packetsAfter: number } | undefined;
   private openWindowId: number | undefined;
   /** Item entities announced by the server (spawn_entity of the item type) on this connection/life. */
   private readonly itemEntities = new Set<number>();
@@ -136,6 +145,7 @@ export class SurvivalTracker {
     this.state = 'alive';
     this.frozen = undefined;
     this.respawnSeen = false;
+    this.respawnSync = undefined;
     this.loginDeath = undefined;
     this.openWindowId = undefined;
     this.itemEntities.clear();
@@ -234,6 +244,7 @@ export class SurvivalTracker {
     if (this.invSource === 'unavailable') this.invSource = 'server_packets';
     this.invAtMs = this.now();
     if (this.frozen) this.frozen.clearing += 1;
+    if (this.respawnSync) this.respawnSync.packetsAfter += 1;
     this.emit({ type: 'inventory_changed' });
   }
 
@@ -251,6 +262,10 @@ export class SurvivalTracker {
       this.fullSync = true;
       this.invAtMs = this.now();
       if (this.frozen) this.frozen.clearing += 1;
+      if (this.state === 'respawned_awaiting_sync' && this.respawnSeen && !this.respawnSync && this.opts) {
+        // The authoritative respawn inventory: frozen at the first full sync after the respawn packet.
+        this.respawnSync = { inv: { source: 'server_packets', connectionEpoch: this.opts.connectionEpoch, atMs: this.invAtMs, stacks: clone(this.slots), fullSync: true, ...(this.heldHotbar !== undefined ? { heldHotbar: this.heldHotbar } : {}) }, packetsAfter: 0 };
+      } else if (this.respawnSync) this.respawnSync.packetsAfter += 1;
       this.emit({ type: 'inventory_changed' });
       this.maybeRespawnReady();
       return;
@@ -413,6 +428,7 @@ export class SurvivalTracker {
     }
     this.state = 'respawned_awaiting_sync';
     this.respawnSeen = true;
+    this.respawnSync = undefined;
     this.fullSync = false;
   }
 
@@ -421,7 +437,14 @@ export class SurvivalTracker {
     if (!this.vitalsValue || this.vitalsValue.health <= 0) return;
     this.state = 'alive';
     const inv = this.inventory();
-    if (inv) this.emit({ type: 'respawn_ready', connectionEpoch: this.opts.connectionEpoch, inventory: inv, vitals: this.vitals() });
+    const sync = this.respawnSync;
+    this.respawnSync = undefined;
+    if (inv) this.emit({ type: 'respawn_ready', connectionEpoch: this.opts.connectionEpoch, inventory: sync ? sync.inv : inv, current: inv, packetsAfterSync: sync ? sync.packetsAfter : 0, vitals: this.vitals() });
+  }
+
+  /** C10 diagnostics: every server-stated dropped item stack currently known on this connection (bounded copy). */
+  dropStacks(limit = 64): DropStackFacts[] {
+    return [...this.drops.values()].slice(-limit).map((d) => ({ ...d, meta: { ...d.meta } }));
   }
 
   /** The login packet's last-death GlobalPos (historical; may predate this run). */
