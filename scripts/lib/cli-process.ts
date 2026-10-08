@@ -63,6 +63,11 @@ export class CliProcess {
     return this.lines.length;
   }
 
+  /** Every output line at or after `fromIndex` (does not move the cursor). */
+  since(fromIndex: number): string[] {
+    return this.lines.slice(fromIndex).map((l) => l.text);
+  }
+
   /** Waits for a line matching `pattern` at or after `fromIndex` (does not move the cursor). */
   async waitSince(pattern: RegExp, fromIndex: number, timeoutMs = 20_000): Promise<string> {
     const deadline = Date.now() + timeoutMs;

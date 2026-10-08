@@ -416,3 +416,40 @@ describe('proposal validation and limits', () => {
     assert.doesNotMatch(engine.status().goal?.terminal?.detail ?? '', /moon/);
   });
 });
+
+describe('immediate-safety authority (MB-FLOW-003-C11/C13 shared seam; coordinator decision 1)', () => {
+  it('owner goals are protected even while paused; stop without a newer owner goal is none; the stop hook already sees none', async () => {
+    const planner = new ScriptedPlanner();
+    const causes: Array<{ cause: string; basis: string }> = [];
+    let engineRef: { safetyAuthority(): { basis: string } } | undefined;
+    const { engine } = makeEngine({ planner, onSafetyAuthorityChanged: (cause) => causes.push({ cause, basis: engineRef!.safetyAuthority().basis }) });
+    engineRef = engine;
+    assert.equal(engine.safetyAuthority().basis, 'unpaused', 'idle and not paused');
+    await engine.submit('follow me', OWNER);
+    await until(() => planner.waiting === 1);
+    assert.equal(engine.safetyAuthority().basis, 'owner_goal');
+    await engine.stop('owner_stop', 'chat');
+    assert.equal(engine.safetyAuthority().basis, 'none', 'explicit stop: no idle motion');
+    const stopHook = causes.find((c) => c.cause === 'owner_stop');
+    assert.equal(stopHook?.basis, 'none', 'the stop hook runs after the synchronous revocation');
+    // A new manual owner goal while the automatic pause latch remains set is protected.
+    await engine.submit('come here', OWNER);
+    await until(() => planner.waiting === 1);
+    assert.equal(engine.status().latch.paused, true);
+    assert.equal(engine.safetyAuthority().basis, 'owner_goal');
+    assert.ok(causes.some((c) => c.cause === 'owner_goal_admitted' && c.basis === 'owner_goal'));
+    await engine.stop('owner_stop', 'chat');
+    engine.resume('chat');
+    assert.equal(engine.safetyAuthority().basis, 'unpaused');
+    assert.ok(causes.some((c) => c.cause === 'resume' && c.basis === 'unpaused'));
+  });
+
+  it('no authority when not connected or shutting down', async () => {
+    const h = makeEngine();
+    h.setReady(false);
+    assert.equal(h.engine.safetyAuthority().basis, 'none');
+    h.setReady(true);
+    await h.engine.shutdown();
+    assert.equal(h.engine.safetyAuthority().basis, 'none');
+  });
+});

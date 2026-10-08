@@ -460,3 +460,79 @@ describe('task runtime: stable sustained waiting', () => {
     assert.equal(h.decisions.length, 0);
   });
 });
+
+
+describe('task runtime: immediate-safety hold seam (MB-FLOW-003-C11/C13 shared wiring)', () => {
+  class FakeSafety {
+    held: { reason: string; detail: string; episodeId: string | null } | null = null;
+    waits = 0;
+    next: 'clear' | 'blocked' = 'clear';
+    hold() {
+      return this.held;
+    }
+    async waitClear(_signal: AbortSignal) {
+      this.waits += 1;
+      await new Promise((r) => setTimeout(r, 5));
+      if (this.next === 'blocked') return { status: 'blocked' as const, waitedMs: 5, reason: 'no_exit', detail: 'no observed shore' };
+      this.held = null;
+      return { status: 'clear' as const, waitedMs: 5 };
+    }
+  }
+
+  it('no candidate is dispatched and no Jev call is made while safety holds; work continues from fresh state when clear', async () => {
+    const h = new Harness();
+    h.world.set('blk-1', log('blk-1', 1));
+    const safety = new FakeSafety();
+    safety.held = { reason: 'episode', detail: 'escaping water', episodeId: 'se-0001' };
+    let mined = 0;
+    h.outcome = () => {
+      mined += 1;
+      return { status: 'succeeded', confirmation: 'server_packet' };
+    };
+    h.evaluate = () => ({ status: mined >= 1 ? 'satisfied' : 'unsatisfied' });
+    const r = await new TaskRuntime(h.deps({ safety })).run(h.task());
+    assert.equal(r.status, 'completed');
+    assert.equal(safety.waits, 1);
+    assert.equal(h.decisions.length, 1, 'Jev only after the hold cleared');
+    const events = h.store.events.map((e) => e['type']);
+    assert.ok(events.indexOf('task_safety_hold') < events.indexOf('task_safety_clear'));
+    assert.ok(events.indexOf('task_safety_clear') < events.indexOf('task_round'));
+  });
+
+  it('a safety blocker ends the task blocked/safety_blocked declaratively without dispatch', async () => {
+    const h = new Harness();
+    h.world.set('blk-1', log('blk-1', 1));
+    const safety = new FakeSafety();
+    safety.held = { reason: 'blocked', detail: 'submerged, no exit', episodeId: null };
+    safety.next = 'blocked';
+    const r = await new TaskRuntime(h.deps({ safety })).run(h.task());
+    assert.equal(r.status, 'blocked');
+    assert.equal(r.reason, 'safety_blocked');
+    assert.equal(h.decisions.length, 0);
+    assert.equal(h.executed.length, 0);
+  });
+
+  it('a hazard that begins while Jev decides defers the chosen action (nothing dispatched); the task continues after clear', async () => {
+    const h = new Harness();
+    h.world.set('blk-1', log('blk-1', 1));
+    const safety = new FakeSafety();
+    let first = true;
+    h.decide = async (req) => {
+      if (first) {
+        first = false;
+        safety.held = { reason: 'episode', detail: 'zombie close', episodeId: 'se-0002' };
+      }
+      return h.choice(req, req.candidates[0]!.id);
+    };
+    let mined = 0;
+    h.outcome = () => {
+      mined += 1;
+      return { status: 'succeeded', confirmation: 'server_packet' };
+    };
+    h.evaluate = () => ({ status: mined >= 1 ? 'satisfied' : 'unsatisfied' });
+    const r = await new TaskRuntime(h.deps({ safety })).run(h.task());
+    assert.equal(r.status, 'completed');
+    assert.equal(h.executed.length, 1, 'the deferred choice was never executed; one fresh dispatch after clear');
+    assert.ok(h.store.events.some((e) => e['type'] === 'task_choice_deferred'));
+  });
+});

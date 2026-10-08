@@ -106,7 +106,25 @@ export interface TaskRuntimeDeps {
    * threshold change and never planner-granted.
    */
   lowHealthAllowance?: LowHealthAllowancePort;
+  /**
+   * MB-FLOW-003-C11/C13 shared seam: the consumer subset of the immediate-safety
+   * port (W's SafetyPort hold/waitClear; local, inference-free). While a hold is
+   * active no ordinary candidate is dispatched: the task waits (bounded) without
+   * inference, keeps its goal ownership/outcome/limits, and continues from a
+   * FRESH observation when clear; a declared safety blocker ends the task
+   * `blocked/safety_blocked` (one declarative blocker, no retry loop).
+   */
+  safety?: TaskSafetyGate;
 }
+
+/** Structural consumer subset of the immediate-safety port (see TaskRuntimeDeps.safety). */
+export interface TaskSafetyGate {
+  hold(): { reason: string; detail: string; episodeId: string | null } | null;
+  waitClear(signal: AbortSignal, maxWaitMs?: number): Promise<{ status: 'clear' | 'blocked' | 'aborted' | 'timeout'; waitedMs: number; reason?: string; detail?: string }>;
+}
+
+/** Bound on one safety wait before ownership/currentness is re-checked. */
+const SAFETY_WAIT_SLICE_MS = 30_000;
 
 function guardSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -277,6 +295,14 @@ export class TaskRuntime implements TaskExecutionPort {
       while (true) {
         assertCurrent();
         if (rounds >= maxRounds) return finish('blocked', 'round_limit', `task used ${maxRounds} rounds without verified completion`);
+        // MB-FLOW-003-C11/C13: no ordinary dispatch while immediate safety holds control.
+        if (deps.safety?.hold()) {
+          const waited = await this.awaitSafety(task, emit, rounds);
+          if (waited.kind === 'blocked') return finish('blocked', 'safety_blocked', waited.detail);
+          lastProgressAt += waited.waitedMs; // the stall guard pauses while safety owned control
+          sustain = undefined; // a preempted sustained action is re-chosen from fresh state
+          continue;
+        }
         rounds += 1;
         // 1. Current filtered observation FIRST, so selector-based predicates see current visibility.
         const snapshot = deps.perception.take(task.goalEpoch);
@@ -330,6 +356,7 @@ export class TaskRuntime implements TaskExecutionPort {
           const want = this.key(sustain.candidate);
           const next = usable.find((c) => this.key(c) === want);
           if (next) {
+            if (deps.safety?.hold()) continue; // safety took control after observing: wait at the loop top
             // MB-FLOW-003-C2: a local continuation is a dispatch too — same allowance recheck/accounting as a Jev choice.
             const gate = this.allowanceGate(task, next, snapshot);
             if (!gate.ok) return finish('blocked', 'low_health', gate.detail);
@@ -406,6 +433,11 @@ export class TaskRuntime implements TaskExecutionPort {
           emit('task_choice_rejected', { round: rounds, requestId, candidateId: choice.candidateId, reason: 'choice is not an offered candidate of this frozen round' });
           continue;
         }
+        // A hazard (before any allowance reservation) that began while Jev was deciding wins: nothing is dispatched; the loop waits and re-observes.
+        if (deps.safety?.hold()) {
+          emit('task_choice_deferred', { round: rounds, requestId, candidateId: chosen.id, reason: 'immediate_safety_hold' });
+          continue;
+        }
         // 5. Revalidate against the CURRENT world through the same resolvers.
         const fresh = deps.perception.take(task.goalEpoch);
         if (!fresh || fresh.connectionEpoch !== chosen.connectionEpoch) throw new Revoked();
@@ -429,6 +461,38 @@ export class TaskRuntime implements TaskExecutionPort {
       if (error instanceof Revoked || !task.isCurrent() || task.signal.aborted) return finish('cancelled', 'ownership_revoked', 'the owning goal was stopped, replaced or ended; no further action');
       const message = error instanceof Error ? error.message : String(error);
       return finish('failed', 'runtime_error', message);
+    }
+  }
+
+  /**
+   * Waits out an immediate-safety hold (no inference, no dispatch). Returns the
+   * time spent so the caller can pause its no-progress guard for it (limits and
+   * the goal deadline keep running), or a declared blocker. Revoked ownership
+   * throws.
+   */
+  private async awaitSafety(task: AdmittedTask, emit: (k: string, d: Record<string, unknown>) => void, round: number): Promise<{ kind: 'clear'; waitedMs: number } | { kind: 'blocked'; detail: string }> {
+    const gate = this.deps.safety;
+    const first = gate?.hold();
+    if (!gate || !first) return { kind: 'clear', waitedMs: 0 };
+    emit('task_safety_hold', { round, reason: first.reason, episodeId: first.episodeId, detail: clip(first.detail, 200) });
+    let waited = 0;
+    while (true) {
+      if (!task.isCurrent() || task.signal.aborted) throw new Revoked();
+      const r = await gate.waitClear(task.signal, SAFETY_WAIT_SLICE_MS);
+      waited += r.waitedMs;
+      if (!task.isCurrent() || task.signal.aborted) throw new Revoked();
+      if (r.status === 'blocked') {
+        emit('task_safety_blocked', { round, waitedMs: waited, reason: r.reason ?? null, detail: clip(r.detail ?? '', 200) });
+        return { kind: 'blocked', detail: `immediate safety has no supported response (${r.reason ?? 'blocked'}): ${clip(r.detail ?? '', 200)}` };
+      }
+      if (r.status === 'clear' || (r.status !== 'timeout' && !gate.hold())) {
+        emit('task_safety_clear', { round, waitedMs: waited });
+        return { kind: 'clear', waitedMs: waited };
+      }
+      if (r.status === 'aborted' && gate.hold()) {
+        // Safety authority ended while still held (e.g. explicit stop): the owning goal is revoked by the stop path.
+        throw new Revoked();
+      }
     }
   }
 

@@ -171,6 +171,14 @@ export interface GoalEngineDeps {
    * Must not throw; failures are recorded.
    */
   onLatchChanged?: (latch: ControlLatch, cause: 'owner_stop' | 'resume') => void;
+  /**
+   * MB-FLOW-003-C11/C13 shared seam: SYNCHRONOUS nudge whenever immediate-safety
+   * authority may have changed (explicit stop AFTER the active goal was revoked
+   * synchronously, resume, owner goal admission, goal terminal). The safety
+   * service re-reads `safetyAuthority()`; it never caches authority from this.
+   * Must not throw; failures are recorded.
+   */
+  onSafetyAuthorityChanged?: (cause: 'owner_stop' | 'resume' | 'owner_goal_admitted' | 'goal_terminal') => void;
   /** MB-LOC-001: the goal epoch's route view for planner requests and proposal validation (code-owned; no coordinates). */
   routeView?: (goalEpoch: number) => PlannerRequest['route'] | undefined;
   /** MB-LOC-001: coarse owner locator hint for planner requests. */
@@ -442,6 +450,9 @@ export function terminalForTask(result: TaskResult): TerminalReasonCode {
       return 'no_progress';
     case 'low_health':
       return 'low_health';
+    case 'safety_blocked':
+      // MB-FLOW-003-C11/C13: a hazard without a supported response (declarative blocker); not completion.
+      return 'safety_interrupted';
     case 'decision_error':
       return 'decision_error';
     case 'no_candidates':
@@ -585,12 +596,45 @@ export class GoalEngine {
     return !this.latch.paused && !this.closed;
   }
 
+  /**
+   * MB-FLOW-003-C11/C13 immediate-safety authority, computed FRESH on every
+   * call from this engine's state only (never from memory/autonomy/survival
+   * configuration). Coordinator decision: safety protects every active OWNER
+   * goal even while the automatic pause latch is set; without an owner goal it
+   * acts only while unpaused; an explicit stop with no newer owner goal, a
+   * closed engine or no ready connection is `none` (no idle motion).
+   *   owner_goal: an admitted, non-terminal, not-stopping owner goal (latch may be set)
+   *   unpaused:   no owner goal and the explicit stop latch is clear
+   *   none:       anything else
+   */
+  safetyAuthority(): { basis: 'owner_goal' | 'unpaused' | 'none'; detail: string; goal: { goalId: string; goalEpoch: number; source: 'owner' | 'support' | 'progression' | 'diagnostic' | 'unknown' } | null } {
+    if (this.closed) return { basis: 'none', detail: 'shutting down', goal: null };
+    if (!this.deps.isGameReady()) return { basis: 'none', detail: 'not connected', goal: null };
+    const a = this.active;
+    const live = a && (a.record.state === 'planning' || a.record.state === 'executing') && !a.abort.signal.aborted ? a : undefined;
+    type SafetyGoalSource = 'owner' | 'support' | 'progression' | 'diagnostic' | 'unknown';
+    const source: SafetyGoalSource | undefined = live ? (live.record.kind === 'operator_task_diagnostic' ? 'diagnostic' : live.source?.kind === 'owner' ? 'owner' : live.source?.kind === 'support' ? 'support' : live.source?.kind === 'progression' ? 'progression' : 'unknown') : undefined;
+    const goal = live && source ? { goalId: live.record.id, goalEpoch: live.epoch, source } : null;
+    if (live && source === 'owner') return { basis: 'owner_goal', detail: `owner goal ${live.record.id} ${live.record.state}`, goal };
+    if (this.latch.paused) return { basis: 'none', detail: 'explicit stop: paused with no newer owner goal', goal };
+    return { basis: 'unpaused', detail: goal ? `${source} goal ${goal.goalId} ${live!.record.state}` : 'idle, not paused', goal };
+  }
+
+  private safetyAuthorityChanged(cause: 'owner_stop' | 'resume' | 'owner_goal_admitted' | 'goal_terminal'): void {
+    try {
+      this.deps.onSafetyAuthorityChanged?.(cause);
+    } catch (error) {
+      this.deps.store.record({ type: 'safety_authority_hook_error', cause, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   /** Clears the pause latch (explicit owner resume). */
   resume(surface: string): { wasPaused: boolean } {
     const wasPaused = this.latch.paused;
     this.latch = { paused: false };
     this.deps.store.record({ type: 'control_resumed', surface, wasPaused });
     this.latchChanged('resume');
+    this.safetyAuthorityChanged('resume');
     return { wasPaused };
   }
 
@@ -1308,6 +1352,7 @@ export class GoalEngine {
     } catch (error) {
       this.deps.store.record({ type: 'goal_admission_hook_error', goalId: record.id, message: error instanceof Error ? error.message : String(error) });
     }
+    if (extras.source?.kind === 'owner') this.safetyAuthorityChanged('owner_goal_admitted');
     this.deps.store.record({
       type: 'goal_admitted',
       goalId: record.id,
@@ -1414,12 +1459,16 @@ export class GoalEngine {
     const goalId = this.active?.record.id;
     if (!this.active) {
       this.deps.store.record({ type: 'stop_requested', surface, hadActiveGoal: false, hadPendingInstruction: Boolean(pending) });
+      if (reason === 'owner_stop') this.safetyAuthorityChanged('owner_stop');
       await Promise.all([this.cleanupBarrier, this.preparationCleanupsDone()]);
       return pending ? { stopped: true, intentId: pending.intentId } : { stopped: false };
     }
     this.deps.store.record({ type: 'stop_requested', surface, hadActiveGoal: true, goalId, hadPendingInstruction: Boolean(pending) });
     // revokeActive runs its synchronous revocation prefix before the first await; both cleanups are awaited (bounded).
-    await Promise.all([this.revokeActive(reason, reason === 'owner_stop' ? 'stopped by owner' : 'Chunkbot is shutting down'), this.preparationCleanupsDone()]);
+    const revoking = this.revokeActive(reason, reason === 'owner_stop' ? 'stopped by owner' : 'Chunkbot is shutting down');
+    // The owner goal is already revoked (synchronous prefix): safety re-reads authority NOW (no idle motion after stop).
+    if (reason === 'owner_stop') this.safetyAuthorityChanged('owner_stop');
+    await Promise.all([revoking, this.preparationCleanupsDone()]);
     return { stopped: true, ...(goalId ? { goalId } : {}), ...(pending ? { intentId: pending.intentId } : {}) };
   }
 
@@ -1588,6 +1637,7 @@ export class GoalEngine {
     this.deps.store.record({ type: 'goal_terminal', goalId: active.record.id, epoch: active.epoch, state, reason, detail: active.record.terminal.detail, ...(active.record.kind === undefined ? { counters: { ...active.counters } } : {}) });
     if (active.record.kind === undefined) this.deps.journal?.record({ type: 'goal_terminal', goalId: active.record.id, state, reason, detail: active.record.terminal.detail, counters: { ...active.counters }, outcomeStatus: active.outcomeStatus ?? null });
     this.deps.notify({ goalId: active.record.id, ...(active.record.kind === 'operator_task_diagnostic' ? { audience: 'operator' as const } : {}), text: `Goal ${active.record.id} ${state} (${reason}): ${truncate(detail, 160)}` });
+    this.safetyAuthorityChanged('goal_terminal');
     // A handed-off goal that ended before its draft was revalidated still releases the preparation's refs.
     if (active.handoff) this.releasePreparation(active.handoff.intentId);
     try {

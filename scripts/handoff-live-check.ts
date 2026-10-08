@@ -22,8 +22,9 @@
 //   L4 H5     stop during preparation: controls cleared <= 250 ms, both contexts
 //             cancelled, pause latch set and shown, explicit resume
 //   L5 H5     lifecycle (death) during preparation invalidates both contexts
-//   L6 H6     quota before admission keeps following; a pending clarification
-//             causes no repeated inference and its answer completes the handoff
+//   L6 H6     quota before admission keeps following; a LEGACY clarification
+//             (MB-PLAN-006) is a counted preparation repair: no question/answer
+//             prompt, the old task continues, the repaired draft hands off
 //   L7 H7     window lookahead vs no lookahead: measured window gap (two finite windows)
 //
 // Requires an exclusive coordinator lease on the fixture (scene reset in
@@ -227,6 +228,7 @@ const logTask = (objective: string, n: number) => ({
 });
 const collectLogs = (total: number, windowLogs: number, more: boolean, interpretation: string) =>
   proposal({ interpretation, outcome: { kind: 'finite', predicate: LOGS(total) }, tasks: [logTask(`Collect ${windowLogs} oak log(s).`, windowLogs)], morePlanningNeeded: more });
+/** A LEGACY (pre-MB-PLAN-006) owner question from the scripted planner; code must refuse it (counted repair), never relay it. */
 const clarifyTurn = (question: string) => proposal({ disposition: 'needs_clarification', interpretation: 'ambiguous', question });
 
 // ---------------------------------------------------------------- CLI helpers
@@ -565,9 +567,9 @@ async function main(): Promise<void> {
       await setup(`tp Chunkbot ${SCENE.start.x} ${SCENE.start.y} ${SCENE.start.z} 0 0`);
     });
 
-    await check('L6', 'H6: quota before admission keeps following; a pending clarification causes no repeated inference and its answer completes the handoff', async (ev, trials) => {
+    await check('L6', 'H6 + MB-PLAN-006: quota before admission keeps following; a legacy clarification is a counted preparation repair (no question or answer prompt, old task continues) and the repaired draft completes the handoff', async (ev, trials) => {
       await resetScene();
-      turnsFor([{ kind: 'proposal', proposal: followMe() }, { kind: 'quota' }, { kind: 'proposal', proposal: clarifyTurn('Which side of the house?') }, { kind: 'proposal', proposal: comeHere('after answer') }]);
+      turnsFor([{ kind: 'proposal', proposal: followMe() }, { kind: 'quota' }, { kind: 'proposal', proposal: clarifyTurn('Which side of the house?') }, { kind: 'proposal', proposal: comeHere('after repair') }]);
       const follow = await startFollow(o, ev);
       const s = say(o, 'guard the house');
       const notStarted = await lineSince(/\[chunkbot\] Your new instruction was not started \(planner_not_ready\): quota/, s.from, 15_000);
@@ -578,21 +580,16 @@ async function main(): Promise<void> {
       assert(/no paid or alternative planner/.test(notStarted.text) && /Continuing goal/.test(notStarted.text), 'honest no-fallback text');
       assert(dist(before, after) >= 1.5, 'the old follow kept moving');
       const s2 = say(o, 'stand guard');
-      const q = await lineSince(/\[chunkbot\] Question (q\d+): Which side of the house\?.*about your new instruction/, s2.from, 15_000);
-      const ref = /Question (q\d+)/.exec(q.text)![1]!;
-      const execsBefore = execCount();
-      await sleep(5_000);
-      const execsAfter = execCount();
-      chunkbot.send('status');
-      const pendingLine = await chunkbot.waitFor(/\[status\] pending instruction: intent-\S+ awaiting_owner "stand guard"/, 5_000);
-      const a = say(o, `answer ${ref} the front`);
-      const accepted = await goalAccepted(a.from, 20_000);
+      const accepted = await goalAccepted(s2.from, 30_000);
       const oldEnd = await goalTerminal(follow.goalId, s.from, 10_000);
-      ev.push(`question ${ref}; planner execs while waiting ${execsBefore} -> ${execsAfter}; ${pendingLine.slice(0, 200)}; accepted ${accepted.goalId}; old ${oldEnd.state} (${oldEnd.reason})`);
-      trials.push({ quotaNotice: notStarted.text, ref, execsBefore, execsAfter, accepted, oldEnd });
-      assert(execsAfter === execsBefore, 'no repeated inference while awaiting the answer');
+      const shown = chunkbot.since(s2.from).filter((l) => /\[chunkbot\] .*(Question q\d+|answer q\d+|Which side of the house)/.test(l));
+      const refused = runEvents().filter((e) => e.type === 'planner_question_refused' && e.preparation === true).length;
+      ev.push(`no-question: ${shown.length} question/answer lines shown; preparation question refusals ${refused}; accepted ${accepted.goalId}; old ${oldEnd.state} (${oldEnd.reason})`);
+      trials.push({ quotaNotice: notStarted.text, shown, refused, accepted, oldEnd });
+      assert(shown.length === 0, 'no follow-up question or answer prompt reached chat/terminal');
+      assert(refused >= 1, 'the legacy question was refused as a counted repair');
       assert(oldEnd.reason === 'replaced', 'the old follow continued until the handoff');
-      await goalTerminal(accepted.goalId, a.from, 90_000).catch(() => undefined);
+      await goalTerminal(accepted.goalId, s2.from, 90_000).catch(() => undefined);
     });
   } finally {
     await stopChunkbot();

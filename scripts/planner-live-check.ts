@@ -559,8 +559,12 @@ async function main(): Promise<void> {
       assert(g.state === 'completed' && g.reason === 'outcome_verified', `goal ${g.state} (${g.reason})`);
     });
 
-    // ------------------------------------------------------------ P4: clarification (stationary) + correlated answer
-    await check('P4', 'ambiguous instruction: one useful question, stationary while awaiting the owner (no Jev calls); the correlated answer continues the SAME goal; the item is initially occluded, so planner-selected exploration must move Chunkbot before pickup and delivery (RCON)', async (ev, trials) => {
+    // ------------------------------------------------------------ P4: MB-PLAN-006 no follow-up question + occluded target
+    // Updated for MB-PLAN-006 (the previous clarification/answer scenario is retained in
+    // historical reports only): the owner names the item but not where it is; Chunkbot must
+    // act from grounded defaults WITHOUT asking — no question line, no awaiting_owner state,
+    // no answer prompt — explore to find the occluded bread, collect it and deliver it.
+    await check('P4', 'MB-PLAN-006: no follow-up question for an under-specified instruction (no question/answer prompt, never awaiting the owner); the item is initially occluded, so planner-selected exploration must move Chunkbot before pickup and delivery (RCON)', async (ev, trials) => {
       await resetScene();
       // PRETRIAL SETUP (recorded): the base scene's bread drop is deliberately unpickable (a
       // visibility fixture), so it is removed and a pickable bread is summoned at 203.5,-60,208.5.
@@ -571,38 +575,17 @@ async function main(): Promise<void> {
       await setup('tp FixtureOwner 200.5 -60 209.5 0 0');
       await sleep(1_000);
       ev.push(`RCON pretrial: bread ${await rconRaw('data get entity @e[type=item,tag=chunkbot_p4,limit=1] Pos')}`);
-      const before = await serverPos();
-      const jevBefore = jevRequestsTotal();
-      const { goalId, from } = await submit('bring it to me', 'chat', owner);
-      // Truthful owner answers only (the owner knows what and roughly where; no coordinates are given).
-      const answers = ['the bread lying on the ground near you', 'it is on the ground just behind the chest, a few blocks from where I am standing'];
-      const asked: string[] = [];
-      let searchFrom = from;
-      for (let i = 0; i < answers.length; i += 1) {
-        // one wait for EITHER the next question or this goal's terminal line (no dangling poll)
-        const line = await chunkbot.waitSince(new RegExp(`\\[chunkbot\\] (Question q\\d+: |Goal ${goalId} (completed|blocked|failed|cancelled) \\()`), searchFrom, 10 * 60_000);
-        if (!/Question q\d+: /.test(line)) break;
-        const ref = /Question (q\d+)/.exec(line)![1]!;
-        asked.push(line);
-        ev.push(line.replace(/^\[chunkbot\] /, ''));
-        if (i === 0) {
-          const qAt = Date.now();
-          await sleep(8_000);
-          const still = await serverPos();
-          const jevDuring = jevRequestsTotal() - jevBefore;
-          ev.push(`awaiting the owner for ${Math.round((Date.now() - qAt) / 1000)}s: moved ${dist(before, still).toFixed(2)} blocks, Jev requests ${jevDuring}`);
-          assert(dist(before, still) < 0.5 && jevDuring === 0, 'stationary and no inference while awaiting the owner');
-        }
-        searchFrom = chunkbot.length;
-        owner!.chat(`!chunkbot answer ${ref} ${answers[i]}`);
-      }
-      assert(asked.length >= 1, 'the planner asked a clarification question for an instruction without a referent');
+      const { goalId, from } = await submit('bring me some bread', 'chat', owner);
       const g = await waitTerminal(goalId, from, 12 * 60_000);
-      summarize(g, ev, trials, { questions: asked });
-      const exchanges = g.journal.filter((e) => e.type === 'goal_answer');
-      ev.push(`correlated answers: ${JSON.stringify(exchanges.map((e) => ({ ref: e.ref, answer: e.answer })))}`);
-      assert(exchanges.length === asked.length && exchanges.every((e, i) => asked[i]!.includes(String(e.ref))), 'each answer correlated to its own pending question of the same goal');
-      assert(g.events.some((e) => e.type === 'planner_request' && e.turnKind === 'clarification'), 'a clarification continuation turn was counted');
+      summarize(g, ev, trials);
+      // No owner-facing question anywhere in this trial: terminal/chat lines, run events or journal.
+      const lines = chunkbot.since(from);
+      const questionLines = lines.filter((l) => /\[chunkbot\] .*(Question q\d+|answer q\d+|\?)/.test(l));
+      ev.push(`owner-facing lines with a question/answer prompt: ${questionLines.length}${questionLines.length ? ` e.g. ${questionLines[0]!.slice(0, 160)}` : ''}`);
+      assert(questionLines.length === 0, 'no follow-up question or answer prompt reached the terminal/chat');
+      assert(!g.events.some((e) => e.type === 'clarification_requested' || (e.type === 'goal_state' && e.state === 'awaiting_owner')), 'never awaiting the owner');
+      const refusals = g.events.filter((e) => e.type === 'planner_question_refused').length;
+      ev.push(`planner proposals refused for asking the owner (counted repairs): ${refusals}`);
       // MB-PLAN-005: goal-correlated task/action evidence across ALL planner windows. The
       // planner may recover from a blocked window by replanning (e.g. a survey-only first
       // window ends no_progress, a replan explores); restricting to the first task was a
