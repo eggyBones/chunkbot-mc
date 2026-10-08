@@ -143,7 +143,7 @@ export class SessionSafetyReader {
       food: vitals?.food ?? bot.food ?? 0,
       vitalsSource: vitals ? 'server_update_health' : 'client_model',
       air,
-      fluid: { feetIn: fs.feetIn, eyeIn: fs.eyeIn, support: fs.support, depth: fs.depth, wadeable: fs.wadeable, headroom: fs.headroom, surfaceDy: fs.surfaceDy, onGround: Boolean(bot.entity.onGround), source: 'local_estimate' },
+      fluid: { feetIn: fs.feetIn, eyeIn: fs.eyeIn, columnFluid: fs.columnFluid, support: fs.support, depth: fs.depth, wadeable: fs.wadeable, headroom: fs.headroom, surfaceDy: fs.surfaceDy, onGround: Boolean(bot.entity.onGround), source: 'local_estimate' },
       equipment: this.equipment(bot),
       recentDamage: t.damage.slice(0, 8).map((d) => ({ ...d })),
     };

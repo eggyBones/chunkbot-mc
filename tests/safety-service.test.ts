@@ -8,6 +8,7 @@ import type { ActionCandidate, SkillOutcome } from '../src/contracts/index.ts';
 import { sequentialIds } from '../src/contracts/ids.ts';
 import type { SafetyAuthority, SafetyConfigInput, SafetyEntityFact, SafetyExecutionOwner, SafetySelfFacts } from '../src/contracts/safety.ts';
 import { SafetyService, type SafetyTimers } from '../src/safety/service.ts';
+import { fluidState } from '../src/safety/geometry.ts';
 import { pool, inTag, mob, self, unarmed } from './safety-helpers.ts';
 import { flatWorld } from './skill-fakes.ts';
 
@@ -143,6 +144,51 @@ describe('authority (coordinator review 1)', () => {
 });
 
 describe('episodes', () => {
+  it('W-C11-R7: a surfaced deep-column frame continues the same finite grant, never resolves or refills it', async () => {
+    const h = harness();
+    h.state.world = pool(4, 3);
+    h.state.self = self({ position: { x: 0.8762083584, y: 3.73802231455, z: 0.5 }, fluid: { ...fluidState(h.state.world, { x: 0.8762083584, y: 3.73802231455, z: 0.5 }), onGround: false, source: 'local_estimate' } });
+    h.service.tick();
+    assert.equal(h.pending.length, 1, 'fresh admission at the bob still starts escape');
+    const p = h.pending[0]!;
+    const grant = h.service.grant(p.owner.grantId)!;
+    h.advance(500);
+    p.resolve({ status: 'succeeded' }); // Even an old executor's false-positive must not resolve the episode.
+    await h.flush();
+    assert.equal(h.pending.length, 2);
+    assert.equal(h.pending[1]!.owner.grantId, p.owner.grantId);
+    const continued = h.service.grant(p.owner.grantId)!;
+    assert.deepEqual(continued.origin, grant.origin);
+    assert.equal(continued.expiresAtMs, grant.expiresAtMs);
+    assert.equal(continued.maxDisplacement, grant.maxDisplacement);
+    assert.equal(continued.actionsUsed, 2);
+    assert.equal(h.service.counters.episodes, 1);
+    assert.equal(h.service.counters.resolved, 0);
+    h.state.self = self({ position: { x: 4.5, y: 4, z: 0.5 } });
+    h.pending[1]!.resolve({});
+    await h.flush();
+    assert.equal(h.service.episodes().at(-1)?.outcome, 'resolved');
+    await h.service.close();
+  });
+
+  it('unknown or airborne support after water escape cannot resolve or clear the hold', async () => {
+    for (const support of ['unknown', 'solid'] as const) {
+      const h = harness();
+      h.state.self = self(submerged());
+      h.service.tick();
+      h.state.self = self({ fluid: { ...self().fluid, support, onGround: false, columnFluid: support === 'unknown' ? 'unknown' : 'none' } });
+      h.pending[0]!.resolve({ status: 'succeeded' });
+      await h.flush();
+      assert.notEqual(h.service.episodes().at(-1)?.outcome, 'resolved');
+      assert.equal(h.service.hold()?.reason, 'blocked');
+      h.service.tick();
+      assert.equal(h.service.hold()?.reason, 'blocked', 'unknown is not silently cleared on a later no-hazard tick');
+      h.state.self = self();
+      h.service.tick();
+      assert.equal(h.service.hold(), null, 'verified dry ground clears the blocker');
+      await h.service.close();
+    }
+  });
   it('re-plans from fresh facts; resolved releases the hold and waitClear', async () => {
     const h = harness();
     h.state.self = self(submerged());

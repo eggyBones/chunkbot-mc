@@ -42,6 +42,15 @@ describe('dispositions (code policy, exact names)', () => {
 });
 
 describe('water hazards', () => {
+  it('a body-clear deep column remains dangerous; an older fluid-support fact cannot mean dry', () => {
+    const bob = self({ fluid: { ...self().fluid, columnFluid: 'water', support: 'solid', wadeable: false, depth: 4, onGround: false } });
+    assert.deepEqual(fluidHazards(bob, config()).map((h) => h.kind), ['deep_water']);
+    assert.equal(respond(planSafety(bob, [], policyCtx())).response, 'escape_water');
+    const legacy = self({ fluid: { ...self().fluid, support: 'fluid', onGround: false } });
+    assert.deepEqual(fluidHazards(legacy, config()).map((h) => h.kind), ['deep_water']);
+    assert.equal(respond(planSafety(bob, [mob('zombie', 3, { aggressive: true })], policyCtx())).response, 'escape_water', 'no defense from a body-clear deep column');
+    assert.deepEqual(fluidHazards(self({ fluid: { ...self().fluid, columnFluid: 'lava' } }), config()).map((h) => h.kind), ['in_lava']);
+  });
   it('submersion responds immediately without air metadata (unknown air is urgent, not full)', () => {
     const s = self({ fluid: { feetIn: 'water', eyeIn: 'water', support: 'solid', depth: 2, wadeable: false, headroom: 'open', surfaceDy: 0.3, onGround: true, source: 'local_estimate' } });
     const kinds = fluidHazards(s, config()).map((h) => h.kind);

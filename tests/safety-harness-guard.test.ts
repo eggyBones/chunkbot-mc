@@ -4,8 +4,13 @@
 // and by spawning it only with missing/invalid leases (never with a lease).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createServer, type Socket } from 'node:net';
+import { SafetyTrialJournal, cleanupOnce, parseEntityTest, parseForceload, sameChunks } from '../src/safety/trial-journal.ts';
+import { trialRcon } from '../src/safety/trial-rcon.ts';
+import { serverWaterSupport } from '../src/safety/trial-water.ts';
 import { describe, it } from 'node:test';
 import { PROJECT_ROOT } from '../src/app/fixture-layout.ts';
 
@@ -16,13 +21,31 @@ const liveDir = join(PROJECT_ROOT, 'var', 'live-check');
 const listLive = () => (existsSync(liveDir) ? readdirSync(liveDir).sort() : []);
 
 describe('safety gate harness guard', () => {
+  it('W-H3 requires actual server ground/body blocks: surface bobs, lava and airborne bodies fail', () => {
+    const dry = { onGround: true, floor: 'solid' as const, feet: 'air' as const, eye: 'air' as const };
+    assert.equal(serverWaterSupport(dry), 'dry');
+    assert.equal(serverWaterSupport({ ...dry, feet: 'water' }), 'wading');
+    assert.equal(serverWaterSupport({ ...dry, floor: 'water', onGround: false }), undefined, 'both observed positions clear the body samples over a deep pool');
+    assert.equal(serverWaterSupport({ ...dry, floor: 'water' }), undefined, 'even a stale grounded flag cannot turn fluid into solid');
+    assert.equal(serverWaterSupport({ ...dry, onGround: false }), undefined);
+    assert.equal(serverWaterSupport({ ...dry, feet: 'lava' }), undefined);
+    assert.equal(serverWaterSupport({ ...dry, eye: 'water' }), undefined);
+    assert.equal(serverWaterSupport({ ...dry, floor: 'other' }), undefined);
+    const w1 = code.slice(code.indexOf("g.gate('W1'"), code.indexOf("g.gate('W1s'"));
+    const w1s = code.slice(code.indexOf("g.gate('W1s'"), code.indexOf("g.gate('W2'"));
+    for (const gate of [w1, w1s]) assert.match(gate, /await g\.waterExitSettled\(ev\)/);
+    assert.match(code, /Date\.now\(\) - started >= 3_000 && samples >= 4/);
+    assert.match(code, /counters\.episodes === episodes/);
+    assert.match(code, /nbt=\{OnGround:1b\}/);
+  });
   it('is import-safe and the lease check precedes every fixture path', () => {
     const guard = source.indexOf('if (isEntryPoint(import.meta.url, process.argv[1])) {');
     assert.ok(guard > 0);
     const mainBody = source.slice(source.indexOf('async function main()'), guard);
     const leaseCheck = mainBody.indexOf("arg('--fixture-lease')");
     assert.ok(leaseCheck > 0);
-    for (const later of ['mkdirSync(', 'run()']) assert.ok(mainBody.indexOf(later) > leaseCheck, `${later} only after the lease check`);
+    assert.ok(mainBody.indexOf('mkdirSync(') > leaseCheck);
+    assert.ok(mainBody.search(/\brun\s*\(/) > leaseCheck, 'trial call only after lease refusal');
     const topLevel = source.split('\n').filter((l) => /^(const|let|var|await|[a-zA-Z_$][\w$]*\()/.test(l));
     for (const l of topLevel) assert.ok(!/readRconPassword\(|rconCommand\(|mkdirSync\(|connect\(|new Gate\(/.test(l), `top-level side effect: ${l}`);
     assert.ok(source.indexOf('this.password = readRconPassword()') > source.indexOf('class Gate'), 'password read only inside the Gate (created by run())');
@@ -47,7 +70,7 @@ describe('safety gate harness guard', () => {
   });
 
   it('interventions are recorded per gate and labeled as never earning pass credit; difficulty is always verified', () => {
-    assert.match(code, /this\.interventions\.push\(\{ atMs: Date\.now\(\), gate: this\.phase, command \}\)/);
+    assert.match(code, /this\.interventions\.push\(\{ atMs: Date\.now\(\), gate: phase, command \}\)/);
     assert.match(code, /credit: 'module mechanics only; operator interventions/);
     assert.match(code, /standIn: 'safety owners run through a labeled pre-integration stand-in executor/);
     assert.match(code, /difficulty \$\{difficulty\.changed \? 'restored to' : 'unchanged at'\}/);
@@ -86,5 +109,123 @@ describe('safety gate harness guard', () => {
       assert.match(r.stderr, /refusing to run/);
     }
     assert.deepEqual(listLive(), before, 'no output directory created');
+  });
+
+  it('importing the actual script creates no output and performs no trial', () => {
+    const before = listLive();
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(SCRIPT)})`], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 15_000 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.deepEqual(listLive(), before);
+  });
+
+  it('durable original settings, command intent and exact additions survive interruption before the reply', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chunkbot-safety-journal-'));
+    try {
+      const path = join(dir, 'restoration.json');
+      const j = new SafetyTrialJournal(path);
+      assert.throws(() => j.before('difficulty easy', 'setup'), /before original/);
+      const original = { difficulty: 'peaceful', forceload: [{ cx: 15, cz: 12 }], forceloadReply: 'There is a force loaded chunk in dimension minecraft:overworld at: [15, 12]' };
+      j.capture(original);
+      original.difficulty = 'hard'; // caller mutation cannot alter the saved original
+      const additions = [{ cx: 16, cz: 12 }];
+      j.remember({ addedForceload: additions, backupTaken: true });
+      const index = j.before('forceload add 256 192', 'setup');
+      const interrupted = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(interrupted.original.difficulty, 'peaceful');
+      assert.deepEqual(interrupted.original.forceload, [{ cx: 15, cz: 12 }]);
+      assert.deepEqual(interrupted.state.addedForceload, additions, 'planned addition exists before any response');
+      assert.equal(interrupted.commands[index].reply, undefined, 'ambiguous write retains its exact intent');
+      j.after(index, 'added');
+      assert.equal(JSON.parse(readFileSync(path, 'utf8')).commands[index].reply, 'added');
+      assert.throws(() => j.capture(original), /immutable/);
+      assert.equal(sameChunks(interrupted.original.forceload, [{ cx: 15, cz: 12 }, ...additions]), false, 'final superset is not exact restoration');
+    } finally { rmSync(dir, { recursive: true }); }
+  });
+
+  it('forceload parsing refuses unreadable, truncated or duplicate provenance', () => {
+    assert.deepEqual(parseForceload('No force loaded chunks were found in dimension minecraft:overworld'), []);
+    assert.deepEqual(parseForceload('There is a force loaded chunk in dimension minecraft:overworld at: [15, 12]'), [{ cx: 15, cz: 12 }]);
+    assert.deepEqual(parseForceload('There are 2 force loaded chunks in dimension minecraft:overworld at: [16, 12], [15, -1]'), [{ cx: 15, cz: -1 }, { cx: 16, cz: 12 }]);
+    for (const reply of ['', 'error', 'There are 2 force loaded chunks at: [15, 12]', 'There are 2 force loaded chunks at: [15, 12], [15, 12]']) assert.equal(parseForceload(reply), undefined, reply);
+  });
+
+  it('W-H2 accepts the observed vanilla entity-test Count reply as presence', () => {
+    // Actual vanilla 26.1.2 RCON reply retained by the coordinator at 2026-10-08T05:00:07.231Z.
+    assert.equal(parseEntityTest('Test passed. Count: 1'), true);
+    assert.equal(parseEntityTest('Test passed. Count: 12'), true);
+    assert.equal(parseEntityTest('Test passed, count: 1'), true);
+    assert.equal(parseEntityTest('Test passed'), true);
+    assert.equal(parseEntityTest('Test failed'), false);
+    assert.equal(parseEntityTest('Test failed.'), false);
+  });
+
+  it('unknown or malformed entity-test replies never mean defeated or removed', () => {
+    for (const reply of [
+      'Command failed', 'No entity was found', '', '0', 'RCON error',
+      'Test passed. Count: 0', 'Test passed, count: 0', 'Test passed. Count: -1',
+      'Test passed. Count: 1.5', 'Test passed. Count: ', 'Test passed. Count:1',
+      'Test passed Count: 1', 'Command error: Test passed. Count: 1',
+      'Test passed. Count: 1\nCommand failed', 'Test failed. Count: 1',
+    ]) assert.equal(parseEntityTest(reply), undefined, reply);
+  });
+
+  it('signal and finally callers share the same cleanup settlement exactly once', async () => {
+    let calls = 0;
+    let finish!: () => void;
+    const cleanup = cleanupOnce(async () => { calls += 1; await new Promise<void>((r) => { finish = r; }); });
+    const fromSignal = cleanup();
+    const fromFinally = cleanup();
+    assert.equal(fromFinally, fromSignal);
+    await Promise.resolve();
+    assert.equal(calls, 1);
+    finish();
+    await fromSignal;
+    await cleanup();
+    assert.equal(calls, 1, 'later teardown is idempotent');
+  });
+
+  it('RCON deadline includes a silent connected peer and destroys its socket (dummy endpoint only)', async () => {
+    const peers = new Set<Socket>();
+    const server = createServer((socket) => { peers.add(socket); socket.on('data', () => undefined); socket.on('close', () => peers.delete(socket)); });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === 'object');
+      const at = Date.now();
+      await assert.rejects(trialRcon('127.0.0.1', address.port, 'dummy-not-a-secret', 'difficulty', 100), /absolute deadline/);
+      assert.ok(Date.now() - at < 1_000);
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      assert.equal(peers.size, 0, 'timeout closes the transport; no abandoned I/O');
+      await assert.rejects(trialRcon('example.com', address.port, 'dummy', 'difficulty'), /loopback/);
+    } finally { for (const peer of peers) peer.destroy(); await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
+
+  it('RCON sends the command only after authenticated response and accepts fragmented replies (dummy endpoint)', async () => {
+    const types: number[] = [];
+    const peers = new Set<Socket>();
+    const response = (id: number, type: number, body: string) => {
+      const p = Buffer.alloc(Buffer.byteLength(body) + 14);
+      p.writeInt32LE(p.length - 4, 0); p.writeInt32LE(id, 4); p.writeInt32LE(type, 8); p.write(body, 12); return p;
+    };
+    const server = createServer((socket) => {
+      peers.add(socket); socket.on('close', () => peers.delete(socket));
+      let buffer = Buffer.alloc(0);
+      socket.on('data', (bytes) => {
+        buffer = Buffer.concat([buffer, bytes]);
+        while (buffer.length >= 4 && buffer.length >= buffer.readInt32LE(0) + 4) {
+          const size = buffer.readInt32LE(0); const type = buffer.readInt32LE(8); types.push(type);
+          buffer = buffer.subarray(size + 4);
+          const reply = type === 3 ? response(1, 2, '') : response(2, 0, 'The difficulty is Peaceful');
+          socket.write(reply.subarray(0, 7)); setTimeout(() => socket.write(reply.subarray(7)), 10);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address(); assert.ok(address && typeof address === 'object');
+      assert.equal(await trialRcon('127.0.0.1', address.port, 'dummy', 'difficulty'), 'The difficulty is Peaceful');
+      assert.deepEqual(types, [3, 2], 'auth then command, exactly once each');
+    } finally { for (const peer of peers) peer.destroy(); await new Promise<void>((resolve) => server.close(() => resolve())); }
   });
 });

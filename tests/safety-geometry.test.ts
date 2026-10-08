@@ -1,7 +1,7 @@
 // MB-FLOW-003-C11 (offline): local fluid/ceiling/exit/retreat geometry over a voxel world.
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { deepWaterStepCost, findFluidExits, findOpenColumn, findRetreatTargets, fluidState, isStandable } from '../src/safety/geometry.ts';
+import { deepWaterStepCost, findFluidExits, findOpenColumn, findRetreatTargets, fluidState, hasSafeFluidSupport, isStandable } from '../src/safety/geometry.ts';
 import { pool } from './safety-helpers.ts';
 import { FakeWorld, flatWorld } from './skill-fakes.ts';
 
@@ -43,6 +43,48 @@ describe('fluid state (local estimate)', () => {
     assert.equal(f.eyeIn, 'water');
     assert.equal(f.headroom, 'ceiling');
     assert.equal(f.surfaceDy, null);
+  });
+
+  it('W-C11-R7: actual translated surface bobs retain the four-deep column and shore exits', () => {
+    const w = pool(4, 3);
+    // Server scene floor -60 translated by +60 into this loaded fake world.
+    for (const pos of [
+      { x: 0.8762083584, y: 3.73802231455, z: 0.5 },
+      { x: 1.1394, y: 3.8394, z: 0.5 },
+      { x: 0.5, y: 4.2, z: 0.5 },
+    ]) {
+      const f = fluidState(w, pos);
+      assert.equal(f.feetIn, 'none', 'actual body samples clear the surface');
+      assert.equal(f.eyeIn, 'none');
+      assert.equal(f.columnFluid, 'water');
+      assert.equal(f.depth, 4);
+      assert.equal(f.fluidTopY, 3);
+      assert.equal(f.wadeable, false);
+      assert.equal(hasSafeFluidSupport({ ...f, onGround: false }), false);
+      const exits = findFluidExits(w, pos, 'water', { radius: 10, visible: all });
+      assert.ok(exits.length > 0);
+      assert.ok(exits.every((e) => Math.abs(e.x) >= 4 || Math.abs(e.z) >= 4), 'exit remains at the rim, never the bob');
+    }
+  });
+
+  it('stable support accepts dry/shallow ground and refuses airborne, lava and missing column evidence', () => {
+    const dry = fluidState(pool(4, 3), { x: 4.5, y: 4, z: 0.5 });
+    assert.equal(dry.columnFluid, 'none', 'does not scan through solid dry ground');
+    assert.equal(hasSafeFluidSupport({ ...dry, onGround: true }), true);
+    assert.equal(hasSafeFluidSupport({ ...dry, onGround: false }), false);
+    const wade = fluidState(pool(1), { x: 0.5, y: 0, z: 0.5 });
+    assert.equal(hasSafeFluidSupport({ ...wade, onGround: true }), true);
+    assert.equal(hasSafeFluidSupport({ ...wade, columnFluid: 'lava', onGround: true }), false);
+    const w = pool(4);
+    const missingFloor = { blockAt: (x: number, y: number, z: number) => y < 0 ? null : w.blockAt(x, y, z) };
+    const unknown = fluidState(missingFloor, { x: 0.5, y: 3.84, z: 0.5 });
+    assert.equal(unknown.support, 'unknown');
+    assert.equal(unknown.wadeable, null);
+    assert.equal(hasSafeFluidSupport({ ...unknown, onGround: true }), false);
+    assert.equal(fluidState({ blockAt: () => null }, { x: 0.5, y: 0, z: 0.5 }).columnFluid, 'unknown');
+    const shallow = pool(1);
+    const missingTop = { blockAt: (x: number, y: number, z: number) => y >= 1 ? null : shallow.blockAt(x, y, z) };
+    assert.equal(fluidState(missingTop, { x: 0.5, y: 0, z: 0.5 }).wadeable, null, 'unloaded surface cannot prove shallow wading');
   });
 
   it('waterlogged blocks and kelp count as water; unloaded columns are unknown', () => {

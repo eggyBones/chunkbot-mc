@@ -43,7 +43,7 @@ import {
   type SafetyStatus,
 } from '../contracts/safety.ts';
 import { dispositionOf } from './dispositions.ts';
-import { findFluidExits, findOpenColumn, findRetreatTargets, type SafetyBlockReader } from './geometry.ts';
+import { findFluidExits, findOpenColumn, findRetreatTargets, hasSafeFluidSupport, type SafetyBlockReader } from './geometry.ts';
 import { planSafety, threatHazards, type PolicyContext } from './policy.ts';
 import { SafetyTracker, type SafetyItemRegistry } from './tracker.ts';
 
@@ -363,7 +363,7 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
       inTag: this.deps.inTag,
       fluidExitAvailable: () => {
         if (!world || !visible) return false;
-        const fluid = self.fluid.eyeIn !== 'none' ? self.fluid.eyeIn : self.fluid.feetIn;
+        const fluid = self.fluid.eyeIn !== 'none' ? self.fluid.eyeIn : self.fluid.feetIn !== 'none' ? self.fluid.feetIn : self.fluid.columnFluid === 'water' || self.fluid.columnFluid === 'lava' ? self.fluid.columnFluid : 'none';
         if (fluid === 'none') return false;
         const bound = allowed ?? withinDisp(grant?.maxDisplacement ?? cfg.water.maxDisplacement);
         const col = self.fluid.headroom === 'ceiling' ? findOpenColumn(world, self.position, fluid, cfg.water.surfaceSearchRadius) : undefined;
@@ -432,6 +432,10 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
   private decide(plan: SafetyPlan, self: SafetySelfFacts, a: SafetyAuthority): void {
     const now = this.deps.now();
     if (plan.kind === 'none') {
+      if (this.blocker?.reason === 'safe_support_unverified' && !hasSafeFluidSupport(self.fluid)) {
+        this.preemptOrdinary(this.blocker.reason);
+        return;
+      }
       if (this.blocker) this.deps.record({ type: 'safety_blocker_cleared', reason: this.blocker.reason });
       this.blocker = undefined;
       return;
@@ -600,6 +604,12 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
         // baseline. This grant commits to avoidance until it ends.
         if (disengaged && plan.kind === 'respond' && plan.response === 'defend') plan = { ...plan, response: 'retreat', reason: 'bounded defense ended; disengaging within the existing grant' };
         if (plan.kind === 'none') {
+          if (water && !hasSafeFluidSupport(fresh.self.fluid)) {
+            reason = 'safe_support_unverified';
+            detail = 'water escape has not established grounded dry or shallow solid support';
+            this.setBlocker(reason, detail, [], 'water_support_unknown', this.deps.now() + this.config.episodes.blockedCooldownMs);
+            break;
+          }
           outcome = 'resolved';
           reason = 'hazard_cleared';
           break;
@@ -639,7 +649,7 @@ export class SafetyService implements SafetyPort, SafetyLifecyclePort {
         actions: grant.actionsUsed,
         elapsedMs: this.deps.now() - episode.startedAtMs,
         displacement: pos ? ROUND(Math.hypot(pos.x - grant.origin.x, pos.z - grant.origin.z)) : 0,
-        evidence: { steps, airAfter: after ? { value: after.self.air.value, source: after.self.air.source } : null, healthAfter: after ? { value: after.self.health, source: after.self.vitalsSource } : null, fluidAfter: after ? { eyeIn: after.self.fluid.eyeIn, feetIn: after.self.fluid.feetIn, source: 'local_estimate' } : null },
+        evidence: { steps, airAfter: after ? { value: after.self.air.value, source: after.self.air.source } : null, healthAfter: after ? { value: after.self.health, source: after.self.vitalsSource } : null, fluidAfter: after ? { ...after.self.fluid } : null },
         endedAtMs: this.deps.now(),
       };
       this.counters[outcome] += 1;

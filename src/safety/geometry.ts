@@ -12,6 +12,7 @@
 // too. Fluid surface height follows the fluid level (source 8/9, flowing
 // (8-level)/9, falling or covered by the same fluid: full block).
 import type { Vec3 } from '../contracts/common.ts';
+import type { SafetyFluidFact } from '../contracts/safety.ts';
 
 export interface SafetyBlock {
   name: string;
@@ -96,13 +97,14 @@ export function fluidAtPoint(world: SafetyBlockReader, p: Vec3): Fluid | undefin
 export interface FluidState {
   feetIn: Fluid | 'none';
   eyeIn: Fluid | 'none';
+  columnFluid: Fluid | 'none' | 'unknown';
   support: 'solid' | 'fluid' | 'none' | 'unknown';
   depth: number | null;
   headroom: 'open' | 'ceiling' | 'unknown' | 'dry';
   surfaceDy: number | null;
-  /** Y of the topmost fluid block in the bot's column (null when not in fluid). */
+  /** Y of the topmost fluid block in the body/nearby below-body column. */
   fluidTopY: number | null;
-  /** Standing on the floor beneath would keep the eyes above the fluid surface (null when not in fluid). */
+  /** Standing on the floor beneath would keep the eyes above the fluid surface (null when unknown or dry). */
   wadeable: boolean | null;
 }
 
@@ -122,15 +124,31 @@ export function fluidState(world: SafetyBlockReader, pos: Vec3, eyeHeight = 1.62
   let fluidTopY: number | null = null;
   let wadeable: boolean | null = null;
   let floorTop: number | null = null;
-  const fluid = feetIn !== 'none' ? feetIn : eyeIn !== 'none' ? eyeIn : undefined;
+  let fluid = feetIn !== 'none' ? feetIn : eyeIn !== 'none' ? eyeIn : undefined;
+  let seedY = Math.floor(pos.y + 0.2);
+  let columnFluid: FluidState['columnFluid'] = fluid ?? 'none';
+  if (fluid && fluidOf(world.blockAt(x, seedY, z)) !== fluid) seedY = Math.floor(eyeIn !== 'none' ? eye.y : pos.y + 0.6);
+  if (!fluid) {
+    // A contracted physics/body sample can briefly clear the surface while
+    // still floating above deep water. Inspect at most one block below the
+    // actual feet, stopping at solid support; never scan through a dry floor.
+    for (let y = seedY; y >= Math.floor(pos.y - 1); y -= 1) {
+      const b = world.blockAt(x, y, z);
+      if (b === null || b.name === 'unconfirmed_prediction') { columnFluid = 'unknown'; break; }
+      const belowFluid = fluidOf(b);
+      if (belowFluid) { fluid = belowFluid; columnFluid = belowFluid; seedY = y; break; }
+      if (b.shapes.length > 0 || isHazard(b)) { support = isSolid(b) ? 'solid' : 'none'; break; }
+      support = 'none';
+    }
+  }
   if (fluid) {
-    // Down from the feet block through contiguous fluid to what lies beneath.
-    const feetY = Math.floor(pos.y + 0.2);
-    let y = feetY;
+    // Keep the actual body samples unchanged; depth comes from the nearby
+    // fluid column even during an above-surface bob.
+    let y = seedY;
     let n = 0;
     while (n < 32) {
       const b = world.blockAt(x, y, z);
-      if (b === null) {
+      if (b === null || b.name === 'unconfirmed_prediction') {
         support = 'unknown';
         break;
       }
@@ -139,24 +157,27 @@ export function fluidState(world: SafetyBlockReader, pos: Vec3, eyeHeight = 1.62
         y -= 1;
         continue;
       }
-      support = b.shapes.length > 0 ? 'solid' : fluidOf(b) ? 'fluid' : 'none';
-      if (b.shapes.length > 0) floorTop = y + Math.max(...b.shapes.map((s) => s[4] ?? 1));
+      support = isSolid(b) ? 'solid' : fluidOf(b) ? 'fluid' : 'none';
+      if (support === 'solid') floorTop = y + Math.max(...b.shapes.map((s) => s[4] ?? 1));
       break;
     }
     depth = n;
     // Up from the feet block to the top of the fluid column.
-    let top = feetY;
-    for (let i = 0; i < 32 && fluidOf(world.blockAt(x, top + 1, z)) === fluid; i += 1) top += 1;
-    fluidTopY = fluidOf(world.blockAt(x, top, z)) === fluid ? top : null;
+    let top = seedY;
+    let surfaceKnown = false;
+    for (let i = 0; i < 32; i += 1) {
+      const above = world.blockAt(x, top + 1, z);
+      if (above === null || above.name === 'unconfirmed_prediction') break;
+      if (fluidOf(above) !== fluid) { surfaceKnown = true; break; }
+      top += 1;
+    }
+    fluidTopY = surfaceKnown ? top : null;
     if (support === 'solid' && floorTop !== null && fluidTopY !== null) {
       const surface = fluidTopY + (fluidHeight(world, x, fluidTopY, z, fluid) ?? 1);
       wadeable = surface - floorTop < eyeHeight - 0.1;
-    } else {
+    } else if (support !== 'unknown' && surfaceKnown) {
       wadeable = false;
     }
-  } else {
-    const below = world.blockAt(x, Math.floor(pos.y - 0.05), z);
-    support = below === null ? 'unknown' : below.shapes.length > 0 ? 'solid' : fluidOf(below) ? 'fluid' : 'none';
   }
   let headroom: FluidState['headroom'] = 'dry';
   let surfaceDy: number | null = null;
@@ -181,7 +202,14 @@ export function fluidState(world: SafetyBlockReader, pos: Vec3, eyeHeight = 1.62
       break;
     }
   }
-  return { feetIn, eyeIn, support, depth, headroom, surfaceDy, fluidTopY, wadeable };
+  return { feetIn, eyeIn, columnFluid, support, depth, headroom, surfaceDy, fluidTopY, wadeable };
+}
+
+/** Positive exit evidence: settled on safe solid ground, dry or truly shallow wading. */
+export function hasSafeFluidSupport(f: Pick<SafetyFluidFact, 'feetIn' | 'eyeIn' | 'columnFluid' | 'support' | 'wadeable' | 'onGround'>): boolean {
+  if (!f.onGround || f.support !== 'solid' || f.eyeIn !== 'none' || f.feetIn === 'lava' || f.columnFluid === 'lava' || f.columnFluid === 'unknown') return false;
+  if (f.feetIn === 'water' || f.columnFluid === 'water') return f.wadeable === true;
+  return true;
 }
 
 /** Cells at swimming depth: the feet block is fluid AND there is no solid floor right under it. */

@@ -44,10 +44,10 @@ const sev = (h: SafetyHazard) => (h.severity === 'critical' ? 3 : h.severity ===
 export function fluidHazards(self: SafetySelfFacts, config: SafetyConfig): SafetyHazard[] {
   const out: SafetyHazard[] = [];
   const f = self.fluid;
-  if (f.feetIn === 'lava' || f.eyeIn === 'lava') out.push({ kind: 'in_lava', severity: 'critical', detail: 'in lava (local estimate)', entityIds: [] });
+  if (f.feetIn === 'lava' || f.eyeIn === 'lava' || f.columnFluid === 'lava') out.push({ kind: 'in_lava', severity: 'critical', detail: 'in or immediately over lava (local estimate)', entityIds: [] });
   if (f.eyeIn === 'water') {
     out.push({ kind: 'submerged', severity: 'critical', detail: `eyes under water (local estimate); headroom ${f.headroom}${f.surfaceDy !== null ? `, surface ${f.surfaceDy} up` : ''}`, entityIds: [] });
-  } else if (f.feetIn === 'water' && f.wadeable !== true) {
+  } else if ((f.feetIn === 'water' || f.columnFluid === 'water' || f.support === 'fluid') && (f.wadeable !== true || f.support !== 'solid')) {
     out.push({ kind: 'deep_water', severity: 'high', detail: `in water at swimming depth: no floor that keeps the eyes above water (support ${f.support}, local estimate)`, entityIds: [] });
   }
   const air = self.air;
@@ -160,7 +160,7 @@ export function defenseReadiness(self: SafetySelfFacts, active: readonly SafetyE
   if (self.health < d.minHealth) refusals.push('health_below_minimum');
   if (self.food < d.minFood) refusals.push('food_below_minimum');
   if (self.vitalsSource !== 'server_update_health') refusals.push('vitals_not_server_stated');
-  if (self.fluid.feetIn !== 'none' || self.fluid.eyeIn !== 'none') refusals.push('in_fluid');
+  if (self.fluid.feetIn !== 'none' || self.fluid.eyeIn !== 'none' || self.fluid.columnFluid === 'water' || self.fluid.columnFluid === 'lava' || self.fluid.support === 'fluid') refusals.push('in_fluid');
   if (!self.fluid.onGround) refusals.push('not_on_ground');
   if (self.equipment.source !== 'server_slots') refusals.push('equipment_not_server_stated');
   // Weapon: held now, else an owned verified hotbar weapon (one hotbar packet) when allowed.
