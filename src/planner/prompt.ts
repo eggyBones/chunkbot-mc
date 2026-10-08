@@ -14,7 +14,7 @@
 import type { CapabilityCatalog, MemoryView, ObservationSnapshot, PlannerRequest, TaskFeedback } from '../contracts/index.ts';
 import { MEMORY_PLANNER_INSTRUCTIONS, renderMemoryView } from '../memory/render.ts';
 
-export const PLANNER_INSTRUCTIONS_VERSION = 'gameplay-planner-v5';
+export const PLANNER_INSTRUCTIONS_VERSION = 'gameplay-planner-v6';
 
 export const PLANNER_INSTRUCTIONS = `You are the gameplay planner for "Chunkbot", a companion player in Minecraft Java Edition. You turn the owner's open-ended instruction into a verifiable outcome and a short window of executable steps. You do not play directly.
 
@@ -64,6 +64,7 @@ Evidence and revisions
 - outcomeStatus is the latest code evaluation of the accepted outcome. admission.counts is the server-confirmed inventory when the goal was admitted.
 - rejection lists problems with your previous reply; fix them exactly.
 - goal.status "preparing": the owner sent a NEW instruction while Chunkbot is still doing earlier work (preparation.continuingTask). It is not admitted yet. Plan it exactly like a first turn; code revalidates your plan when the new instruction takes over (fresh observation, server-confirmed admission inventory, re-grounded handles) and asks you again if it went stale. The inventory you see is provisional (it may change before the switch); state quantities relative to the admission inventory as usual.
+- turnKind "continuation" (and a continuation block): the SAME owner job resumes after a death or safety interruption. Its accepted outcome, limits and counters are unchanged: repeat acceptedOutcome exactly. Nothing from before is resumed (old handles and tasks are gone); observe afresh and plan only the remaining work. Earlier verified progress is listed in continuation.facts; code counts returned own belongings and new items separately.
 - turnKind "lookahead": the current window's last task (lookahead.runningTask) is still running. Plan the NEXT window assuming that task succeeds; code discards your plan if it fails or the outcome is already met, and revalidates it against fresh state before use. Repeat acceptedOutcome exactly.
 - Keep interpretation short (one or two sentences), declarative, and state assumptions the owner should know (quantity, which target, possession versus new acquisition). Interpretation, task objectives and cannot_execute text are shown to the owner: never phrase them as questions or requests.
 
@@ -235,6 +236,7 @@ export function renderRequest(request: PlannerRequest, windowSteps: number): str
       ...(request.autonomy ? { autonomy: renderAutonomy(request.autonomy) } : {}),
       ...(request.route ? { route: renderRoute(request.route) } : {}),
       ...(request.locator ? { locator: renderLocator(request.locator) } : {}),
+      ...(request.continuation ? { continuation: { number: request.continuation.number, max: request.continuation.max, after: request.continuation.after, facts: request.continuation.facts.slice(0, 10).map((f) => clip(f, 300)) } } : {}),
       mechanicsVersion: request.mechanicsVersion ?? null,
       catalog: renderCatalog(request.catalog),
     };

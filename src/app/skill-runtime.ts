@@ -26,7 +26,7 @@ import { memorySkills } from '../skills/memory.ts';
 import type { AutonomyControl } from '../autonomy/control.ts';
 import { HomeProjectService } from '../autonomy/home.ts';
 import { ShelterInspector, constructionSkills, evaluateStructure } from '../skills/construction.ts';
-import type { GoalSource, RouteGoalSource, SurvivalConfigInput } from '../contracts/index.ts';
+import type { GoalSource, RouteAdmission, RouteCarry, RouteGoalSource, SurvivalConfigInput } from '../contracts/index.ts';
 import { DEFAULT_LOCATOR_CONFIG, LocatorConfigSchema } from '../contracts/locator.ts';
 import { LocatorService } from '../locator/service.ts';
 import { RouteController } from '../locator/routes.ts';
@@ -306,7 +306,7 @@ export class SkillRuntime {
    * goal's travel anchor is captured at the bot's position NOW and owned by the
    * goal epoch. Execution never re-anchors; only the next admission replaces it.
    */
-  onGoalAdmitted(admission: { goalId: string; epoch: number; admittedAtMs: number; instruction?: string; source?: GoalSource; deadlineAtMs?: number; ownerCoordinates?: Array<{ x: number; y: number; z: number; source: 'instruction' | 'answer' }> }): void {
+  onGoalAdmitted(admission: { goalId: string; epoch: number; admittedAtMs: number; instruction?: string; source?: GoalSource; deadlineAtMs?: number; ownerCoordinates?: Array<{ x: number; y: number; z: number; source: 'instruction' | 'answer' }>; continuation?: { number: number; anchor: { dimension: string; at: { x: number; y: number; z: number }; radius: number } | null; route: RouteCarry | null | undefined } }): void {
     // MB-MEM-001: keep the owner's words for grounding designations (synchronous, no I/O).
     if (this.memory && admission.instruction !== undefined) {
       try {
@@ -315,11 +315,24 @@ export class SkillRuntime {
         this.options.store.record({ type: 'memory_hook_error', hook: 'beginGoal', message: error instanceof Error ? error.message : String(error) });
       }
     }
-    const ok = this.perception.admitTravelAnchor(admission.epoch);
+    // MB-FLOW-003-C12: a continuation installs the job's ORIGINAL admission anchor (never the respawn position);
+    // without one, goal actions stay refused (no re-anchoring).
+    const cont = admission.continuation;
+    const ok = cont ? (cont.anchor ? this.perception.admitTravelAnchor(admission.epoch, cont.anchor.at, cont.anchor.dimension) : false) : this.perception.admitTravelAnchor(admission.epoch);
     const proof = this.perception.admissionBounds();
     this.options.store.record({ type: 'goal_travel_anchor', goalId: admission.goalId, epoch: admission.epoch, admitted: ok, anchor: proof ? { x: Math.round(proof.anchor.x * 10) / 10, y: Math.round(proof.anchor.y * 10) / 10, z: Math.round(proof.anchor.z * 10) / 10 } : null, radius: proof?.radius ?? null });
     // MB-LOC-001: route authorization for THIS goal epoch from operator policy (synchronous; one admission per epoch).
-    if (this.routes && proof && proof.goalEpoch === admission.epoch) {
+    if (this.routes && proof && proof.goalEpoch === admission.epoch && cont) {
+      // C12 route lineage: only the cumulative authorization transfers (L's RouteController); no refill, no old leg.
+      const routes = this.routes as unknown as { admitContinuation?(a: RouteAdmission, carry: RouteCarry): unknown };
+      if (cont.route && typeof routes.admitContinuation === 'function') {
+        try {
+          routes.admitContinuation({ goalId: admission.goalId, goalEpoch: admission.epoch, admittedAtMs: admission.admittedAtMs, source: 'owner', goalDeadlineMs: admission.deadlineAtMs ?? admission.admittedAtMs, connectionEpoch: proof.connectionEpoch, dimension: proof.dimension, admissionAnchor: { ...proof.anchor }, admissionRadius: proof.radius, ownerCoordinates: (admission.ownerCoordinates ?? []).map((c) => ({ x: c.x, y: c.y, z: c.z, source: c.source })) }, cont.route);
+        } catch (error) {
+          this.options.store.record({ type: 'route_admission_error', goalId: admission.goalId, message: error instanceof Error ? error.message : String(error) });
+        }
+      } else this.options.store.record({ type: 'route_continuation_not_granted', goalId: admission.goalId, epoch: admission.epoch, reason: cont.route === null ? 'the job had no route authorization' : cont.route === undefined ? 'the route lineage could not be exported' : 'route continuation admission is not installed' });
+    } else if (this.routes && proof && proof.goalEpoch === admission.epoch) {
       const source: RouteGoalSource = admission.source ? admission.source.kind : 'diagnostic';
       try {
         this.routes.admit({
@@ -338,6 +351,19 @@ export class SkillRuntime {
         this.options.store.record({ type: 'route_admission_error', goalId: admission.goalId, message: error instanceof Error ? error.message : String(error) });
       }
     }
+  }
+
+  /** MB-FLOW-003-C12 (synchronous, before lifecycle invalidation): the ORIGINAL admission anchor of a goal epoch. */
+  continuationAnchor(goalEpoch: number): { dimension: string; at: { x: number; y: number; z: number }; radius: number } | undefined {
+    const proof = this.perception.admissionBounds();
+    return proof && proof.goalEpoch === goalEpoch ? { dimension: proof.dimension, at: { ...proof.anchor }, radius: proof.radius } : undefined;
+  }
+
+  /** MB-FLOW-003-C12: route lineage export (L's RouteController.carryOut); null: no routes; undefined: cannot export. */
+  continuationRoute(goalEpoch: number): RouteCarry | null | undefined {
+    if (!this.routes) return null;
+    const routes = this.routes as unknown as { carryOut?(goalEpoch: number): RouteCarry | null };
+    return typeof routes.carryOut === 'function' ? routes.carryOut(goalEpoch) : undefined;
   }
 
   /** Goal terminal (MB-MEM-001): verified outcomes become milestones; refs are released. Never throws. */

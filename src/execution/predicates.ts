@@ -29,6 +29,8 @@ import type { SkillServices } from '../skills/definition.ts';
 import { countMatching } from '../skills/common.ts';
 import { UNCONFIRMED_BLOCK } from '../perception/visibility.ts';
 import { groupIdentity, groupLineageScore, type GroupIdentity } from '../perception/perception.ts';
+import { outcomeAtoms, isCountAtom, segmentProgress } from '../goals/continuation.ts';
+import type { ContinuationCapture, ContinuationSegment, CountLineage, GoalOutcomeContract, RemovalCarry } from '../contracts/index.ts';
 import { correlatedResync } from './actuator.ts';
 import { inventoryFromConfirmed, type InventoryView } from './ledger.ts';
 import type { ActuatorLeases } from './lease.ts';
@@ -47,6 +49,13 @@ interface Bound extends BoundPredicate {
   /** Lifecycle interruptions recorded by the ledger when the baselines were bound. */
   lifecycleMark?: number;
   connectionEpoch?: number;
+  /**
+   * MB-FLOW-003-C12 continuation segment per count atom path (absent on a first
+   * segment): verified credit C and non-credit N of the previous interruption,
+   * fresh count F at this rebind, the own-incident returns at F, the effect
+   * credit carried for crafting/smelting.
+   */
+  segments?: Map<string, ContinuationSegment>;
 }
 
 type Ev = PredicateEvaluation['evidence'];
@@ -65,6 +74,12 @@ export interface PredicateDeps {
   structures?: { evaluateStructure(expect: 'site_approved' | 'enclosed' | 'complete'): PredicateEvaluation };
   /** MB-FLOW-003 (optional): survival routine conditions; absent => unknown. */
   survival?: SurvivalPredicatePort;
+  /**
+   * MB-FLOW-003-C12 (optional): server-attributed own-incident returns
+   * (regained + retained) matching a selector, or null when attribution is not
+   * established (the count then stays unknown). Absent: no incident lineage.
+   */
+  incidentReturns?: (incidentId: string, selector: string) => number | null;
 }
 
 /** Baseline key of the memory write sequence captured when a memory_state predicate is bound. */
@@ -210,6 +225,21 @@ export class PredicateEngine implements PredicateEvaluator {
         if (p.predicate === 'inventory_amount' && p.mode === 'possess') {
           return result(now >= p.atLeast ? 'satisfied' : 'unsatisfied', `holds ${now}/${p.atLeast} ${p.selector}`, ev);
         }
+        const seg = bound.segments?.get(path);
+        if (seg) {
+          // MB-FLOW-003-C12 continuation segment: restored own credit + genuinely new acquisition.
+          const interruptedC = (bound.lifecycleMark !== undefined && services.ledger.invalidations.length !== bound.lifecycleMark) || (bound.connectionEpoch !== undefined && s?.connectionEpoch !== bound.connectionEpoch);
+          if (interruptedC) return result('unknown', 'a lifecycle interruption happened since this continuation was bound', { ...ev, lifecycleInterrupted: true });
+          if (bound.latched.has(path)) return result('satisfied', `milestone already reached before the interruption (${p.atLeast} ${p.selector}); later consumption allowed`, { ...ev, latched: true, continuation: true });
+          const returns = seg.incidentId ? (this.deps.incidentReturns?.(seg.incidentId, p.selector) ?? null) : 0;
+          if (returns === null) return result('unknown', 'own-incident return attribution is not established; returned belongings cannot be separated from new acquisition', { ...ev, continuation: true });
+          const consumed = p.predicate === 'inventory_delta' && p.mayBeConsumedLater ? this.consumedSince(p.selector, bound.boundAtMs) : 0;
+          const r = segmentProgress({ ...seg, incident: seg.incidentId !== null }, { count: now, returns, consumed });
+          Object.assign(ev, { continuation: true, restoredCredit: r.restored, newSinceContinuation: r.acquiredNew, priorCredit: seg.credited, freshAtContinuation: seg.fresh, ownReturns: returns, acquired: r.progress });
+          const okC = r.progress >= p.atLeast;
+          if (okC && p.predicate === 'inventory_delta' && p.mayBeConsumedLater) bound.latched.add(path);
+          return result(okC ? 'satisfied' : 'unsatisfied', `acquired ${r.progress}/${p.atLeast} ${p.selector} (restored ${r.restored} of ${seg.credited} earlier credit, ${r.acquiredNew} new since continuing)`, ev);
+        }
         const baseline = bound.baselines[`inv:${p.selector}`];
         if (baseline === undefined || Number.isNaN(baseline)) return result('unknown', 'baseline was not bound from a server-confirmed inventory', ev);
         const interrupted = (bound.lifecycleMark !== undefined && services.ledger.invalidations.length !== bound.lifecycleMark) || (bound.connectionEpoch !== undefined && s?.connectionEpoch !== bound.connectionEpoch);
@@ -240,11 +270,10 @@ export class PredicateEngine implements PredicateEvaluator {
       case 'crafting_result':
       case 'smelting_result': {
         const kind = p.predicate === 'crafting_result' ? 'crafted' : 'smelted_collected';
-        const n = services.ledger
-          .since(bound.boundAtMs)
-          .filter((e) => e.kind === kind && (e as { output: string }).output === p.output)
-          .reduce((sum, e) => sum + (e as { count: number }).count, 0);
-        return result(n >= p.atLeast ? 'satisfied' : 'unsatisfied', `${n}/${p.atLeast} ${p.output} ${kind === 'crafted' ? 'crafted' : 'collected from a furnace'} (skill-confirmed) since admission`, { confirmed: n });
+        // MB-FLOW-003-C12: code-verified effect credit of earlier segments is preserved (never a claim of present inventory).
+        const carried = bound.segments?.get(path)?.credited ?? 0;
+        const n = carried + this.effectSince(kind, p.output, bound.boundAtMs);
+        return result(n >= p.atLeast ? 'satisfied' : 'unsatisfied', `${n}/${p.atLeast} ${p.output} ${kind === 'crafted' ? 'crafted' : 'collected from a furnace'} (skill-confirmed) since admission${carried ? ` (${carried} before the interruption)` : ''}`, { confirmed: n, ...(carried ? { carriedEffect: carried } : {}) });
       }
       case 'near_target':
       case 'visited_location': {
@@ -387,6 +416,149 @@ export class PredicateEngine implements PredicateEvaluator {
     // Semantic component identity: observed members (incl. non-selector anchors such as leaves), trunk bbox, other observed trunks.
     const identity = groupIdentity(t);
     return members.size ? { members, identity } : { members, identity, issue: `group ${p.target.handle} has no visible ${p.selector} member` };
+  }
+
+  private consumedSince(selector: string, sinceMs: number): number {
+    const { services } = this.deps;
+    return services.ledger
+      .since(sinceMs)
+      .filter((e) => e.kind === 'consumed' && (selector.startsWith('#') ? services.knowledge.recipes?.matches(selector, e.item) : e.item === selector))
+      .reduce((n, e) => n + (e as { count: number }).count, 0);
+  }
+
+  private effectSince(kind: 'crafted' | 'smelted_collected', output: string, sinceMs: number): number {
+    return this.deps.services.ledger
+      .since(sinceMs)
+      .filter((e) => e.kind === kind && (e as { output: string }).output === output)
+      .reduce((sum, e) => sum + (e as { count: number }).count, 0);
+  }
+
+  /**
+   * MB-FLOW-003-C12: synchronous capture at an interruption (called in the
+   * revocation's synchronous prefix, BEFORE lifecycle invalidation clears the
+   * ledger): effect credit and consumption per count path, latches, the bound
+   * removal positions/identity, and the current segments.
+   */
+  captureContinuation(boundIn: BoundPredicate): ContinuationCapture {
+    const bound = boundIn as Bound;
+    const out: ContinuationCapture = { effect: {}, consumed: {}, latched: [...(bound.latched ?? [])], removal: [], segments: Object.fromEntries(bound.segments ?? []), boundAtMs: bound.boundAtMs, baselines: { ...bound.baselines } };
+    const contract: GoalOutcomeContract = { kind: 'finite', outcome: bound.predicate };
+    for (const { path, atom } of outcomeAtoms(contract)) {
+      if (atom.predicate === 'crafting_result' || atom.predicate === 'smelting_result') {
+        const seg = bound.segments?.get(path);
+        out.effect[path] = (seg?.credited ?? 0) + this.effectSince(atom.predicate === 'crafting_result' ? 'crafted' : 'smelted_collected', atom.output, bound.boundAtMs);
+      } else if (atom.predicate === 'inventory_delta' && atom.mayBeConsumedLater) out.consumed[path] = this.consumedSince(atom.selector, bound.boundAtMs);
+      else if (atom.predicate === 'blocks_removed') {
+        const r = bound.removal?.get(path);
+        if (r && !r.issue) {
+          const s = this.deps.session();
+          out.removal.push({
+            path,
+            selector: atom.selector,
+            dimension: s ? String(s.bot.game.dimension) : '',
+            members: [...r.members.entries()].map(([k, key]) => {
+              const [x, y, z] = k.split(',').map(Number) as [number, number, number];
+              return { x, y, z, key };
+            }),
+            ...(r.identity
+              ? {
+                  identity: {
+                    class: r.identity.class,
+                    anchors: [...r.identity.anchors].slice(0, 1_024).map((k) => {
+                      const [x, y, z] = k.split(',').map(Number) as [number, number, number];
+                      return { x, y, z };
+                    }),
+                    others: [...r.identity.others].slice(0, 512).map((k) => {
+                      const [x, y, z] = k.split(',').map(Number) as [number, number, number];
+                      return { x, y, z };
+                    }),
+                    min: { ...r.identity.min },
+                    max: { ...r.identity.max },
+                  },
+                }
+              : {}),
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * MB-FLOW-003-C12: code-verified progress per count path for given held
+   * counts (server-confirmed now, or the packet-frozen last-alive counts at a
+   * death), using the capture's segment lineage and own-incident returns
+   * observed at that moment. Possession only; effect paths come from the
+   * capture. Null for a path whose evidence is missing.
+   */
+  progressAt(capture: ContinuationCapture, contract: GoalOutcomeContract, counts: Readonly<Record<string, number>>, returnsNow: (incidentId: string, selector: string) => number | null): Record<string, number | null> {
+    const out: Record<string, number | null> = {};
+    const map = new Map(Object.entries(counts));
+    for (const { path, atom } of outcomeAtoms(contract)) {
+      if (!isCountAtom(atom) || atom.predicate === 'crafting_result' || atom.predicate === 'smelting_result') continue;
+      const sel = atom.selector;
+      const now = countMatching(map, sel, this.deps.services);
+      const consumed = capture.consumed[path] ?? 0;
+      const seg = capture.segments[path];
+      if (!seg) {
+        const b0 = capture.baselines[`inv:${sel}`];
+        out[path] = b0 === undefined || Number.isNaN(b0) ? null : Math.max(0, now - b0 + consumed);
+        continue;
+      }
+      const returns = seg.incidentId ? returnsNow(seg.incidentId, sel) : 0;
+      if (returns === null) {
+        out[path] = null;
+        continue;
+      }
+      out[path] = segmentProgress({ ...seg, incident: seg.incidentId !== null }, { count: now, returns, consumed }).progress;
+    }
+    return out;
+  }
+
+  /**
+   * MB-FLOW-003-C12 continuation binding of the IMMUTABLE accepted outcome:
+   * count atoms continue their lineage from the checkpoint (fresh count F is
+   * CURRENT evidence for re-binding only, never a new acquisition baseline),
+   * latched milestones stay latched, blocks_removed re-binds its carried
+   * positions/identity (server facts are verified freshly), other atoms bind
+   * normally. The original admission counts remain the baselines' provenance.
+   */
+  async rebindContinuation(contract: GoalOutcomeContract, input: { counts: readonly CountLineage[]; removal: readonly RemovalCarry[]; fresh: InventoryBaseline; original: InventoryBaseline; owner: PredicateOwner; notBeforeMs?: number }, signal: AbortSignal): Promise<BoundPredicate> {
+    const root = contract.kind === 'finite' ? contract.outcome : contract.maintain;
+    const bound = (await this.bind(root, signal, input.original, input.owner)) as Bound;
+    const s = this.deps.session();
+    // Ledger entries of earlier segments are already in the carried credit: never count them twice.
+    (bound as { boundAtMs: number }).boundAtMs = Math.max(input.fresh.capturedAtMs, input.notBeforeMs ?? 0);
+    bound.lifecycleMark = input.fresh.lifecycleMark ?? this.deps.services.ledger.invalidations.length;
+    if (input.fresh.connectionEpoch !== undefined) bound.connectionEpoch = input.fresh.connectionEpoch;
+    else if (s) bound.connectionEpoch = s.connectionEpoch;
+    const fresh = new Map(Object.entries(input.fresh.counts ?? {}));
+    const segments = new Map<string, ContinuationSegment>();
+    for (const l of input.counts) {
+      if (l.latched) bound.latched.add(l.path);
+      if (l.credited === null) continue;
+      if (l.basis === 'effect') {
+        segments.set(l.path, { basis: 'effect', credited: l.credited, nonCredit: 0, fresh: 0, incidentId: null, returnsAtF: 0 });
+        continue;
+      }
+      const f = countMatching(fresh, l.selector, this.deps.services);
+      const returnsAtF = l.incidentId ? (this.deps.incidentReturns?.(l.incidentId, l.selector) ?? 0) : 0;
+      const held = l.heldAtInterruption ?? l.credited;
+      segments.set(l.path, { basis: 'possession', credited: l.credited, nonCredit: Math.max(0, held - l.credited), fresh: f, incidentId: l.incidentId, returnsAtF });
+    }
+    bound.segments = segments;
+    if (input.removal.length > 0) {
+      bound.removal ??= new Map();
+      for (const r of input.removal) {
+        bound.removal.set(r.path, {
+          members: new Map(r.members.map((m) => [`${m.x},${m.y},${m.z}`, m.key])),
+          ...(r.identity ? { identity: groupIdentity({ class: r.identity.class, trunk: r.identity.anchors, members: [], others: r.identity.others }) } : {}),
+        });
+        const id = bound.removal.get(r.path)!.identity;
+        if (id && r.identity) Object.assign(id, { min: { ...r.identity.min }, max: { ...r.identity.max } });
+      }
+    }
+    return bound;
   }
 
   private keyMatches(selector: string, key: string): boolean {

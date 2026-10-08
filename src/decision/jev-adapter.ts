@@ -79,6 +79,8 @@ export class JevDecisionAdapter implements DecisionPort {
   private inFlight = false;
   private lastAttemptStartMs: number | undefined;
   private readonly perGoal = new Map<string, number>();
+  /** MB-FLOW-003-C12: goal ids whose attempt count must survive (held/continuing owner jobs); never evicted. */
+  private readonly retained = new Set<string>();
   private sticky: { kind: DecisionFailureKind; detail: string } | undefined;
   private readonly stats: JevAdapterStats = { attempts: 0, decisions: 0, failures: {}, inFlight: false };
 
@@ -124,6 +126,12 @@ export class JevDecisionAdapter implements DecisionPort {
 
   attemptsForGoal(goalId: string): number {
     return this.perGoal.get(goalId) ?? 0;
+  }
+
+  /** MB-FLOW-003-C12: keep (or release) a goal's per-goal attempt count across its continuation lineage. */
+  retainGoalBudget(goalId: string, retain: boolean): void {
+    if (retain) this.retained.add(goalId);
+    else this.retained.delete(goalId);
   }
 
   private fail(kind: DecisionFailureKind, detail: string, request: DecisionRequest, attempts: number, httpStatus?: number): DecisionError {
@@ -175,8 +183,13 @@ export class JevDecisionAdapter implements DecisionPort {
         }
         attempts += 1;
         this.stats.attempts += 1;
+        // Most-recently-used order; retained (held/continuing) goals are never evicted, so a continuation never refills attempts.
+        this.perGoal.delete(request.goalId);
         this.perGoal.set(request.goalId, used + 1);
-        if (this.perGoal.size > 32) this.perGoal.delete(this.perGoal.keys().next().value as string);
+        if (this.perGoal.size > 32) {
+          const victim = [...this.perGoal.keys()].find((k) => !this.retained.has(k) && k !== request.goalId);
+          if (victim !== undefined) this.perGoal.delete(victim);
+        }
         this.lastAttemptStartMs = this.o.clock.now();
         this.o.store.record({
           type: 'jev_request',

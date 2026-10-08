@@ -98,7 +98,17 @@ import {
   type SkillExecutor,
   type TerminalGoalState,
   type TerminalReasonCode,
+  CONTINUABLE_INTERRUPTIONS,
+  DEFAULT_MAX_CONTINUATIONS,
+  HELD_ONLY_INTERRUPTIONS,
+  type ContinuationCapture,
+  type ContinuationCheckpoint,
+  type ContinuationSurvivalPort,
+  type ContinueResult,
+  type RouteCarry,
+  type Vec3,
 } from '../contracts/index.ts';
+import { countFor, groundOutcome, initialCountLineage } from './continuation.ts';
 import { isOwnerQuestionProblem, questionBlockerText } from './declarative.ts';
 import { checkProposal, type ShownSnapshot } from './proposal.ts';
 import { publicBlocker, publicOutcome, publicTaskLabel } from './public-text.ts';
@@ -200,7 +210,14 @@ export interface GoalEngineDeps {
    * Execution adapters capture admission-bound state here (e.g. the goal's
    * travel anchor). Must not throw; failures are recorded, not fatal.
    */
-  onGoalAdmitted?: (admission: { goalId: string; epoch: number; admittedAtMs: number; instruction: string; kind: GoalKind; source?: GoalSource; deadlineAtMs: number; ownerCoordinates: OwnerCoordinate[] }) => void;
+  onGoalAdmitted?: (admission: { goalId: string; epoch: number; admittedAtMs: number; instruction: string; kind: GoalKind; source?: GoalSource; deadlineAtMs: number; ownerCoordinates: OwnerCoordinate[]; continuation?: AdmissionContinuation }) => void;
+  /**
+   * MB-FLOW-003-C12 same-session continuation (in memory; works with survival,
+   * memory and autonomy disabled). Absent: no checkpoints are kept.
+   */
+  continuation?: ContinuationDeps;
+  /** MB-FLOW-003-C12: keeps the Jev per-goal attempt budget of held/continuing owner jobs (same goal id). */
+  decisionBudget?: { retainGoalBudget?(goalId: string, retain: boolean): void };
   /** Called once when a goal reaches a terminal state (after cleanup). Must not throw; failures are recorded. */
   onGoalTerminal?: (end: GoalTerminalEvent) => void;
   /** MB-MEM-001 planner seam (bounded view per request, shown refs, prepared-ref re-grounding). */
@@ -246,6 +263,57 @@ export interface GoalTerminalEvent {
   /** Server-confirmed admission inventory (counts null when unknown). */
   baseline?: { capturedAtMs: number; counts: Record<string, number> | null };
   progress?: string;
+  /** MB-FLOW-003-C12: the owner job is HELD as a same-session checkpoint (not finished). */
+  held?: { continuable: boolean; reason: string; continuations: { used: number; max: number } };
+}
+
+/** What a continuation admission passes to the admission hook (original anchor and route lineage). */
+export interface AdmissionContinuation {
+  number: number;
+  anchor: { dimension: string; at: Vec3; radius: number } | null;
+  /** undefined: the route lineage could not be exported (no route grant is made); null: the job had none. */
+  route: RouteCarry | null | undefined;
+}
+
+export interface ContinuationDeps {
+  /** This application process (a restart is another session: display only). */
+  sessionId: string;
+  maxContinuations?: number;
+  /** Optional survival service (frozen last-alive counts, own-incident returns, recovery gate, display persistence). */
+  survival?: ContinuationSurvivalPort;
+  /** Synchronous: the ORIGINAL admission anchor of a goal epoch (execution layer). */
+  captureAnchor?(goalEpoch: number): { dimension: string; at: Vec3; radius: number } | undefined;
+  /** Synchronous: the route authorization lineage of a goal epoch (undefined: cannot export). */
+  captureRoute?(goalEpoch: number): RouteCarry | null | undefined;
+  isAlive?(): boolean;
+  currentDimension?(): string | undefined;
+  /** Selector matching (exact key or version tag). */
+  matches(selector: string, key: string): boolean;
+  /** Status/dashboard notification of a checkpoint change (synchronous; must not throw). */
+  onChanged?(checkpoint: ContinuationCheckpoint): void;
+}
+
+/** One held owner job (in memory). */
+interface HeldEntry {
+  cp: ContinuationCheckpoint;
+  capture: ContinuationCapture | undefined;
+  /** Planner-internal accepted interpretation (never owner-visible). */
+  plannerInterpretation: string;
+  knowledge: KnowledgeResult[];
+  origin: IntakeOrigin;
+  /** Own-incident returns of the PREVIOUS incident at this interruption, keyed `${incidentId}|${selector}`. */
+  returnsAtInterruption: Map<string, number | null>;
+  /** False when the route lineage could not be exported: the continuation then gets NO route grant (never a refill). */
+  routeKnown: boolean;
+  /** True while the continuation admission is awaiting old-work cleanup (still fenceable by stop/intake). */
+  admitting?: boolean;
+}
+
+/** Sum of two per-key count records. */
+function sumCounts(a: Readonly<Record<string, number>>, b: Readonly<Record<string, number>>): Record<string, number> {
+  const out: Record<string, number> = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = (out[k] ?? 0) + v;
+  return out;
 }
 
 /** Code-owned ceilings of one support admission (survival proposal; never above the goal limits). */
@@ -295,6 +363,8 @@ export interface EngineStatus {
   latch?: ControlLatch;
   /** Latest measured gaps between windows (bounded). */
   windowGaps?: WindowGap[];
+  /** MB-FLOW-003-C12 held/continuing owner jobs (bounded copies). */
+  checkpoints?: ContinuationCheckpoint[];
 }
 
 /** What GoalEngine.status() actually returns: the MB-FLOW-002 fields are always present. */
@@ -372,6 +442,8 @@ interface ActiveGoal {
   windowEnd?: { atMs: number; afterWindow: number } | undefined;
   nextWindowSource: 'lookahead' | 'replan';
   revalidationMs?: number;
+  /** MB-FLOW-003-C12: set on a continuation admission of a held owner job (same goal id). */
+  continuation?: HeldEntry;
 }
 
 /** The single pending (not admitted) owner instruction. */
@@ -559,6 +631,9 @@ export class GoalEngine {
   private readonly windowGaps: WindowGap[] = [];
   /** Owner/operator intakes between validation and admission (an automatic admission never overtakes one). */
   private ownerIntakesInFlight = 0;
+  /** MB-FLOW-003-C12 held owner jobs by goal id (bounded). */
+  private readonly held = new Map<string, HeldEntry>();
+  private continuingNow = false;
 
   constructor(deps: GoalEngineDeps) {
     this.deps = deps;
@@ -782,6 +857,8 @@ export class GoalEngine {
     const text = instruction.trim();
     const invalid = this.validateIntake(text, origin);
     if (invalid) return invalid;
+    // MB-FLOW-003-C12: a new owner instruction supersedes held jobs synchronously.
+    this.fenceHeld('superseded_by_owner', 'new_owner_instruction');
     const route = this.intakeRoute();
     if (route === 'prepare') return this.startPreparation(text, origin, receivedAtMs);
     if (route === 'allowance_exhausted') {
@@ -824,6 +901,7 @@ export class GoalEngine {
     const label = `[operator task diagnostic, ${mode}] ${spec.objective}`;
     const invalid = this.validateIntake(label, origin, BOUNDS.longText);
     if (invalid) return invalid;
+    this.fenceHeld('superseded_by_owner', 'operator_task');
     const admitted = await this.admit(truncate(label, BOUNDS.longText), origin, 'operator_task_diagnostic');
     if (admitted.status !== 'admitted') return admitted.result;
     const active = admitted.active;
@@ -1266,7 +1344,7 @@ export class GoalEngine {
     origin: IntakeOrigin,
     kind: GoalKind,
     prepared?: PendingIntent,
-    extras: { source?: GoalSource; autonomy?: AutonomyPlannerContext; ceilings?: GoalCeilings } = {},
+    extras: { source?: GoalSource; autonomy?: AutonomyPlannerContext; ceilings?: GoalCeilings; continuation?: HeldEntry } = {},
   ): Promise<{ status: 'admitted'; active: ActiveGoal; result: SubmitResult } | { status: 'not_admitted'; result: SubmitResult }> {
     if (!prepared && this.pending) this.discardPending(this.pending, 'superseded', 'replaced by a directly admitted instruction', false);
     const generation = prepared ? prepared.generation : ++this.intakeGeneration;
@@ -1280,8 +1358,10 @@ export class GoalEngine {
 
     this.epoch += 1;
     const now = this.deps.clock.now();
+    const cont = extras.continuation;
     const record: GoalRecord = {
-      id: this.deps.ids.next('goal'),
+      // MB-FLOW-003-C12: a continuation keeps the SAME logical goal id (fresh epoch).
+      id: cont ? cont.cp.goalId : this.deps.ids.next('goal'),
       ...(kind === 'owner_goal' ? {} : { kind }),
       epoch: this.epoch,
       instruction: text,
@@ -1292,11 +1372,13 @@ export class GoalEngine {
       plannerTurns: 0,
       progress: '',
       ...(extras.source ? { source: extras.source } : {}),
+      ...(cont ? { continuation: { number: cont.cp.continuations.used, max: cont.cp.continuations.max, after: cont.cp.interruptions.at(-1)?.reason ?? 'interruption' } } : {}),
     };
     const lim = this.deps.limits;
     const cl = extras.ceilings;
-    const deadlineAtMs = now + (cl ? Math.min(cl.deadlineMs, lim.goalDeadlineMs) : lim.goalDeadlineMs);
-    const caps = {
+    // A continuation keeps the ORIGINAL absolute deadline and ORIGINAL caps (never a fresh allowance).
+    const deadlineAtMs = cont ? cont.cp.deadlineAtMs : now + (cl ? Math.min(cl.deadlineMs, lim.goalDeadlineMs) : lim.goalDeadlineMs);
+    const caps = cont ? { ...cont.cp.caps } : {
       plannerTurns: cl ? Math.min(cl.plannerTurns, lim.plannerTurnsPerGoal) : lim.plannerTurnsPerGoal,
       tasks: cl ? Math.min(cl.tasks, lim.totalTaskCeiling) : lim.totalTaskCeiling,
       replans: cl ? Math.min(cl.replans, lim.replans ?? 8) : (lim.replans ?? 8),
@@ -1323,7 +1405,15 @@ export class GoalEngine {
       nextTurnKind: 'initial',
       parked: false,
       nextWindowSource: 'replan',
+      ...(cont ? { continuation: cont } : {}),
     };
+    if (cont) {
+      // ALL cumulative counters continue (incl. questionRefusals and any legacy history field); nothing resets.
+      active.counters = { ...cont.cp.counters } as GoalCounters;
+      record.plannerTurns = active.counters.plannerTurns;
+      active.admittedTasks = cont.cp.admittedTasks;
+      active.knowledge = [...cont.knowledge];
+    }
     if (prepared) {
       // The pending instruction becomes this goal: its turns count against THIS goal.
       if (prepared.deadline) clearTimeout(prepared.deadline);
@@ -1348,7 +1438,7 @@ export class GoalEngine {
     this.currentTask = undefined;
     this.lastTask = undefined;
     try {
-      this.deps.onGoalAdmitted?.({ goalId: record.id, epoch: record.epoch, admittedAtMs: now, instruction: text, kind, ...(extras.source ? { source: extras.source } : {}), deadlineAtMs, ownerCoordinates: extras.source?.kind === 'owner' ? ownerCoordinates(text) : [] });
+      this.deps.onGoalAdmitted?.({ goalId: record.id, epoch: record.epoch, admittedAtMs: now, instruction: text, kind, ...(extras.source ? { source: extras.source } : {}), deadlineAtMs, ownerCoordinates: extras.source?.kind === 'owner' ? ownerCoordinates(text) : [], ...(cont ? { continuation: { number: cont.cp.continuations.used, anchor: cont.cp.anchor, route: cont.routeKnown ? cont.cp.route : undefined } } : {}) });
     } catch (error) {
       this.deps.store.record({ type: 'goal_admission_hook_error', goalId: record.id, message: error instanceof Error ? error.message : String(error) });
     }
@@ -1363,6 +1453,7 @@ export class GoalEngine {
       replacedGoalId: replaced,
       ...(extras.source ? { source: extras.source } : {}),
       ...(cl ? { ceilings: { ...caps, deadlineMs: deadlineAtMs - now } } : {}),
+      ...(cont ? { continuation: { number: cont.cp.continuations.used, of: cont.cp.continuations.max, deadlineAtMs, counters: { ...active.counters } } } : {}),
       ...(prepared ? { intentId: prepared.intentId, preparedTurns: prepared.counters.plannerTurns, timeline: active.handoff?.timeline } : {}),
     });
     const result: SubmitResult = replaced ? { status: 'admitted', goal: { ...record }, replacedGoalId: replaced } : { status: 'admitted', goal: { ...record } };
@@ -1448,6 +1539,8 @@ export class GoalEngine {
    */
   async stop(reason: 'owner_stop' | 'shutdown' = 'owner_stop', surface: string = 'terminal'): Promise<{ stopped: boolean; goalId?: string; intentId?: string }> {
     ++this.intakeGeneration;
+    // MB-FLOW-003-C12: an explicit stop fences every held job (it never continues; resume does not revive it).
+    this.fenceHeld('stopped_by_owner', reason === 'owner_stop' ? 'owner_stop' : 'shutdown');
     if (reason === 'owner_stop') {
       this.latch = { paused: true, sinceMs: this.deps.clock.now(), source: surface };
       this.latchChanged('owner_stop');
@@ -1494,6 +1587,266 @@ export class GoalEngine {
     return { status: 'rejected', reason: 'no_pending_clarification', detail };
   }
 
+  // ------------------------------------------------------------ continuation (MB-FLOW-003-C12)
+
+  /** Held/continuing owner-job checkpoints (bounded copies; status/dashboard). */
+  checkpoints(): ContinuationCheckpoint[] {
+    return [...this.held.values()].map((h) => structuredClone(h.cp));
+  }
+
+  private heldChanged(h: HeldEntry, state: ContinuationCheckpoint['state'], reason: string): void {
+    h.cp.state = state;
+    h.cp.stateReason = reason;
+    h.cp.stateAtMs = this.deps.clock.now();
+    const terminal = state === 'completed' || state === 'stopped_by_owner' || state === 'superseded_by_owner' || (state === 'blocked' && reason !== 'not_continuable_in_v1' && !reason.startsWith('waiting'));
+    if (terminal || state === 'blocked') this.retainBudget(h.cp.goalId, false);
+    this.deps.store.record({ type: 'continuation_checkpoint', goalId: h.cp.goalId, state, reason, continuations: { ...h.cp.continuations }, counters: { ...h.cp.counters } });
+    try {
+      this.deps.continuation?.onChanged?.(structuredClone(h.cp));
+      this.deps.continuation?.survival?.persistCheckpoint(structuredClone(h.cp));
+    } catch (error) {
+      this.deps.store.record({ type: 'continuation_hook_error', goalId: h.cp.goalId, message: error instanceof Error ? error.message : String(error) });
+    }
+    // Bounded history: drop the oldest finished entries.
+    if (this.held.size > 8) {
+      for (const [id, e] of this.held) {
+        if (this.held.size <= 8) break;
+        if (e.cp.state !== 'held' && e.cp.state !== 'capturing' && e.cp.state !== 'continuing') this.held.delete(id);
+      }
+    }
+  }
+
+  private retainBudget(goalId: string, retain: boolean): void {
+    try {
+      this.deps.decisionBudget?.retainGoalBudget?.(goalId, retain);
+    } catch {
+      /* optional */
+    }
+  }
+
+  /** Explicit stop / new owner or operator intake: every waiting checkpoint is fenced synchronously (never continues). */
+  private fenceHeld(state: 'stopped_by_owner' | 'superseded_by_owner', why: string): void {
+    for (const h of this.held.values()) {
+      if (h.cp.state === 'held' || h.cp.state === 'capturing' || (h.cp.state === 'continuing' && h.admitting) || (h.cp.state === 'blocked' && h.cp.stateReason === 'not_continuable_in_v1')) this.heldChanged(h, state, why);
+    }
+  }
+
+  /**
+   * Synchronous prefix of an ownership end: a checkpoint for an OWNER job whose
+   * ownership ENDED by a checkpoint interruption (never stop/replace/completion).
+   * Captures code-verified effect credit, consumption, latches and removal
+   * positions while the ledger is still valid; possession credit is resolved
+   * after cleanup (alive) or at readiness from packet-frozen evidence (death).
+   */
+  private beginHold(active: ActiveGoal, reason: TerminalReasonCode): HeldEntry | undefined {
+    const C = this.deps.continuation;
+    if (!C || active.source?.kind !== 'owner' || active.record.kind !== undefined || !active.outcome) return undefined;
+    const continuable = (CONTINUABLE_INTERRUPTIONS as readonly string[]).includes(reason);
+    const heldOnly = (HELD_ONLY_INTERRUPTIONS as readonly string[]).includes(reason);
+    if (!continuable && !heldOnly) return undefined;
+    const now = this.deps.clock.now();
+    const existing = this.held.get(active.record.id);
+    const contract = active.outcome.contract;
+    const capture = this.deps.outcomes?.captureContinuation?.(active.outcome.bound);
+    const baseline = active.baseline;
+    const prevCounts = existing?.cp.counts ?? initialCountLineage(contract, baseline?.counts ?? null, C.matches);
+    const returnsAtInterruption = new Map<string, number | null>();
+    const counts = prevCounts.map((l) => {
+      const next = { ...l, segments: l.segments + 1 };
+      if (capture?.latched.includes(l.path)) next.latched = true;
+      if (l.basis === 'effect') {
+        next.credited = capture?.effect[l.path] ?? null;
+        next.evidence = capture ? 'skill_confirmed_outputs' : 'unavailable';
+      } else {
+        if (l.incidentId) {
+          const r = C.survival?.incidentReturns(l.incidentId);
+          returnsAtInterruption.set(`${l.incidentId}|${l.selector}`, r && r.attribution === 'server_attributed' ? countFor({ ...sumCounts(r.regained, r.retained) }, l.selector, C.matches) : null);
+        }
+        next.credited = null;
+        next.heldAtInterruption = null;
+        next.evidence = 'pending';
+      }
+      return next;
+    });
+    const route = C.captureRoute?.(active.epoch);
+    const cp: ContinuationCheckpoint = {
+      version: 1,
+      goalId: active.record.id,
+      sessionId: C.sessionId,
+      connectionEpoch: this.deps.connectionEpoch?.() ?? 0,
+      dimension: existing?.cp.dimension ?? active.dimension ?? C.currentDimension?.() ?? '',
+      instruction: active.record.instruction,
+      publicOutcome: active.record.interpretation ?? '',
+      outcome: contract,
+      outcomeCanonical: active.outcome.canonical,
+      admissionBaseline: existing?.cp.admissionBaseline ?? { capturedAtMs: baseline?.capturedAtMs ?? active.record.admittedAtMs, counts: baseline?.counts ? { ...baseline.counts } : null, detail: baseline?.detail ?? 'no admission baseline' },
+      anchor: existing?.cp.anchor ?? C.captureAnchor?.(active.epoch) ?? null,
+      counters: { ...active.counters },
+      caps: { ...active.caps },
+      admittedTasks: active.admittedTasks,
+      deadlineAtMs: active.deadlineAtMs,
+      grounding: existing?.cp.grounding ?? groundOutcome(contract, Boolean(baseline?.counts)),
+      counts,
+      removal: capture?.removal ?? existing?.cp.removal ?? [],
+      route: route === undefined ? (existing?.cp.route ?? null) : route,
+      verifiedEffects: [...(existing?.cp.verifiedEffects ?? [])],
+      continuations: existing?.cp.continuations ?? { used: 0, max: C.maxContinuations ?? DEFAULT_MAX_CONTINUATIONS },
+      interruptions: [...(existing?.cp.interruptions ?? []), { reason: reason as ContinuationCheckpoint['interruptions'][number]['reason'], atMs: now, epoch: active.epoch }].slice(-8),
+      state: 'capturing',
+      stateReason: 'capturing',
+      stateAtMs: now,
+    };
+    const entry: HeldEntry = { cp, capture, plannerInterpretation: active.outcome.interpretation, knowledge: active.knowledge.slice(-16), origin: active.record.origin, returnsAtInterruption, routeKnown: route !== undefined || (existing?.routeKnown ?? false) };
+    this.held.set(cp.goalId, entry);
+    this.retainBudget(cp.goalId, true);
+    if (heldOnly) this.heldChanged(entry, 'blocked', 'not_continuable_in_v1');
+    return entry;
+  }
+
+  /** After cleanup: resolve alive possession credit from a server-confirmed inventory; decide held/blocked. */
+  private async completeHold(h: HeldEntry, reason: TerminalReasonCode): Promise<void> {
+    if (h.cp.state !== 'capturing') return;
+    const C = this.deps.continuation!;
+    const alive = reason === 'low_health' || reason === 'safety_interrupted';
+    const possession = h.cp.counts.filter((l) => l.basis === 'possession');
+    if (alive && possession.length > 0 && h.capture && this.deps.outcomes?.captureBaseline && this.deps.outcomes.progressAt) {
+      const counts = await withTimeout(this.deps.outcomes.captureBaseline(new AbortController().signal), Math.max(1_000, this.deps.limits.cleanupTimeoutMs), () => new Error('capture timeout')).catch(() => undefined);
+      if (h.cp.state !== 'capturing') return;
+      if (counts?.counts) {
+        const progress = this.deps.outcomes.progressAt(h.capture, h.cp.outcome, counts.counts, (id, sel) => h.returnsAtInterruption.get(`${id}|${sel}`) ?? null);
+        for (const l of possession) {
+          const v = progress[l.path];
+          l.credited = v ?? null;
+          l.heldAtInterruption = countFor(counts.counts, l.selector, C.matches);
+          l.incidentId = null;
+          l.evidence = v === null || v === undefined ? 'unavailable' : 'current_server_inventory';
+        }
+      } else for (const l of possession) l.evidence = 'unavailable';
+    }
+    const ng = h.cp.grounding.find((g) => g.status === 'not_groundable');
+    if (ng) return this.heldChanged(h, 'blocked', `not_groundable:${ng.reason ?? ng.predicate}`);
+    if (h.cp.counts.some((l) => l.evidence === 'unavailable' && !l.latched)) return this.heldChanged(h, 'blocked', 'provenance_unavailable');
+    if (h.cp.continuations.used >= h.cp.continuations.max) return this.heldChanged(h, 'blocked', 'continuations_exhausted');
+    if (this.deps.clock.now() >= h.cp.deadlineAtMs) return this.heldChanged(h, 'blocked', 'deadline_passed');
+    this.heldChanged(h, 'held', reason === 'death' ? 'waiting:respawn_and_recovery' : 'waiting:safe_state');
+  }
+
+  /**
+   * MB-FLOW-003-C12 continuation of a held owner job: code-owned, finite
+   * readiness (never the automatic progression latch or an absent goal's
+   * safety authority), then the SAME goal id is admitted at a fresh epoch
+   * through the single admission path with all original limits/anchor/route
+   * lineage, and its immutable outcome is re-bound before any planner turn.
+   */
+  async continueHeld(goalId: string, cause: 'respawn_ready' | 'recovery_concluded' | 'safety_clear' | 'scheduled'): Promise<ContinueResult> {
+    const C = this.deps.continuation;
+    const h = this.held.get(goalId);
+    const notReady = (reason: string, detail: string): ContinueResult => ({ status: 'not_ready', reason, detail });
+    const blocked = (reason: string, detail: string): ContinueResult => {
+      if (h) this.heldChanged(h, 'blocked', reason);
+      return { status: 'blocked', reason, detail };
+    };
+    if (!C || !h) return notReady('no_checkpoint', 'no held job with this id');
+    if (h.cp.state !== 'held') return notReady(`state_${h.cp.state}`, h.cp.stateReason);
+    if (this.closed) return notReady('shutting_down', 'Chunkbot is shutting down');
+    if (this.continuingNow) return notReady('busy', 'another continuation is being admitted');
+    const now = this.deps.clock.now();
+    if (now >= h.cp.deadlineAtMs) return blocked('deadline_passed', 'the job deadline passed while it was held');
+    if (h.cp.continuations.used >= h.cp.continuations.max) return blocked('continuations_exhausted', `already continued ${h.cp.continuations.used} time(s)`);
+    if (h.cp.counters.plannerTurns >= h.cp.caps.plannerTurns || h.cp.admittedTasks >= h.cp.caps.tasks || h.cp.counters.replans >= h.cp.caps.replans) return blocked('limit_exhausted', 'the job used its original planner/task/replan limits');
+    if (!this.deps.isGameReady()) return notReady('not_connected', 'not connected');
+    if ((this.deps.connectionEpoch?.() ?? 0) !== h.cp.connectionEpoch) return blocked('connection_changed', 'held work never continues on another connection');
+    if (C.isAlive && !C.isAlive()) return notReady('not_alive', 'waiting for respawn');
+    const dim = C.currentDimension?.();
+    if (dim !== undefined && dim !== h.cp.dimension) return notReady('other_dimension', `the job belongs to ${h.cp.dimension}`);
+    if (this.active || this.pending || this.ownerIntakesInFlight > 0) return notReady('busy', this.active ? `goal ${this.active.record.id} owns control` : 'an owner instruction is being handled');
+    const gate = C.survival?.continuationGate(now);
+    if (gate?.kind === 'wait') return notReady(gate.reason, gate.detail);
+    if (gate?.kind === 'blocked') return blocked(gate.reason, gate.detail);
+    // Death: possession credit from packet-frozen last-alive evidence and its incident (provenance).
+    const pending = h.cp.counts.filter((l) => l.basis === 'possession' && l.evidence === 'pending' && !l.latched);
+    if (pending.length > 0) {
+      const S = C.survival;
+      if (!S || !h.capture || !this.deps.outcomes?.progressAt) return blocked('provenance_unavailable', 'counted progress cannot be attributed without the survival service');
+      const frozen = S.frozenInventory(h.cp.connectionEpoch);
+      const used = new Set(h.cp.counts.map((l) => l.incidentId).filter(Boolean));
+      if (!frozen || used.has(frozen.incidentId)) return notReady('frozen_inventory_pending', 'waiting for the death evidence');
+      const returns = S.incidentReturns(frozen.incidentId);
+      if (!returns || returns.attribution !== 'server_attributed') return notReady('attribution_unknown', 'own-incident returns are not attributed yet');
+      const progress = this.deps.outcomes.progressAt(h.capture, h.cp.outcome, frozen.counts, (id, sel) => h.returnsAtInterruption.get(`${id}|${sel}`) ?? null);
+      for (const l of pending) {
+        const v = progress[l.path];
+        if (v === null || v === undefined) return blocked('provenance_unavailable', `no verified progress for ${l.selector}`);
+        l.credited = v;
+        l.heldAtInterruption = countFor(frozen.counts, l.selector, C.matches);
+        l.incidentId = frozen.incidentId;
+        l.evidence = 'last_alive_server_packets';
+      }
+    }
+    for (const l of h.cp.counts) if (l.latched && l.credited === null) l.credited = l.atLeast;
+    this.continuingNow = true;
+    try {
+      // Counted BEFORE planning (a later failure never refunds it).
+      h.cp.continuations.used += 1;
+      h.admitting = true;
+      this.heldChanged(h, 'continuing', `continuation ${h.cp.continuations.used}/${h.cp.continuations.max} (${cause})`);
+      const admitted = await this.admit(h.cp.instruction, h.origin, 'owner_goal', undefined, { source: { kind: 'owner' }, continuation: h });
+      h.admitting = false;
+      if (admitted.status !== 'admitted') {
+        if ((h.cp.state as string) === 'continuing') this.heldChanged(h, 'blocked', 'admission_superseded');
+        return notReady('superseded', 'a stop or instruction arrived during admission');
+      }
+      const last = h.cp.interruptions.at(-1)?.reason ?? 'interruption';
+      this.deps.notify({ goalId: h.cp.goalId, text: `Continuing goal ${h.cp.goalId} after ${last.replace(/_/g, ' ')} (continuation ${h.cp.continuations.used}/${h.cp.continuations.max}): ${truncate(h.cp.publicOutcome, 200)}` });
+      this.track(this.plan(admitted.active));
+      return { status: 'admitted', goalId: h.cp.goalId, epoch: admitted.active.epoch, continuation: h.cp.continuations.used };
+    } finally {
+      this.continuingNow = false;
+    }
+  }
+
+  /** Re-binds the immutable outcome of a continuation from a fresh server inventory (credit re-binding only). */
+  private async bindContinuation(active: ActiveGoal): Promise<boolean> {
+    const h = active.continuation!;
+    const cp = h.cp;
+    const outcomes = this.deps.outcomes;
+    const original: InventoryBaseline = { capturedAtMs: cp.admissionBaseline.capturedAtMs, counts: cp.admissionBaseline.counts, detail: cp.admissionBaseline.detail };
+    active.baseline = original;
+    active.admission = { capturedAtMs: original.capturedAtMs, counts: original.counts ? Object.entries(original.counts).map(([key, count]) => ({ key, count })).slice(0, BOUNDS.listMedium + 9) : null, detail: `ORIGINAL admission inventory (continuation ${cp.continuations.used}): ${original.detail}` };
+    if (!outcomes?.captureBaseline || !outcomes.rebindContinuation) {
+      await this.finishIfCurrent(active, 'capability_not_ready', 'continuation re-binding is not installed');
+      return false;
+    }
+    const fresh = await raceAbort(outcomes.captureBaseline(active.abort.signal), active.abort.signal);
+    this.assertCurrent(active);
+    if (!fresh.counts && cp.counts.some((l) => l.basis === 'possession' && !l.latched)) {
+      await this.finishIfCurrent(active, 'cannot_execute', `the held job's counted progress could not be re-bound: no server-confirmed inventory now (${truncate(fresh.detail, 160)})`);
+      return false;
+    }
+    const bound = await raceAbort(outcomes.rebindContinuation(cp.outcome, { counts: cp.counts, removal: cp.removal, fresh, original, owner: { goalId: active.record.id, goalEpoch: active.epoch }, notBeforeMs: (cp.interruptions.at(-1)?.atMs ?? 0) + 1 }, active.abort.signal), active.abort.signal);
+    this.assertCurrent(active);
+    active.outcome = { contract: cp.outcome, canonical: cp.outcomeCanonical, bound, interpretation: h.plannerInterpretation };
+    const root = cp.outcome.kind === 'finite' ? cp.outcome.outcome : cp.outcome.maintain;
+    active.record.outcome = truncate(`${cp.outcome.kind}: ${JSON.stringify(root)}`, BOUNDS.text);
+    active.record.interpretation = cp.publicOutcome;
+    active.nextTurnKind = 'continuation';
+    this.deps.store.record({ type: 'goal_continuation_bound', goalId: active.record.id, epoch: active.epoch, continuation: cp.continuations.used, freshCapturedAtMs: fresh.capturedAtMs, counts: cp.counts.map((l) => ({ path: l.path, basis: l.basis, selector: l.selector, credited: l.credited, held: l.heldAtInterruption, evidence: l.evidence, latched: l.latched, incident: l.incidentId !== null })), removal: cp.removal.map((r) => ({ path: r.path, members: r.members.length })) });
+    return true;
+  }
+
+  /** Bounded, app-written planner facts for a continuation (never planner prose). */
+  private continuationFacts(h: HeldEntry): NonNullable<PlannerRequest['continuation']> {
+    const cp = h.cp;
+    const last = cp.interruptions.at(-1)?.reason ?? 'interruption';
+    const facts = [
+      `this is continuation ${cp.continuations.used} of ${cp.continuations.max} of the SAME owner job after ${last.replace(/_/g, ' ')}; the accepted outcome, limits and counters are unchanged`,
+      ...cp.counts.slice(0, 6).map((l) => (l.basis === 'effect' ? `${l.credited ?? 0} ${l.selector} already produced (skill-confirmed) count toward ${l.atLeast}` : l.latched ? `the ${l.selector} milestone was already reached` : `${l.credited ?? 0} ${l.selector} were verified before the interruption; own lost items returned to the inventory restore that credit, other items count as new`)),
+      ...cp.removal.slice(0, 3).map((r) => `${r.members.length} bound ${r.selector} positions of the original target remain bound (verified freshly by code)`),
+      'old tasks, handles and actions are NOT resumed: observe afresh and plan only the remaining work',
+    ];
+    return { number: cp.continuations.used, max: cp.continuations.max, after: last, facts: facts.slice(0, 10) };
+  }
+
   status(): FullEngineStatus {
     const catalog = this.deps.capabilities.catalog();
     const p = this.pending;
@@ -1528,6 +1881,7 @@ export class GoalEngine {
       handoff: { ...this.totals },
       latch: { ...this.latch },
       windowGaps: this.windowGaps.slice(-8).map((g) => ({ ...g })),
+      ...(this.held.size > 0 ? { checkpoints: this.checkpoints() } : {}),
     };
   }
 
@@ -1599,6 +1953,13 @@ export class GoalEngine {
     this.active = undefined;
     this.epoch += 1;
     if (active.deadline) clearTimeout(active.deadline);
+    // MB-FLOW-003-C12: synchronous capture BEFORE any lifecycle invalidation (ledger still valid).
+    let hold: HeldEntry | undefined;
+    try {
+      hold = this.beginHold(active, reason);
+    } catch (error) {
+      this.deps.store.record({ type: 'continuation_capture_error', goalId: active.record.id, message: error instanceof Error ? error.message : String(error) });
+    }
     if (viaStopping) this.setState(active, 'stopping');
     active.abort.abort(new Error(reason));
     if (active.lookahead) {
@@ -1623,6 +1984,7 @@ export class GoalEngine {
         failed,
         elapsedMs: this.deps.clock.now() - started,
       });
+      if (hold) await this.completeHold(hold, reason).catch((error: unknown) => this.deps.store.record({ type: 'continuation_capture_error', goalId: active.record.id, message: error instanceof Error ? error.message : String(error) }));
       this.finalize(active, reason, detail);
     })();
     await this.cleanupBarrier;
@@ -1636,7 +1998,19 @@ export class GoalEngine {
     active.record.terminal = { reason, detail: truncate(detail, BOUNDS.text), atMs: active.record.updatedAtMs };
     this.deps.store.record({ type: 'goal_terminal', goalId: active.record.id, epoch: active.epoch, state, reason, detail: active.record.terminal.detail, ...(active.record.kind === undefined ? { counters: { ...active.counters } } : {}) });
     if (active.record.kind === undefined) this.deps.journal?.record({ type: 'goal_terminal', goalId: active.record.id, state, reason, detail: active.record.terminal.detail, counters: { ...active.counters }, outcomeStatus: active.outcomeStatus ?? null });
-    this.deps.notify({ goalId: active.record.id, ...(active.record.kind === 'operator_task_diagnostic' ? { audience: 'operator' as const } : {}), text: `Goal ${active.record.id} ${state} (${reason}): ${truncate(detail, 160)}` });
+    // MB-FLOW-003-C12: a held owner job is NOT finished; a continuation's end settles its checkpoint.
+    const heldEntry = this.held.get(active.record.id);
+    let heldInfo: GoalTerminalEvent['held'];
+    if (heldEntry && (heldEntry.cp.state === 'held' || heldEntry.cp.state === 'blocked' || heldEntry.cp.state === 'capturing') && heldEntry.cp.interruptions.at(-1)?.epoch === active.epoch) {
+      heldInfo = { continuable: heldEntry.cp.state === 'held', reason: heldEntry.cp.stateReason, continuations: { ...heldEntry.cp.continuations } };
+    } else if (heldEntry && heldEntry.cp.state === 'continuing' && active.continuation === heldEntry) {
+      if (reason === 'outcome_verified') this.heldChanged(heldEntry, 'completed', 'outcome_verified');
+      else if (reason === 'owner_stop') this.heldChanged(heldEntry, 'stopped_by_owner', 'owner_stop');
+      else if (reason === 'replaced') this.heldChanged(heldEntry, 'superseded_by_owner', 'replaced');
+      else this.heldChanged(heldEntry, 'blocked', `ended:${reason}`);
+    }
+    const heldText = heldInfo ? (heldInfo.continuable ? ` — held: Chunkbot continues this job when it is safe (continuation ${heldInfo.continuations.used + 1} of at most ${heldInfo.continuations.max})` : ` — held, not continued (${heldInfo.reason.replace(/_/g, ' ')}); a new instruction replaces it`) : '';
+    this.deps.notify({ goalId: active.record.id, ...(active.record.kind === 'operator_task_diagnostic' ? { audience: 'operator' as const } : {}), text: `Goal ${active.record.id} ${state} (${reason}): ${truncate(detail, 160)}${heldText}` });
     this.safetyAuthorityChanged('goal_terminal');
     // A handed-off goal that ended before its draft was revalidated still releases the preparation's refs.
     if (active.handoff) this.releasePreparation(active.handoff.intentId);
@@ -1658,6 +2032,7 @@ export class GoalEngine {
         deadlineAtMs: active.deadlineAtMs,
         ...(active.baseline ? { baseline: { capturedAtMs: active.baseline.capturedAtMs, counts: active.baseline.counts ? { ...active.baseline.counts } : null } } : {}),
         progress: active.record.progress,
+        ...(heldInfo ? { held: heldInfo } : {}),
       });
     } catch (error) {
       this.deps.store.record({ type: 'goal_terminal_hook_error', goalId: active.record.id, message: error instanceof Error ? error.message : String(error) });
@@ -1789,6 +2164,7 @@ export class GoalEngine {
       limits: { travelRadius: limits.travelRadius ?? 128, observationRadius: limits.observationRadius ?? 32, planWindowSteps: limits.planWindowSteps },
       ...this.memoryField({ kind: 'goal', goalId: active.record.id, goalEpoch: active.epoch }, requestId, active.record.instruction, snapshot),
       ...(active.autonomy ? { autonomy: active.autonomy } : {}),
+      ...(active.continuation ? { continuation: this.continuationFacts(active.continuation) } : {}),
       ...this.routeFields(active.epoch),
       ...extra,
     };
@@ -1941,7 +2317,10 @@ export class GoalEngine {
         return;
       }
       // Admission-bound baseline BEFORE the first planner turn or draft revalidation (kept across every later turn).
-      await this.captureBaseline(active);
+      // A continuation keeps the ORIGINAL baseline and re-binds its immutable outcome from a fresh inventory instead.
+      if (active.continuation) {
+        if (!(await this.bindContinuation(active))) return;
+      } else await this.captureBaseline(active);
       if (!(await this.passBarrier(active))) return;
       while (true) {
         this.assertCurrent(active);

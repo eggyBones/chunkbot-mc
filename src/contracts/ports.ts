@@ -8,7 +8,8 @@ import type { Epoch } from './ids.ts';
 import type { KnowledgeQuery, KnowledgeResult } from './knowledge.ts';
 import type { ObservationSnapshot } from './observation.ts';
 import type { PlannerProposal, PlannerRequest } from './planner.ts';
-import type { OutcomePredicate, PredicateEvaluation } from './predicate.ts';
+import type { GoalOutcomeContract, OutcomePredicate, PredicateEvaluation } from './predicate.ts';
+import type { ContinuationCapture, CountLineage, RemovalCarry } from './continuation.ts';
 import type { TaskMode, TaskResult, TaskSpec } from './task.ts';
 import type { JsonValue } from './common.ts';
 import type { ConnectionEndReason, ConnectionState } from './states.ts';
@@ -172,6 +173,12 @@ export interface PredicateEvaluator {
   evaluate(bound: BoundPredicate, signal: AbortSignal): Promise<PredicateEvaluation>;
   /** Captures the full server-confirmed inventory for a goal admission baseline. */
   captureBaseline?(signal: AbortSignal): Promise<InventoryBaseline>;
+  /** MB-FLOW-003-C12: synchronous capture of a bound outcome at an interruption (ledger still valid). */
+  captureContinuation?(bound: BoundPredicate): ContinuationCapture;
+  /** MB-FLOW-003-C12: possession progress per count path for given held counts. */
+  progressAt?(capture: ContinuationCapture, contract: GoalOutcomeContract, counts: Readonly<Record<string, number>>, returnsNow: (incidentId: string, selector: string) => number | null): Record<string, number | null>;
+  /** MB-FLOW-003-C12: continuation binding of the immutable outcome (fresh counts re-bind credit only). */
+  rebindContinuation?(contract: GoalOutcomeContract, input: { counts: readonly CountLineage[]; removal: readonly RemovalCarry[]; fresh: InventoryBaseline; original: InventoryBaseline; owner: PredicateOwner; /** Ledger entries before this are already carried (default: fresh capture time). */ notBeforeMs?: number }, signal: AbortSignal): Promise<BoundPredicate>;
 }
 
 /** Version-registry facts used to validate planner references (read-only; no inference). */
@@ -261,6 +268,8 @@ export interface DecisionPort {
   readiness(): Readiness;
   /** Rejects with an error carrying `failure: DecisionFailure` (see src/decision/errors.ts). */
   choose(request: DecisionRequest, signal: AbortSignal): Promise<DecisionChoice>;
+  /** MB-FLOW-003-C12: keep a goal's per-goal attempt count across its continuation lineage (optional). */
+  retainGoalBudget?(goalId: string, retain: boolean): void;
 }
 
 /** A TaskSpec admitted for execution by the owning goal epoch. */

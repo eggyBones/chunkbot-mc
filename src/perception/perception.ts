@@ -301,9 +301,10 @@ export class PerceptionService implements ObservationPort {
    * not moved by later observations or actions; a replacement admission (new
    * epoch) installs its own. Returns false when there is no connection.
    */
-  admitTravelAnchor(goalEpoch: number, at?: Vec): boolean {
+  admitTravelAnchor(goalEpoch: number, at?: Vec, dimension?: string): boolean {
     const s = this.options.session();
-    if (!s) {
+    // A carried (continuation) anchor belongs to its original dimension only.
+    if (!s || (dimension !== undefined && dimension !== String(s.bot.game.dimension))) {
       this.travelAnchor = undefined;
       return false;
     }

@@ -35,7 +35,7 @@ import { CodexPlanner } from './planner/codex-planner.ts';
 import { runPlannerCheck } from './planner/planner-check.ts';
 import { NotReadyPlanner } from './goals/not-ready.ts';
 import { PlannerJournal } from './telemetry/planner-journal.ts';
-import type { PlannerPort, RunStore } from './contracts/index.ts';
+import type { ContinuationSurvivalPort, PlannerPort, RunStore } from './contracts/index.ts';
 import { createDashboardRuntime, type DashboardRuntime } from './dashboard/runtime.ts';
 import { VIEWER_USAGE, parseViewerArgs, runDashboardViewer } from './dashboard/viewer-command.ts';
 import { memorySummaryFrom, pauseFrom, pendingDirectiveFrom } from './app/status.ts';
@@ -400,6 +400,21 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
         return { lines: autonomyStatusLines(s, { locator: runtime.locator?.ownerHint() ?? null, admission: view?.admission ?? null }), chat: autonomyStatusChat(s), automatic: s.mode !== 'disabled' && s.mode !== 'scope_blocked' };
       },
       diagnostic: (args) => diagnostics!.handle(args),
+      // MB-FLOW-003-C12 same-session continuation of held owner jobs. In memory and independent of
+      // memory/autonomy/survival configuration; the survival port is attached when S's service provides it.
+      continuation: {
+        sessionId: store.runId,
+        ...(continuationSurvivalPort(runtime.survival) ? { survival: continuationSurvivalPort(runtime.survival)! } : {}),
+        captureAnchor: (goalEpoch) => runtime.continuationAnchor(goalEpoch),
+        captureRoute: (goalEpoch) => runtime.continuationRoute(goalEpoch),
+        isAlive: () => (game.statusInfo().health ?? 0) > 0,
+        currentDimension: () => {
+          const d = game.statusInfo().dimension;
+          return d === undefined ? undefined : String(d);
+        },
+        matches: (selector, key) => (selector.startsWith('#') ? Boolean(runtime.knowledge.recipes?.matches(selector, key)) : selector === key),
+      },
+      decisionBudget: decision,
     },
   });
   appRef = app;
@@ -647,6 +662,15 @@ async function commandDashboard(argv: string[]): Promise<number> {
     throw error;
   }
   return runDashboardViewer(loaded, parsed.options, { out, err, env: process.env });
+}
+
+/**
+ * MB-FLOW-003-C12: S's continuation service, when its survival service implements
+ * the approved ContinuationSurvivalPort (structural check; absent otherwise).
+ */
+function continuationSurvivalPort(survival: unknown): ContinuationSurvivalPort | undefined {
+  const s = survival as Partial<ContinuationSurvivalPort> | undefined;
+  return s && typeof s.frozenInventory === 'function' && typeof s.incidentReturns === 'function' && typeof s.continuationGate === 'function' && typeof s.persistCheckpoint === 'function' ? (s as ContinuationSurvivalPort) : undefined;
 }
 
 async function main(): Promise<void> {

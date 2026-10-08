@@ -28,7 +28,8 @@ import type { ChunkbotConfig } from '../config/schema.ts';
 import { parseChatLine, parseTerminalLine, type ParsedCommand } from '../commands/parse.ts';
 import { routeCommand, type CommandTarget } from '../commands/router.ts';
 import { evaluateOwner, ownerPolicyFromConfig, type OwnerPolicy } from '../game/identity.ts';
-import { GoalEngine, type GoalEngineDeps, type GoalTerminalEvent } from '../goals/goal-engine.ts';
+import { GoalEngine, type ContinuationDeps, type GoalEngineDeps, type GoalTerminalEvent } from '../goals/goal-engine.ts';
+import { ContinuationScheduler } from './continuation-scheduler.ts';
 import {
   NotReadyDecision,
   NotReadyKnowledge,
@@ -100,6 +101,12 @@ export interface AppExtensions {
   autonomyStatus?(): { lines: string[]; chat: string; /** Automatic work can run after a resume (not disabled/scope-blocked). */ automatic?: boolean } | undefined;
   /** Terminal-only operator mechanic diagnostics (`/diag ...`). */
   diagnostic?(args: string): Promise<void>;
+  /** MB-FLOW-003-C12 same-session continuation of held owner jobs (in memory; works without survival/memory/autonomy). */
+  continuation?: ContinuationDeps;
+  /** MB-FLOW-003-C12: keeps the Jev per-goal attempt budget of held/continuing jobs. */
+  decisionBudget?: GoalEngineDeps['decisionBudget'];
+  /** MB-FLOW-003-C11/C13: immediate-safety authority nudge (see GoalEngineDeps.onSafetyAuthorityChanged). */
+  onSafetyAuthorityChanged?: GoalEngineDeps['onSafetyAuthorityChanged'];
 }
 
 /** Exit code used when Chunkbot shuts down because its connection ended (no operator terminal). */
@@ -156,6 +163,8 @@ export class ChunkbotApp implements CommandTarget {
     connections: 0,
   };
   private lastEnd: { reason: string; detail: string } | undefined;
+  /** MB-FLOW-003-C12 local continuation trigger (present when continuation is composed). */
+  private readonly continuationScheduler: ContinuationScheduler | undefined;
   private readonly closedSignal = Promise.withResolvers<number>();
   /** Resolves with the exit code once shutdown has fully completed (any path). */
   readonly closed: Promise<number> = this.closedSignal.promise;
@@ -201,14 +210,32 @@ export class ChunkbotApp implements CommandTarget {
       },
       isGameReady: () => this.deps.game.state === 'ready',
       onGoalAdmitted: (admission) => this.deps.extensions?.onGoalAdmitted?.(admission),
-      onGoalTerminal: (end) => this.deps.extensions?.onGoalTerminal?.(end),
+      onGoalTerminal: (end) => {
+        this.deps.extensions?.onGoalTerminal?.(end);
+        // A finished support/other goal may make a held owner job ready.
+        this.continuationScheduler?.nudge('recovery_concluded');
+      },
       onLatchChanged: (latch, cause) => this.deps.extensions?.onLatchChanged?.(latch, cause),
       onPreparationDiscarded: (p) => this.deps.extensions?.onPreparationDiscarded?.(p),
       ...(deps.extensions?.routeView ? { routeView: deps.extensions.routeView } : {}),
       ...(deps.extensions?.locatorHint ? { locatorHint: deps.extensions.locatorHint } : {}),
       ...(deps.extensions?.installed ? { installed: deps.extensions.installed } : {}),
       ...(deps.extensions?.admissionBarrier ? { admissionBarrier: deps.extensions.admissionBarrier } : {}),
+      ...(deps.extensions?.decisionBudget ? { decisionBudget: deps.extensions.decisionBudget } : {}),
+      ...(deps.extensions?.onSafetyAuthorityChanged ? { onSafetyAuthorityChanged: deps.extensions.onSafetyAuthorityChanged } : {}),
+      ...(deps.extensions?.continuation
+        ? {
+            continuation: {
+              ...deps.extensions.continuation,
+              onChanged: (cp) => {
+                deps.extensions?.continuation?.onChanged?.(cp);
+                if (cp.state === 'held') this.continuationScheduler?.nudge('scheduled');
+              },
+            },
+          }
+        : {}),
     });
+    this.continuationScheduler = deps.extensions?.continuation ? new ContinuationScheduler(this.engine, deps.store) : undefined;
     this.unsubscribe.push(deps.game.onLifecycle((event) => this.onLifecycle(event)));
     this.unsubscribe.push(deps.game.onChat((envelope) => this.onChat(envelope)));
     deps.store.record({ type: 'run_started', ...deps.runFacts });
@@ -429,7 +456,8 @@ export class ChunkbotApp implements CommandTarget {
         this.deps.out(`[chunkbot] bot died; ${hadGoal ? 'ending active goal ownership' : 'no active goal'}`);
         return;
       case 'respawn':
-        this.deps.out(`[chunkbot] respawned in ${event.dimension}; idle (goals never auto-resume)`);
+        this.deps.out(`[chunkbot] respawned in ${event.dimension}; ${this.engine.checkpoints().some((c) => c.state === 'held') ? 'a held owner job continues when it is safe (stop cancels it)' : 'idle (nothing to continue)'}`);
+        this.continuationScheduler?.nudge('respawn_ready');
         return;
       case 'dimension_change':
         this.deps.out(`[chunkbot] dimension changed ${event.from} -> ${event.to}; ${hadGoal ? 'ending active goal ownership' : 'no active goal'}`);
@@ -462,6 +490,7 @@ export class ChunkbotApp implements CommandTarget {
       this.deps.store.record({ type: 'shutdown_started', reason });
       // Cancel joining first (synchronous), then close goal admission and cancel work.
       this.joinAbort?.abort();
+      this.continuationScheduler?.close();
       this.deps.extensions?.cancelControl?.('shutdown');
       await this.engine.shutdown();
       await this.connecting;

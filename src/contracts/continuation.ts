@@ -180,6 +180,29 @@ export interface ContinuationSurvivalPort {
   persistCheckpoint(checkpoint: ContinuationCheckpoint): void;
 }
 
+/** One continuation segment of a count atom (rule 2 arithmetic inputs; plain data). */
+export interface ContinuationSegment {
+  basis: 'possession' | 'effect';
+  credited: number;
+  nonCredit: number;
+  fresh: number;
+  incidentId: string | null;
+  returnsAtF: number;
+}
+
+/** Plain-data capture of a bound outcome at an interruption (taken synchronously while the ledger is still valid). */
+export interface ContinuationCapture {
+  /** Per count path: code-verified effect credit (crafting/smelting). */
+  effect: Record<string, number>;
+  /** Per count path: ledger-confirmed consumption since the segment start (mayBeConsumedLater). */
+  consumed: Record<string, number>;
+  latched: string[];
+  removal: RemovalCarry[];
+  segments: Record<string, ContinuationSegment>;
+  boundAtMs: number;
+  baselines: Record<string, number>;
+}
+
 export type ContinueResult =
   | { status: 'admitted'; goalId: string; epoch: number; continuation: number }
   | { status: 'not_ready'; reason: string; detail: string }

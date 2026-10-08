@@ -163,7 +163,7 @@ describe('lifecycle', () => {
     assert.ok(lines.some((l) => /bot died; ending active goal ownership/.test(l)));
     await until(() => app.engine.status().goal?.terminal?.reason === 'death');
     game.emit({ type: 'respawn', connectionEpoch: 1, dimension: 'overworld' });
-    assert.ok(lines.some((l) => /respawned in overworld; idle \(goals never auto-resume\)/.test(l)));
+    assert.ok(lines.some((l) => /respawned in overworld; idle \(nothing to continue\)/.test(l)), "without a held job nothing continues");
     assert.equal(planner.requests.length, 1);
 
     await app.handleTerminalLine('collect wood');

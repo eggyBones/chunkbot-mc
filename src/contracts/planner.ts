@@ -96,7 +96,7 @@ export interface PriorResultRef {
   dimension: string;
 }
 
-export const PLANNER_TURN_KINDS = ['initial', 'knowledge', 'repair', 'retry', 'replan', 'lookahead'] as const;
+export const PLANNER_TURN_KINDS = ['initial', 'knowledge', 'repair', 'retry', 'replan', 'lookahead', 'continuation'] as const;
 export type PlannerTurnKind = (typeof PLANNER_TURN_KINDS)[number];
 
 /** Correlation id of a request's subject for evidence (goal id or intent id). */
@@ -169,6 +169,12 @@ export interface PlannerRequest {
   route?: RouteProposalContext & { status: RouteStatus | null; admission: { anchor: { x: number; y: number; z: number }; radius: number } | null };
   /** MB-LOC-001: coarse owner locator hint (direction/band/elevation only; never coordinates). */
   locator?: LocatorHint;
+  /**
+   * MB-FLOW-003-C12: present on every turn of a CONTINUATION of a held owner job
+   * (same goal id): app-written facts (never planner prose), the continuation
+   * number and what interrupted it. Data, not instructions.
+   */
+  continuation?: { number: number; max: number; after: string; facts: string[] };
 }
 
 /**

@@ -51,6 +51,12 @@ export function renderStatusLines(input: StatusInput): string[] {
     let line = `pending instruction: ${p.intentId} ${p.state} "${instr}" (planner turns ${p.plannerTurns}; not admitted${p.activeGoalId ? `; ${p.activeGoalId} keeps control until handoff` : ''})`;
     lines.push(line);
   }
+  // MB-FLOW-003-C12 held owner jobs (app-owned, declarative; never a question).
+  for (const cp of e.checkpoints ?? []) {
+    const last = cp.interruptions.at(-1)?.reason.replace(/_/g, ' ') ?? 'an interruption';
+    const what = cp.state === 'held' ? `held after ${last}; continues when it is safe (continuation ${cp.continuations.used + 1} of at most ${cp.continuations.max}); stop cancels it` : cp.state === 'continuing' ? `continuing after ${last} (continuation ${cp.continuations.used}/${cp.continuations.max})` : cp.state === 'blocked' ? `held after ${last}, not continued: ${cp.stateReason.replace(/[_:]/g, ' ')}; a new instruction replaces it` : cp.state.replace(/_/g, ' ');
+    lines.push(`owner job ${cp.goalId}: ${what} — ${cp.publicOutcome.slice(0, 160)}`);
+  }
   if (e.parked) lines.push('handoff: the current goal finished its admitted step and starts no new work until the pending instruction is ready');
   const h = e.handoff;
   if (h && (h.preparations > 0 || h.lookaheadTurns > 0)) {
