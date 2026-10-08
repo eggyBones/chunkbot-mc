@@ -41,43 +41,43 @@ Implemented against W's draft (`gameplay-safety` `804e61d`, not imported):
 
 Remaining P obligations once W's stable contract commit is approved: `ExecutionOwner {kind:'safety'}` in ports.ts and lease `ownerCurrent` → `grantCurrent`; `SafetyActuationPort` over the existing `ActuatorLeases` + `SkillExecutorImpl` (`preemptCurrent` revokes a non-safety lease with `safety_preempt` without ending the goal; executor outcome identity for safety owners); `SafetyAuthority` host function (engine basis + connection/alive/travel); `attachConnection` at bot creation, `onLifecycle` before lease/ledger invalidation in `SkillRuntime.onLifecycle`; `start/close` in CLI composition independent of memory/autonomy; status/dashboard projection lines; registering W's safety skills in the catalog and updating `scripts/lib/profile-catalog.ts` expectations (C9 rule: actual registered catalog). Locator route runner holds are L's module; generic navigation is fenced by the lease preemption.
 
-## C12 — proposed versioned continuation admission (NOT implemented; for approval)
+## C12 — shared continuation API, P proposal r2 (declarations only; NOT implemented; for approval)
 
-Scope: same application session, same connection epoch and dimension; triggers are lifecycle/safety revocations of an OWNER goal (`death`, survival `revoke_unsafe` → `safety_interrupted`, task `low_health`). In-goal safety episodes (W's hold/preempt) do not end the goal and need no continuation.
+Declarations: `src/contracts/continuation.ts` (not exported from `contracts/index.ts` and not consumed). It supersedes my r1 above (new goal id, "remaining" ceilings) and adopts S's r2 semantics (`gameplay-recovery` `d3b3e9f`), with the shared types moved to a P-owned common contract so continuation works with survival/memory/autonomy disabled. After approval S imports these types and deletes its duplicate declarations.
 
-`HeldGoalCheckpointV1` (GoalEngine-owned, in memory; at most one per original goal; bounded):
+| Review point | API answer |
+| --- | --- |
+| 1 Budget identity | The SAME `goalId` is re-admitted at a fresh epoch, so Jev `perGoal` attempts, memory, journal and status keep one identity. `counters: CarriedCounters` is the full `GoalRecord.counters` type, including `questionRefusals`, the inert legacy `clarifications`, `preparationTurns` and `lookaheads`. It is carried as the SAME cumulative object, checked against the ORIGINAL `caps`; `admittedTasks` is carried too. `deadlineAtMs` is the original absolute deadline. **Obligation (decision adapter owner):** `JevDecisionAdapter.perGoal` evicts FIFO after 32 entries; support/recovery goals could evict a held job's count and refill it. It needs `retainGoalBudget(goalId, retain)` (or no eviction of held ids). P calls it at hold and release. |
+| 2 Immutable evidence | `admissionBaseline` (counts or null, with `detail`), `outcome` + `outcomeCanonical`, `anchor` and `accounting: AcquisitionEntry[]` (V recomputed against the original B0 at every interruption, evidence labeled). At admission a fresh resync gives F only for re-binding: possession `carried = min(V, max(0, F − B0))` and `acquired = carried + max(0, now − F)` (+ consumption since); effect `carried = V`; latched stays satisfied. |
+| 3 No executable data | Plain data only. Groundable: inventory_amount/delta, crafting/smelting_result, equipped, structure_state, memory_state, survival_state, and near_target/visited_location/block_state/container_state with registry/owner/owner_destination targets. `blocks_removed` is also groundable: its bound world positions are carried as `RemovalCarry` (semantic identity, not a handle). Not groundable, so the job stays held with one declarative reason: observed handles in other predicates, prior_result, remembered_anchor, memory_ref, count atoms under any/not, unknown B0. |
+| 4 Independence | P holds checkpoints in memory (`ContinuationEnginePort`). `ContinuationSurvivalPort` is optional (frozen last-alive counts, recovery-priority gate, display-only persistence). Readiness never reads the automatic latch. Explicit stop marks held checkpoints `stopped_by_owner`; any owner or operator intake marks them `superseded_by_owner` synchronously before admission. No motion after stop. |
+| 5 Preemption | W holds keep the goal admitted (TaskRuntime gate, `49f14a1`). A checkpoint is created only when ownership ENDED: `death`, `low_health` or `safety_interrupted` (continuable in v1, same connection epoch and dimension). `disconnected`, `kicked` and `dimension_change` are held only (`not_continuable_in_v1`). |
+| 6 Route lineage | `RouteCarry` copies the ORIGINAL frozen ceilings (absolute `routeDeadlineMs`), destinations, legs/distance/stalled used and any blocker. **Obligation (L):** `RoutePort.carryOut(goalEpoch): RouteCarry` before revoke, and `admit(a, { continuation: RouteCarry })`. That grant keeps `routeId`, copies the ceilings, pre-consumes the usage and never recomputes from `admittedAtMs`; an exhausted route stays exhausted. The continuation's travel anchor is the original anchor (`admitTravelAnchor(epoch, original.at)`), never the respawn position. |
 
-```ts
-{
-  version: 1, checkpointId: 'hold-…', goalId, goalEpoch, instruction, source: { kind: 'owner' },
-  heldAtMs, heldReason: 'death' | 'safety_interrupted' | 'low_health',
-  connectionEpoch, dimension,
-  outcome: { contract, canonical },               // immutable, never re-proposed
-  admission: InventoryBaseline,                   // original counts (display/evidence)
-  travel: { anchor, radius },                     // ORIGINAL admission anchor; never re-anchored
-  counters: GoalCounters, caps, admittedTasks,    // frozen copies; continuation keeps counting
-  deadlineAtMs,                                   // ORIGINAL absolute deadline (no refill)
-  credits: Array<{ path, predicate, credited }>,  // last CODE-VERIFIED acquisition per counting leaf
-  removal?: bound blocks_removed positions,       // world positions survive lifecycle
-  knowledge, feedback (bounded, code reason codes),
-  compatibility: { status: 'continuable' | 'unsupported', unsupported: string[] },
-  state: 'held' | 'continuing' | 'superseded' | 'stopped' | 'expired' | 'unsupported'
-}
-```
+P implementation plan after approval (single shared writer):
+- `GoalEngine.finalize` builds the checkpoint for owner goals ending with a checkpoint interruption, synchronously and with no I/O. `GoalTerminalEvent` gains `held?: { version: 1 }`, so the supervisor and survival know the job is not finished.
+- `continueHeld()` admits through `admit()` with `extras.continuation`:
+  - original anchor and route carry go through `onGoalAdmitted`;
+  - a pre-bound outcome via a new `PredicateEvaluator.rebindContinuation(contract, { carry, removal, latched }, freshResync)`;
+  - the first planner turn kind is `continuation`, with a bounded request field (app-owned facts: carried credit, verified effects, remaining limits);
+  - the planner must repeat the accepted outcome exactly (existing check).
+- An app-owned `ContinuationScheduler` (respawn/ready/safety-clear events plus a bounded local timer, no inference) calls `continueHeld`, so manual-only profiles continue too.
+- Status shows held, continuing and blocked states with app-owned text.
 
-Compatibility v1 (every leaf must be compatible; all/any/not by children):
-- `inventory_amount possess`, `equipped`, `structure_state`, `memory_state`, `container_state` (fresh inspection after rebind), `near_target/visited_location` with owner/remembered/owner-destination targets, persistent owner-follow: **continuable** (fresh evaluation).
-- `inventory_amount collect_additional`, `inventory_delta`, `crafting_result`, `smelting_result`: **continuable with carried credit**: `credited` = last code-verified acquired/produced count before the interruption (conservative: work after the last evaluation is not credited); the continuation binds a FRESH baseline after recovery, so returned old belongings never count as new acquisition and nothing is double-counted.
-- `blocks_removed`: continuable (bound positions carried; fresh server state).
-- Observed-handle `entity_outcome`, `block_state`, `near_target` to an observed handle, `prior_result`: **unsupported** in v1 (handles/ledger results are invalidated by the lifecycle) → held declarative blocker.
+Regressions planned:
+- B0 8 + 4 verified, then death and recovery to 12 → credit 4 (completes at 18);
+- partial recovery to 9 → 1;
+- nothing recovered → 0;
+- respawn-point pickups to 17 → still 4;
+- a second death after +3 → V 7 against the original B0;
+- latched consumed milestone;
+- unknown B0 → held;
+- an observed-handle atom → held with one reason;
+- repeated death/continuation never refills Jev attempts, planner/task/replan counters, deadline, route legs/distance/time or continuations;
+- stop/new owner instruction while held → never continues;
+- disconnect → held only.
 
-Admission `GoalEngine.continueHeld(checkpointId, cause: 'recovery_concluded' | 'safety_clear')`:
-- Refused (checkpoint stays held, no question) unless: same connection epoch and dimension, game ready, no active owner goal, no pending owner instruction, no owner intake in flight, safety authority not `none`, checkpoint `continuable`, deadline not passed and caps remaining. Explicit stop marks every held checkpoint `stopped` (never continues; resume does not revive it). A new owner instruction marks it `superseded`.
-- Uses the single `admit` path with a NEW goal id/epoch and `record.continuationOf = originalGoalId`; `onGoalAdmitted` receives `continuation: { anchor, radius, route ceilings }` so SkillRuntime installs the ORIGINAL anchor (not the respawn position) and L's route port keeps original ceilings. Admission baseline is captured fresh (for the carried-credit rebind only).
-- Outcome pre-bound before any planner turn through a new `PredicateEvaluator.rebindContinuation(contract, { credits, removal }, freshBaseline, owner)`; the planner must repeat it exactly (existing immutability check). First turn kind `continuation` with a bounded `continuation` request field (held reason, carried credits, remaining limits). No old tasks, handles, drafts or actions are replayed; the original sentence is not resubmitted.
-- Counters/caps/deadline continue from the checkpoint (no reset); the SpendLedger is unchanged.
-
-Ownership split: P implements checkpoint capture in `finalize`, `continueHeld`, the evaluator rebind, the supervisor trigger (after S reports necessary support concluded and safety is clear) and status/dashboard projection. S owns the durable record: `InterruptedDirectiveSchema.continuation` gains `{ kind: 'continuable', checkpointId, version: 1 } | 'requires_owner_decision'` plus compatibility/unsupported list; restart keeps only this NON-executable record (never continues after restart in v1). S never admits continuation itself. Unsupported cases stay explicit held blockers without questions (S's current status wording "needs your decision" should become declarative, e.g. "held: send a new instruction to replace it").
+Residual for decision: own drops picked up during a continuation by a NON-recovery skill count as new (`now − F`). Option: survival reports server collects of lost keys inside the incident radius and P subtracts them up to the unaccounted remainder.
 
 ## Combined ordinary-goal harness (not run; needs a lease and coordinator-run real planner)
 
