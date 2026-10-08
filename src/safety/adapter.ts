@@ -189,6 +189,7 @@ export class SessionSafetyReader {
       if (!raw || raw === (bot.entity as unknown as RawEntity) || !raw.position || raw.isValid === false) continue;
       const name = raw.name ?? 'unknown';
       if (name === 'item' || name === 'experience_orb') continue;
+      if (this.deps.tracker.dying.has(raw.id)) continue; // server death status: dying body, not a threat
       const distance = Math.hypot(raw.position.x - self.x, raw.position.y - self.y, raw.position.z - self.z);
       if (distance > opts.scanRadius) continue;
       const height = raw.height ?? 1;

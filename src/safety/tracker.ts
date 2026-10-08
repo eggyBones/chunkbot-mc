@@ -92,6 +92,8 @@ export class SafetyTracker {
   slotsAtMs: number | null = null;
   fullSync = false;
   readonly damage: DamageRecord[] = [];
+  /** Entities the server declared dead (entity_status 3) and not yet destroyed: dying bodies are never threats or targets. */
+  readonly dying = new Map<number, number>();
   /** Counts for evidence/status. */
   readonly counts = { airStatements: 0, otherEntityAirIgnored: 0, damageEvents: 0, slotPackets: 0 };
 
@@ -147,6 +149,14 @@ export class SafetyTracker {
       });
       if (this.damage.length > 8) this.damage.length = 8;
     });
+    on('entity_status', (p: { entityId?: number; entityStatus?: number }) => {
+      if (typeof p.entityId !== 'number' || p.entityStatus !== 3 || p.entityId === this.selfId) return;
+      this.dying.set(p.entityId, this.now());
+      if (this.dying.size > 64) this.dying.delete(this.dying.keys().next().value as number);
+    });
+    on('entity_destroy', (p: { entityIds?: number[] }) => {
+      for (const id of p.entityIds ?? []) this.dying.delete(id);
+    });
     on('window_items', (p: { windowId?: number; items?: RawSlot[] }) => {
       if (p.windowId !== 0 || !Array.isArray(p.items)) return;
       const reg = this.registry();
@@ -191,6 +201,7 @@ export class SafetyTracker {
     this.slotsAtMs = null;
     this.fullSync = false;
     this.damage.length = 0;
+    this.dying.clear();
     this.heldHotbarServer = null;
   }
 
