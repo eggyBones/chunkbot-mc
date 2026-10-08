@@ -1,8 +1,7 @@
 // MB-FLOW-003-C12 shared continuation contract — APPROVED SEAM (coordinator
 // decisions after P r2). P (single shared writer) implements the GoalEngine /
 // predicate / app wiring; S implements ContinuationSurvivalPort; L implements
-// the route lineage export/admission against RouteCarry (structural; L may
-// refine field names in src/contracts/locator.ts with Codex, P adapts).
+// the canonical RouteLineage export/admission (RouteCarry is a type-only alias).
 //
 // Rules:
 //   1. Continuation re-admits the SAME logical goal id at a fresh, monotonically

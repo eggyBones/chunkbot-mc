@@ -26,7 +26,7 @@ import { memorySkills } from '../skills/memory.ts';
 import type { AutonomyControl } from '../autonomy/control.ts';
 import { HomeProjectService } from '../autonomy/home.ts';
 import { ShelterInspector, constructionSkills, evaluateStructure } from '../skills/construction.ts';
-import type { GoalSource, RouteAdmission, RouteCarry, RouteGoalSource, SurvivalConfigInput } from '../contracts/index.ts';
+import type { GoalSource, RouteCarry, RouteGoalSource, SurvivalConfigInput } from '../contracts/index.ts';
 import type { SafetyActuationPort, SafetyAuthority } from '../contracts/safety.ts';
 import { createSafetyRuntime } from '../safety/wiring.ts';
 import type { SafetyService } from '../safety/service.ts';
@@ -441,14 +441,17 @@ export class SkillRuntime {
 
   /** Abort synchronously, then wait bounded for every owned executor settlement. */
   async closeSafety(): Promise<void> {
-    await this.safety?.close();
+    let closeError: unknown;
+    try { await this.safety?.close(); } catch (error) { closeError = error; }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const settled = await Promise.race([
       Promise.allSettled([...this.safetySettlements]).then(() => true),
       new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), this.options.config.limits.cleanupTimeoutMs); }),
     ]);
     if (timer) clearTimeout(timer);
-    this.options.store.record({ type: 'safety_cleanup', settled, pending: this.safetySettlements.size });
+    this.options.store.record({ type: 'safety_cleanup', settled: settled && !closeError, pending: this.safetySettlements.size, ...(closeError ? { error: closeError instanceof Error ? closeError.message : String(closeError) } : {}) });
+    if (closeError) throw closeError;
+    if (!settled) throw new Error('owned safety executor cleanup did not settle within its bound');
   }
 
   /** Goal terminal (MB-MEM-001): verified outcomes become milestones; refs are released. Never throws. */

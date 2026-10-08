@@ -516,15 +516,24 @@ export class ChunkbotApp implements CommandTarget {
       this.joinAbort?.abort();
       this.continuationScheduler?.close();
       this.deps.extensions?.cancelControl?.('shutdown');
-      const controlClosed = this.deps.extensions?.closeControl?.();
+      // A control cleanup failure must still reach connection teardown. Attach
+      // the rejection handler immediately while engine cleanup runs in parallel.
+      const controlFailure = (error: unknown): false => {
+        this.deps.store.record({ type: 'control_cleanup_failed', message: error instanceof Error ? error.message : String(error) });
+        return false;
+      };
+      let controlClosed: Promise<boolean>;
+      try { controlClosed = Promise.resolve(this.deps.extensions?.closeControl?.()).then(() => true, controlFailure); }
+      catch (error) { controlClosed = Promise.resolve(controlFailure(error)); }
       await this.engine.shutdown();
-      await controlClosed;
+      const controlSettled = await controlClosed;
       await this.connecting;
       await this.deps.game.disconnect(reason === 'signal' ? 'shutdown_signal' : 'operator_stop', `shutdown (${reason})`);
       for (const off of this.unsubscribe.splice(0)) off();
       const finalStatus = this.engine.status();
       await this.deps.store.close({
         shutdownReason: reason,
+        controlCleanupSettled: controlSettled,
         connectionState: this.deps.game.state,
         lastConnectionEnd: this.lastEnd,
         lastGoal: finalStatus.goal
@@ -533,8 +542,9 @@ export class ChunkbotApp implements CommandTarget {
         counters: this.counters,
       });
       this.deps.out('[chunkbot] shutdown complete');
-      this.closedSignal.resolve(exitCode);
-      return exitCode;
+      const code = controlSettled ? exitCode : exitCode || 1;
+      this.closedSignal.resolve(code);
+      return code;
     })();
     return this.shutdownPromise;
   }
