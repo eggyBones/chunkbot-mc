@@ -42,7 +42,7 @@ import { RouteController } from '../locator/routes.ts';
 import { locatorSkills } from '../skills/locator.ts';
 import type { SurvivalService } from '../survival/service.ts';
 import { createSurvivalService } from '../survival/wiring.ts';
-import { survivalSkills } from '../skills/survival.ts';
+import { navigateRecoveryTravel, survivalSkills } from '../skills/survival.ts';
 import { verifyShelter } from '../autonomy/blueprint.ts';
 
 export interface SkillRuntimeOptions {
@@ -199,13 +199,21 @@ export class SkillRuntime {
       this.home = undefined;
       this.inspector = undefined;
     }
+    const survival = this.survival;
+    const recoveryTravel = survival
+      ? (ctx: Parameters<typeof navigateRecoveryTravel>[1], options: Parameters<typeof navigateRecoveryTravel>[2]) => navigateRecoveryTravel(survival, ctx, options)
+      : undefined;
     this.registry = new SkillRegistry([
       ...allSkills(),
       ...memorySkills(this.memory),
       ...(this.home && this.inspector && features.home ? constructionSkills({ home: this.home, inspector: this.inspector, interior: features.home.interior, maxSiteDistance: features.home.maxSiteDistance }) : []),
       ...survivalSkills(this.survival),
       ...(this.safety ? safetySkills(this.safety) : []),
-      ...(this.routes ? locatorSkills({ ...(this.locator ? { locator: this.locator } : {}), routes: this.routes }) : []),
+      ...(this.routes ? locatorSkills({
+        ...(this.locator ? { locator: this.locator } : {}),
+        routes: this.routes,
+        ...(recoveryTravel ? { recoveryTravel } : {}),
+      }) : []),
     ]);
     this.leases = new ActuatorLeases({
       clock,

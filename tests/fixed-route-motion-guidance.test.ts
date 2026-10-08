@@ -18,6 +18,7 @@ import { RouteController } from '../src/locator/routes.ts';
 import { PerceptionService } from '../src/perception/perception.ts';
 import { allSkills } from '../src/skills/index.ts';
 import { locatorSkills } from '../src/skills/locator.ts';
+import { navigateRecoveryTravel } from '../src/skills/survival.ts';
 import { currentMotionGuidance, type MotionGuidanceDeps } from '../src/tasks/motion-guidance.ts';
 import { TaskMotionProgress } from '../src/tasks/motion-progress.ts';
 import { TaskRuntime } from '../src/tasks/task-runtime.ts';
@@ -44,7 +45,7 @@ async function scene() {
   const routes = new RouteController({ policy: RoutePolicySchema.parse({ sources: ['support'], destinations: ['own_death'] }), clock: h.clock, ownDeath: provider });
   const auth = routes.admit({ goalId: 'goal-rec5', ...fence, admittedAtMs: h.clock.now(), source: 'support', goalDeadlineMs: h.clock.now() + 600_000, admissionAnchor: { ...h.pos.at }, admissionRadius: 128, ownerCoordinates: [] })!;
   assert.ok(auth);
-  const registry = new SkillRegistry([...allSkills(), ...locatorSkills({ routes })]);
+  const registry = new SkillRegistry([...allSkills(), ...locatorSkills({ routes, recoveryTravel: (ctx, options) => navigateRecoveryTravel(h.service, ctx, options) })]);
   const abort = new AbortController();
   let epoch = 5, connection = 1, held = false;
   const task: AdmittedTask = { goalId: 'goal-rec5', goalEpoch: 5, taskId: 'task-rec5', mode: 'complete', spec: { objective: 'Attempt scoped recovery.', decisionInstruction: 'Use offered options.', allowedCapabilities: ['route_travel'], targetSelectors: [], parameters: { destination: 'own_death', durationMs: 1_000 }, completion }, signal: abort.signal, isCurrent: () => epoch === 5 && !abort.signal.aborted };
