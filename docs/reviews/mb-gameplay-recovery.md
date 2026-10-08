@@ -10,7 +10,8 @@ Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree
 | --- | --- |
 | `2ffdf10` | C8/C9/C10 corrections, harness, offline tests |
 | `549ce47` | The proposed C12 typed seam (declarations only, not consumed) and this review |
-| (this commit) | The status projection enforces the declared 4,000-character bound (C10 added fields) |
+| `41733b2` | The status projection enforces the declared 4,000-character bound (C10 added fields) |
+| (this commit) | Coordinator schema review: state/count consistency invariants, v1 migration that reconstructs the original lost count from recorded regains, old-revision fallback tests |
 
 Owned paths changed:
 - `src/contracts/survival.ts`
@@ -84,8 +85,23 @@ Official sources: the 26.1.2 and 26.2 `server.jar` files, read from the coordina
 - **Immutable lost count:** `ManifestItem.count` is now the immutable lost count. A separate `regained` counter (`0..count`, refined) records server-confirmed regains.
   - Helpers `manifestRemaining` and `manifestSought` replace every `state === 'missing' && count > 0` check (`episodes.ts`, `policy.ts`, `service.ts`).
   - A whole-key regain sets `state: regained` and leaves the body valid.
+- **State/count consistency** is enforced by the durable schema (`ManifestItemSchema.superRefine`), so an inconsistent record can never be written:
+
+  | State | Required counters |
+  | --- | --- |
+  | `missing` | `regained == 0` |
+  | `partially_regained` | `0 < regained < count` (never labeled complete) |
+  | `regained` | `regained == count` (a fully regained record is never sought or missing) |
+  | `likely_destroyed`, `unknown` | `regained < count` (a remainder exists) |
+
+  In every state `regained <= count` and `count > 0`. `manifestSought` (used by recovery targets, candidates, policy and the planner context) only ever selects `missing` or `partially_regained` items with a remainder. Status and planner quantities use the remaining count (`count − regained`).
 - **Store schema v2:**
-  - It reads v1, verifying the checksum over the body exactly as written. A v1 `count` (which was the remaining amount) is kept as the lost count, with nothing assumed regained.
+  - The checksum is verified on the **raw stored body**, before any zod default or migration, so old revisions load and a tampered body is rejected. A corrupt or tampered newest revision falls back to the last verified revision (state `recovered`), and nothing is replaced.
+  - **v1 migration** (`migrateV1Body`, pure, applied after the raw checksum and before the v2 schema). v1 stored the REMAINING amount in `count` and listed regains in the episode's `regained` entries. So:
+    - `lost = v1 remaining + recorded regains of that key`, `regained = recorded regains`, and the state is derived from those counters (a sought item with recorded regains becomes `partially_regained`);
+    - `unknown` and `likely_destroyed` keep their remainder and are never re-sought;
+    - a v1 `regained` label keeps its recorded regains as both lost and regained;
+    - nothing is invented. If v1's 32-entry regain list had dropped old entries, the reconstructed lost count is lower than the truth, never higher. The historical remaining count is never treated as the original lost count once regains are recorded.
   - It writes v2. A newer schema stays read-only and is never overwritten.
   - The load detail states the migration. A rejected body names the exact field (e.g. `at episodes.0.manifest.missing.0.regained: regained exceeds the lost count`).
 - **Unknown effects:** a restart closes a running attempt as `restart_interrupted` (still counted) with `effectsUnknown: true`. Pickups after its last durable revision are never assumed in either direction, and status says so.
@@ -129,12 +145,24 @@ Official sources: the 26.1.2 and 26.2 `server.jar` files, read from the coordina
     - `set_slot` and window-sync item contents;
     - `collect` entity, collector and count.
 
-## Checks (Node 24.21.0, direct exit codes, this worktree's own `npm ci`)
+## Checks (Node 24.21.0, this worktree's own `npm ci`)
+
+Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the schema-review commit:
+
+| Command | Exit | Log summary |
+| --- | --- | --- |
+| `npm run typecheck` | 0 | — |
+| `npm run build` | 0 | — |
+| `npm test` | 0 | 790 tests, 790 pass, 0 fail |
+| `node --test tests/survival-*.test.ts` | 0 | 133 tests, 133 pass, 0 fail |
+| adverse: v1 migration disabled, `node --test tests/survival-persistence.test.ts` | 1 (expected) | only the v1 migration test fails; source restored |
+
+Earlier rounds (before the schema review):
 
 - `npm ci`: 0
 - `npm run typecheck`: 0. Re-run after the C12 proposal: 0.
 - `npm run build`: 0
-- `npm test`: 0, with 788/788 passing. Survival is now 15 test files and 131 tests (`node --test tests/survival-*.test.ts`: 131/131), including the new `survival-persistence` and `survival-incidental` files.
+- `npm test`: 0, with 788/788 passing at `41733b2`. Some earlier survival-only runs used a pipe to `grep`; those counts are superseded by the direct runs above.
 - **Adverse checks:** reverting the tracker sync fix makes the respawn-race test fail, and removing the travel guard makes three travel tests fail. Both fixes were restored afterwards.
 - **Harness guard:** it spawns `scripts/survival-live-check.ts` with a missing or invalid lease (`[]`, `--fixture-lease`, `../x;rm`, `--with-settings`, `--fixture 26.2`). Every run exits 2 with no stdout and no output directory, before any password read, RCON command or join.
 - **Not run:**
@@ -258,30 +286,19 @@ Declarations live at the end of `src/contracts/survival.ts` under `MB-FLOW-003-C
 - **Commands:**
   - `node scripts/survival-live-check.ts --fixture-lease <id> --with-settings`
   - then the same with `--fixture 26.2`
-- **Write footprint:** unchanged from the C6 review and enforced by the static guard.
-  - Scene: x 196..224, y −61..−50, z 190..224.
-  - Backup: x 196..224, y 200..211, z 190..224. It must be verified empty first.
-  - Forceload: only chunks this trial added are removed.
-  - Foreign piles: tag `cbsurv_<time>_<pid>`, plus per-pile sub-tags, always scoped to the scene volume.
-  - New reads only: the bot's `Pos`, an item count within 6 blocks of the bot after respawn, and per-pile `Item` data. None of them writes outside the scene.
-- **Bot state (fixture bot only):**
-  - `clear`, `effect clear`;
-  - `tp` within the scene, and to the scene start after respawn;
-  - `give` of the kit;
-  - `kill`, `damage`, hunger effects;
-  - G4/G4n may set its respawn point to the trial bed, with before and after values recorded.
-- **Settings (`--with-settings`):**
-  - difficulty → easy;
-  - `keep_inventory` → true for G1k only;
-  - `natural_health_regeneration` → true, then false;
-  - time of day for G4/G4n.
-- **Restoration (all verified; any failure fails the report):**
-  - every original setting is restored, including the clock at the original plus the measured elapsed time;
-  - tagged piles and scene item/XP entities are removed;
-  - the scene is restored from the backup and verified with `execute if blocks … all`;
-  - the backup is cleared and verified empty;
-  - trial-added forceload is removed;
-  - the bot is cleared and moved above the scene.
+- **Exact bounded footprint.** This is every RCON command the harness can issue. Coordinates are fixed constants and `${ITEM_AREA}` = `x=196,y=-61,z=190,dx=28,dy=11,dz=34`. The static guard test enforces that every entity kill carries `${ITEM_AREA}`, that there is no `spawnpoint` command, and that no selector goes beyond the y range.
+
+  | Kind | Commands | Where |
+  | --- | --- | --- |
+  | Blocks (writes) | `clone 196 -61 190 224 -50 224 196 200 190` (backup); `fill 196 -60 190 224 -50 224 air`; `fill 196 -61 190 224 -61 224 grass_block`; `setblock 208 -60 208` / `208 -60 209 red_bed[…]` (G4/G4n); restore `clone 196 200 190 224 211 224 196 -61 190 replace force`; `fill 196 200 190 224 211 224 air` | scene x 196..224, y −61..−50, z 190..224; backup y 200..211 (verified empty first by a masked self-clone count) |
+  | Entities (writes) | `kill @e[type=item,${ITEM_AREA}]`, `kill @e[type=experience_orb,${ITEM_AREA}]`, `kill @e[type=item,tag=cbsurv_<run>,${ITEM_AREA}]`; `summon item` ×3 at (215.5,−60,208.5) bread 64, (209.5,−60,208.5) dirt 3, (212.5,−60,201.5) diamond sword sharpness 1, tagged `cbsurv_<run>` + `_bread`/`_dirt`/`_sword` | inside the scene only |
+  | Forceload | `forceload query`; `forceload add` only for scene chunks reported "not marked"; `forceload remove` only for those | chunks (12..14, 11..14) |
+  | Fixture bot only (writes) | `clear Chunkbot`, `effect clear Chunkbot [minecraft:hunger]`, `give Chunkbot` iron_pickaxe[damage=200] 1 / bread 4 / cobblestone 20 / diamond_sword[sharpness 3] 1 / bread 12, `kill Chunkbot`, `damage Chunkbot 13` and `4 minecraft:generic`, `effect give Chunkbot minecraft:hunger 30 120` and `10 60`, `tp Chunkbot` to (205.5,−60,205.5), (212.5,−60,205.5), (208.5,−60,206.5) and finally (205.5,−49,205.5) | the bot's own state; G4/G4n may change its respawn point to the trial bed (before/after recorded; NOT restored, since there is no `spawnpoint` command; the bed itself is removed by the scene restore) |
+  | Settings (writes, `--with-settings` only) | `difficulty easy`; `gamerule keep_inventory true` (G1k only); `gamerule natural_health_regeneration true` / `false`; `time set 1000` (G4); `time set 13000` (G4n) | world settings, each restored in `finally` |
+  | Restoration (writes) | `difficulty <original>`; `gamerule keep_inventory <original>`; `gamerule natural_health_regeneration <original>`; `time of <clock> set <original + measured elapsed>`; plus the block/entity/forceload/bot cleanup above | every step verified; any failure fails the report |
+  | Reads only | `difficulty`; `gamerule keep_inventory` / `natural_health_regeneration`; `time query time` (twice, 1 s apart, for the clock rate); `time query minecraft:day`; `clear Chunkbot minecraft:<item> 0` (counts); `data get entity Chunkbot LastDeathLocation` / `Pos` / `respawn` / `sleeping_pos`; `execute as Chunkbot at @s if entity @e[type=item,distance=..6]` (count only, at the respawn point); `data get entity @e[type=item,tag=cbsurv_<run>_<pile>,limit=1,${ITEM_AREA}] Item`; `execute if entity @e[…]` counts; `execute if block`/`if blocks … all`; `list` | read-only anywhere listed; the respawn-point read changes nothing |
+
+- **Settings snapshot before any write:** difficulty, both gamerules and the clock are read and parsed first. If any read fails, the trial changes nothing and fails `SETUP` with the recorded replies.
 - **Expected new evidence:**
   - G2/G2b pass with C9 fixed, or fail with the exact mismatch;
   - the real respawn position and nearby loot;

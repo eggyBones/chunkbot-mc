@@ -401,7 +401,25 @@ export const ManifestItemSchema = z
     identities: z.array(z.object({ digest: z.string().regex(/^[0-9a-f]{16}$/), count: z.number().int().positive() }).strict()).max(8).optional(),
   })
   .strict()
-  .refine((m) => m.regained <= m.count, { message: 'regained exceeds the lost count', path: ['regained'] });
+  .superRefine((m, ctx) => {
+    // State/count consistency (C9 coordinator review): the label must agree with the counters.
+    const bad = (message: string, path: string) => ctx.addIssue({ code: 'custom', message, path: [path] });
+    if (m.regained > m.count) return bad('regained exceeds the lost count', 'regained');
+    switch (m.state) {
+      case 'missing':
+        if (m.regained !== 0) bad('a missing item cannot have regained units (use partially_regained)', 'state');
+        break;
+      case 'partially_regained':
+        if (m.regained === 0 || m.regained >= m.count) bad('partially_regained needs 0 < regained < lost count', 'state');
+        break;
+      case 'regained':
+        if (m.regained !== m.count) bad('regained needs every lost unit regained (a partial regain is not complete)', 'state');
+        break;
+      default:
+        // likely_destroyed / unknown: some remainder is unaccounted for.
+        if (m.regained >= m.count) bad(`${m.state} needs a remainder (a fully regained item is regained)`, 'state');
+    }
+  });
 export type ManifestItem = z.infer<typeof ManifestItemSchema>;
 
 /** Units of a manifest item still unaccounted for (lost minus server-confirmed regains). */

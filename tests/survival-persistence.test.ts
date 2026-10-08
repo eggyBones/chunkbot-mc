@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { after, describe, it } from 'node:test';
-import { SurvivalStoreBodySchema, type SurvivalProposal } from '../src/contracts/survival.ts';
+import { ManifestItemSchema, SurvivalStoreBodySchema, type SurvivalProposal } from '../src/contracts/survival.ts';
 import { checksum, survivalScopeDirectory } from '../src/survival/store.ts';
 import { NOW0, OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, sampleEpisode, settle, slot, tempRoot, type Harness } from './survival-helpers.ts';
 
@@ -125,29 +125,100 @@ describe('post-collection persistence (C9)', () => {
     await h.service.close();
   });
 
-  it('a v1 store (count = remaining, no regained field) loads, migrates conservatively and the next write is v2', async () => {
+  it('v1 migration: lost = v1 remaining + recorded regains; sought, partial, regained and unknown records stay truthful; next write is v2', async () => {
     const root = tempRoot();
     const dir = survivalScopeDirectory(root, SCOPE);
     mkdirSync(dir, { recursive: true });
+    const item = (key: string, count: number, state: string) => ({ key, count, valuable: false, metadata: 'server_slot', state });
     const v1Episode = {
       ...sampleEpisode({ phase: 'ready', status: 'partially_recovered', site: { source: 'server_death_location', dimension: 'overworld', at: { x: 30.5, y: 64, z: 10.5 }, observedAtMs: NOW0 } }),
-      manifest: { assessedAtMs: NOW0, freshInventorySource: 'server_packets', lastAliveSource: 'server_packets', missing: [{ key: 'minecraft:bread', count: 3, valuable: false, metadata: 'server_slot', state: 'missing' }], retained: [], partial: false, detail: 'v1' },
-      regained: [{ key: 'minecraft:bread', count: 1, atMs: NOW0, provenance: 'scoped_visible_drop' }],
+      manifest: {
+        assessedAtMs: NOW0,
+        freshInventorySource: 'server_packets',
+        lastAliveSource: 'server_packets',
+        // v1 semantics: `count` is what was STILL missing (regains had been subtracted).
+        missing: [item('minecraft:bread', 3, 'missing'), item('minecraft:cobblestone', 20, 'missing'), item('minecraft:iron_pickaxe', 1, 'regained'), item('minecraft:oak_log', 2, 'unknown')],
+        retained: [],
+        partial: false,
+        detail: 'v1',
+      },
+      regained: [
+        { key: 'minecraft:bread', count: 1, atMs: NOW0, provenance: 'scoped_visible_drop' },
+        { key: 'minecraft:iron_pickaxe', count: 1, atMs: NOW0, provenance: 'scoped_visible_drop' },
+        { key: 'minecraft:oak_log', count: 1, atMs: NOW0, provenance: 'scoped_visible_drop' },
+      ],
     } as Record<string, unknown>;
     delete v1Episode['incidental'];
     const body = { scope: SCOPE, createdAtMs: NOW0, episodes: [v1Episode], interrupted: [], nextEpisode: 2, evicted: 0 };
+    // The checksum covers the raw v1 body exactly as written (no v2 defaults).
     writeFileSync(`${dir}/survival-00000001.json`, JSON.stringify({ format: 'chunkbot-survival', schemaVersion: 1, revision: 1, writtenAtMs: NOW0, checksum: checksum(body), body }));
     const h = harness({ root, pid: 7105 });
     const st = h.service.status(h.clock.now());
     assert.equal(st.store.state, 'ready', st.store.detail);
     assert.match(st.store.detail, /schema v1 migrated to v2/);
-    const bread = st.incidents[0]?.missing.find((m) => m.key === 'minecraft:bread');
-    assert.deepEqual([bread?.lost, bread?.regained, bread?.count, bread?.state], [3, 0, 3, 'missing'], 'v1 remaining count kept as the lost count; nothing assumed regained');
+    const row = (key: string) => {
+      const m = st.incidents[0]?.missing.find((x) => x.key === key);
+      return m ? [m.lost, m.regained, m.count, m.state] : undefined;
+    };
+    assert.deepEqual(row('minecraft:bread'), [4, 1, 3, 'partially_regained'], 'partial: original lost reconstructed from the recorded regain, 3 still sought');
+    assert.deepEqual(row('minecraft:cobblestone'), [20, 0, 20, 'missing'], 'sought: unchanged');
+    assert.equal(row('minecraft:iron_pickaxe'), undefined, 'already regained: not missing (lost 1, regained 1)');
+    assert.deepEqual(row('minecraft:oak_log'), [3, 1, 2, 'unknown'], 'unknown keeps its remainder; not re-sought');
+    assert.equal(st.incidents[0]?.regained.reduce((n, r) => n + r.count, 0), 3, 'recorded regains kept; none invented');
+    // The planner proposal/missing quantities use the REMAINING amounts only.
+    h.packets.inventory({});
+    h.packets.health(20, 20);
+    await settle(h);
+    const d = h.service.assess(assessInput(h));
+    assert.equal(d.kind, 'propose', JSON.stringify(d));
+    const p = (d as { proposal: SurvivalProposal }).proposal;
+    const facts = p.execution.kind === 'planner_goal' ? p.execution.context.facts.join(' | ') : '';
+    assert.match(facts, /still sought [^|]*: 3 bread, 20 cobblestone \|/);
+    assert.doesNotMatch(facts, /iron_pickaxe|oak_log|4 bread/);
     h.service.abandonRecovery('test write', h.clock.now());
     await settle(h);
-    const file = JSON.parse(readFileSync(`${dir}/${readdirSync(dir).filter((n) => /^survival-\d{8}\.json$/.test(n)).sort().at(-1)}`, 'utf8')) as { schemaVersion: number };
+    assert.equal(h.events.filter((e) => e['type'] === 'survival_write_failed').length, 0, 'the migrated body writes as valid v2');
+    const file = JSON.parse(readFileSync(`${dir}/${readdirSync(dir).filter((n) => /^survival-\d{8}\.json$/.test(n)).sort().at(-1)}`, 'utf8')) as { schemaVersion: number; body: unknown };
     assert.equal(file.schemaVersion, 2);
+    SurvivalStoreBodySchema.parse(file.body);
     await h.service.close();
+  });
+
+  it('old revisions load: a corrupt or tampered newest revision falls back to the last verified v1 revision (never replaced)', async () => {
+    const root = tempRoot();
+    const dir = survivalScopeDirectory(root, SCOPE);
+    mkdirSync(dir, { recursive: true });
+    const ep = { ...sampleEpisode({ phase: 'ready' }), manifest: { assessedAtMs: NOW0, freshInventorySource: 'server_packets', lastAliveSource: 'server_packets', missing: [{ key: 'minecraft:bread', count: 2, valuable: false, metadata: 'server_slot', state: 'missing' }], retained: [], partial: false, detail: 'v1' } } as Record<string, unknown>;
+    delete ep['incidental'];
+    const body = { scope: SCOPE, createdAtMs: NOW0, episodes: [ep], interrupted: [], nextEpisode: 2, evicted: 0 };
+    writeFileSync(`${dir}/survival-00000001.json`, JSON.stringify({ format: 'chunkbot-survival', schemaVersion: 1, revision: 1, writtenAtMs: NOW0, checksum: checksum(body), body }));
+    // Newest revision tampered after its checksum was computed (raw-body verification must reject it).
+    const tampered = structuredClone(body) as typeof body;
+    ((tampered.episodes[0] as { manifest: { missing: Array<{ count: number }> } }).manifest.missing[0] as { count: number }).count = 64;
+    writeFileSync(`${dir}/survival-00000002.json`, JSON.stringify({ format: 'chunkbot-survival', schemaVersion: 1, revision: 2, writtenAtMs: NOW0, checksum: checksum(body), body: tampered }));
+    const h = harness({ root, pid: 7109 });
+    const st = h.service.status(h.clock.now());
+    assert.equal(st.store.state, 'recovered', st.store.detail);
+    assert.match(st.store.detail, /loaded revision 1 \(schema v1 migrated to v2.*newer unreadable revision\(s\) 2/);
+    assert.equal(st.incidents[0]?.missing[0]?.count, 2, 'the tampered 64 was never used');
+    await h.service.close();
+  });
+
+  it('state/count consistency is enforced by the durable schema', () => {
+    const base = { key: 'minecraft:bread', valuable: false, metadata: 'server_slot' as const };
+    const ok = (m: object) => ManifestItemSchema.safeParse(m).success;
+    assert.ok(ok({ ...base, count: 4, regained: 0, state: 'missing' }));
+    assert.ok(ok({ ...base, count: 4, regained: 2, state: 'partially_regained' }));
+    assert.ok(ok({ ...base, count: 4, regained: 4, state: 'regained' }));
+    assert.ok(ok({ ...base, count: 4, regained: 1, state: 'unknown' }));
+    assert.ok(!ok({ ...base, count: 4, regained: 5, state: 'regained' }), 'regained cannot exceed the lost count');
+    assert.ok(!ok({ ...base, count: 4, regained: 4, state: 'missing' }), 'a fully regained item cannot still be missing/sought');
+    assert.ok(!ok({ ...base, count: 4, regained: 4, state: 'partially_regained' }), 'a fully regained item is not partial');
+    assert.ok(!ok({ ...base, count: 4, regained: 2, state: 'regained' }), 'a partial regain is not complete');
+    assert.ok(!ok({ ...base, count: 4, regained: 2, state: 'missing' }), 'a missing item has no regained units');
+    assert.ok(!ok({ ...base, count: 4, regained: 0, state: 'partially_regained' }));
+    assert.ok(!ok({ ...base, count: 4, regained: 4, state: 'unknown' }), 'unknown needs a remainder');
+    assert.ok(!ok({ ...base, count: 0, regained: 0, state: 'missing' }), 'the lost count is positive');
   });
 
   it('a crash mid-attempt: the restart closes the attempt as counted restart_interrupted with UNKNOWN effects', async () => {
