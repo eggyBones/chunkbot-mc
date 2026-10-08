@@ -145,6 +145,38 @@ export function fixtureEntityTest(reply: string): boolean | null {
   return null;
 }
 
+/** Loaded/block conditions use vanilla's single-condition reply, without an entity count. */
+export function fixtureBlockTest(reply: string): boolean | null {
+  if (/^Test passed\.?$/i.test(reply.trim())) return true;
+  if (/^Test failed\.?$/i.test(reply.trim())) return false;
+  return null;
+}
+
+function entityCount(reply: string): number | null {
+  const m = /^Test passed[.,] Count: ([1-9]\d*)\.?$/i.exec(reply.trim());
+  if (m && Number.isSafeInteger(Number(m[1]))) return Number(m[1]);
+  return fixtureEntityTest(reply) === false ? 0 : null;
+}
+
+const EXTENDED_SAFETY_CASES = new Set(['O7P', 'O7R', 'O7F', 'O8C', 'O8N']);
+interface SafetyCaseEvidence {
+  id: string;
+  attemptedAtMs: number;
+  geometry?: 'water' | 'dry';
+  geometryVerifiedAtMs?: number;
+  stagedAtMs?: number;
+  executedAtMs?: number;
+  verifiedAtMs?: number;
+  goalId?: string;
+}
+
+/** Offline tests inject command replies and a clock; the real leased entry point supplies none. */
+export interface OrdinaryHarnessIO {
+  command(command: string): Promise<string>;
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}
+
 /** A y-only surface bob inside the pool cannot satisfy the escape oracle. */
 export function onWaterBank(p: V3): boolean {
   const { platform, pool } = LAYOUT.water;
@@ -224,7 +256,7 @@ function readRconPassword(): string {
   return line.slice('rcon.password='.length).trim();
 }
 
-class Harness {
+export class Harness {
   readonly results: Result[] = [];
   readonly setupLog: Array<{ atMs: number; scenario: string; command: string; reply: string }> = [];
   readonly interventions: Array<{ atMs: number; scenario: string; command: string; reply: string; why: string }> = [];
@@ -233,6 +265,9 @@ class Harness {
   readonly readbacks: Json[] = [];
   readonly safetySamples: Json[] = [];
   readonly sceneActors = new Map<string, { uuid: string; nbt: string }>();
+  readonly actorDiagnostics: Json[] = [];
+  readonly actorRemovals: Json[] = [];
+  readonly extendedSafetyCases = new Map<string, SafetyCaseEvidence>();
   readonly outDir: string;
   readonly dataDir: string;
   scenario = 'preflight';
@@ -245,24 +280,50 @@ class Harness {
   jevCalls = 0;
   houseInterior = 3;
   memoryConfig = MemoryConfigSchema.parse({ worldProfile: `ordinary-goals-${PINS.profile.replace(/\./g, '-')}-${Date.now().toString(36)}`, worldRevision: 1, botProfile: 'chunkbot-ordinary-goals' });
-  private readonly password: string;
+  private readonly password: string | undefined;
+  private readonly io: OrdinaryHarnessIO | undefined;
   private rconQueue: Promise<unknown> = Promise.resolve();
 
-  constructor(outDir: string) {
+  constructor(outDir: string, io?: OrdinaryHarnessIO) {
     this.outDir = outDir;
     this.dataDir = join(outDir, 'data');
     // Created only by run() after the lease check (see main()).
-    this.password = readRconPassword();
+    this.io = io;
+    if (!io) this.password = readRconPassword();
   }
 
+  private now(): number { return this.io?.now() ?? Date.now(); }
+  private pause(ms: number): Promise<void> { return this.io ? this.io.sleep(ms) : sleep(ms); }
+
   private rconRaw(command: string): Promise<string> {
-    const r = this.rconQueue.then(() => rconCommand(PINS.host, PINS.rconPort, this.password, command));
+    const r = this.rconQueue.then(() => this.io ? this.io.command(command) : rconCommand(PINS.host, PINS.rconPort, this.password!, command));
     this.rconQueue = r.catch(() => undefined);
     return r;
   }
   async setup(command: string): Promise<string> {
+    if (/^summon /.test(command)) await this.noForeignSceneActors();
     const reply = await this.rconRaw(command);
-    this.setupLog.push({ atMs: Date.now(), scenario: this.scenario, command, reply: reply.slice(0, 200) });
+    this.setupLog.push({ atMs: this.now(), scenario: this.scenario, command, reply: reply.slice(0, 200) });
+    const verb = command.split(' ')[0], text = reply.trim();
+    const recognized = verb === 'fill' ? /^(Successfully filled \d+ block\(s\)|No blocks were filled)$/.test(text)
+      : verb === 'setblock' ? /^(Changed the block at -?\d+, -?\d+, -?\d+|Could not set the block)$/.test(text)
+      : verb === 'tp' ? /^Teleported .+ to -?[\d.]+, -?[\d.]+, -?[\d.]+$/.test(text)
+      : verb === 'kill' ? /^(Killed .+|No entity was found)$/.test(text)
+      : verb === 'clear' ? /^(Removed \d+ item\(s\) from player .+|No items were found on player .+)$/.test(text)
+      : verb === 'give' ? /^Gave \d+ .+ to .+$/.test(text)
+      : verb === 'item' ? /^Replaced .+$/.test(text)
+      : verb === 'effect' ? /^(Applied effect .+ to .+|Removed every effect from .+|Target has no effects to remove)$/.test(text)
+      : verb === 'summon' ? /^Summoned new .+$/.test(text)
+      : verb === 'gamemode' ? text === '' || /^Set .+ game mode to .+$/.test(text)
+      : verb === 'forceload' ? command.startsWith('forceload add ') ? /^(Marked (chunk \[-?\d+, -?\d+\]|\d+ chunks) in \S+( from \[-?\d+, -?\d+\] to \[-?\d+, -?\d+\])? to be force loaded|No chunks were marked for force loading)$/.test(text)
+        : command.startsWith('forceload remove ') && /^(Unmarked (chunk \[-?\d+, -?\d+\]|\d+ chunks) in \S+( from \[-?\d+, -?\d+\] to \[-?\d+, -?\d+\])? for force loading|No chunks were removed from force loading)$/.test(text)
+      : false;
+    check(recognized, `unknown mutation reply; no setup/cleanup credit: ${command}: ${reply}`);
+    if (verb === 'gamemode') check(/has the following entity data: 0$/.test((await this.read(`data get entity ${BOT} playerGameType`)).trim()), 'current Survival game mode must be proved even when command feedback is empty');
+    if (verb === 'setblock' && text === 'Could not set the block') {
+      const args = command.split(' ');
+      check(fixtureBlockTest(await this.read(`execute if block ${args.slice(1, 5).join(' ')}`)) === true, 'unchanged setblock requires exact current block/state proof');
+    }
     const tag = /^summon \w+ .+Tags:\["([a-zA-Z0-9_]+)"\]/.exec(command)?.[1];
     if (tag) {
       check(/^Summoned new /i.test(reply), `summon failed: ${reply}`);
@@ -280,32 +341,102 @@ class Harness {
     return this.rconRaw(command);
   }
   async read(command: string): Promise<string> {
-    const startedAtMs = Date.now();
+    const startedAtMs = this.now();
     const reply = await this.query(command);
-    this.readbacks.push({ scenario: this.scenario, startedAtMs, atMs: Date.now(), command, reply });
+    this.readbacks.push({ scenario: this.scenario, startedAtMs, atMs: this.now(), command, reply });
     return reply;
   }
-  async noForeignSceneActors(): Promise<void> {
-    for (const [tag, actor] of this.sceneActors) {
-      const count = await this.read(`execute if entity @e[tag=${tag},${ENTITY_BOX}]`);
-      const present = fixtureEntityTest(count);
-      check(present !== null, 'staging_unready: unknown actor presence');
-      if (present) check(/^Test passed[.,] Count: 1\.?$/i.test(count.trim()) && parseTrialUuid(await this.read(`data get entity @e[tag=${tag},limit=1,${ENTITY_BOX}] UUID`)) === actor.uuid, 'staging_unready: actor count/identity changed');
+  /** Identity diagnostics are read-only. Unknown/truncated/changing occupancy never grants a reset. */
+  private async requireSceneLoaded(): Promise<void> {
+    for (const chunk of AREA_CHUNKS) {
+      const [cx, cz] = chunk.split(',').map(Number) as [number, number];
+      const x = Math.max(AREA.x1, cx * 16), z = Math.max(AREA.z1, cz * 16);
+      check(fixtureBlockTest(await this.read(`execute if loaded ${x} -60 ${z}`)) === true, 'every current original scene chunk must be loaded for actor absence/census');
     }
-    const excludes = [...this.sceneActors.keys()].map((tag) => `tag=!${tag}`).join(',');
+  }
+  async captureSceneActors(): Promise<boolean> {
+    const base = `type=!player,type=!item,type=!experience_orb,${ENTITY_BOX}`;
+    const sample: Json = { scenario: this.scenario, startedAtMs: this.now(), actors: [], complete: false };
+    this.actorDiagnostics.push(sample);
+    try {
+      await this.requireSceneLoaded();
+      const count = entityCount(await this.read(`execute if entity @e[${base}]`));
+      sample.count = count;
+      check(count !== null && count <= 16, 'unknown/oversized actor census; diagnostic cap is not absence');
+      const seen: string[] = [];
+      for (let i = 0; i < count; i++) {
+        const exclude = seen.map((nbt) => `,nbt=!{UUID:${nbt}}`).join('');
+        const selector = `@e[${base}${exclude},limit=1]`;
+        const uuidReply = await this.read(`data get entity ${selector} UUID`);
+        const uuid = parseTrialUuid(uuidReply), nbt = /\[I;[^\]]+\]$/.exec(uuidReply.trim())?.[0];
+        check(uuid && nbt && !seen.includes(nbt), 'unique census UUID required');
+        const exact = `@e[nbt={UUID:${nbt}},${ENTITY_BOX},limit=1]`;
+        const body = await this.read(`data get entity ${exact}`);
+        const position = await this.entityPosition(exact);
+        const tags = await this.read(`data get entity ${exact} Tags`);
+        const packet = Object.values(this.owner?.entities ?? {}).find((e) => e.uuid?.replaceAll('-', '').toLowerCase() === uuid.replaceAll('-', '').toLowerCase());
+        const key = packet?.name ? `minecraft:${packet.name}` : null;
+        const speciesConfirmed = key ? entityCount(await this.read(`execute if entity @e[type=${key},nbt={UUID:${nbt}},${ENTITY_BOX}]`)) === 1 : false;
+        const unique = entityCount(await this.read(`execute if entity @e[nbt={UUID:${nbt}},${ENTITY_BOX}]`)) === 1;
+        sample.actors.push({ uuid, nbt, position, tags, body: body.slice(0, 8_192), bodyTruncated: body.length > 8_192, packetEntityId: packet?.id ?? null, key: speciesConfirmed ? key : null, unique, recordedTags: [...this.sceneActors].filter(([, a]) => a.uuid === uuid).map(([tag]) => tag) });
+        check(unique && /has the following entity data:/.test(body) && /has the following entity data: \[.*\]$/.test(tags.trim()) && body.length <= 8_192, 'incomplete current census identity/body/tags');
+        seen.push(nbt);
+      }
+      check(entityCount(await this.read(`execute if entity @e[${base}]`)) === count, 'actor census changed during readback');
+      sample.complete = true;
+    } catch (error) { sample.error = error instanceof Error ? error.message : String(error); }
+    sample.atMs = this.now();
+    return sample.complete;
+  }
+
+  private async recordedActorPresence(tag: string, actor: { uuid: string; nbt: string }): Promise<boolean> {
+    const exact = `@e[tag=${tag},nbt={UUID:${actor.nbt}},${ENTITY_BOX}]`;
+    const inside = entityCount(await this.read(`execute if entity ${exact}`));
+    const global = entityCount(await this.read(`execute if entity @e[nbt={UUID:${actor.nbt}}]`));
+    check(inside !== null && global !== null, 'recorded actor presence unknown; no removal/absence credit');
+    if (inside === 0 && global === 0) { await this.requireSceneLoaded(); return false; }
+    check(inside === 1 && global === 1 && entityCount(await this.read(`execute if entity @e[tag=${tag},${ENTITY_BOX}]`)) === 1, 'recorded actor escaped box, lost tag or shares a tag; no removal');
+    check(parseTrialUuid(await this.read(`data get entity @e[tag=${tag},nbt={UUID:${actor.nbt}},limit=1,${ENTITY_BOX}] UUID`)) === actor.uuid, 'recorded actor current UUID changed');
+    return true;
+  }
+
+  async noForeignSceneActors(): Promise<void> {
+    const complete = await this.captureSceneActors();
+    const exclude: string[] = [];
+    for (const [tag, actor] of this.sceneActors) {
+      if (await this.recordedActorPresence(tag, actor)) exclude.push(`nbt=!{UUID:${actor.nbt}}`);
+    }
+    const excludes = exclude.join(',');
     const reply = await this.read(`execute if entity @e[type=!player,type=!item,type=!experience_orb,${ENTITY_BOX}${excludes ? `,${excludes}` : ''}]`);
-    check(fixtureEntityTest(reply) === false, `staging_unready: foreign/ambient/group/cloud occupancy; never removed: ${reply}`);
+    check(complete && fixtureEntityTest(reply) === false, `staging_unready: foreign/ambient/group/cloud occupancy or incomplete identity census; never removed: ${reply}`);
+  }
+  async removeKnownSceneActors(): Promise<void> {
+    const errors: string[] = [];
+    for (const [tag, actor] of this.sceneActors) {
+      const removal: Json = { scenario: this.scenario, atMs: this.now(), tag, uuid: actor.uuid, box: ENTITY_BOX, removed: false, absent: false };
+      this.actorRemovals.push(removal);
+      try {
+        if (await this.recordedActorPresence(tag, actor)) {
+          const reply = await this.setup(`kill @e[tag=${tag},nbt={UUID:${actor.nbt}},${ENTITY_BOX}]`);
+          check(/^Killed /.test(reply), `recorded actor removal unreadable: ${reply}`);
+          removal.removed = true;
+        }
+        check(fixtureEntityTest(await this.read(`execute if entity @e[nbt={UUID:${actor.nbt}}]`)) === false, 'recorded actor absence not proved after bounded removal');
+        removal.absent = true;
+        this.sceneActors.delete(tag);
+      } catch (error) {
+        removal.error = error instanceof Error ? error.message : String(error);
+        errors.push(`${tag}/${actor.uuid}: ${removal.error}`);
+      }
+    }
+    check(errors.length === 0, `known actor cleanup incomplete: ${errors.join('; ')}`);
   }
   async removeSceneActors(): Promise<void> {
+    await this.removeKnownSceneActors();
     await this.noForeignSceneActors();
-    for (const [tag, actor] of this.sceneActors) {
-      await this.setup(`kill @e[tag=${tag},nbt={UUID:${actor.nbt}},${ENTITY_BOX}]`);
-      check(fixtureEntityTest(await this.read(`execute if entity @e[nbt={UUID:${actor.nbt}}]`)) === false, 'owned scene actor escaped the authorized removal box; cleanup not reconciled');
-    }
     for (const type of ['item', 'experience_orb']) await this.setup(`kill @e[type=${type},${ENTITY_BOX}]`);
-    await sleep(1_600);
+    await this.pause(1_600);
     check(fixtureEntityTest(await this.read(`execute if entity @e[type=!player,${ENTITY_BOX}]`)) === false, 'no scene entities after bounded owned cleanup');
-    this.sceneActors.clear();
   }
   journal(): Json[] { return readJsonl(join(dirname(this.eventsPath), 'planner.jsonl')); }
   dashboard(): Json {
@@ -327,7 +458,10 @@ class Harness {
     this.cleanup.push({ atMs: Date.now(), step, ok, detail: detail.slice(0, 300) });
   }
   async blockIs(p: V3, key: string): Promise<boolean> {
-    return /Test passed/i.test(await this.query(`execute if block ${p.x} ${p.y} ${p.z} ${key}`));
+    const reply = await this.read(`execute if block ${p.x} ${p.y} ${p.z} ${key}`);
+    const result = fixtureBlockTest(reply);
+    check(result !== null, `unknown block test reply: ${reply}`);
+    return result;
   }
   async entityExists(tag: string): Promise<boolean> {
     const reply = await this.query(`execute if entity @e[tag=${tag},${ENTITY_BOX}]`);
@@ -336,7 +470,7 @@ class Harness {
     return exists;
   }
   async health(name: string): Promise<number> {
-    const r = await this.query(`data get entity ${name} Health`);
+    const r = await this.read(`data get entity ${name} Health`);
     return Number(/(-?[\d.]+)f?$/.exec(r.trim())?.[1] ?? NaN);
   }
 
@@ -368,13 +502,15 @@ class Harness {
     const { x1, z1, x2, z2 } = AREA;
     check(this.forceloadBefore, 'the forceloaded set must be recorded before the first forceload change');
     await this.noForeignSceneActors();
+    if (/^O(?:7[WPRF]|8[MADCN])$/.test(this.scenario)) await this.requireSuppressedAmbientSpawns();
     await this.setup(`forceload add ${x1} ${z1} ${x2} ${z2}`);
     await this.setup(`tp ${BOT} ${SCENE.start.x} ${SCENE.start.y + 30} ${SCENE.start.z}`);
     await this.setup(`effect give ${BOT} slow_falling 5 0 true`);
     await this.removeSceneActors();
+    await this.noForeignSceneActors();
     for (const c of this.blockResetCommands()) await this.setup(c);
     for (const c of [`clear ${BOT}`, `give ${BOT} minecraft:bread 8`, `clear ${OWNER}`, `effect clear ${BOT}`, `gamemode survival ${BOT}`, `tp ${BOT} ${SCENE.start.x} ${SCENE.start.y} ${SCENE.start.z} 0 0`, `tp ${OWNER} ${LAYOUT.ownerDefault.x} ${LAYOUT.ownerDefault.y} ${LAYOUT.ownerDefault.z} 0 0`]) await this.setup(c);
-    await sleep(1_500);
+    await this.pause(1_500);
   }
   blockResetCommands(): string[] {
     const { x1, z1, x2, z2 } = AREA;
@@ -430,8 +566,8 @@ class Harness {
   }
 
   async waitForTruth(label: string, fn: () => Promise<boolean>, timeoutMs = 60_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) { if (await fn()) return; await sleep(200); }
+    const deadline = this.now() + timeoutMs;
+    while (this.now() < deadline) { if (await fn() && this.now() <= deadline) return; await this.pause(200); }
     throw new Error(`bounded server-truth wait expired: ${label}`);
   }
 
@@ -440,7 +576,7 @@ class Harness {
     await this.setup(`fill ${p.x1} ${p.y1} ${p.z1} ${p.x2} ${p.y2} ${p.z2} dirt`);
     await this.setup(`fill ${pool.x1} ${p.y1} ${pool.z1} ${pool.x2} ${p.y2} ${pool.z2} water`);
     for (const [name, at] of [[BOT, LAYOUT.water.bot], [OWNER, LAYOUT.water.owner]] as const) await this.setup(`tp ${name} ${at.x} ${at.y} ${at.z}`);
-    await sleep(800);
+    await this.pause(800);
   }
 
   async triggerTeleport(name: typeof BOT | typeof OWNER, p: V3, why: string): Promise<void> {
@@ -449,14 +585,50 @@ class Harness {
     this.interventions.push({ atMs: Date.now(), scenario: this.scenario, command, reply, why });
     check(/^Teleported /i.test(reply), `staging_unready: teleport failed: ${reply}`);
   }
+  async requireSuppressedAmbientSpawns(): Promise<void> {
+    const reply = await this.read('gamerule do_mob_spawning');
+    check(/^Gamerule do_mob_spawning is currently set to: false\.?$/i.test(reply.trim()), `staging_unready: coordinator must record/suppress/restore ambient spawning before this driver; harness never changes it: ${reply}`);
+  }
+  async requireNonPeaceful(): Promise<void> {
+    const reply = await this.read('difficulty');
+    check(/^The difficulty is (easy|normal|hard)\.?$/i.test(reply.trim()), `staging_unready: unchanged non-peaceful difficulty must be readable; never changed: ${reply}`);
+  }
+  beginExtendedSafetyCase(id: string): void {
+    check(EXTENDED_SAFETY_CASES.has(id) && !this.extendedSafetyCases.has(id), 'one attempt per extended case; history is never reset/retried');
+    this.extendedSafetyCases.set(id, { id, attemptedAtMs: this.now() });
+  }
+  async prepareExtendedSafetyGeometry(kind: 'water' | 'dry'): Promise<void> {
+    const trial = this.extendedSafetyCases.get(this.scenario);
+    check(trial && trial.geometryVerifiedAtMs === undefined, 'geometry belongs to the current single case attempt');
+    await this.resetScene();
+    if (kind === 'water') { await this.waterScene(); await this.verifyWaterGeometry(); }
+    else await this.verifyDryMobGeometry();
+    trial.geometry = kind;
+    trial.geometryVerifiedAtMs = this.now();
+  }
+  markExtendedSafetyStaged(): void {
+    const trial = this.extendedSafetyCases.get(this.scenario);
+    check(trial?.geometryVerifiedAtMs !== undefined && trial.stagedAtMs === undefined, 'current geometry and case-specific prerequisites precede staging credit');
+    trial.stagedAtMs = this.now();
+  }
+  markExtendedSafetyExecuted(goalId: string): void {
+    const trial = this.extendedSafetyCases.get(this.scenario);
+    check(trial?.stagedAtMs !== undefined && trial.executedAtMs === undefined && goalId, 'only an actually staged control and current admitted goal can begin execution');
+    trial.executedAtMs = this.now(); trial.goalId = goalId;
+  }
+  extendedSafetyReport(): Json {
+    const cases = [...this.extendedSafetyCases.values()];
+    const executed = cases.filter((c) => c.executedAtMs !== undefined);
+    return { attemptedCases: cases.map((c) => c.id), stagedCases: cases.filter((c) => c.stagedAtMs !== undefined).map((c) => c.id), executedCases: executed.map((c) => c.id), verifiedCases: cases.filter((c) => c.verifiedAtMs !== undefined).map((c) => c.id), historyAcceptance: executed.length ? 'requires_verification' : 'not_exercised', cases };
+  }
   async verifyWaterGeometry(): Promise<void> {
     const { platform: p, pool } = LAYOUT.water;
     for (const x of [pool.x1, 207, pool.x2]) for (const z of [pool.z1, 206, pool.z2]) for (const y of [p.y1, p.y2]) {
-      check(fixtureEntityTest(await this.read(`execute if loaded ${x} ${y} ${z} if block ${x} ${y} ${z} minecraft:water`)) === true, 'staging_unready: original deep pool geometry unverified');
+      check(fixtureBlockTest(await this.read(`execute if loaded ${x} ${y} ${z} if block ${x} ${y} ${z} minecraft:water`)) === true, 'staging_unready: original deep pool geometry unverified');
     }
     for (const at of [LAYOUT.water.bot, LAYOUT.water.owner, LAYOUT.safety.eastOwner, { x: 211.5, y: -56, z: 206.5 }, { x: 203.5, y: -56, z: 206.5 }]) {
       const x = Math.floor(at.x), z = Math.floor(at.z);
-      for (const [y, key] of [[-57, 'dirt'], [-56, 'air'], [-55, 'air']] as const) check(fixtureEntityTest(await this.read(`execute if loaded ${x} ${y} ${z} if block ${x} ${y} ${z} minecraft:${key}`)) === true, 'staging_unready: dry supported bank/corridor unverified');
+      for (const [y, key] of [[-57, 'dirt'], [-56, 'air'], [-55, 'air']] as const) check(fixtureBlockTest(await this.read(`execute if loaded ${x} ${y} ${z} if block ${x} ${y} ${z} minecraft:${key}`)) === true, 'staging_unready: dry supported bank/corridor unverified');
     }
     await this.noForeignSceneActors();
   }
@@ -471,7 +643,7 @@ class Harness {
     // All supported/sight/escape cells used by the original dry scene. Read
     // them again after any creeper response; an explosion is never hidden by reset.
     for (const x of [201, 203, 205, 207, 210, 213, 216]) for (const z of [203, 205, 206, 208]) for (const [y, key] of [[-61, 'grass_block'], [-60, 'air'], [-59, 'air']] as const) {
-      check(fixtureEntityTest(await this.read(`execute if loaded ${x} ${y} ${z} if block ${x} ${y} ${z} minecraft:${key}`)) === true, 'staging_unready: original dry mob standing/sight/escape geometry unverified');
+      check(fixtureBlockTest(await this.read(`execute if loaded ${x} ${y} ${z} if block ${x} ${y} ${z} minecraft:${key}`)) === true, 'staging_unready: original dry mob standing/sight/escape geometry unverified');
     }
     await this.noForeignSceneActors();
   }
@@ -585,30 +757,54 @@ class Harness {
     const observer = this.owner;
     const damage: Array<{ entityId: number; sourceCauseId: number; atMs: number }> = [];
     const onDamage = (p: { entityId: number; sourceCauseId: number }) => {
-      damage.push({ entityId: p.entityId, sourceCauseId: p.sourceCauseId, atMs: Date.now() });
+      damage.push({ entityId: p.entityId, sourceCauseId: p.sourceCauseId, atMs: this.now() });
+      this.safetySamples.push({ scenario: this.scenario, atMs: this.now(), stagingDamageEvent: { ...p } });
       if (damage.length > 32) damage.shift();
     };
     observer._client.on('damage_event', onDamage);
     try {
       await summon();
-      const reply = await this.query(`data get entity @e[tag=${tag},limit=1,${ENTITY_BOX}] UUID`);
-      const parts = /\[I;\s*(-?\d+),\s*(-?\d+),\s*(-?\d+),\s*(-?\d+)\]/.exec(reply);
-      check(parts, `staging UUID unreadable: ${reply}`);
-      const uuid = parts.slice(1).map((n) => (Number(n) >>> 0).toString(16).padStart(8, '0')).join('');
-      await this.waitForTruth('current server-attributed zombie melee engagement before admission', async () => {
+      const actor = this.sceneActors.get(tag);
+      check(actor, 'recorded summoned UUID required for defense staging');
+      const uuid = actor.uuid;
+      let settled: { since: number; hit: typeof damage[number]; position: V3; samples: number } | undefined;
+      await this.waitForTruth('current server-attributed grounded zombie melee engagement after knockback settles, before admission', async () => {
         const self = observer.players[BOT]?.entity;
-        const threat = Object.values(observer.entities).find((e) => e.uuid?.replaceAll('-', '').toLowerCase() === uuid);
-        if (!self || !threat || threat.name !== 'zombie') return false;
-        const hit = damage.findLast((d) => currentMeleeDamage(d, self.id, threat.id, Date.now()));
-        if (!hit) return false;
-        const p = await this.position();
-        const r = await this.query(`data get entity @e[tag=${tag},limit=1,${ENTITY_BOX}] Pos`);
-        const m = /\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]/.exec(r);
-        check(m, `staging threat position unreadable: ${r}`);
-        const distance = Math.hypot(p.x-Number(m[1]), p.y-Number(m[2]), p.z-Number(m[3]));
-        if (distance > 3.5 || !currentMeleeDamage(hit, self.id, threat.id, Date.now())) return false;
+        const threat = Object.values(observer.entities).find((e) => e.uuid?.replaceAll('-', '').toLowerCase() === uuid.replaceAll('-', '').toLowerCase());
+        const hit = self && threat && threat.name === 'zombie' ? damage.findLast((d) => currentMeleeDamage(d, self.id, threat.id, this.now())) : undefined;
+        if (!self || !threat || !hit) { settled = undefined; return false; }
+        const startedAtMs = this.now(), p = await this.entityPosition(BOT);
+        const ground = fixtureEntityTest(await this.read(`execute if entity @a[name=${BOT},nbt={OnGround:1b},${ENTITY_BOX}]`));
+        check(ground !== null, 'staging_unready: server OnGround is unknown');
+        if (!ground) { settled = undefined; return false; }
+        const mob = await this.mobIdentity(tag, 'minecraft:zombie');
+        check(mob.uuid === uuid && mob.entityId === threat.id, 'staging_unready: current melee actor identity changed');
+        const adult = await this.read(`data get entity @e[tag=${tag},nbt={UUID:${actor.nbt}},limit=1,${ENTITY_BOX}] IsBaby`);
+        check(/has the following entity data: 0b$/.test(adult.trim()), 'staging_unready: explicit current adult proof required');
+        const meleeDistance = distance(p, mob.position);
+        if (meleeDistance > 3.5 || Math.abs(p.y - (-60)) > 0.1) { settled = undefined; return false; }
+        const x = Math.floor(p.x), z = Math.floor(p.z);
+        for (const [y, key] of [[-61, 'grass_block'], [-60, 'air'], [-59, 'air']] as const) check(fixtureBlockTest(await this.read(`execute if loaded ${x} ${y} ${z} if block ${x} ${y} ${z} minecraft:${key}`)) === true, 'staging_unready: current melee dry support/body unknown');
+        const inventory = await this.read(`data get entity ${BOT} Inventory`);
+        check(/has the following entity data:/.test(inventory) && ['minecraft:iron_sword', 'minecraft:iron_helmet', 'minecraft:iron_chestplate'].every((key) => inventory.includes(`id: "${key}"`)), 'staging_unready: current server gear missing/unknown');
+        const snapshot = await this.observe();
+        const status = this.dashboard();
+        const prior = status.directive.goal;
+        check(status.directive.mode === 'idle' && (!prior || (prior.terminal && ['completed', 'cancelled', 'blocked', 'failed'].includes(prior.phase))) && !status.directive.task?.current && status.directive.pause?.paused === true && status.directive.safety?.authority === 'none' && status.directive.safety?.state === 'no_authority', 'staging_unready: no active owner goal or safety authority before defense admission');
+        check(snapshot.equipment.hand === 'minecraft:iron_sword' && snapshot.equipment.head === 'minecraft:iron_helmet' && snapshot.equipment.torso === 'minecraft:iron_chestplate', 'staging_unready: actual current equipped gear not ready');
         check(await this.health(BOT) >= 14, 'staged engagement retains defense health readiness');
-        ev.push(`PRECONDITION: server damage_event victim ${self.id}, cause ${threat.id}, tagged UUID ${uuid}, age ${Date.now()-hit.atMs}ms, current RCON distance ${distance.toFixed(2)}; no goal/safety authority during staging`);
+        await this.noForeignSceneActors();
+        const current = await this.entityPosition(BOT);
+        const currentThreat = await this.entityPosition(`@e[tag=${tag},nbt={UUID:${actor.nbt}},limit=1,${ENTITY_BOX}]`);
+        const stillGrounded = fixtureEntityTest(await this.read(`execute if entity @a[name=${BOT},nbt={OnGround:1b},${ENTITY_BOX}]`));
+        check(stillGrounded !== null, 'staging_unready: final grounded readback unknown');
+        if (!stillGrounded || distance(current, p) > 0.1 || distance(current, currentThreat) > 3.5 || this.now() - startedAtMs > 1_500 || !currentMeleeDamage(hit, self.id, threat.id, this.now()) || damage.findLast((d) => currentMeleeDamage(d, self.id, threat.id, this.now())) !== hit) { settled = undefined; return false; }
+        if (!settled || settled.hit !== hit || distance(settled.position, current) > 0.1) settled = { since: this.now(), hit, position: current, samples: 1 };
+        else settled.samples++;
+        const proof = { scenario: this.scenario, atMs: this.now(), defenseStaging: { uuid, selfId: self.id, threatId: threat.id, hitAtMs: hit.atMs, hitAgeMs: this.now()-hit.atMs, onGround: true, drySupport: true, currentEquipment: snapshot.equipment, serverInventory: inventory, meleeDistance, settledMs: this.now()-settled.since, samples: settled.samples } };
+        this.safetySamples.push(proof);
+        if (this.now()-settled.since < 250 || settled.samples < 2) return false;
+        ev.push(`PRECONDITION: server damage_event victim ${self.id}, cause ${threat.id}, tagged UUID ${uuid}, age ${this.now()-hit.atMs}ms, current RCON distance ${meleeDistance.toFixed(2)}, grounded dry support settled ${this.now()-settled.since}ms/${settled.samples} samples, current equipped gear; no goal/safety authority during staging`);
         return true;
       }, 10_000);
     } finally { observer._client.removeListener('damage_event', onDamage); }
@@ -729,16 +925,22 @@ class Harness {
   async scenarioRun(id: string, title: string, only: Set<string> | undefined, fn: (ev: string[]) => Promise<void>): Promise<void> {
     if (only && !only.has(id)) return;
     this.scenario = id;
+    if (EXTENDED_SAFETY_CASES.has(id)) this.beginExtendedSafetyCase(id);
     const evidence: string[] = [];
     const started = Date.now();
     process.stdout.write(`RUN  ${id} ${title}\n`);
     try {
       await this.quiesce();
       await fn(evidence);
+      const extended = this.extendedSafetyCases.get(id);
+      if (extended) { check(extended.executedAtMs !== undefined, 'an unexecuted stage cannot pass'); this.dashboard(); extended.verifiedAtMs = this.now(); }
       this.results.push({ id, title, status: 'pass', evidence });
       process.stdout.write(`PASS ${id} (${Math.round((Date.now() - started) / 1000)} s)\n`);
     } catch (error) {
       evidence.push(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+      if (this.extendedSafetyCases.get(id)?.executedAtMs !== undefined) {
+        try { this.dashboard(); } catch (sampleError) { evidence.push(`Post-failure actual history unavailable: ${sampleError instanceof Error ? sampleError.message : String(sampleError)}`); }
+      }
       this.results.push({ id, title, status: 'fail', evidence });
       process.stdout.write(`FAIL ${id} ${title}\n  ${evidence.at(-1)?.slice(0, 800)}\n`);
     }
@@ -1036,9 +1238,10 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     ]) await h.scenarioRun(mode.id, `ordinary follow: ${mode.title} through the single safety actuator`, only, async (ev) => {
       const { armed, engaging } = mode;
       await freshCli(`mob-${mode.id.toLowerCase()}`); await h.resetScene();
-      check(!/peaceful/i.test(await h.query('difficulty')), 'mob trial needs an unchanged non-peaceful fixture; no automatic settings change');
+      await h.requireNonPeaceful();
       for (const c of [`effect give ${BOT} minecraft:instant_health 1 4 true`, `effect give ${BOT} minecraft:saturation 1 10 true`]) await h.setup(c);
-      if (armed) for (const c of [`item replace entity ${BOT} hotbar.0 with minecraft:iron_sword`, `item replace entity ${BOT} armor.head with minecraft:iron_helmet`, `item replace entity ${BOT} armor.chest with minecraft:iron_chestplate`]) await h.setup(c);
+      if (armed) await h.armSafetyControl();
+      await h.verifyDryMobGeometry();
       const tag = `og_${mode.id.toLowerCase()}`;
       const summon = async () => {
         const at = await h.position();
@@ -1079,17 +1282,19 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     // One process/service/history for ALL new controls. Stop/new manual
     // admission is allowed; a failed episode is never erased by restarting.
     let extendedSafetyStarted = false;
-    const extendedSafety = async () => {
+    const extendedSafety = async (geometry: 'water' | 'dry') => {
       if (!extendedSafetyStarted) {
         await freshCli('safety-ordinary');
         check(activeProfile.limits.travelRadius === 128 && activeProfile.limits.observationRadius === 32 && activeProfile.locator?.enabled !== false, 'original default 128/32 and locator profile required');
         extendedSafetyStarted = true;
       }
-      await h.resetScene();
+      h.dashboard(); // Same actual service before even a failed geometry/staging attempt.
+      await h.prepareExtendedSafetyGeometry(geometry);
     };
     const waterTrigger = async (goalId: string) => {
       const atMs = Date.now();
       await h.triggerTeleport(BOT, LAYOUT.water.submerged, 'recorded water hazard trigger; not autonomous movement/outcome credit');
+      h.markExtendedSafetyExecuted(goalId);
       const episode = await h.waitEvent((e) => e.type === 'safety_episode_started' && e.suspended?.goalId === goalId && timeOf(e) >= atMs, 10_000, 'current local water episode');
       check(episode.response === 'escape_water', 'only water escape response expected');
       return { atMs, episode };
@@ -1108,7 +1313,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     };
 
     await h.scenarioRun('O7P', 'water intervention during an actual in-flight subscription planner request, before its real response', only, async (ev) => {
-      await extendedSafety(); await h.waterScene(); await h.verifyWaterGeometry();
+      await extendedSafety('water');
       const goal = await h.goal('follow me');
       let pending: Json | undefined;
       await h.waitForTruth('genuine current subscription planner turn', async () => {
@@ -1117,6 +1322,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       }, 30_000);
       // No simulated delay, extra turn or retry to manufacture the race.
       check(pendingRealTurn(h.events(), h.journal(), goal.goalId)?.requestId === pending!.requestId, 'staging_unready: real planner already settled before trigger');
+      h.markExtendedSafetyStaged();
       const { atMs, episode } = await waterTrigger(goal.goalId);
       await h.waitForTruth('fresh planner-wait safety status', async () => Boolean(currentProtectedStatus(goal.goalId, episode)), 2_000);
       await h.waitEvent((e) => e.type === 'planner_turn_completed' && e.requestId === pending!.requestId, 60_000, 'same actual planner completion');
@@ -1129,7 +1335,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     });
 
     await h.scenarioRun('O7R', 'active ordinary follow lease preempted by water then freshly resumes the same goal/epoch/counters', only, async (ev) => {
-      await extendedSafety(); await h.waterScene(); await h.verifyWaterGeometry();
+      await extendedSafety('water');
       await h.triggerTeleport(OWNER, LAYOUT.safety.eastOwner, 'visible owner staging for actual ordinary movement');
       const origin = await h.position(), motionSince = Date.now();
       const goal = await h.goal('follow me');
@@ -1137,6 +1343,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       const before = h.dashboard();
       check(before.directive.goal?.id === goal.goalId && before.directive.goal.outcome, 'code-bound ordinary outcome before preemption');
       check(!h.events().some((e) => e.type === 'skill_outcome' && e.actionId === action.actionId), 'staging_unready: original action no longer active');
+      h.markExtendedSafetyStaged();
       const { episode } = await waterTrigger(goal.goalId);
       verifyPreemption(h.events(), episode, action, before.directive.goal.epoch);
       await h.waitForTruth('fresh active-work safety status', async () => Boolean(currentProtectedStatus(goal.goalId, episode)), 2_000);
@@ -1154,9 +1361,9 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     });
 
     await h.scenarioRun('O7F', 'far unseen owner route/cue water protection survives genuine cue withdrawal with finite unchanged authority', only, async (ev) => {
-      await extendedSafety(); await h.waterScene(); await h.verifyWaterGeometry();
+      await extendedSafety('water');
       const commands = ownerStandingCommands(LAYOUT.safety.farOwner, OWNER);
-      for (const command of [commands.support, commands.feet, commands.head]) check(fixtureEntityTest(await h.read(command)) === true, 'staging_unready: additional OWNER-only point must be loaded, supported and air');
+      for (const command of [commands.support, commands.feet, commands.head]) check(fixtureBlockTest(await h.read(command)) === true, 'staging_unready: additional OWNER-only point must be loaded, supported and air');
       check(fixtureEntityTest(await h.read(commands.occupants)) === false, 'staging_unready: additional OWNER-only body occupied/unknown');
       await h.triggerTeleport(OWNER, LAYOUT.safety.farOwner, 'approved owner-only far cue point; no block writes or bot travel outside scene');
       const guard = h.guardFarScene();
@@ -1172,6 +1379,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
         check(route?.state === 'leg_active' && route.legsUsed >= 1 && before.directive.autonomy.locator.actionable && before.directive.autonomy.locator.direction?.includes('east'), 'actual current counted route leg toward a fresh coarse east cue');
         verifyHiddenOwner(await h.observe(), LAYOUT.safety.farOwner);
         check(!h.events().some((e) => e.type === 'skill_outcome' && e.actionId === action.actionId), 'staging_unready: far route action must still be active');
+        h.markExtendedSafetyStaged();
         const { episode } = await waterTrigger(goal.goalId);
         verifyPreemption(h.events(), episode, action, before.directive.goal.epoch);
         const withdrawalAtMs = Date.now();
@@ -1207,17 +1415,19 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     });
 
     await h.scenarioRun('O8C', 'equipped ordinary follow retreats from an effect-free tagged visible creeper without attacks', only, async (ev) => {
-      await extendedSafety(); await h.verifyDryMobGeometry();
+      await extendedSafety('dry');
       await h.triggerTeleport(BOT, LAYOUT.safety.dryBot, 'original dry mob origin');
       await h.armSafetyControl();
-      check(!/peaceful/i.test(await h.read('difficulty')), 'staging_unready: unchanged non-peaceful fixture required');
+      await h.requireNonPeaceful();
       await h.setup(`summon creeper ${LAYOUT.safety.creeper.x} ${LAYOUT.safety.creeper.y} ${LAYOUT.safety.creeper.z} {PersistenceRequired:1b,Tags:["og_o8c"]}`);
       await h.waitForTruth('actual visible tagged creeper packets', async () => Boolean(Object.values(h.owner!.entities).find((e) => e.uuid === h.sceneActors.get('og_o8c')?.uuid)), 5_000);
       await h.effectFreeCreeper('og_o8c');
       const staged = await h.mobIdentity('og_o8c', 'minecraft:creeper');
       check(distance(await h.position(), staged.position) >= 4.5, 'staging_unready: initial non-exploding visible creeper separation required');
       await h.verifyDryMobGeometry(); await h.effectFreeCreeper('og_o8c');
+      h.markExtendedSafetyStaged();
       const since = Date.now(), goal = await h.goal('follow me');
+      h.markExtendedSafetyExecuted(goal.goalId);
       const ep = await h.waitEvent((e) => e.type === 'safety_episode_started' && e.suspended?.goalId === goal.goalId && timeOf(e) >= since, 15_000, 'ordinary local creeper retreat');
       check(ep.response === 'retreat' && ep.hazards.includes('creeper'), 'equipped creeper must remain avoidance-only');
       const end = await h.waitEvent((e) => e.type === 'safety_episode_ended' && e.episodeId === ep.episodeId, 60_000, 'finite creeper response');
@@ -1232,7 +1442,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     });
 
     await h.scenarioRun('O8N', 'verified unprovoked wolf, passive cow and visible owner: no intervention, attacks or damage', only, async (ev) => {
-      await extendedSafety(); await h.verifyDryMobGeometry();
+      await extendedSafety('dry');
       await h.triggerTeleport(BOT, LAYOUT.safety.dryBot, 'original dry neutral-control origin');
       await h.triggerTeleport(OWNER, { x: 205.5, y: -60, z: 207.5 }, 'owned visible passive-control owner within follow radius');
       await h.armSafetyControl();
@@ -1247,8 +1457,11 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       const onDamage = (p: { entityId: number; sourceCauseId: number }) => { damage.push({ ...p, atMs: Date.now() }); };
       h.owner!._client.on('damage_event', onDamage);
       try {
+        h.markExtendedSafetyStaged();
         const since = Date.now(), episodes = h.events().filter((e) => e.type === 'safety_episode_started').length;
-        const goal = await startFollowing();
+        const goal = await h.goal('follow me');
+        h.markExtendedSafetyExecuted(goal.goalId);
+        await h.waitEvent((e) => e.type === 'task_admitted' && e.goalId === goal.goalId, GOAL_TIMEOUT_MS, 'ordinary follow task');
         await sleep(4_000);
         await h.quiesce();
         const nowCow = await h.mobIdentity('og_o8n_cow', 'minecraft:cow'), nowWolf = await h.mobIdentity('og_o8n_wolf', 'minecraft:wolf');
@@ -1407,9 +1620,14 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       });
     }
     if (h.forceloadBefore) {
+      await step('known-actors', async () => {
+        await h.captureSceneActors(); // Retain ambient identity even when it prevents a reset.
+        await h.removeKnownSceneActors();
+        return 'each recorded UUID/tag freshly proved inside the positive original box or proved absent; independent of foreign reset refusal';
+      });
       await step('entities', async () => {
         await h.removeSceneActors();
-        check(/Test passed/i.test(await h.query(`execute unless entity @e[type=!player,${ENTITY_BOX}]`)), 'no scene entities after cleanup');
+        check(fixtureEntityTest(await h.read(`execute if entity @e[type=!player,${ENTITY_BOX}]`)) === false, 'no scene entities after cleanup');
         return 'bounded recorded-UUID/drop removal and server proof of no scene entities; foreign occupancy refuses removal';
       });
       await step('blocks', async () => {
@@ -1422,7 +1640,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       for (const [name, command] of [['bot-inventory', `clear ${BOT}`], ['owner-inventory', `clear ${OWNER}`], ['bot-effects', `effect clear ${BOT}`], ['owner-effects', `effect clear ${OWNER}`]] as const) {
         await step(name, async () => {
           const player = name.startsWith('owner-') ? OWNER : BOT;
-          check(/Test passed/i.test(await h.query(`execute if entity @a[name=${player}]`)), 'cleanup player is online');
+          check(fixtureEntityTest(await h.read(`execute if entity @a[name=${player}]`)) === true, 'cleanup player is online');
           const r = await h.setup(command);
           check(/^Removed |^No items were found|no effects to remove/i.test(r.trim()), `${command} failed: ${r}`);
           const field = name.endsWith('effects') ? 'active_effects' : 'Inventory';
@@ -1458,11 +1676,13 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       check(/^There are 0 of /i.test(list), `zero players after logout: ${list}`);
       return list;
     });
-    const extendedCases = h.results.filter((r) => ['O7P', 'O7R', 'O7F', 'O8C', 'O8N'].includes(r.id)).map((r) => r.id);
-    if (extendedCases.length) await step('single-safety-history', async () => {
+    const extendedSafetyReport = h.extendedSafetyReport();
+    if (extendedSafetyReport.attemptedCases.length) await step('single-safety-history', async () => {
       check(h.runs.filter((r) => r.name === 'run-safety-ordinary').length === 1, 'exactly one actual CLI for all extended controls');
-      verifySharedSafetyHistory(h.safetySamples, extendedCases);
-      return `${extendedCases.join(',')} retained one run/connection, monotonic safety counters and original spend cap`;
+      check(extendedSafetyReport.executedCases.length > 0, 'not_exercised: no staged extended control actually executed; no history acceptance');
+      verifySharedSafetyHistory(h.safetySamples, extendedSafetyReport.attemptedCases);
+      extendedSafetyReport.historyAcceptance = 'verified_for_executed_cases';
+      return `attempted ${extendedSafetyReport.attemptedCases.join(',')}; executed ${extendedSafetyReport.executedCases.join(',')}; one run/connection, monotonic safety counters and original spend cap; staging failures remain failures`;
     });
     const counted = h.results.filter((r) => r.status !== 'skipped');
     const scenariosPass = counted.length > 0 && counted.every((r) => r.status === 'pass');
@@ -1482,8 +1702,10 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       setup: h.setupLog,
       interventions: h.interventions,
       readbacks: h.readbacks,
+      actorDiagnostics: h.actorDiagnostics,
+      actorRemovals: h.actorRemovals,
       safetySamples: h.safetySamples,
-      extendedSafety: { executedCases: extendedCases, runs: h.runs.filter((r) => r.name === 'run-safety-ordinary'), originalRadius: 128, originalO7WRadius: 8 },
+      extendedSafety: { ...extendedSafetyReport, runs: h.runs.filter((r) => r.name === 'run-safety-ordinary'), originalRadius: 128, originalO7WRadius: 8 },
       runs: h.runs,
       providerCalls: { plannerRequests: ev.filter((e) => e.type === 'planner_request').length, plannerQuestionRefusals: ev.filter((e) => e.type === 'planner_question_refused').length, jevChoices: ev.filter((e) => e.type === 'task_choice').length, loopbackJevCalls: h.jevCalls },
       terminals: ev.filter((e) => e.type === 'goal_terminal').map((e) => ({ goalId: e.goalId, state: e.state, reason: e.reason, counters: e.counters ?? null })),
