@@ -73,8 +73,8 @@ async function rcon(command: string, record = true): Promise<string> {
   try { reply = await run; }
   catch (error) { if (record) setupLog.push({ atMs: Date.now(), command, reply: `ERROR: ${String(error)}` }); throw error; }
   if (record) setupLog.push({ atMs: Date.now(), command, reply: reply.slice(0, 300) });
-  if (command.startsWith('fill ')) assert(validFillReply(reply), `fill not proven: ${command}: ${reply}`);
-  if (/^(Unknown|Incorrect|Incomplete|Unrecognized|Cannot|No player was found|That player does not exist)/i.test(reply.trim())) throw new Error(`RCON command failed: ${command}: ${reply}`);
+  assertSkillsSceneReply(command, reply);
+  if (/^(Unknown|Incorrect|Incomplete|Unrecognized|Cannot|Option |No player was found|That player does not exist)/i.test(reply.trim())) throw new Error(`RCON command failed: ${command}: ${reply}`);
   return reply;
 }
 
@@ -135,6 +135,19 @@ export function entityTest(reply: string): boolean {
   throw new Error(`unreadable server test: ${reply.slice(0, 160)}`);
 }
 
+/** Scene mutations need a recognizable reply as well as their later independent
+ * block/absence proofs. In particular a selector syntax error is never a kill. */
+export function assertSkillsSceneReply(command: string, reply: string): void {
+  const text = reply.trim();
+  if (command.startsWith('kill ')) assert(/^Killed [^\r\n]+$/.test(text) || /^No entity was found\.?$/.test(text), `kill not proven: ${command}: ${reply}`);
+  if (command.startsWith('fill ')) assert(validFillReply(reply), `fill not proven: ${command}: ${reply}`);
+  if (command.startsWith('setblock ')) {
+    const at = /^setblock (-?\d+) (-?\d+) (-?\d+) /.exec(command);
+    assert(at && (text === `Changed the block at ${at[1]}, ${at[2]}, ${at[3]}` || /^No blocks were changed\.?$/.test(text)), `setblock not proven: ${command}: ${reply}`);
+  }
+  if (/^execute (?:if block |(?:if|unless) entity )/.test(command)) entityTest(reply);
+}
+
 export const CHEST_STAGE_CELLS = [[201, -60, 207], [201, -59, 207], [202, -60, 207], [202, -59, 207]] as const;
 export function safePlacement(description: string): boolean {
   const match = /-> (-?\d+),(-?\d+),(-?\d+)\)/.exec(description);
@@ -151,8 +164,47 @@ export async function proveChestStage(query: (command: string) => Promise<string
   throw new Error('chest staging has no positively proven full solid floor');
 }
 
+/** Bounded, read-only proof of two empty supported cells beside the actual
+ * generated furnace. Never clears a workstation or treats unknown as air. */
+export async function proveFurnaceStage(query: (command: string) => Promise<string>, furnace: { x: number; y: number; z: number }): Promise<{ at: { x: number; y: number; z: number }; floors: string[] }> {
+  const inside = (x: number, z: number) => x >= SCENE.area.x1 && x <= SCENE.area.x2 && z >= SCENE.area.z1 && z <= SCENE.area.z2;
+  assert(Object.values(furnace).every(Number.isInteger) && furnace.y === -60 && inside(furnace.x, furnace.z), 'furnace must be in the original standard scene');
+  assert(entityTest(await query(`execute if block ${furnace.x} ${furnace.y} ${furnace.z} furnace`)), 'actual furnace must still exist');
+  for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]] as const) {
+    const cells = [1,2].map(n => ({ x: furnace.x + dx*n, y: furnace.y, z: furnace.z + dz*n }));
+    if (cells.some(c => !inside(c.x,c.z))) continue;
+    const floors: string[] = [];
+    let free = true;
+    for (const c of cells) {
+      for (const y of [c.y,c.y+1]) if (!entityTest(await query(`execute if block ${c.x} ${y} ${c.z} air`))) free = false;
+      let floor: string | undefined;
+      for (const material of ['grass_block','dirt','stone','cobblestone','stone_bricks']) {
+        if (entityTest(await query(`execute if block ${c.x} ${c.y-1} ${c.z} ${material}`))) { floor = material; break; }
+      }
+      if (!floor) free = false; else floors.push(floor);
+      const box = `x=${c.x},y=${c.y},z=${c.z},dx=0,dy=1,dz=0`;
+      // Separate categories: no positive type may follow a negative type.
+      if (!entityTest(await query(`execute unless entity @a[name=!Chunkbot,${box}]`))) free = false;
+      if (!entityTest(await query(`execute unless entity @e[type=!player,${box}]`))) free = false;
+    }
+    if (free) {
+      const c = cells[1]!;
+      return { at: { x: c.x+0.5, y: c.y, z: c.z+0.5 }, floors };
+    }
+  }
+  throw new Error('no positively proven free, supported furnace standing/sight lane inside the original scene');
+}
+
 const SCENE_BOX = `x=${SCENE.area.x1},y=-64,z=${SCENE.area.z1},dx=${SCENE.area.x2-SCENE.area.x1},dy=40,dz=${SCENE.area.z2-SCENE.area.z1}`;
-export const SKILLS_SCENE_SELECTORS = ['tag=chunkbot_hidden','tag=chunkbot_front','tag=chunkbot_animal','type=item','type=experience_orb'].map((s) => `@e[type=!player,${s},${SCENE_BOX}]`);
+const SKILLS_SCENE_CATEGORIES = ['hidden','front','animal','item','experience_orb'] as const;
+export function skillsSceneSelector(category: typeof SKILLS_SCENE_CATEGORIES[number]): string {
+  // Exact official 26.1.2/26.2 selector parsers refuse a positive type after
+  // an inverse type. Item/orb already exclude players; tags need !player.
+  if (category === 'item' || category === 'experience_orb') return `@e[type=${category},${SCENE_BOX}]`;
+  if (category === 'hidden' || category === 'front' || category === 'animal') return `@e[type=!player,tag=chunkbot_${category},${SCENE_BOX}]`;
+  throw new Error('unknown skills scene entity category');
+}
+export const SKILLS_SCENE_SELECTORS = SKILLS_SCENE_CATEGORIES.map(skillsSceneSelector);
 export const skillsSceneClearCommands = () => SKILLS_SCENE_SELECTORS.map((s) => `kill ${s}`);
 
 const dist = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -249,6 +301,22 @@ async function stageVisibleChest(ev: string[], scenario: string): Promise<{ snap
   assert(thing, `${scenario}: the chest is visible in the staged snapshot`);
   assert(thing.inReach === true, `${scenario}: the chest is within reach from the staged position`);
   return { snap, chest: { snapshotId: snap.id as string, handle: thing.handle as string } };
+}
+
+async function stageVisibleFurnace(ev: string[], scenario: string, furnace: { x: number; y: number; z: number }): Promise<void> {
+  const stage = await proveFurnaceStage(rcon, furnace);
+  ev.push(`${scenario}: positively proven empty standing/sight lane with full solid floors ${stage.floors.join(',')}; no cell cleared`);
+  await expectStatus(await act('move_near', { target: { kind: 'destination', dimension: 'overworld', ...stage.at }, within: 1 }), 'succeeded', ev);
+  const server = await serverPos();
+  const rawDistance = Math.hypot(server.x-stage.at.x,server.y-stage.at.y,server.z-stage.at.z);
+  assert(rawDistance <= 1, `${scenario}: raw server position is outside the original within=1: ${rawDistance}`);
+  const snap = await observe();
+  const visible = (snap.blocks as Json[]).find(b => b.key === 'minecraft:furnace' && b.at.x === furnace.x && b.at.y === furnace.y && b.at.z === furnace.z);
+  assert(visible?.inReach === true, `${scenario}: actual furnace must be visible and in interaction reach`);
+  // Unrounded eye-to-center distance is an additional bound, not visibility proof.
+  const eyeDistance = Math.hypot(server.x-furnace.x-0.5,server.y+1.62-furnace.y-0.5,server.z-furnace.z-0.5);
+  assert(eyeDistance <= 4.2, `${scenario}: furnace beyond interaction reach: ${eyeDistance}`);
+  ev.push(`${scenario}: raw server standing distance ${rawDistance}, eye distance ${eyeDistance}; visible inReach furnace ${visible.handle} in ${snap.id}`);
 }
 
 function outcomeLine(o: Json): string {
@@ -883,10 +951,7 @@ async function main(): Promise<void> {
         await sleep(400);
       }
       assert(furnaceAt, 'furnace placed in F1');
-      // Stand 2.5 blocks east so a side or top face is visible with a free destination. (3.5 east plus
-      // move_near's 1.25 arrival tolerance put the furnace 4.3 from the eye in one run: beyond the
-      // 4.2 placement reach, a correct refusal; the staging point was the defect.)
-      await expectStatus(await act('move_near', { target: { kind: 'destination', dimension: 'overworld', x: furnaceAt.x + 2.5, y: -60, z: furnaceAt.z + 0.5 }, within: 1 }), 'succeeded', ev);
+      await stageVisibleFurnace(ev, 'PL1', furnaceAt);
       const staged = await serverPos();
       const ownerNow = await serverPos('FixtureOwner');
       ev.push(`staged: Chunkbot ${staged.x.toFixed(2)},${staged.z.toFixed(2)} (furnace ${furnaceAt.x},${furnaceAt.y},${furnaceAt.z}); owner ${ownerNow.x.toFixed(2)},${ownerNow.z.toFixed(2)}`);
@@ -1191,7 +1256,7 @@ async function main(): Promise<void> {
       await rcon(`tp FixtureOwner ${SCENE.start.x - 6} -60 ${SCENE.start.z - 10}`);
       // Stop during an interactive-support placement (furnace top face, sneak held until the reply).
       assert(furnaceAt, 'furnace from F1');
-      await act('move_near', { target: { kind: 'destination', dimension: 'overworld', x: furnaceAt.x + 2.5, y: -60, z: furnaceAt.z + 0.5 }, within: 1 });
+      await stageVisibleFurnace(ev, 'PL2', furnaceAt);
       let snap = await observe();
       const furnace = handleOf(snap, 'minecraft:furnace', furnaceAt);
       const named = await candidates({
