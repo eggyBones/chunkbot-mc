@@ -96,9 +96,9 @@ export class SafetyTracker {
   /** Entities the server declared dead (entity_status 3) and not yet destroyed: dying bodies are never threats or targets. */
   readonly dying = new Map<number, number>();
   private bundleOpen = false;
-  private readonly ages = new Map<number, { name: string; complete: boolean; baby: boolean | null | undefined }>();
+  private readonly ages = new Map<number, { name: string; uuid: string | undefined; complete: boolean; baby: boolean | null | undefined }>();
   /** Counts for evidence/status. */
-  readonly counts = { airStatements: 0, otherEntityAirIgnored: 0, damageEvents: 0, slotPackets: 0 };
+  readonly counts = { airStatements: 0, otherEntityAirIgnored: 0, damageEvents: 0, slotPackets: 0, bundleDelimiters: 0, ageSpawns: 0, unbundledAgeSpawns: 0, completedAgePairings: 0, explicitAgeValues: 0, invalidAgeValues: 0 };
 
   attach(source: SafetyPacketSource, opts: { connectionEpoch: number; registry: () => SafetyItemRegistry | undefined; now: () => number; selfId?: () => number | undefined }): void {
     this.detach();
@@ -128,15 +128,21 @@ export class SafetyTracker {
     // one ClientboundBundlePacket. A baby must not briefly appear adult before
     // its metadata is processed; require the closing delimiter.
     on('bundle_delimiter', () => {
+      this.counts.bundleDelimiters += 1;
       this.bundleOpen = !this.bundleOpen;
-      if (!this.bundleOpen) for (const age of this.ages.values()) age.complete = true;
+      if (!this.bundleOpen) for (const age of this.ages.values()) {
+        if (!age.complete) this.counts.completedAgePairings += 1;
+        age.complete = true;
+      }
     });
-    on('spawn_entity', (p: { entityId?: number; type?: number }) => {
+    on('spawn_entity', (p: { entityId?: number; type?: number; objectUUID?: unknown }) => {
       if (typeof p.entityId !== 'number' || typeof p.type !== 'number') return;
       const name = this.registry()?.entityNameOf?.(p.type);
       this.ages.delete(p.entityId);
       if (!name || !['zombie', 'husk', 'zombie_villager', 'drowned'].includes(name)) return;
-      this.ages.set(p.entityId, { name, complete: false, baby: this.bundleOpen ? undefined : null });
+      this.counts.ageSpawns += 1;
+      if (!this.bundleOpen) this.counts.unbundledAgeSpawns += 1;
+      this.ages.set(p.entityId, { name, uuid: typeof p.objectUUID === 'string' ? p.objectUUID : undefined, complete: false, baby: this.bundleOpen ? undefined : null });
       if (this.ages.size > 64) this.ages.delete(this.ages.keys().next().value as number);
     });
     on('entity_metadata', (p: { entityId?: number; metadata?: Array<{ key: number; value: unknown }> }) => {
@@ -144,7 +150,11 @@ export class SafetyTracker {
       const age = p.entityId === undefined ? undefined : this.ages.get(p.entityId);
       if (age) {
         const key = reg?.metadataIndex(age.name, 'baby');
-        for (const m of p.metadata ?? []) if (m.key === key) age.baby = typeof m.value === 'boolean' ? m.value : null;
+        for (const m of p.metadata ?? []) if (m.key === key) {
+          age.baby = typeof m.value === 'boolean' ? m.value : null;
+          if (age.baby === null) this.counts.invalidAgeValues += 1;
+          else this.counts.explicitAgeValues += 1;
+        }
       }
       const airKey = reg?.metadataIndex('player', 'air_supply');
       if (airKey === undefined) return;
@@ -250,9 +260,17 @@ export class SafetyTracker {
    * supply that default. Missing spawn, malformed value or incomplete bundle
    * stays unknown. Explicit metadata remains binding after completion.
    */
-  adultDefault(entityId: number, name: string, version: string): boolean {
+  adultDefault(entityId: number, name: string, version: string, identity?: { connectionEpoch: number; uuid: string | undefined }): boolean {
     const age = this.ages.get(entityId);
+    if (identity && (identity.connectionEpoch !== this.connectionEpoch || !identity.uuid || identity.uuid !== age?.uuid)) return false;
     return (version === '26.1.2' || version === '26.2') && age?.name === name && age.complete && age.baby === undefined;
+  }
+
+  /** Bounded harness diagnostics for an already-visible entity id. No
+   * coordinates, inventory, raw packets or authority injection. */
+  pairingEvidence(entityId: number): { complete: boolean; age: 'omitted' | 'adult' | 'baby' | 'invalid'; uuidKnown: boolean } | null {
+    const age = this.ages.get(entityId);
+    return age ? { complete: age.complete, age: age.baby === undefined ? 'omitted' : age.baby === null ? 'invalid' : age.baby ? 'baby' : 'adult', uuidKnown: age.uuid !== undefined } : null;
   }
 
   /** Server-stated item fact for a window-0 slot (only after a full sync of this life). */

@@ -582,7 +582,7 @@ class Gate {
         }),
         plan: (self, visible) => planSafety(self, visible, this.safety.policyContext(self)),
       });
-      last = { ...facts, damage: [...this.safety.tracker.damage], counters: { ...this.safety.counters } };
+      last = { ...facts, damage: [...this.safety.tracker.damage], counters: { ...this.safety.counters }, pairing: { clientVersion: s.bot._client.version, botVersion: s.bot.version, counts: { ...this.safety.tracker.counts }, visible: facts.visible.map((e) => ({ entityId: e.entityId, proof: this.safety.tracker.pairingEvidence(e.entityId) })) } };
       return facts.refusals.length === 0;
     };
     await this.waitFor('exact isolated mob prerequisites', snapshot, ms).catch((error: unknown) => {
