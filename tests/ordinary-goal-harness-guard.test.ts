@@ -43,9 +43,12 @@ describe('ordinary-goal live harness guard', () => {
 
   it('declared geometry stays inside the reset footprint', () => {
     const inside = (p: { x: number; z: number }) => p.x >= SCENE.area.x1 && p.x <= SCENE.area.x2 && p.z >= SCENE.area.z1 && p.z <= SCENE.area.z2;
-    const points = [LAYOUT.chickenNear, LAYOUT.o2.near, LAYOUT.o2.far, LAYOUT.o2.cow, LAYOUT.houseOwner, LAYOUT.ownerDefault, ...LAYOUT.birchLogs, ...LAYOUT.oakTrees.flatMap((t) => [...t.logs])];
+    const points = [LAYOUT.chickenNear, LAYOUT.o2.near, LAYOUT.o2.far, LAYOUT.o2.cow, LAYOUT.houseOwner, LAYOUT.ownerDefault, ...LAYOUT.birchLogs, ...LAYOUT.oakTrees.flatMap((t) => [...t.logs]), ...LAYOUT.gather.trunks, { x: LAYOUT.gather.stone.x1, z: LAYOUT.gather.stone.z1 }, { x: LAYOUT.gather.stone.x2, z: LAYOUT.gather.stone.z2 }];
     for (const p of points) assert.ok(inside(p), JSON.stringify(p));
     for (const p of [...LAYOUT.birchLogs]) assert.ok(p.y >= -60 && p.y <= -50);
+    assert.ok(LAYOUT.birchLogs[0].y > -60, 'happy-path target remains floating');
+    assert.ok(Math.abs(LAYOUT.birchLeaves.y + 0.5 - (-60 + 1.62)) < 4.5, 'lower canopy admits an eye-reach approach');
+    assert.ok(Math.abs(LAYOUT.birchLeaves.y + 1.5 - (-60 + 1.62)) > 4.5, 'O3u canopy remains unreachable without climbing');
   });
 
   it('question detection on CLI output', () => {

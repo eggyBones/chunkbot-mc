@@ -17,7 +17,8 @@
 //   O2  two chickens + a nearer cow: "kill the chicken" -> exactly the CLOSER chicken defeated;
 //       the farther chicken and the cow stay alive (RCON)
 //   O3  floating birch remnant beside grounded oak trees: "remove that floating tree" -> every
-//       birch log position no longer birch (RCON); every oak log intact
+//       birch log and canopy position removed (RCON); every oak log intact
+//   O3u unreachable floating remnant -> bounded declarative blocker; no substitute cutting
 //   O4  "set up your house here" with the owner visible at a vacant flat site: a verified home
 //       (structure_state complete) near the owner's position; `--house-materials provided`
 //       (default: cobblestone + table/furnace/chest given, recorded) or `gather` (nothing given;
@@ -31,7 +32,8 @@
 //   blocks    x 196..224, z 190..224, y -63..-50 (the standard skills scene area): reset to
 //             dirt (y -63..-62), grass (y -61), air (y -60..-50) plus the standard oak trunk at
 //             208,-60..-58,202, and per scenario: oak trees (x 198..200, z 196..198 / 214..216),
-//             a floating birch remnant (x 211..213, z 204..206, y -57..-54). Cleanup re-applies
+//             a floating birch remnant (x 211..213, z 204..206, y -58..-55;
+//             O3u shifts it up one). Cleanup re-applies
 //             the standard reset and verifies sample positions.
 //   entities  kills ONLY inside the box x 196..224, y -64..-24, z 190..224; NoAI chickens/cow
 //             summoned inside it with tags `og_*`.
@@ -92,17 +94,21 @@ export const LAYOUT = {
   chickenNear: { x: 208.5, y: -60, z: 205.5 },
   o2: { near: { x: 207.5, y: -60, z: 207.5 }, far: { x: 213.5, y: -60, z: 205.5 }, cow: { x: 203.5, y: -60, z: 205.5 } },
   birchLogs: [
+    { x: 212, y: -58, z: 205 },
     { x: 212, y: -57, z: 205 },
     { x: 212, y: -56, z: 205 },
-    { x: 212, y: -55, z: 205 },
   ],
-  birchLeaves: { x1: 211, x2: 213, y: -54, z1: 204, z2: 206 },
+  birchLeaves: { x1: 211, x2: 213, y: -55, z1: 204, z2: 206 },
   oakTrees: [
     { logs: [{ x: 199, y: -60, z: 197 }, { x: 199, y: -59, z: 197 }, { x: 199, y: -58, z: 197 }], leaves: { x1: 198, x2: 200, y: -57, z1: 196, z2: 198 } },
     { logs: [{ x: 199, y: -60, z: 215 }, { x: 199, y: -59, z: 215 }, { x: 199, y: -58, z: 215 }], leaves: { x1: 198, x2: 200, y: -57, z1: 214, z2: 216 } },
   ],
   houseOwner: { x: 216.5, y: -60, z: 216.5 },
   ownerDefault: { x: 202.5, y: -60, z: 209.5 },
+  gather: {
+    trunks: [{ x: 198, z: 193 }, { x: 202, z: 193 }, { x: 206, z: 193 }, { x: 198, z: 198 }, { x: 202, z: 198 }, { x: 206, z: 198 }],
+    stone: { x1: 210, x2: 213, z1: 193, z2: 195, y: -60 },
+  },
 } as const;
 
 /** Owner-facing question/answer prompts in CLI output lines (MB-PLAN-006 boundary). */
@@ -249,16 +255,39 @@ class Harness {
       ...SCENE.logs.map((p) => `setblock ${p.x} ${p.y} ${p.z} oak_log`),
     ];
   }
-  async buildTrees(): Promise<void> {
+  async buildTrees(unreachable = false): Promise<void> {
     for (const t of LAYOUT.oakTrees) {
       const l = t.leaves;
       await this.setup(`fill ${l.x1} ${l.y} ${l.z1} ${l.x2} ${l.y} ${l.z2} oak_leaves[persistent=true]`);
       for (const p of t.logs) await this.setup(`setblock ${p.x} ${p.y} ${p.z} oak_log`);
     }
     const b = LAYOUT.birchLeaves;
-    await this.setup(`fill ${b.x1} ${b.y} ${b.z1} ${b.x2} ${b.y} ${b.z2} birch_leaves[persistent=true]`);
-    for (const p of LAYOUT.birchLogs) await this.setup(`setblock ${p.x} ${p.y} ${p.z} birch_log`);
+    const offset = unreachable ? 1 : 0;
+    await this.setup(`fill ${b.x1} ${b.y + offset} ${b.z1} ${b.x2} ${b.y + offset} ${b.z2} birch_leaves[persistent=true]`);
+    for (const p of LAYOUT.birchLogs) await this.setup(`setblock ${p.x} ${p.y + offset} ${p.z} birch_log`);
     await sleep(800);
+  }
+
+  async buildGatherSources(): Promise<void> {
+    // Reachable natural trunks supply 30 logs; planks can build/furnish the
+    // shelter. An exposed stone outcrop supplies the furnace after tool craft.
+    for (const t of LAYOUT.gather.trunks) {
+      await this.setup(`fill ${t.x - 1} -55 ${t.z - 1} ${t.x + 1} -55 ${t.z + 1} oak_leaves[persistent=true]`);
+      await this.setup(`fill ${t.x} -60 ${t.z} ${t.x} -56 ${t.z} oak_log`);
+    }
+    const s = LAYOUT.gather.stone;
+    await this.setup(`fill ${s.x1} ${s.y} ${s.z1} ${s.x2} ${s.y} ${s.z2} stone`);
+  }
+
+  async inventory(name = BOT): Promise<Record<string, number>> {
+    const reply = await this.query(`data get entity ${name} Inventory`);
+    check(/has the following entity data:/.test(reply), `server inventory unreadable: ${reply}`);
+    const out: Record<string, number> = {};
+    for (const entry of reply.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g) ?? []) {
+      const key = /id: "([^"]+)"/.exec(entry)?.[1];
+      if (key) out[key] = (out[key] ?? 0) + Number(/count: (\d+)/.exec(entry)?.[1] ?? 0);
+    }
+    return out;
   }
 
   async startJev(): Promise<string> {
@@ -420,6 +449,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     throw new Error(`fixture not reachable over RCON (${String(error)}); the coordinator starts it under the lease`);
   });
   process.stdout.write(`fixture: ${list}\n`);
+  check(/^There are 0 of /i.test(list), 'exclusive fixture must have zero players before joining');
   await h.recordForceload();
 
   // Generated config: the fixture autonomy profile (home construction registered with a fresh
@@ -497,20 +527,38 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       ev.push(`outcome bound: ${outcome ? 'yes' : 'no'}; first proposal disposition ${record?.disposition ?? 'n/a'}`);
       const birchLeft = [];
       for (const p of LAYOUT.birchLogs) if (await h.blockIs(p, 'minecraft:birch_log')) birchLeft.push(p);
+      const b = LAYOUT.birchLeaves;
+      for (let x = b.x1; x <= b.x2; x++) for (let z = b.z1; z <= b.z2; z++) if (await h.blockIs({ x, y: b.y, z }, 'minecraft:birch_leaves')) birchLeft.push({ x, y: b.y, z });
       const oakMissing = [];
       for (const t of LAYOUT.oakTrees) for (const p of t.logs) if (!(await h.blockIs(p, 'minecraft:oak_log'))) oakMissing.push(p);
       for (const p of SCENE.logs) if (!(await h.blockIs(p, 'minecraft:oak_log'))) oakMissing.push(p);
-      ev.push(`RCON: birch logs left ${birchLeft.length}/${LAYOUT.birchLogs.length}; oak logs missing ${oakMissing.length}`);
+      ev.push(`RCON: birch log/canopy blocks left ${birchLeft.length}/12; oak logs missing ${oakMissing.length}`);
       h.noQuestions(goalId, from, ev);
       check(oakMissing.length === 0, 'no unrelated tree was cut');
       check(end.state === 'completed' && end.reason === 'outcome_verified', 'removal verified by code');
-      check(birchLeft.length === 0, 'RCON: every floating birch log removed');
+      check(birchLeft.length === 0, 'RCON: every bound floating birch log and canopy block removed');
+    });
+
+    await h.scenarioRun('O3u', 'unreachable floating remnant: bounded declarative blocker, no substitute cutting', only, async (ev) => {
+      await h.resetScene(); await h.buildTrees(true);
+      const { goalId, from } = await h.goal('remove that floating tree');
+      const end = await h.waitEvent((e) => e.type === 'goal_terminal' && e.goalId === goalId, GOAL_TIMEOUT_MS, `blocked remnant ${goalId}`);
+      h.noQuestions(goalId, from, ev);
+      check(end.state !== 'completed' && end.reason !== 'outcome_verified', 'uncleared remnant never completes');
+      check(String(end.detail ?? '').length > 0, 'declarative blocker reported');
+      const b = LAYOUT.birchLeaves;
+      check(await h.blockIs({ x: b.x1, y: b.y + 1, z: b.z1 }, 'minecraft:birch_leaves'), 'unreachable canopy remains');
+      for (const p of [...SCENE.logs, ...LAYOUT.oakTrees.flatMap((t) => [...t.logs])]) check(await h.blockIs(p, 'minecraft:oak_log'), 'unrelated oak stays intact');
+      ev.push(`${goalId}: ${end.reason}; original canopy remains, all unrelated oak logs intact`);
     });
 
     await h.scenarioRun('O4', `"set up your house here": verified home near the VISIBLE owner (materials ${materials}); no question`, only, async (ev) => {
       await h.resetScene();
-      await h.buildTrees();
+      if (materials === 'gather') await h.buildGatherSources(); else await h.buildTrees();
       if (materials === 'provided') for (const c of [`give ${BOT} minecraft:cobblestone 64`, `give ${BOT} minecraft:crafting_table 1`, `give ${BOT} minecraft:furnace 1`, `give ${BOT} minecraft:chest 1`]) await h.setup(c);
+      const before = await h.inventory();
+      if (materials === 'gather') check(Object.keys(before).every((k) => k === 'minecraft:bread'), 'gather trial begins without materials, tools or furnishings');
+      const setupAtGoal = h.setupLog.length;
       const at = LAYOUT.houseOwner;
       await h.setup(`tp ${OWNER} ${at.x} ${at.y} ${at.z} 0 0`);
       await sleep(1_000);
@@ -546,6 +594,13 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       }
       ev.push(`RCON: ${cells.length - wrong.length}/${cells.length} blueprint cells as required${wrong.length ? `; wrong ${wrong.slice(0, 6).join(' ')}` : ''}`);
       check(wrong.length === 0, 'every blueprint cell confirmed by the server');
+      if (materials === 'gather') {
+        check(!h.setupLog.slice(setupAtGoal).some((s) => /^(give|item replace|setblock|fill)\b/.test(s.command)), 'no in-trial materials or world rescue');
+        const actions = h.goalActions(goalId);
+        check(actions.some((a) => a.capability === 'mine_block' && a.status === 'succeeded'), 'ordinary pipeline mined source materials');
+        check(actions.some((a) => a.capability === 'craft_item' && a.status === 'succeeded'), 'ordinary pipeline crafted prerequisites');
+        ev.push('gather acceptance: empty material baseline, reachable trunks/stone, ordinary mining/crafting, no supplied prerequisites or rescue');
+      }
     });
 
     await h.scenarioRun('O5', 'absent target: "kill that rabbit" with no rabbit -> one declarative blocker; nothing else attacked; no question', only, async (ev) => {
@@ -590,9 +645,6 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
         await sleep(500);
         return 'stop sent to the owned CLI';
       });
-      await step('cli-quit', async () => {
-        await h.quit();
-      });
     }
     if (h.forceloadBefore) {
       await step('entities', async () => `kill non-players in the entity box: ${(await h.setup(`kill @e[type=!player,${ENTITY_BOX}]`)).slice(0, 80)}`);
@@ -605,14 +657,19 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       for (const [name, command] of [['bot-inventory', `clear ${BOT}`], ['owner-inventory', `clear ${OWNER}`], ['bot-effects', `effect clear ${BOT}`]] as const) {
         await step(name, async () => {
           const r = await h.setup(command);
-          const ok = /^Removed |^No items were found|no effects to remove/i.test(r.trim());
-          h.note(name, ok, `${command}: ${r.slice(0, 80)}`);
+          check(/^Removed |^No items were found|no effects to remove/i.test(r.trim()), `${command} failed: ${r}`);
+          const player = name === 'owner-inventory' ? OWNER : BOT;
+          const field = name === 'bot-effects' ? 'active_effects' : 'Inventory';
+          const proof = await h.query(`data get entity ${player} ${field}`);
+          check(field === 'Inventory' ? /\[\]$/.test(proof.trim()) : /\[\]$|Found no elements matching/i.test(proof), `server ${field} was not verified empty while ${player} was online: ${proof}`);
+          h.note(name, true, `${command}: ${r.slice(0, 80)}; ${proof.slice(0, 120)}`);
         });
       }
       await step('forceload-restore', async () => {
         await h.restoreForceload();
       });
     }
+    if (h.cli) await step('cli-quit', async () => { await h.quit(); });
     await step('owner-quit', async () => {
       const o = h.owner;
       if (!o) return 'owner bot never joined';
@@ -629,6 +686,12 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       await new Promise<void>((r, j) => srv.close((e) => (e ? j(e) : r())));
       return 'loopback Jev closed';
     });
+    await step('zero-players', async () => {
+      let list = '';
+      for (let i = 0; i < 40; i++) { list = await h.query('list'); if (/^There are 0 of /i.test(list)) break; await sleep(100); }
+      check(/^There are 0 of /i.test(list), `zero players after logout: ${list}`);
+      return list;
+    });
     const counted = h.results.filter((r) => r.status !== 'skipped');
     const scenariosPass = counted.length > 0 && counted.every((r) => r.status === 'pass');
     const cleanupFailures = h.cleanup.filter((c) => !c.ok);
@@ -638,6 +701,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       fixture: PINS.profile,
       sourceFreeze: freeze,
       config: { path: h.configPath, base: basePath, dataDir: h.dataDir, houseMaterials: materials, houseInterior: h.houseInterior },
+      houseAcceptance: materials === 'gather' ? 'gather and construction' : 'provided-material construction only; does not prove gather acceptance',
       pass: scenariosPass && cleanupFailures.length === 0,
       scenariosPass,
       cleanup: { reconciled: cleanupFailures.length === 0, failures: cleanupFailures, steps: h.cleanup, forceloadBefore: h.forceloadBefore ? [...h.forceloadBefore] : null, areaChunks: AREA_CHUNKS },

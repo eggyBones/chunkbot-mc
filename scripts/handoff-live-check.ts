@@ -21,7 +21,8 @@
 //             process groups cleaned; spoofed system/console lines ignored
 //   L4 H5     stop during preparation: controls cleared <= 250 ms, both contexts
 //             cancelled, pause latch set and shown, explicit resume
-//   L5 H5     lifecycle (death) during preparation invalidates both contexts
+//   L5 H5     death discards the pending intent; compatible original work may
+//             continue under the same logical goal with a fresh epoch
 //   L6 H6     quota before admission keeps following; a LEGACY clarification
 //             (MB-PLAN-006) is a counted preparation repair: no question/answer
 //             prompt, the old task continues, the repaired draft hands off
@@ -29,7 +30,7 @@
 //
 // Requires an exclusive coordinator lease on the fixture (scene reset in
 // x 196..224, z 190..224). Usage:
-//   npm run build && npm run fixture -- status && npm run handoff-live-check [-- --only L1,L4] [--fixture 26.2]
+//   npm run handoff-live-check -- --fixture-lease <new granted id> [--only L1,L4] [--fixture 26.2]
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -41,6 +42,7 @@ import { CliProcess } from './lib/cli-process.ts';
 import { rconCommand } from './lib/rcon.ts';
 import { SCENE, sceneClearCommands, sceneCommands } from './lib/scene.ts';
 import { setFaultTurns, writeFaultCodex, type FaultTurn } from './lib/fault-codex.ts';
+import { pathToFileURL } from 'node:url';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Bot = ReturnType<typeof mineflayer.createBot>;
@@ -53,7 +55,6 @@ const only = argv.includes('--only') ? new Set((argv[argv.indexOf('--only') + 1]
 const fx = fixturePaths(PROJECT_ROOT, FIXTURE_PINS);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${FIXTURE_SUFFIX}-handoff`);
-mkdirSync(outDir, { recursive: true });
 const BASE_CONFIG = join(PROJECT_ROOT, FIXTURE_PINS.config);
 const REAL_CODEX = '/opt/homebrew/bin/codex';
 const STOP_TARGET_MS = 250;
@@ -76,7 +77,20 @@ function rconPassword(): string {
   if (!line) throw new Error('fixture RCON password missing');
   return line.slice('rcon.password='.length).trim();
 }
-const password = rconPassword();
+let password = '';
+let owner: Bot | undefined;
+let forceloadBefore: Set<string> | undefined;
+const cleanup: Array<{ step: string; ok: boolean; detail: string }> = [];
+function cleanupNote(step: string, ok: boolean, detail: string): void {
+  cleanup.push({ step, ok, detail });
+  writeFileSync(join(outDir, 'cleanup.json'), JSON.stringify({ forceloadBefore: forceloadBefore ? [...forceloadBefore] : null, cleanup }, null, 2));
+}
+function parseForceload(reply: string): Set<string> {
+  const pairs = [...reply.matchAll(/\[(-?\d+), (-?\d+)\]/g)].map((m) => `${m[1]},${m[2]}`);
+  if (pairs.length) return new Set(pairs);
+  assert(/^no\b.*force ?load/i.test(reply.trim()), `unrecognized forceload response: ${reply}`);
+  return new Set();
+}
 let rconQueue: Promise<unknown> = Promise.resolve();
 function rconRaw(command: string): Promise<string> {
   const run = rconQueue.then(() => rconCommand(FIXTURE_PINS.host, FIXTURE_PINS.rconPort, password, command));
@@ -115,6 +129,25 @@ function assert(cond: unknown, message: string): asserts cond {
 }
 const dist = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.hypot(a.x - b.x, a.z - b.z);
 const tOf = (e: Json) => Date.parse(String(e.t));
+
+/** Exact intent oracle: a compatible original continuation is distinct from a discarded draft. */
+export function verifyDeathContinuation(events: Json[], original: Json, pending: Json, instruction: string): { capture: Json; bound: Json; admitted: Json[] } {
+  const discarded = events.find((e) => e.type === 'preparation_discarded' && e.reason === 'lifecycle' && e.intentId === pending.intentId);
+  assert(discarded, 'exact pending intent was discarded by lifecycle');
+  const admitted = events.filter((e) => e.type === 'goal_admitted' && tOf(e) > tOf(discarded));
+  assert(admitted.every((e) => e.intentId !== pending.intentId && e.instruction !== instruction), 'discarded intent/instruction never starts');
+  assert(admitted.length > 0 && admitted.every((e) => e.goalId === original.goalId && Number(e.epoch) > Number(original.epoch) && Number(e.continuation?.number) >= 1), 'only the original same logical goal continues at a fresh epoch');
+  const capture = events.find((e) => e.type === 'continuation_checkpoint' && e.goalId === original.goalId && e.state === 'held');
+  const bound = events.find((e) => e.type === 'goal_continuation_bound' && e.goalId === original.goalId && admitted.some((a) => a.epoch === e.epoch));
+  assert(capture && bound, 'continuation capture and fresh binding both recorded');
+  for (const field of ['outcomeCanonical', 'caps', 'deadlineAtMs', 'admissionBaseline']) {
+    assert(capture[field] !== undefined && JSON.stringify(bound[field]) === JSON.stringify(capture[field]), `original ${field} preserved`);
+  }
+  assert(bound.carriedTasks === 0 && bound.carriedHandles === 0, 'no task or executable handle replay');
+  assert(capture.counters && Object.keys(capture.counters).length > 0, 'cumulative counters recorded');
+  for (const a of admitted) for (const [k, v] of Object.entries(capture.counters)) assert(Number(a.continuation.counters[k]) >= Number(v), `${k} never refilled`);
+  return { capture, bound, admitted };
+}
 
 /** Connection loss is recorded (with its reason) and the CLI rejoins before the next scenario. */
 const connectionLosses: Array<{ atMs: number; scenario: string; line: string }> = [];
@@ -249,6 +282,7 @@ const runEvents = () => readJsonl(eventsPath);
 
 async function startChunkbot(name: string, configPath: string, env: NodeJS.ProcessEnv): Promise<CliProcess> {
   const p = new CliProcess(name, ['run', '--no-autonomy', '--config', configPath], env);
+  chunkbot = p; // Own the child before any startup await, including failed joins.
   await p.waitFor(/\[chunkbot\] planner: /, 30_000);
   const runLine = await p.waitFor(/\[chunkbot\] run \S+; evidence: /, 10_000);
   eventsPath = /evidence: (\S+)$/.exec(runLine)?.[1] ?? '';
@@ -257,10 +291,32 @@ async function startChunkbot(name: string, configPath: string, env: NodeJS.Proce
 }
 
 async function stopChunkbot(): Promise<void> {
+  if (!chunkbot || chunkbot.child.exitCode !== null || chunkbot.child.signalCode !== null) return;
+  try {
+    const from = chunkbot.length;
+    chunkbot.send('stop');
+    await chunkbot.waitSince(/\[chunkbot\] (Stopped|Nothing (to stop|was running)|Goal goal-\S+ cancelled)/, from, 15_000);
+    await clearPlayer('Chunkbot');
+  } catch (e) { cleanupNote('online-bot-clear', false, String(e)); }
   chunkbot.send('/quit');
-  const exited = await Promise.race([chunkbot.exited, sleep(15_000).then(() => undefined)]);
-  if (!exited) chunkbot.child.kill('SIGKILL');
+  let exited = await Promise.race([chunkbot.exited, sleep(15_000).then(() => undefined)]);
+  const forced = !exited;
+  if (!exited) {
+    chunkbot.child.kill('SIGKILL');
+    exited = await Promise.race([chunkbot.exited, sleep(10_000).then(() => undefined)]);
+  }
+  cleanupNote(`cli-exit:${chunkbot.pid}`, Boolean(exited) && !forced, JSON.stringify(exited ?? { notExited: true }));
   chunkbot.save(outDir);
+}
+
+async function clearPlayer(name: string): Promise<void> {
+  assert(/Test passed/i.test(await rconRaw(`execute if entity @a[name=${name}]`)), `${name} must be online for cleanup proof`);
+  for (const command of [`clear ${name}`, `effect clear ${name}`]) await setup(command);
+  const inv = await rconRaw(`data get entity ${name} Inventory`);
+  const effects = await rconRaw(`data get entity ${name} active_effects`);
+  assert(/\[\]$/.test(inv.trim()), `${name} Inventory is not empty: ${inv}`);
+  assert(/\[\]$|Found no elements matching/i.test(effects), `${name} effects are not empty: ${effects}`);
+  cleanupNote(`player-clear:${name}`, true, `${inv}; ${effects}`);
 }
 
 async function fixtureBot(username: string): Promise<Bot> {
@@ -353,7 +409,7 @@ async function ownerWalksAndSample(points: Array<[number, number]>, stepMs: numb
 
 // ---------------------------------------------------------------- main
 
-async function main(): Promise<void> {
+async function runChecks(): Promise<void> {
   process.stdout.write(`handoff-live-check (PLANNER FAULT FIXTURE with scripted delays + loopback Jev; harness validation): fixture ${FIXTURE_PINS.host}:${FIXTURE_PINS.port}; report ${outDir}\n`);
   const base = JSON.parse(readFileSync(BASE_CONFIG, 'utf8')) as Json;
   const keyEnv = String(base.models?.decision?.apiKeyEnv ?? 'OPENROUTER_API_KEY');
@@ -367,7 +423,7 @@ async function main(): Promise<void> {
   const makeConfig = (name: string, flow: Json): string => {
     const cfg: Json = {
       ...base,
-      storage: { ...base.storage, dataDir: join(PROJECT_ROOT, 'var') },
+      storage: { ...base.storage, dataDir: join(outDir, 'data'), maxEventsPerRun: 50_000 },
       models: { ...base.models, planner: { ...base.models.planner, mode: 'codex', command: faultCodex }, decision },
       limits: { ...base.limits, plannerTimeoutMs: 8_000 },
       flow,
@@ -387,7 +443,6 @@ async function main(): Promise<void> {
   turnsFor([]);
   chunkbot = await startChunkbot('run-handoff', smoothConfig, env);
   connectionCursor = 0;
-  let owner: Bot | undefined;
   try {
     await check('L0', 'built CLI with the planner fault fixture and loopback Jev is ready; owner joins; scene reset', async (ev) => {
       ev.push(chunkbot.lines.find((l) => l.text.startsWith('[chunkbot] planner: '))?.text ?? 'no planner line');
@@ -549,21 +604,24 @@ async function main(): Promise<void> {
       assert(dist(p1, p2) < 0.6, 'no movement after stop (paused)');
     });
 
-    await check('L5', 'H5: a lifecycle interruption (death) during preparation invalidates both contexts; nothing resumes', async (ev) => {
+    await check('L5', 'H5: death discards the pending intent; only the compatible original logical goal may continue freshly', async (ev) => {
       await resetScene();
       turnsFor([{ kind: 'proposal', proposal: followMe() }, { kind: 'hang' }]);
       const follow = await startFollow(o, ev);
       const s = say(o, 'dig a well');
       await lineSince(/\[chunkbot\] Preparing your new instruction/, s.from, 5_000);
-      await waitEvent((e) => e.type === 'planner_turn_started' && e.intentId && tOf(e) >= s.at - 5, 10_000);
+      const pending = await waitEvent((e) => e.type === 'planner_turn_started' && e.intentId && tOf(e) >= s.at - 5, 10_000);
+      const firstAdmission = runEvents().find((e) => e.type === 'goal_admitted' && e.goalId === follow.goalId)!;
       await ownerAction('kill Chunkbot', 'lifecycle interruption under test');
       const ended = await goalTerminal(follow.goalId, s.from, 10_000);
-      const discarded = await waitEvent((e) => e.type === 'preparation_discarded' && e.reason === 'lifecycle', 10_000);
+      const discarded = await waitEvent((e) => e.type === 'preparation_discarded' && e.reason === 'lifecycle' && e.intentId === pending.intentId, 10_000);
       await sleep(2_000);
       const admittedAfter = runEvents().filter((e) => e.type === 'goal_admitted' && tOf(e) > tOf(discarded));
       ev.push(`old goal ${ended.state} (${ended.reason}); pending discarded (${discarded.detail}); goals admitted afterwards: ${admittedAfter.length}`);
       assert(ended.reason === 'death', 'goal ended by death');
-      assert(admittedAfter.length === 0, 'the pending instruction did not start after the death');
+      await waitEvent((e) => e.type === 'goal_continuation_bound' && e.goalId === follow.goalId, 15_000);
+      const verified = verifyDeathContinuation(runEvents(), firstAdmission, pending, 'dig a well');
+      ev.push(`same goal fresh epoch ${firstAdmission.epoch}->${verified.bound.epoch}; immutable outcome/baseline/caps/deadline; cumulative counters; no task/handle replay`);
       await setup(`tp Chunkbot ${SCENE.start.x} ${SCENE.start.y} ${SCENE.start.z} 0 0`);
     });
 
@@ -634,8 +692,6 @@ async function main(): Promise<void> {
       await stopChunkbot();
     }
   }
-  owner?.quit();
-  jevServer?.close();
 
   const passed = results.filter((r) => r.pass).length;
   const report = {
@@ -659,7 +715,61 @@ async function main(): Promise<void> {
   process.exitCode = passed === results.length ? 0 : 1;
 }
 
-main().catch((error: unknown) => {
+async function main(): Promise<void> {
+  const leaseAt = argv.indexOf('--fixture-lease');
+  const lease = leaseAt >= 0 ? argv[leaseAt + 1] : undefined;
+  if (!lease || !/^[A-Za-z0-9][A-Za-z0-9._-]{2,100}$/.test(lease)) {
+    process.stderr.write('refusing to run: pass --fixture-lease <new named exclusive coordinator lease>\n');
+    process.exitCode = 2; return;
+  }
+  mkdirSync(outDir, { recursive: true });
+  password = rconPassword();
+  try {
+    assert(/^There are 0 of /i.test(await rconRaw('list')), 'exclusive fixture must have zero players before joining');
+    forceloadBefore = parseForceload(await rconRaw('forceload query'));
+    cleanupNote('preflight-forceload', true, `lease ${lease}; original set recorded before changes`);
+    await runChecks();
+  } finally {
+    const step = async (label: string, fn: () => Promise<void>) => { try { await fn(); } catch (e) { cleanupNote(label, false, String(e)); } };
+    await step('final-cli-stop', stopChunkbot);
+    if (forceloadBefore) {
+      await step('standard-scene', async () => {
+        const a = SCENE.area;
+        const box = `x=${a.x1},y=-64,z=${a.z1},dx=${a.x2-a.x1},dy=40,dz=${a.z2-a.z1}`;
+        await setup(`kill @e[type=!player,${box}]`); await sleep(1_600);
+        for (const c of [`kill @e[type=!player,${box}]`, `fill ${a.x1} -60 ${a.z1} ${a.x2} -50 ${a.z2} air`, `fill ${a.x1} -61 ${a.z1} ${a.x2} -61 ${a.z2} grass_block`, `fill ${a.x1} -63 ${a.z1} ${a.x2} -62 ${a.z2} dirt`, ...SCENE.logs.map((p) => `setblock ${p.x} ${p.y} ${p.z} oak_log`)]) await setup(c);
+        for (const p of SCENE.logs) assert(/Test passed/i.test(await rconRaw(`execute if block ${p.x} ${p.y} ${p.z} oak_log`)), 'standard trunk restored');
+        assert(!/Test passed/i.test(await rconRaw(`execute if entity @e[type=!player,${box}]`)), 'no scene entities after cleanup');
+        cleanupNote('standard-scene', true, 'standard blocks/trunk restored; no scene entities');
+      });
+      if (owner) await step('owner-online-clear', () => clearPlayer('FixtureOwner'));
+      await step('forceload-restore', async () => {
+        const a = SCENE.area;
+        for (let cx = Math.floor(a.x1/16); cx <= Math.floor(a.x2/16); cx++) for (let cz = Math.floor(a.z1/16); cz <= Math.floor(a.z2/16); cz++) if (!forceloadBefore!.has(`${cx},${cz}`)) await setup(`forceload remove ${cx*16} ${cz*16}`);
+        const after = parseForceload(await rconRaw('forceload query'));
+        assert(after.size === forceloadBefore!.size && [...after].every((c) => forceloadBefore!.has(c)), 'exact original forceload set restored');
+        cleanupNote('forceload-restore', true, 'original set verified');
+      });
+    }
+    if (owner) await step('owner-logout', async () => {
+      const ended = new Promise<void>((r) => owner!.once('end', () => r())); owner!.quit();
+      assert(await Promise.race([ended.then(() => true), sleep(10_000).then(() => false)]), 'owner logout settled');
+    });
+    if (jevServer) await step('jev-close', async () => { jevServer!.closeAllConnections(); await new Promise<void>((r,j) => jevServer!.close((e) => e ? j(e) : r())); });
+    await step('zero-players', async () => {
+      let list = '';
+      for (let i=0; i<40; i++) { list = await rconRaw('list'); if (/^There are 0 of /i.test(list)) break; await sleep(100); }
+      assert(/^There are 0 of /i.test(list), 'zero players verified after logout'); cleanupNote('zero-players', true, list);
+    });
+    const path = join(outDir, 'report.json');
+    const report = existsSync(path) ? JSON.parse(readFileSync(path,'utf8')) as Json : { results, incomplete: true };
+    report.cleanup = { reconciled: cleanup.every((s) => s.ok), steps: cleanup }; report.lease = lease;
+    writeFileSync(path, JSON.stringify(report, null, 2));
+    if (cleanup.some((s) => !s.ok)) process.exitCode = 1;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error: unknown) => {
   process.stderr.write(`handoff-live-check error: ${error instanceof Error ? error.stack : String(error)}\n`);
   process.exitCode = 1;
 });

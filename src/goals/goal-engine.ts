@@ -1607,7 +1607,7 @@ export class GoalEngine {
     h.cp.stateAtMs = this.deps.clock.now();
     const terminal = state === 'completed' || state === 'stopped_by_owner' || state === 'superseded_by_owner' || (state === 'blocked' && reason !== 'not_continuable_in_v1' && !reason.startsWith('waiting'));
     if (terminal || state === 'blocked') this.retainBudget(h.cp.goalId, false);
-    this.deps.store.record({ type: 'continuation_checkpoint', goalId: h.cp.goalId, state, reason, continuations: { ...h.cp.continuations }, counters: { ...h.cp.counters } });
+    this.deps.store.record({ type: 'continuation_checkpoint', goalId: h.cp.goalId, state, reason, continuations: { ...h.cp.continuations }, counters: { ...h.cp.counters }, deadlineAtMs: h.cp.deadlineAtMs, caps: { ...h.cp.caps }, outcomeCanonical: h.cp.outcomeCanonical, admissionBaseline: h.cp.admissionBaseline });
     try {
       this.deps.continuation?.onChanged?.(structuredClone(h.cp));
       this.deps.continuation?.survival?.persistCheckpoint(structuredClone(h.cp));
@@ -1837,7 +1837,7 @@ export class GoalEngine {
     active.record.outcome = truncate(`${cp.outcome.kind}: ${JSON.stringify(root)}`, BOUNDS.text);
     active.record.interpretation = cp.publicOutcome;
     active.nextTurnKind = 'continuation';
-    this.deps.store.record({ type: 'goal_continuation_bound', goalId: active.record.id, epoch: active.epoch, continuation: cp.continuations.used, freshCapturedAtMs: fresh.capturedAtMs, counts: cp.counts.map((l) => ({ path: l.path, basis: l.basis, selector: l.selector, credited: l.credited, held: l.heldAtInterruption, evidence: l.evidence, latched: l.latched, incident: l.incidentId !== null })), removal: cp.removal.map((r) => ({ path: r.path, members: r.members.length })) });
+    this.deps.store.record({ type: 'goal_continuation_bound', goalId: active.record.id, epoch: active.epoch, continuation: cp.continuations.used, freshCapturedAtMs: fresh.capturedAtMs, deadlineAtMs: active.deadlineAtMs, caps: { ...active.caps }, outcomeCanonical: cp.outcomeCanonical, admissionBaseline: cp.admissionBaseline, carriedTasks: 0, carriedHandles: 0, counts: cp.counts.map((l) => ({ path: l.path, basis: l.basis, selector: l.selector, credited: l.credited, held: l.heldAtInterruption, evidence: l.evidence, latched: l.latched, incident: l.incidentId !== null })), removal: cp.removal.map((r) => ({ path: r.path, members: r.members.length })) });
     return true;
   }
 
