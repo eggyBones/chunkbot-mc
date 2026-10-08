@@ -158,6 +158,24 @@ describe('mob threats', () => {
     assert.equal(noSwitch.response, 'retreat');
   });
 
+  it('unknown armor durability and unknown zombie age never earn defense readiness; spiders need no age property', () => {
+    const engaged = (key = 'zombie', baby: boolean | null = false) => mob(key, 2, { aggressive: true, baby });
+    for (const [max, remaining] of [[null, null], [240, null], [null, 200]] as const) {
+      const s = self({ equipment: { ...armed(), armor: [item('iron_chestplate', 6, max, remaining), item('iron_helmet', 5, max, remaining)] } });
+      assert.equal(verifiedArmorPoints(s, 0.1), 0);
+      const p = respond(planSafety(s, [engaged()], policyCtx()));
+      assert.equal(p.response, 'retreat');
+      assert.ok(p.defense?.refusals.includes('armor_below_minimum'));
+    }
+    for (const key of ['zombie', 'husk', 'zombie_villager', 'drowned']) {
+      const p = respond(planSafety(self(), [engaged(key, null)], policyCtx()));
+      assert.equal(p.response, 'retreat', key);
+      assert.ok(p.defense?.refusals.includes('age_unknown'));
+      assert.equal(respond(planSafety(self(), [engaged(key, false)], policyCtx())).response, 'defend', `known adult ${key}`);
+    }
+    assert.equal(respond(planSafety(self(), [engaged('spider', null)], policyCtx())).response, 'defend', 'spider is an individually supported species without a baby variant');
+  });
+
   it('cornered: escape terrain is never waived — no retreat leg is a declarative blocker, never a fight', () => {
     const engaged = () => [mob('zombie', 2.5, { aggressive: true })];
     const ready = planSafety(self(), engaged(), policyCtx({ retreatAvailable: () => false }));

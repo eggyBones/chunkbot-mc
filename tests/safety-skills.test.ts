@@ -56,6 +56,34 @@ describe('safety skills over the installed physics (client-physics evidence)', (
     await rt.service.close();
   });
 
+  it('stop then a NEW manual goal escapes again after old cleanup, with distinct authority and no revived controls', async () => {
+    const sc = scene();
+    let auth = ownerAuthority();
+    const rt = runtime(sc.session, () => auth);
+    rt.service.tick();
+    assert.ok(await until(() => sc.controls['jump'] === true, 2_000));
+    const oldLease = rt.leases.current!;
+    const oldGrant = (oldLease.owner as unknown as SafetyExecutionOwner).grantId;
+    auth = { ...auth, basis: 'none', goal: null, detail: 'automatic pause latched after stop' };
+    rt.service.onAuthorityChanged('owner_stop');
+    assert.equal(sc.controls['jump'], false);
+    assert.equal(rt.service.grantCurrent(oldGrant), false);
+    auth = { ...auth, basis: 'owner_goal', goal: { goalId: 'goal-0002', goalEpoch: 3, source: 'owner' }, detail: 'NEW manual goal, automatic pause remains latched' };
+    rt.service.onAuthorityChanged('owner_goal_admitted');
+    assert.ok(await until(() => rt.leases.current !== undefined && rt.leases.current !== oldLease, 2_000), 'fresh grant only after prior execute/cleanup settles');
+    const newLease = rt.leases.current!;
+    assert.notEqual((newLease.owner as unknown as SafetyExecutionOwner).grantId, oldGrant);
+    assert.equal(rt.leases.revoke(oldLease, 'late_cleanup'), undefined, 'old cleanup cannot clear the new holder');
+    assert.equal(rt.leases.current, newLease);
+    assert.ok(await until(() => rt.service.episodes().length >= 2 && rt.service.hold() === null, 25_000));
+    const ep = rt.service.episodes().at(-1)!;
+    assert.equal(ep.outcome, 'resolved', ep.detail);
+    assert.equal(fluidState(rt.service.world()!, sc.bot.entity.position).feetIn, 'none');
+    assert.equal(rt.service.counters.episodes, 2, 'prior episode history retained');
+    assert.equal(rt.service.grantCurrent(oldGrant), false);
+    await rt.service.close();
+  });
+
   it('under a solid ceiling with no open column: refuses (no blind jump) and reports a blocker', async () => {
     const sc = scene({ ceiling: true });
     const rt = runtime(sc.session, ownerAuthority);

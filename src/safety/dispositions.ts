@@ -69,6 +69,11 @@ const UNKNOWN_OVERRIDES = new Set(['sulfur_cube', 'camel_husk', 'parched']);
  */
 const DEFENSE_SUPPORTED = new Set(['zombie', 'husk', 'zombie_villager', 'drowned', 'spider']);
 
+/** Supported species with a baby variant. Spiders have no age metadata. */
+export function defenseRequiresAdult(key: string): boolean {
+  return DEFENSE_SUPPORTED.has(strip(key)) && strip(key) !== 'spider';
+}
+
 /** Main-hand items that make an otherwise melee mob a ranged threat. */
 const RANGED_ITEMS = new Set(['bow', 'crossbow', 'trident']);
 

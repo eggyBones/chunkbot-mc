@@ -21,7 +21,7 @@
 // (never a cornered fight). Players, the owner, passive and neutral mobs are
 // never attack targets. No model is consulted.
 import type { DefenseReadiness, SafetyConfig, SafetyEntityFact, SafetyHazard, SafetyHazardKind, SafetyItemFact, SafetyPlan, SafetySelfFacts } from '../contracts/safety.ts';
-import { armorPointsOf, weaponFacts, type WeaponFacts } from './dispositions.ts';
+import { armorPointsOf, defenseRequiresAdult, weaponFacts, type WeaponFacts } from './dispositions.ts';
 
 export interface PolicyContext {
   config: SafetyConfig;
@@ -131,7 +131,9 @@ export function verifiedArmorPoints(self: SafetySelfFacts, minFraction: number):
   let points = 0;
   for (const a of self.equipment.armor) {
     if (a.metadata !== 'server_slot') continue;
-    if (a.maxDurability !== null && a.remainingUses !== null && a.remainingUses < Math.ceil(a.maxDurability * minFraction)) continue;
+    // Unknown/non-wearing component state is not current durability proof.
+    if (a.maxDurability === null || a.remainingUses === null) continue;
+    if (a.remainingUses < Math.max(1, Math.ceil(a.maxDurability * minFraction))) continue;
     points += armorPointsOf(a.key);
   }
   return points;
@@ -154,6 +156,7 @@ export function defenseReadiness(self: SafetySelfFacts, active: readonly SafetyE
   const target = active.length === 1 ? (active[0] as SafetyEntityFact) : undefined;
   if (target && !ctx.defenseSupported(target)) refusals.push(`unsupported_matchup:${target.key.replace(/^minecraft:/, '')}`);
   if (target && target.baby === true) refusals.push('baby_variant');
+  if (target && defenseRequiresAdult(target.key) && target.baby === null) refusals.push('age_unknown');
   if (self.health < d.minHealth) refusals.push('health_below_minimum');
   if (self.food < d.minFood) refusals.push('food_below_minimum');
   if (self.vitalsSource !== 'server_update_health') refusals.push('vitals_not_server_stated');

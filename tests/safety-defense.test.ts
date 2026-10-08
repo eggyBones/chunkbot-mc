@@ -11,6 +11,7 @@ import { SafetyTracker, parseSafetySlot } from '../src/safety/tracker.ts';
 import { registryFactsOf } from '../src/safety/adapter.ts';
 import { ownerAuthority, runtime, scene, stopPhysics, until } from './safety-session.ts';
 import { REGISTRY_26_1_2 } from './skill-fakes.ts';
+import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
 
 after(stopPhysics);
@@ -20,6 +21,34 @@ const id = (name: string) => (REGISTRY_26_1_2.itemsByName[name] as { id: number 
 const slot = (name: string, damage = 0) => ({ itemCount: 1, itemId: id(name), components: damage ? [{ type: 'damage', data: damage }] : [] });
 
 describe('safety tracker (server statements, self-id filtered)', () => {
+  it('proven vanilla adult default requires a completed matching spawn bundle on each exact release', () => {
+    const md = createRequire(import.meta.url)('minecraft-data') as (version: string) => typeof REGISTRY_26_1_2;
+    for (const version of ['26.1.2', '26.2']) {
+      const registry = md(version);
+      const facts = registryFactsOf(registry);
+      const src = new EventEmitter();
+      const t = new SafetyTracker();
+      t.attach(src, { connectionEpoch: 1, registry: () => facts, now: () => 5 });
+      const zombieType = registry.entitiesByName['zombie']!.id;
+      assert.equal(t.adultDefault(50, 'zombie', version), false, 'no spawn is unknown');
+      src.emit('bundle_delimiter', {});
+      src.emit('spawn_entity', { entityId: 50, type: zombieType });
+      assert.equal(t.adultDefault(50, 'zombie', version), false, 'incomplete bundle is unknown');
+      src.emit('bundle_delimiter', {});
+      assert.equal(t.adultDefault(50, 'zombie', version), true, 'official default proven by complete pairing');
+      assert.equal(t.adultDefault(50, 'husk', version), false, 'wrong species');
+      assert.equal(t.adultDefault(50, 'zombie', '26.2.1'), false, 'unproved release');
+      src.emit('entity_metadata', { entityId: 50, metadata: [{ key: facts.metadataIndex('zombie', 'baby'), value: true }] });
+      assert.equal(t.adultDefault(50, 'zombie', version), false, 'explicit baby supersedes default');
+      src.emit('entity_destroy', { entityIds: [50] });
+      assert.equal(t.adultDefault(50, 'zombie', version), false, 'destroy invalidates identity');
+      src.emit('spawn_entity', { entityId: 50, type: zombieType });
+      src.emit('bundle_delimiter', {}); src.emit('bundle_delimiter', {});
+      assert.equal(t.adultDefault(50, 'zombie', version), false, 'unbundled spawn never borrows a later bundle');
+      t.detach();
+    }
+  });
+
   it('own air only from metadata addressed to the bot; other entities never change it', () => {
     const src = new EventEmitter();
     const t = new SafetyTracker();
@@ -58,10 +87,13 @@ describe('safety tracker (server statements, self-id filtered)', () => {
   });
 });
 
-function armedScene(opts: { zombieAt?: number; player?: boolean } = {}) {
+function armedScene(opts: { zombieAt?: number; player?: boolean; outsideAnchor?: boolean } = {}) {
   const sc = scene({ pool: false });
   sc.fake.give(36, 'iron_sword', 1);
-  const rt = runtime(sc.session, ownerAuthority);
+  // outsideAnchor: the bot is 400 blocks beyond its 128-radius goal anchor (route leg ended/withdrawn).
+  const travel = opts.outsideAnchor ? { anchor: { x: 400, y: 0, z: 400 }, radius: 128 } : undefined;
+  const auth = travel ? () => ({ ...ownerAuthority(), travel }) : ownerAuthority;
+  const rt = runtime(sc.session, auth, { tickMs: 200 }, travel ? { travel } : {});
   rt.service.attachConnection(sc.client, { connectionEpoch: 1, registry: () => REGISTRY_26_1_2 });
   sc.client.emit('login', { entityId: 1 });
   const items = new Array(46).fill(null);
@@ -73,7 +105,8 @@ function armedScene(opts: { zombieAt?: number; player?: boolean } = {}) {
   const z = sc.fake.addEntity({ id: 50, type: opts.player ? 'player' : 'hostile', name: opts.player ? 'player' : 'zombie', at: { x: 0.5 + (opts.zombieAt ?? 2.2), y: 0, z: 0.5 }, height: 1.95 });
   // Server metadata: mob_flags aggressive bit (the exact version's zombie metadata key index).
   const flagsIndex = reg.metadataIndex('zombie', 'mob_flags');
-  if (!opts.player && flagsIndex !== undefined) (z as unknown as { metadata: Record<number, unknown> }).metadata = { [flagsIndex]: 0x04 };
+  const babyIndex = reg.metadataIndex('zombie', 'baby');
+  if (!opts.player && flagsIndex !== undefined && babyIndex !== undefined) (z as unknown as { metadata: Record<number, unknown> }).metadata = { [flagsIndex]: 0x04, [babyIndex]: false };
   return { sc, rt, z };
 }
 
@@ -99,6 +132,28 @@ describe('defend_against_threat (real skill, scripted server)', () => {
     assert.equal(s.counters.defeatsConfirmed, 1);
     assert.equal(s.counters.hitsConfirmed, 3);
     assert.equal(attacks, 3, 'bounded: no attack after the death status');
+    await rt.service.close();
+  });
+
+  it('outside the original anchor after an exhausted route: the REAL defend skill under a genuine grant still defends (same displacement bound)', async () => {
+    const { sc, rt } = armedScene({ outsideAnchor: true });
+    let attacks = 0;
+    const origWrite = sc.client.write.bind(sc.client);
+    sc.client.write = (name: string, data: Record<string, unknown>) => {
+      origWrite(name, data);
+      if (name === 'attack' && data['entityId'] === 50) {
+        attacks += 1;
+        setImmediate(() => {
+          sc.client.emit('damage_event', { entityId: 50, sourceTypeId: 1, sourceCauseId: 2, sourceDirectId: 2 });
+          if (attacks === 2) sc.client.emit('entity_status', { entityId: 50, entityStatus: 3 });
+        });
+      }
+    };
+    rt.service.tick();
+    assert.equal(rt.service.hold()?.response, 'defend', 'not blocked by the goal radius');
+    assert.ok(await until(() => rt.service.status(Date.now()).counters.defeatsConfirmed > 0, 10_000));
+    const steps = (rt.service.episodes().at(-1)?.evidence['steps'] as Array<{ reason: string | null }>) ?? [];
+    assert.ok(!steps.some((x) => x.reason === 'readiness_changed'), 'the per-attack escape-space recheck uses the same bound');
     await rt.service.close();
   });
 
@@ -132,6 +187,30 @@ describe('defend_against_threat (real skill, scripted server)', () => {
     assert.equal(written.includes('attack'), false);
     assert.equal(rt.service.hold(), null);
     await rt.service.close();
+  });
+
+  it('health, armor or target age changing during the look await refuses the first attack', async () => {
+    for (const change of ['health', 'armor', 'age'] as const) {
+      const { sc, rt, z } = armedScene();
+      let resolveLook!: () => void;
+      let looking = false;
+      let attacks = 0;
+      const write = sc.client.write.bind(sc.client);
+      sc.client.write = (name: string, data: Record<string, unknown>) => { if (name === 'attack') attacks += 1; write(name, data); };
+      sc.bot['lookAt'] = () => new Promise<void>((resolve) => { looking = true; resolveLook = resolve; });
+      rt.service.tick();
+      assert.ok(await until(() => looking, 1_000));
+      if (change === 'health') sc.client.emit('update_health', { health: 9, food: 20 });
+      else if (change === 'armor') sc.client.emit('set_slot', { windowId: 0, slot: 6, item: { itemCount: 0 } });
+      else (z as unknown as { metadata: Record<number, unknown> }).metadata[reg.metadataIndex('zombie', 'baby')!] = true;
+      resolveLook();
+      assert.ok(await until(() => rt.service.episodes().length > 0, 2_000), change);
+      const steps = rt.service.episodes().at(-1)?.evidence['steps'] as Array<{ reason: string; response: string }>;
+      assert.equal(steps[0]?.reason, 'readiness_changed');
+      assert.ok(rt.service.status(Date.now()).counters.retreats > 0, 'downgraded to avoidance');
+      assert.equal(attacks, 0, `no attack after ${change} changed while aiming`);
+      await rt.service.close();
+    }
   });
 
   it('unarmed: the same zombie is avoided (retreat planned), never fought', async () => {

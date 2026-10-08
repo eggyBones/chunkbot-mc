@@ -270,6 +270,39 @@ describe('episodes', () => {
     assert.equal(h.service.grant(h.pending[1]!.owner.grantId)?.target, null);
   });
 
+  it('a defense action ending at its local loss threshold cannot refill that baseline in the same grant', async () => {
+    const h = harness();
+    h.state.entities = [mob('zombie', 2.5, { aggressive: true })];
+    h.service.tick();
+    const old = h.pending[0]!.owner.grantId;
+    h.state.self = self({ health: 14 }); // admission minimum still met; local loss from 20 triggered disengage
+    h.pending[0]!.resolve({ status: 'partial', reason: 'readiness_changed' });
+    await h.flush();
+    assert.equal(h.pending[1]?.candidate.capability, 'retreat_from_threat');
+    assert.equal(h.pending[1]?.owner.grantId, old, 'same finite grant, no budget refill');
+  });
+
+  it('stop then immediate new manual admission waits for old cleanup and creates a distinct grant', async () => {
+    const h = harness();
+    h.state.self = self(submerged());
+    h.service.tick();
+    const old = h.pending[0]!.owner.grantId;
+    h.state.authority = { ...h.state.authority, basis: 'none', goal: null };
+    h.service.onAuthorityChanged('owner_stop');
+    h.state.authority = { ...h.state.authority, basis: 'owner_goal', goal: { goalId: 'goal-0002', goalEpoch: 4, source: 'owner' } };
+    h.service.onAuthorityChanged('owner_goal_admitted');
+    assert.equal(h.pending.length, 1, 'new authority cannot dispatch before the old promise settles');
+    await h.flush();
+    assert.equal(h.pending.length, 2, 'fresh assessment runs immediately after cleanup');
+    const fresh = h.pending[1]!.owner.grantId;
+    assert.notEqual(fresh, old);
+    assert.equal(h.service.grantCurrent(old), false);
+    assert.equal(h.service.grantCurrent(fresh), true);
+    assert.equal(h.service.grant(fresh)?.suspended?.goalEpoch, 4);
+    assert.equal(h.service.counters.episodes, 2, 'history/counters are retained');
+    await h.service.close();
+  });
+
   it('waitClear honours the caller abort signal', async () => {
     const h = harness();
     h.state.self = self(submerged());
@@ -331,6 +364,61 @@ describe('episodes', () => {
     for (let i = 0; i < max; i += 1) assert.equal(h.service.reserveAttack(g), true);
     assert.equal(h.service.reserveAttack(g), false, 'no attack beyond the episode budget');
     assert.equal(h.service.reserveAttack('sg-forged1'), false, 'a foreign grant reserves nothing');
+  });
+
+  it('route exhausted / outside the original anchor: mob escape uses the prospective grant bound, not the goal radius', async () => {
+    // The bot ended a counted route leg 400 blocks from its 128-radius admission anchor; the leg is withdrawn.
+    const outside = { anchor: { x: 400, y: 0, z: 400 }, radius: 128 };
+    const h = harness();
+    h.state.authority = { ...h.state.authority, travel: outside };
+    h.state.self = self({ equipment: unarmed() });
+    h.state.entities = [mob('zombie', 5, { approaching: true })];
+    h.service.tick();
+    assert.equal(h.pending.length, 1, 'a finite safety grant is issued (no blocker from the goal radius)');
+    assert.equal(h.pending[0]!.candidate.capability, 'retreat_from_threat');
+    const g = h.service.grant(h.pending[0]!.owner.grantId)!;
+    assert.deepEqual(g.origin, h.state.self.position, 'grant origin is the bot position (no re-anchor of the goal)');
+    assert.equal(h.state.authority.travel, outside, 'the goal/route bound is untouched');
+
+    // Readiness/escape-space uses the same bound: an engaging zombie with gear is defended there too.
+    const d = harness();
+    d.state.authority = { ...d.state.authority, travel: outside };
+    d.state.entities = [mob('zombie', 2.5, { aggressive: true })];
+    d.service.tick();
+    assert.equal(d.pending[0]?.candidate.capability, 'defend_against_threat', 'escape space found inside the safety displacement');
+
+    // Unpaused basis (no owner goal) also escapes; explicit stop does nothing.
+    const u = harness({ basis: 'unpaused' });
+    u.state.authority = { ...u.state.authority, travel: outside, goal: null };
+    u.state.self = self({ equipment: unarmed() });
+    u.state.entities = [mob('zombie', 5, { approaching: true })];
+    u.service.tick();
+    assert.equal(u.pending.length, 1);
+    const n = harness({ basis: 'none' });
+    n.state.authority = { ...n.state.authority, travel: outside, goal: null };
+    n.state.self = self({ equipment: unarmed() });
+    n.state.entities = [mob('zombie', 5, { approaching: true })];
+    n.service.tick();
+    assert.equal(n.pending.length, 0, 'explicit stop: no safety motion');
+    assert.equal(n.preempts.length, 0);
+  });
+
+  it('owner replacement while an episode runs: the application-owned grant continues, the new goal waits, stop still revokes', async () => {
+    const h = harness();
+    h.state.self = self(submerged());
+    h.service.tick();
+    const p = h.pending[0]!;
+    // A new manual owner goal replaces the old one mid-episode (new goal id/epoch; basis stays owner_goal).
+    h.state.authority = { ...h.state.authority, goal: { goalId: 'goal-0002', goalEpoch: 4, source: 'owner' } };
+    h.service.onAuthorityChanged('owner_goal_admitted');
+    assert.equal(h.service.grantCurrent(p.owner.grantId), true, 'grant is application-owned, fenced by basis/connection/dimension');
+    assert.equal(p.signal.aborted, false);
+    assert.equal(h.service.hold()?.reason, 'episode', 'the new goal must wait locally for the episode');
+    assert.equal(h.service.grant(p.owner.grantId)?.suspended?.goalId, 'goal-0001', 'suspended identity is informational only');
+    h.state.authority = { ...h.state.authority, basis: 'none', goal: null };
+    h.service.onAuthorityChanged('owner_stop');
+    assert.equal(p.signal.aborted, true, 'explicit stop always revokes');
+    assert.equal(h.service.grantCurrent(p.owner.grantId), false);
   });
 
   it('status is bounded, labeled and never includes players/owner as threats', () => {
