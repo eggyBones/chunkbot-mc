@@ -377,14 +377,22 @@ export type RouteStatus = z.infer<typeof RouteStatusSchema>;
 
 // ---------------------------------------------------------------- continuation lineage (MB-FLOW-003-C12)
 
-export const ROUTE_CARRY_VERSION = 1 as const;
+export const ROUTE_LINEAGE_VERSION = 1 as const;
 
 /**
  * The route allowance lineage of ONE logical goal, exported by the route
  * controller BEFORE the interrupted goal epoch's route is revoked, and admitted
  * once into the continuation epoch of the SAME logical goal id. Plain data: no
- * handles, actions, tasks, leases or executable leg. Canonical definition of the
- * shared checkpoint's `route` field (src/contracts/continuation.ts imports it).
+ * handles, actions, tasks, leases or executable leg.
+ *
+ * Relation to the approved shared declaration (P `4409ba1`,
+ * src/contracts/continuation.ts `RouteCarry`, "structural; L may refine field
+ * names in locator.ts"): RouteLineage is a strict SUPERSET of that shape (every
+ * approved field with a compatible type, plus the identity/provenance fields the
+ * lineage rules need). It is named differently so the two `export *` lines of
+ * contracts/index.ts never collide; the intended integration is
+ * `export type RouteCarry = RouteLineage` in continuation.ts (P), so the
+ * checkpoint stores exactly what exportCarry returns and admitContinuation takes.
  *
  * Invariants enforced by RouteController.admitContinuation:
  *   - same routeId and logical goalId; a FRESH goal epoch (> every admitted epoch);
@@ -398,8 +406,8 @@ export const ROUTE_CARRY_VERSION = 1 as const;
  *   - exhausted, blocked or expired lineages get NO authority again;
  *   - only the LATEST export of a route is admissible, and only once.
  */
-export interface RouteCarry {
-  version: typeof ROUTE_CARRY_VERSION;
+export interface RouteLineage {
+  version: typeof ROUTE_LINEAGE_VERSION;
   routeId: RouteId;
   /** The logical goal id shared by every epoch of this owner job. */
   goalId: string;
@@ -420,6 +428,8 @@ export interface RouteCarry {
   ceilings: Readonly<RouteCeilings>;
   /** Legs consumed by every epoch so far (an interrupted active leg included). */
   legsUsed: number;
+  /** The index the next leg will get (always legsUsed + 1; numbering is monotonic across epochs). */
+  nextLegIndex: number;
   lastLeg: { index: number; outcome: string; netProgress: number; displacement: number } | null;
   stalledLegs: number;
   /** Cumulative own movement with its sources; never reduced. */
@@ -500,14 +510,14 @@ export interface RoutePort {
    * active leg finalized as interrupted. Pure: changes nothing. Undefined after
    * revocation, for another epoch, or without a route.
    */
-  exportCarry(goalEpoch: number): RouteCarry | undefined;
+  exportCarry(goalEpoch: number): RouteLineage | undefined;
   /** C12: exportCarry then revoke, atomically (the ordering the continuation contract requires). */
-  revokeWithCarry(reason: string, goalEpoch: number): RouteCarry | undefined;
+  revokeWithCarry(reason: string, goalEpoch: number): RouteLineage | undefined;
   /**
    * C12: the continuation admission of the SAME logical goal at a fresh epoch
    * (instead of `admit`). Synchronous, once per export.
    */
-  admitContinuation(carry: RouteCarry, admission: RouteAdmission): RouteContinuationResult;
+  admitContinuation(carry: RouteLineage, admission: RouteAdmission): RouteContinuationResult;
 }
 
 /**

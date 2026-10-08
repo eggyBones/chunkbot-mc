@@ -24,10 +24,10 @@
 import type { EventEmitter } from 'node:events';
 import type { Clock, Vec3 } from '../contracts/index.ts';
 import {
-  ROUTE_CARRY_VERSION,
+  ROUTE_LINEAGE_VERSION,
   RoutePolicySchema,
   type RouteAdmission,
-  type RouteCarry,
+  type RouteLineage,
   type RouteContinuationRefusal,
   type RouteContinuationResult,
   type RouteAuthorization,
@@ -543,7 +543,7 @@ export class RouteController implements RoutePort {
    * active leg is finalized conservatively as `interrupted_*` from its last own
    * sample: it stays counted and is never executable again.
    */
-  exportCarry(goalEpoch: number): RouteCarry | undefined {
+  exportCarry(goalEpoch: number): RouteLineage | undefined {
     const r = this.current;
     if (!r || r.state === 'revoked' || r.auth.goalEpoch !== goalEpoch) return undefined;
     const a = r.auth;
@@ -555,8 +555,8 @@ export class RouteController implements RoutePort {
       if (active) stalled = outcome === 'interrupted_stalled' ? stalled + 1 : 0;
       lastLeg = { index: leg.index, outcome, netProgress: r1(leg.netProgress), displacement: r1(leg.displacement) };
     }
-    const carry: RouteCarry = deepFreeze({
-      version: ROUTE_CARRY_VERSION,
+    const carry: RouteLineage = deepFreeze({
+      version: ROUTE_LINEAGE_VERSION,
       routeId: a.routeId,
       goalId: a.goalId,
       originalGoalEpoch: a.continuation?.originalGoalEpoch ?? a.goalEpoch,
@@ -571,6 +571,7 @@ export class RouteController implements RoutePort {
       admissionRadius: a.admissionRadius,
       ceilings: { ...a.ceilings },
       legsUsed: r.legOffset + r.legs.length,
+      nextLegIndex: r.legOffset + r.legs.length + 1,
       lastLeg,
       stalledLegs: stalled,
       distance: { ...r.distance },
@@ -589,7 +590,7 @@ export class RouteController implements RoutePort {
     return carry;
   }
 
-  revokeWithCarry(reason: string, goalEpoch: number): RouteCarry | undefined {
+  revokeWithCarry(reason: string, goalEpoch: number): RouteLineage | undefined {
     const carry = this.exportCarry(goalEpoch);
     this.revoke(reason, goalEpoch);
     return carry;
@@ -602,7 +603,11 @@ export class RouteController implements RoutePort {
    * then installs the original ceilings and consumed history. Exhausted, blocked
    * or expired lineages are recorded for truthful status with NO authority.
    */
-  admitContinuation(carry: RouteCarry, a: RouteAdmission): RouteContinuationResult {
+  admitContinuation(carry: RouteLineage, a: RouteAdmission): RouteContinuationResult {
+    if (!carry || typeof carry !== 'object' || typeof carry.routeId !== 'string' || typeof carry.fromGoalEpoch !== 'number') {
+      // Malformed (e.g. a checkpoint without a route lineage): never a grant; a fresh epoch is consumed (fail closed).
+      return this.refuseContinuation({ routeId: '' } as RouteLineage, a, 'unknown_or_stale_carry', 'not a route lineage exported by this controller', true);
+    }
     if (a.goalEpoch <= this.lastAdmittedEpoch || a.goalEpoch <= carry.fromGoalEpoch) return this.refuseContinuation(carry, a, 'stale_epoch', `goal epoch ${a.goalEpoch} is not fresh`, false);
     const lineage = this.lineages.get(carry.routeId);
     let fingerprint = '';
@@ -611,7 +616,7 @@ export class RouteController implements RoutePort {
     } catch {
       fingerprint = '';
     }
-    if (carry.version !== ROUTE_CARRY_VERSION || !lineage || lineage.consumed || lineage.latestExport === null || lineage.latestExport !== fingerprint || lineage.goalId !== carry.goalId) {
+    if (carry.version !== ROUTE_LINEAGE_VERSION || !lineage || lineage.consumed || lineage.latestExport === null || lineage.latestExport !== fingerprint || lineage.goalId !== carry.goalId) {
       return this.refuseContinuation(carry, a, 'unknown_or_stale_carry', 'not the latest unadmitted route lineage exported by this controller', true);
     }
     if (a.goalId !== carry.goalId) return this.refuseContinuation(carry, a, 'goal_mismatch', 'a continuation keeps the logical goal id of its lineage', true);
@@ -668,7 +673,7 @@ export class RouteController implements RoutePort {
   }
 
   /** Refusal: nothing is installed. A FRESH epoch is still consumed (fail closed: it can never get a fresh grant later). */
-  private refuseContinuation(carry: RouteCarry, a: RouteAdmission, reason: RouteContinuationRefusal, detail: string, freshEpoch: boolean): RouteContinuationResult {
+  private refuseContinuation(carry: RouteLineage, a: RouteAdmission, reason: RouteContinuationRefusal, detail: string, freshEpoch: boolean): RouteContinuationResult {
     if (freshEpoch && a.goalEpoch > this.lastAdmittedEpoch) {
       this.lastAdmittedEpoch = a.goalEpoch;
       if (this.current && this.current.state !== 'revoked') this.revoke('replaced_by_admission');

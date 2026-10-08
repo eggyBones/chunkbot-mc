@@ -8,7 +8,7 @@
 // No movement, handle, task or lease is carried (plain data only).
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { RoutePolicySchema, RouteStatusSchema, type RouteAdmission, type RouteCarry, type RouteDestinationProvider } from '../src/contracts/locator.ts';
+import { RoutePolicySchema, RouteStatusSchema, type RouteAdmission, type RouteLineage, type RouteDestinationProvider } from '../src/contracts/locator.ts';
 import { RouteController } from '../src/locator/routes.ts';
 
 const DIM = 'minecraft:overworld';
@@ -198,7 +198,7 @@ describe('MB-FLOW-003-C12 continuation admission', () => {
   });
 
   it('refusals: stale epoch, connection, dimension, anchor, goal and source mismatches, tampered or forged carries', () => {
-    const cases: Array<[string, (c: RouteCarry) => RouteCarry, Partial<RouteAdmission>, number, string]> = [
+    const cases: Array<[string, (c: RouteLineage) => RouteLineage, Partial<RouteAdmission>, number, string]> = [
       ['stale epoch', (c) => c, {}, 1, 'stale_epoch'],
       ['connection', (c) => c, { connectionEpoch: 2 }, 2, 'connection_mismatch'],
       ['dimension', (c) => c, { dimension: 'minecraft:the_nether' }, 2, 'dimension_mismatch'],
@@ -208,7 +208,7 @@ describe('MB-FLOW-003-C12 continuation admission', () => {
       ['source', (c) => c, { source: 'progression' }, 2, 'source_mismatch'],
       ['tampered distance', (c) => ({ ...c, distance: { ...c.distance, total: 0, clientPhysics: 0 } }), {}, 2, 'unknown_or_stale_carry'],
       ['tampered ceilings', (c) => ({ ...c, ceilings: { ...c.ceilings, routeDeadlineMs: c.ceilings.routeDeadlineMs + 1_000_000 } }), {}, 2, 'unknown_or_stale_carry'],
-      ['forged route id', (c) => ({ ...c, routeId: 'route-99' as RouteCarry['routeId'] }), {}, 2, 'unknown_or_stale_carry'],
+      ['forged route id', (c) => ({ ...c, routeId: 'route-99' as RouteLineage['routeId'] }), {}, 2, 'unknown_or_stale_carry'],
     ];
     for (const [label, mutate, over, epoch, reason] of cases) {
       const s = setup();
@@ -244,5 +244,41 @@ describe('MB-FLOW-003-C12 continuation admission', () => {
     current = { ...current!, destinationId: 'mf-0002', at: { x: 10, y: 64, z: 10 }, recordedAtMs: 9 };
     const changed = s.routes.verifyDestination(s.ctx(2), 'own_death');
     assert.ok(!changed.ok && changed.blocker === 'destination_changed');
+  });
+
+  it('malformed lineages (null, empty object, missing fields) never crash and never grant; a fresh epoch is consumed (fail closed)', () => {
+    for (const bad of [null, undefined, {}, { routeId: 'route-1' }, 'route-1']) {
+      const s = setup();
+      interruptedRoute(s);
+      s.routes.revokeWithCarry('lifecycle_death', 1);
+      const r = s.routes.admitContinuation(bad as unknown as RouteLineage, s.admission(2));
+      assert.ok(!r.ok && r.kind === 'refused' && r.reason === 'unknown_or_stale_carry', JSON.stringify(bad));
+      assert.equal(s.routes.status(2), null);
+      assert.equal(s.routes.admit(s.admission(2, { goalId: 'goal-0009' })), undefined, 'the consumed epoch can never get a fresh grant later');
+    }
+  });
+
+  it('nextLegIndex is always legsUsed + 1 and matches the index the next leg actually gets', () => {
+    const s = setup();
+    interruptedRoute(s);
+    const c1 = s.routes.revokeWithCarry('lifecycle_death', 1)!;
+    assert.equal(c1.nextLegIndex, c1.legsUsed + 1);
+    assert.ok(s.routes.admitContinuation(c1, s.admission(2)).ok);
+    const leg = s.routes.beginLeg({ ...s.ctx(2), at: { x: 0.5, y: 64, z: 0.5 }, destination: 'owner', bearingRad: 0 });
+    assert.ok(leg.ok && leg.leg.legIndex === c1.nextLegIndex);
+    const c2 = s.routes.revokeWithCarry('lifecycle_death', 2)!;
+    assert.equal(c2.legsUsed, c1.nextLegIndex);
+    assert.equal(c2.nextLegIndex, c2.legsUsed + 1);
+  });
+
+  it('structurally a superset of the approved shared RouteCarry declaration (P 4409ba1, continuation.ts)', () => {
+    // Field names and primitive kinds of the approved structural declaration; RouteLineage must provide all of them.
+    const s = setup();
+    interruptedRoute(s);
+    const c = s.routes.revokeWithCarry('lifecycle_death', 1)! as unknown as Record<string, unknown>;
+    const kinds: Record<string, string> = { routeId: 'string', originalGoalEpoch: 'number', grantedAtMs: 'number', ceilings: 'object', destinations: 'object', admissionAnchor: 'object', admissionRadius: 'number', state: 'string', legsUsed: 'number', nextLegIndex: 'number', distance: 'object', stalledLegs: 'number', blocker: 'object', boundOwnDeath: 'object' };
+    for (const [k, kind] of Object.entries(kinds)) assert.equal(typeof c[k], kind, k);
+    assert.ok(['authorized', 'leg_active', 'exhausted', 'blocked', 'revoked'].includes(c['state'] as string), 'state is within the approved union');
+    for (const k of ['total', 'clientPhysics', 'serverCorrections', 'correctionCount']) assert.equal(typeof (c['distance'] as Record<string, unknown>)[k], 'number', `distance.${k}`);
   });
 });
