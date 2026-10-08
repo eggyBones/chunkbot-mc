@@ -6,7 +6,7 @@
 // PredicateEngine on a credential-free fake world (no fixture, no inference).
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { sequentialIds, systemClock, type GoalOutcomeContract, type OutcomePredicate, type TaskSpec } from '../src/contracts/index.ts';
+import { sequentialIds, systemClock, type AdmittedTask, type DecisionPort, type GoalOutcomeContract, type OutcomePredicate, type TaskSpec } from '../src/contracts/index.ts';
 import { TaskCandidateGenerator } from '../src/execution/candidates.ts';
 import { SkillExecutorImpl } from '../src/execution/executor.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
@@ -24,6 +24,7 @@ import { allSkills } from '../src/skills/index.ts';
 import { constructionSkills } from '../src/skills/construction.ts';
 import { offlinePlayerUuid } from '../src/game/identity.ts';
 import { ownerQuestionIn } from '../src/goals/declarative.ts';
+import { TaskRuntime } from '../src/tasks/task-runtime.ts';
 import { ackSequenced, evidenceFor, fakeClient, fakeMineflayerBot } from './skill-fakes.ts';
 
 function treeScene() {
@@ -54,6 +55,113 @@ function treeScene() {
 }
 
 const signal = () => new AbortController().signal;
+
+/** All production task ports; only physical mining/server replies and Jev are simulated. */
+async function independentRemovalTask() {
+  const w = treeScene();
+  const positions = [{ x: 0, y: 1, z: 2 }, { x: 1, y: 1, z: 2 }, { x: 2, y: 1, z: 2 }];
+  const foreign = { x: -1, y: 1, z: 2 };
+  for (const p of [...positions, foreign]) w.scene.setBlock(p.x, p.y, p.z, 'birch_leaves');
+  const snap = w.perception.take(3)!;
+  const ref = (p: { x: number; y: number; z: number }) => {
+    const b = snap.blocks.find((b) => b.at.x === p.x && b.at.y === p.y && b.at.z === p.z);
+    assert.ok(b, 'each target must actually be shown');
+    return { kind: 'observed' as const, snapshotId: snap.id, handle: b.handle };
+  };
+  const refs = positions.map(ref);
+  const completion: OutcomePredicate = { predicate: 'all', of: refs.map((target) => ({ predicate: 'blocks_removed', target, selector: 'minecraft:birch_leaves' })) };
+  const bound = await w.predicates.bind(completion, signal());
+  const destructiveScope = w.predicates.captureContinuation(bound).removal;
+  const scopeBefore = JSON.stringify(destructiveScope);
+  const store = new MemoryRunStore();
+  const offeredSizes: number[] = [];
+  const dug: string[] = [];
+  let beforeChoice: (() => void) | undefined;
+  const serverRemoves = (p: { x: number; y: number; z: number }) => {
+    w.scene.setBlock(p.x, p.y, p.z, 'air');
+    w.client.emit('block_change', { location: p, type: 0 });
+  };
+  Object.assign(w.scene.bot, {
+    lookAt: async () => undefined,
+    digTime: () => 10,
+    dig: async (block: { position: { x: number; y: number; z: number } }) => {
+      const p = block.position;
+      dug.push(`${p.x},${p.y},${p.z}`);
+      w.client.write('block_dig', { status: 0, location: p, face: 1 });
+      serverRemoves(p);
+    },
+    stopDigging: () => undefined,
+    clearControlStates: () => undefined,
+  });
+  w.perception.admitTravelAnchor(3);
+  const executor = new SkillExecutorImpl({ registry: w.registry, leases: w.leases, session: () => w.session, services: w.services, goalEpoch: () => 3, store });
+  const decision: DecisionPort = {
+    readiness: () => ({ ready: true, detail: 'scripted first offered candidate; no inference' }),
+    choose: async (request) => {
+      offeredSizes.push(request.candidates.length);
+      const candidateId = request.candidates[0]!.id;
+      beforeChoice?.();
+      return { requestId: request.requestId, candidateId, confidence: 1, probabilities: { [candidateId]: 1 }, requestedModel: 'typesafe/jev-1.13', model: 'typesafe/jev-1.13', provider: 'TypeSafe', usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 0, attempts: 1 };
+    },
+  };
+  const runtime = new TaskRuntime({
+    perception: w.perception, candidates: w.generator, executor, predicates: w.predicates, decision,
+    sustained: (capability) => w.registry.get(capability)?.sustained,
+    catalogVersion: () => w.registry.catalog().catalogVersion, mechanicsVersion: '26.1.2', connectionEpoch: () => 1,
+    model: 'typesafe/jev-1.13', store, clock: systemClock, ids: sequentialIds(),
+    limits: { maxOptions: 8, noProgressMs: 10_000, perTargetRetries: 1, lowHealth: 6, maxRounds: 8 },
+  });
+  const abort = new AbortController();
+  const spec: TaskSpec = { objective: 'Remove the three shown bound blocks.', decisionInstruction: 'Pick a currently offered member.', allowedCapabilities: ['mine_block'], targetSelectors: refs, parameters: {}, completion };
+  const task: AdmittedTask = { goalId: 'goal-0001', goalEpoch: 3, taskId: 'task-0001', mode: 'complete', spec, destructiveScope, signal: abort.signal, isCurrent: () => !abort.signal.aborted };
+  return { ...w, bound, positions, foreign, foreignRef: ref(foreign), scopeBefore, store, offeredSizes, dug, runtime, task, serverRemoves, setBeforeChoice: (fn: () => void) => { beforeChoice = fn; } };
+}
+
+describe('N1-R5 production independent-removal TaskRuntime', () => {
+  it('executes each required member once and verifies ALL completion only after three real executor/server-packet outcomes', async () => {
+    const h = await independentRemovalTask();
+    assert.equal((await h.predicates.evaluate(h.bound, signal())).status, 'unsatisfied');
+    const result = await h.runtime.run(h.task);
+    assert.equal(result.status, 'completed', result.detail);
+    assert.equal(result.reason, 'completion_verified');
+    assert.equal(result.actions, 3); assert.equal(result.decisions, 3); assert.equal(result.localContinuations, 0);
+    assert.deepEqual(h.offeredSizes, [3, 2, 1], 'fresh resolver work shrinks without substituting the foreign leaf');
+    assert.deepEqual(new Set(h.dug), new Set(h.positions.map((p) => `${p.x},${p.y},${p.z}`)));
+    const outcomes = h.store.ofType('skill_outcome');
+    assert.equal(outcomes.length, 3);
+    for (const outcome of outcomes) {
+      assert.equal(outcome.status, 'succeeded'); assert.equal(outcome.confirmation, 'server_packet');
+      assert.equal(outcome.goalId, h.task.goalId); assert.equal(outcome.goalEpoch, 3); assert.equal(outcome.taskId, h.task.taskId);
+    }
+    assert.equal((await h.predicates.evaluate(h.bound, signal())).status, 'satisfied');
+    assert.equal(JSON.stringify(h.task.destructiveScope), h.scopeBefore);
+    assert.equal(h.scene.bot.blockAt(h.foreign)?.name, 'birch_leaves');
+    assert.equal(h.leases.current, undefined);
+  });
+  it('rejects a frozen choice removed during the decision await; no stale action or foreign replacement is executed', async () => {
+    const h = await independentRemovalTask();
+    h.setBeforeChoice(() => { for (const p of h.positions) h.serverRemoves(p); });
+    const result = await h.runtime.run(h.task);
+    assert.equal(result.status, 'completed', result.detail);
+    assert.equal(result.decisions, 1); assert.equal(result.actions, 0);
+    assert.equal(h.store.ofType('task_choice_stale').length, 1);
+    assert.equal(h.store.ofType('skill_started').length, 0); assert.equal(h.dug.length, 0);
+    assert.equal(h.scene.bot.blockAt(h.foreign)?.name, 'birch_leaves');
+    assert.equal(JSON.stringify(h.task.destructiveScope), h.scopeBefore);
+    assert.equal(h.leases.current, undefined);
+  });
+  it('blocks an unrelated fresh replacement task under the original goal scope without inference or actuation', async () => {
+    const h = await independentRemovalTask();
+    h.task.spec = { ...h.task.spec, targetSelectors: [h.foreignRef], completion: { predicate: 'blocks_removed', target: h.foreignRef, selector: 'minecraft:birch_leaves' } };
+    const result = await h.runtime.run(h.task);
+    assert.equal(result.status, 'blocked'); assert.equal(result.reason, 'no_candidates');
+    assert.equal(result.decisions, 0); assert.equal(result.actions, 0); assert.equal(h.dug.length, 0);
+    assert.equal((await h.predicates.evaluate(h.bound, signal())).status, 'unsatisfied', 'original accepted work remains unfinished');
+    assert.equal(h.scene.bot.blockAt(h.foreign)?.name, 'birch_leaves');
+    assert.equal(JSON.stringify(h.task.destructiveScope), h.scopeBefore);
+    assert.equal(h.leases.current, undefined);
+  });
+});
 
 describe('MB-PLAN-006 N-G3 observation groups', () => {
   it('N1-R5: three independent removal completions permit each bound member, while primary, registry, stale and original-goal fences remain binding', async () => {
