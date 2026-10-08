@@ -5,6 +5,7 @@
 import type { Clock, DecisionPort, ExecutionOwner, GameLifecycleEvent, IdSource, PriorResultRef, RunStore } from '../contracts/index.ts';
 import { NotReadyDecision } from '../goals/not-ready.ts';
 import { TaskRuntime } from '../tasks/task-runtime.ts';
+import { TaskMotionProgress } from '../tasks/motion-progress.ts';
 import type { ChunkbotConfig } from '../config/schema.ts';
 import { TaskCandidateGenerator } from '../execution/candidates.ts';
 import { SkillExecutorImpl, clearSharedControls } from '../execution/executor.ts';
@@ -245,6 +246,20 @@ export class SkillRuntime {
     const decision = options.decision ?? new NotReadyDecision();
     this.decision = decision;
     const limits = config.limits;
+    const locator = this.locator;
+    const motionProgress = routes && locator ? new TaskMotionProgress({
+      executor: this.executor,
+      guidance: (task, candidate, sample) => {
+        const descriptor = this.registry.get(candidate.capability)?.descriptor;
+        if (descriptor?.family !== 'movement' || !descriptor.targets?.includes('owner') || (!task.requiresOwnerDirection && !task.spec.targetSelectors.some((s) => s.kind === 'owner')) || task.goalEpoch !== options.goalEpoch() || sample.connectionEpoch !== options.connectionEpoch() || this.safety?.hold()) return undefined;
+        const ctx = { goalEpoch: task.goalEpoch, connectionEpoch: sample.connectionEpoch, dimension: sample.dimension };
+        const auth = routes.authorization(ctx), status = routes.status(task.goalEpoch), cue = locator.steering();
+        if (!auth || auth.goalId !== task.goalId || !auth.destinations.includes('owner') || !status || status.goalId !== task.goalId || status.routeId !== auth.routeId || (status.state !== 'authorized' && status.state !== 'leg_active') || status.remainingMs <= 0 || status.distanceUsed >= status.maxTotalDistance || status.legsUsed > status.maxLegs || !cue || cue.connectionEpoch !== sample.connectionEpoch) return undefined;
+        const bounds = status.state === 'leg_active' ? routes.legBounds(ctx) : this.perception.admissionBounds();
+        if (!bounds || bounds.goalEpoch !== task.goalEpoch || bounds.connectionEpoch !== sample.connectionEpoch || bounds.dimension !== sample.dimension || Math.hypot(sample.self.x - bounds.anchor.x, sample.self.z - bounds.anchor.z) > bounds.radius) return undefined;
+        return { authorityId: auth.routeId, bearingRad: cue.bearingRad };
+      },
+    }) : undefined;
     this.tasks = new TaskRuntime({
       perception: this.perception,
       candidates: this.candidates,
@@ -265,6 +280,7 @@ export class SkillRuntime {
       ...(options.emitTask ? { emit: options.emitTask } : {}),
       ...(this.survival ? { lowHealthAllowance: this.survival } : {}),
       ...(this.safety ? { safety: this.safety } : {}),
+      ...(motionProgress ? { motionProgress } : {}),
     });
   }
 

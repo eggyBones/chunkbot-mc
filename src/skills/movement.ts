@@ -8,6 +8,7 @@ import { admittedParameters, json, liveEntity, namedTargetUnavailable, pos3, tar
 import { failed, precondition, type CandidateDraft, type ExecuteContext, type SkillDefinition, type SkillResult, type Unavailable } from './definition.ts';
 import { GoalBesideBlock, assertPolicy, conservativeMovements, distanceTo, goals, navigate, standingOn } from './navigation.ts';
 import { HandleRefSchema, MoveTargetSchema, type MoveTarget } from './refs.ts';
+import { observeActuatorMotion } from '../execution/actuator.ts';
 
 const SUPPORTED_MOVE_PREDICATES = ['near_target', 'visited_location'];
 
@@ -335,6 +336,7 @@ export const followEntity: SkillDefinition<{ target: MoveTarget; within: number;
       evidence: { samples, visibleSamples, nearFraction: visibleSamples ? Math.round((near / visibleSamples) * 100) / 100 : 0, lastObservedTarget: pos3(tracker.last.at), lastObservedAgeMs: tracker.lostForMs(), ...boundsEvidence(ctx) },
     });
     try {
+      observeActuatorMotion(ctx.act);
       while (ctx.services.clock.now() - started < params.durationMs) {
         // Visibility FIRST: the target's position is read only when it is visible now.
         const seen = tracker.sample();
@@ -360,6 +362,7 @@ export const followEntity: SkillDefinition<{ target: MoveTarget; within: number;
           ctx.act.clearPathGoal();
           return stopWith('failed', 'outside_travel_bounds', 'reached the travel radius while following; stopped');
         }
+        observeActuatorMotion(ctx.act);
         samples += 1;
         const after = tracker.sample();
         if (after) {
