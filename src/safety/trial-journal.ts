@@ -26,7 +26,7 @@ export function sameChunks(a: TrialOriginal['forceload'], b: TrialOriginal['forc
 }
 
 export function parseEntityTest(reply: string): boolean | undefined {
-  if (/^Test passed(?:, count: [1-9]\d*)?[.!]?$/i.test(reply.trim())) return true;
+  if (/^Test passed(?:(?:, count: |\. Count: )[1-9]\d*)?[.!]?$/i.test(reply.trim())) return true;
   if (/^Test failed[.!]?$/i.test(reply.trim())) return false;
   return undefined;
 }

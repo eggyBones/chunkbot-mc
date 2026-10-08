@@ -132,10 +132,24 @@ describe('safety gate harness guard', () => {
     for (const reply of ['', 'error', 'There are 2 force loaded chunks at: [15, 12]', 'There are 2 force loaded chunks at: [15, 12], [15, 12]']) assert.equal(parseForceload(reply), undefined, reply);
   });
 
-  it('unknown command errors never mean that an entity was defeated or removed', () => {
+  it('W-H2 accepts the observed vanilla entity-test Count reply as presence', () => {
+    // Actual vanilla 26.1.2 RCON reply retained by the coordinator at 2026-10-08T05:00:07.231Z.
+    assert.equal(parseEntityTest('Test passed. Count: 1'), true);
+    assert.equal(parseEntityTest('Test passed. Count: 12'), true);
     assert.equal(parseEntityTest('Test passed, count: 1'), true);
+    assert.equal(parseEntityTest('Test passed'), true);
     assert.equal(parseEntityTest('Test failed'), false);
-    for (const reply of ['Command failed', 'No entity was found', '', '0', 'RCON error']) assert.equal(parseEntityTest(reply), undefined, reply);
+    assert.equal(parseEntityTest('Test failed.'), false);
+  });
+
+  it('unknown or malformed entity-test replies never mean defeated or removed', () => {
+    for (const reply of [
+      'Command failed', 'No entity was found', '', '0', 'RCON error',
+      'Test passed. Count: 0', 'Test passed, count: 0', 'Test passed. Count: -1',
+      'Test passed. Count: 1.5', 'Test passed. Count: ', 'Test passed. Count:1',
+      'Test passed Count: 1', 'Command error: Test passed. Count: 1',
+      'Test passed. Count: 1\nCommand failed', 'Test failed. Count: 1',
+    ]) assert.equal(parseEntityTest(reply), undefined, reply);
   });
 
   it('signal and finally callers share the same cleanup settlement exactly once', async () => {
