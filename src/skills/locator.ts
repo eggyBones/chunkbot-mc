@@ -26,12 +26,15 @@ import type { RouteController } from '../locator/routes.ts';
 import { runRoute, type RouteEnv, type RouteTarget } from '../locator/route-runner.ts';
 import { admittedParameters, json, pos3 } from './common.ts';
 import { precondition, type AnySkill, type CandidateDraft, type ExecuteContext, type ResolveContext, type SkillDefinition, type SkillResult, type Unavailable } from './definition.ts';
-import { distanceTo, goals, navigate } from './navigation.ts';
+import { distanceTo, goals, navigate, type NavigateOptions } from './navigation.ts';
+import type { navigateRecoveryTravel } from './survival.ts';
 
 export interface LocatorSkillDeps {
   locator?: LocatorService;
   /** Route controller (also holds the survival own-death provider seam). */
   routes: RouteController;
+  /** P binds the current enabled recovery service; only verified own-death route legs use it. */
+  recoveryTravel?: (ctx: ExecuteContext, options: NavigateOptions) => ReturnType<typeof navigateRecoveryTravel>;
 }
 
 const WITHIN = z.number().min(1).max(16).default(3);
@@ -69,6 +72,11 @@ export function admissionProof(ctx: ExecuteContext, routes: RouteController): Ro
 
 /** Production RouteEnv over the fenced actuator, perception and the skill services. */
 export function routeEnv(ctx: ExecuteContext, routes: RouteController): RouteEnv {
+  return routeEnvUsing(ctx, routes, (options) => navigate(ctx.act, options));
+}
+
+/** One navigation adapter; the runner still owns every leg, bound, poll and cumulative ceiling. */
+function routeEnvUsing(ctx: ExecuteContext, routes: RouteController, navigateLeg: (options: NavigateOptions) => ReturnType<typeof navigate>): RouteEnv {
   const { services, session, act } = ctx;
   const bot = session.bot;
   const perception = services.perception;
@@ -99,7 +107,7 @@ export function routeEnv(ctx: ExecuteContext, routes: RouteController): RouteEnv
     admissionBounds: () => admissionProof(ctx, routes),
     move: async (target, within, bounds, options) => {
       let goalAt = target;
-      const r = await navigate(act, {
+      const optionsForLeg: NavigateOptions = {
         goal: new goals.GoalNear(target.x, target.y, target.z, Math.max(1, within - 0.5)),
         arrived: () => distanceTo(bot, goalAt) <= within + 0.25,
         distance: () => distanceTo(bot, goalAt),
@@ -117,7 +125,8 @@ export function routeEnv(ctx: ExecuteContext, routes: RouteController): RouteEnv
               },
             }
           : {}),
-      });
+      };
+      const r = await navigateLeg(optionsForLeg);
       return { status: r.status, finalDistance: r.finalDistance, ...(r.aborted ? { aborted: r.aborted } : {}) };
     },
     progress: (e) => ctx.progress(e),
@@ -291,6 +300,7 @@ export function routeTravelSkill(deps: LocatorSkillDeps): SkillDefinition<RouteT
         const can = deps.routes.canBegin(rc, 'own_death');
         if (!verified.ok) unavailable.push({ reason: `route_${verified.blocker}`, detail: verified.detail });
         else if (!can.ok) unavailable.push({ reason: `route_${can.blocker}`, detail: can.detail });
+        else if (!deps.recoveryTravel) unavailable.push({ reason: 'recovery_travel_not_installed', detail: 'own-death route travel requires the bound recovery pickup guard' });
         else drafts.push({ parameters: { destination: 'own_death', within, durationMs }, description: `travel toward ${verified.label} through route legs`, criteria: routeCriteria(deps, ctx) });
       }
       if (drafts.length === 0 && unavailable.length === 0) unavailable.push({ reason: 'no_route_destination', detail: 'no owner-typed far destination or authorized code-owned destination for this task' });
@@ -320,8 +330,10 @@ export function routeTravelSkill(deps: LocatorSkillDeps): SkillDefinition<RouteT
           },
         };
       } else {
+        if (ctx.owner.kind !== 'goal' || deps.routes.authorization(rc)?.goalId !== ctx.owner.goalId) return precondition('not_a_recovery_goal', 'own-death travel requires this authorized recovery goal');
         const verified = deps.routes.verifyDestination(rc, 'own_death');
         if (!verified.ok || verified.kind !== 'own_death') return precondition(`route_${verified.ok ? 'destination_unverified' : verified.blocker}`, verified.ok ? 'unexpected destination kind' : verified.detail);
+        if (!deps.recoveryTravel) return precondition('recovery_travel_not_installed', 'own-death route travel requires the bound recovery pickup guard');
         // C3: freeze the WHOLE own-incident identity at first use; re-verified before every step and poll.
         if (!deps.routes.bindOwnDeath(rc, verified.identity)) return precondition('route_destination_changed', 'the recorded own death location changed after this route began');
         target = {
@@ -336,8 +348,56 @@ export function routeTravelSkill(deps: LocatorSkillDeps): SkillDefinition<RouteT
           },
         };
       }
-      const result = await runRoute(routeEnv(ctx, deps.routes), target, p, { routes: deps.routes, ...(deps.locator ? { locator: deps.locator } : {}) });
+      type Receipt = Exclude<Awaited<ReturnType<typeof navigateRecoveryTravel>>, { error: string; detail: string }>;
+      const receipts: Receipt[] = [];
+      let refusal: { reason: string; detail: string } | undefined;
+      let executionError = false;
+      const ownDeath = target.kind === 'fixed' && target.destination === 'own_death';
+      const env = ownDeath ? routeEnvUsing(ctx, deps.routes, async (options) => {
+        ctx.act.fence();
+        const current = { ...rc, connectionEpoch: ctx.session.connectionEpoch, dimension: String(bot.game.dimension) };
+        const verified = deps.routes.verifyDestination(current, 'own_death');
+        if (!verified.ok || ctx.owner.kind !== 'goal' || deps.routes.authorization(current)?.goalId !== ctx.owner.goalId || !deps.routes.frozenOwnDeath(current)) {
+          refusal = { reason: verified.ok ? 'not_a_recovery_goal' : `route_${verified.blocker}`, detail: verified.ok ? 'bound recovery route ownership changed' : verified.detail };
+          throw new Error(refusal.detail);
+        }
+        // Forward the exact existing leg options/context. No new bounds, abort wrapper, loop or allowance.
+        const receipt = await deps.recoveryTravel!(ctx, options);
+        if ('error' in receipt) {
+          refusal = { reason: receipt.error, detail: receipt.detail };
+          throw new Error(receipt.detail);
+        }
+        receipts.push(receipt);
+        if (receipt.veto) {
+          refusal = { reason: receipt.veto, detail: `recovery route stopped by ${receipt.veto}` };
+          throw new Error(refusal.detail);
+        }
+        return receipt.navigation;
+      }) : routeEnv(ctx, deps.routes);
+      let result: Awaited<ReturnType<typeof runRoute>>;
+      try {
+        result = await runRoute(env, target, p, { routes: deps.routes, ...(deps.locator ? { locator: deps.locator } : {}) });
+      } catch (error) {
+        if (!ownDeath) throw error;
+        ctx.act.fence(); // preserve executor cancellation/safety/epoch fencing; never convert revoked work to success
+        executionError = true;
+        const detail = refusal?.detail ?? (error instanceof Error ? error.message : String(error));
+        result = { status: 'failed', reason: refusal?.reason ?? 'recovery_travel_error', effect: detail, evidence: { route: json(deps.routes.status(rc.goalEpoch)) } };
+      }
       const out = toSkillResult(result);
+      if (ownDeath) {
+        if (executionError && receipts.length === 0) out.confirmation = 'none';
+        const counted = receipts.reduce((n, r) => n + r.pickup.counted, 0);
+        const incidental = receipts.flatMap((r) => r.pickup.incidental), nonItem = receipts.flatMap((r) => r.pickup.nonItem);
+        out.evidence = { ...(out.evidence ?? {}), recoveryTravel: json(receipts) };
+        if (counted || incidental.length || nonItem.length) out.confirmation = 'server_packet';
+        if (counted) out.effect += `; regained ${counted} own item(s) during route travel (server collect packets)`;
+        if (incidental.length) {
+          out.effect += `; incidental loot collected, not counted as own return: ${incidental.join(', ')}`;
+          if (out.status === 'succeeded') { out.status = 'partial'; out.reason = 'incidental_pickup'; }
+        }
+        if (nonItem.length) out.effect += `; non-item server collects: ${nonItem.join(', ')}`;
+      }
       if (target.kind === 'fixed') out.evidence = { ...(out.evidence ?? {}), destination: target.destination === 'owner_destination' ? pos3(target.at) : 'own_death', position: pos3(bot.entity.position) } as Record<string, JsonValue>;
       return out;
     },
