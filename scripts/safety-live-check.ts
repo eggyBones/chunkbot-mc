@@ -79,6 +79,7 @@ import { allSkills } from '../src/skills/index.ts';
 import { safetySkills } from '../src/skills/safety.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { trialRcon } from '../src/safety/trial-rcon.ts';
+import { serverWaterSupport, type TrialWaterBlock } from '../src/safety/trial-water.ts';
 
 type Json = Record<string, unknown>;
 
@@ -401,6 +402,43 @@ class Gate {
     return { pos: pos ? [Number(pos[1]), Number(pos[2]), Number(pos[3])] : null, air: air ? Number(air[1]) : null, health: health ? Number(health[1]) : null };
   }
 
+  /** Independent server block/ground oracle, never the product's fluid estimate. */
+  async waterExitSettled(ev: string[]): Promise<void> {
+    const episodes = this.safety.counters.episodes;
+    const started = Date.now();
+    const block = async (x: number, y: number, z: number): Promise<TrialWaterBlock> => {
+      check(x >= AREA.x1 && x <= AREA.x2 && z >= AREA.z1 && z <= AREA.z2 && y >= SCENE_Y.y1 && y <= SCENE_Y.y2, 'water support read stays inside declared scene');
+      for (const key of ['dirt', 'stone', 'air', 'water', 'lava']) {
+        const reply = await this.rcon(`execute if block ${x} ${y} ${z} minecraft:${key}`, false);
+        const matched = parseEntityTest(reply);
+        check(matched !== undefined, `water support block reply unreadable: ${reply.slice(0, 120)}`);
+        if (matched) return key === 'dirt' || key === 'stone' ? 'solid' : key as TrialWaterBlock;
+      }
+      return 'other';
+    };
+    let samples = 0;
+    do {
+      check(!this.leases.current && this.safety.hold() === null, 'water exit controls/lease already released');
+      const session = this.game.session();
+      check(session, 'water exit session');
+      for (const c of ['forward', 'back', 'left', 'right', 'jump', 'sprint'] as const) check(!session.bot.getControlState(c), `water exit ${c} released`);
+      const b = await this.serverBot();
+      check(b.pos, 'water exit server position readable');
+      const [x, y, z] = b.pos;
+      const reply = await this.rcon(`execute if entity @a[name=${BOT},nbt={OnGround:1b},limit=1,${ENTITY_AREA}]`, false);
+      const onGround = parseEntityTest(reply);
+      check(onGround !== undefined, `water ground reply unreadable: ${reply.slice(0, 120)}`);
+      const support = { onGround, floor: await block(Math.floor(x), Math.floor(y - 0.05), Math.floor(z)), feet: await block(Math.floor(x), Math.floor(y + 0.2), Math.floor(z)), eye: await block(Math.floor(x), Math.floor(y + 1.62), Math.floor(z)) };
+      ev.push(`settled server sample ${++samples}: pos ${b.pos.join(',')} air ${b.air}; ${JSON.stringify(support)}`);
+      check(serverWaterSupport(support) !== undefined, 'actual dry or genuine shallow solid-supported wading after release (not a surface bob)');
+      check(this.safety.counters.episodes === episodes, 'no water episode churn after release');
+      check(!this.leases.current && this.safety.hold() === null, 'no resumed controls after water exit sample');
+      if (Date.now() - started >= 3_000 && samples >= 4) break;
+      await sleep(250);
+    } while (true);
+    ev.push(`stable server support after release for ${Date.now() - started}ms, ${samples} samples, no re-sinking/episode churn`);
+  }
+
   async serverEntityPos(tag: string): Promise<[number, number, number] | null> {
     const m = /\[([-\d.]+)d, ([-\d.]+)d, ([-\d.]+)d\]/.exec(await this.rcon(`data get entity @e[tag=${tag},limit=1,${ENTITY_AREA}] Pos`, false));
     return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
@@ -487,7 +525,7 @@ function sceneChunks(): Array<{ cx: number; cz: number }> {
   return out;
 }
 
-const inPool = (p: [number, number, number]) => p[0] >= POOL.x1 && p[0] <= POOL.x2 + 1 && p[2] >= POOL.z1 && p[2] <= POOL.z2 + 1 && p[1] < -56.2;
+const inPool = (p: [number, number, number]) => p[0] >= POOL.x1 && p[0] < POOL.x2 + 1 && p[2] >= POOL.z1 && p[2] < POOL.z2 + 1;
 const dist2 = (a: [number, number, number], b: [number, number, number]) => Math.hypot(a[0] - b[0], a[2] - b[2]);
 
 interface RestoreCheck {
@@ -663,7 +701,7 @@ async function run(outDir: string): Promise<Json> {
       ev.push(`episode ${ep.outcome}/${ep.reason} in ${Date.now() - t0}ms, ${ep.actions} step(s), displacement ${ep.displacement}: ${ep.detail}`);
       ev.push(`server after: pos ${after.pos?.join(',')} air ${after.air} health ${after.health}; tracker air statements ${g.safety.tracker.counts.airStatements}, other-entity air ignored ${g.safety.tracker.counts.otherEntityAirIgnored}`);
       check(ep.outcome === 'resolved', `episode ${ep.outcome}`);
-      check(after.pos && !inPool(after.pos), 'server position is out of the pool');
+      await g.waterExitSettled(ev);
       check(after.health !== null && before.health !== null && after.health >= before.health, 'no drowning damage (server health)');
     });
 
@@ -684,7 +722,8 @@ async function run(outDir: string): Promise<Json> {
       const ep = g.episodeAfter(n)[0]!;
       const after = await g.serverBot();
       ev.push(`after admission: ${ep.outcome}/${ep.reason}; server pos ${after.pos?.join(',')} air ${after.air}`);
-      check(ep.outcome === 'resolved' && after.pos && !inPool(after.pos), 'escaped once authorized');
+      check(ep.outcome === 'resolved', 'escape episode resolved once authorized');
+      await g.waterExitSettled(ev);
     });
 
     await g.gate('W2', 'unsupported water entry during ordinary goal work: preempted (safety_preempt) or the deep path refused', async (ev) => {

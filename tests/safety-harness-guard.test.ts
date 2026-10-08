@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { createServer, type Socket } from 'node:net';
 import { SafetyTrialJournal, cleanupOnce, parseEntityTest, parseForceload, sameChunks } from '../src/safety/trial-journal.ts';
 import { trialRcon } from '../src/safety/trial-rcon.ts';
+import { serverWaterSupport } from '../src/safety/trial-water.ts';
 import { describe, it } from 'node:test';
 import { PROJECT_ROOT } from '../src/app/fixture-layout.ts';
 
@@ -20,6 +21,23 @@ const liveDir = join(PROJECT_ROOT, 'var', 'live-check');
 const listLive = () => (existsSync(liveDir) ? readdirSync(liveDir).sort() : []);
 
 describe('safety gate harness guard', () => {
+  it('W-H3 requires actual server ground/body blocks: surface bobs, lava and airborne bodies fail', () => {
+    const dry = { onGround: true, floor: 'solid' as const, feet: 'air' as const, eye: 'air' as const };
+    assert.equal(serverWaterSupport(dry), 'dry');
+    assert.equal(serverWaterSupport({ ...dry, feet: 'water' }), 'wading');
+    assert.equal(serverWaterSupport({ ...dry, floor: 'water', onGround: false }), undefined, 'both observed positions clear the body samples over a deep pool');
+    assert.equal(serverWaterSupport({ ...dry, floor: 'water' }), undefined, 'even a stale grounded flag cannot turn fluid into solid');
+    assert.equal(serverWaterSupport({ ...dry, onGround: false }), undefined);
+    assert.equal(serverWaterSupport({ ...dry, feet: 'lava' }), undefined);
+    assert.equal(serverWaterSupport({ ...dry, eye: 'water' }), undefined);
+    assert.equal(serverWaterSupport({ ...dry, floor: 'other' }), undefined);
+    const w1 = code.slice(code.indexOf("g.gate('W1'"), code.indexOf("g.gate('W1s'"));
+    const w1s = code.slice(code.indexOf("g.gate('W1s'"), code.indexOf("g.gate('W2'"));
+    for (const gate of [w1, w1s]) assert.match(gate, /await g\.waterExitSettled\(ev\)/);
+    assert.match(code, /Date\.now\(\) - started >= 3_000 && samples >= 4/);
+    assert.match(code, /counters\.episodes === episodes/);
+    assert.match(code, /nbt=\{OnGround:1b\}/);
+  });
   it('is import-safe and the lease check precedes every fixture path', () => {
     const guard = source.indexOf('if (isEntryPoint(import.meta.url, process.argv[1])) {');
     assert.ok(guard > 0);
