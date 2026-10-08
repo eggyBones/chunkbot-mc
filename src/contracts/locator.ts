@@ -175,8 +175,17 @@ export const LocatorConfigSchema = z
   .object({
     /** Locator perception (waypoint packets -> coarse owner hint). */
     enabled: z.boolean().default(true),
-    /** A tracked owner statement older than this is `expired` (not actionable). */
-    hintMaxAgeMs: z.number().int().min(1_000).max(600_000).default(120_000),
+    /**
+     * A tracked owner statement older than this is `expired` (not actionable).
+     * MB-LOC-002 D1 (coordinator-authorized): the DEFAULT is the bounded maximum,
+     * 600 s, because the official server sends no new statement while a
+     * block/chunk-precision owner stands still, even as the bot moves. Untrack,
+     * logout (identity no longer listed), dimension change, respawn and
+     * connection end still withdraw the cue IMMEDIATELY, at any age. An explicitly
+     * configured value is binding (never extended); the reported age and
+     * remaining freshness stay honest.
+     */
+    hintMaxAgeMs: z.number().int().min(1_000).max(600_000).default(600_000),
     routes: RoutePolicySchema.default(RoutePolicySchema.parse({})),
   })
   .strict();
