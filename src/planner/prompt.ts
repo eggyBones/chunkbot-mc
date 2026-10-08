@@ -107,6 +107,9 @@ export function renderObservation(s: ObservationSnapshot | null, maxBlocks = 96)
   const thing = (t: ObservationSnapshot['blocks'][number]) => ({ handle: t.handle, key: t.key, at: pos(t.at), distance: t.distance, ...(t.label ? { label: t.label } : {}), ...(t.inReach !== undefined ? { inReach: t.inReach } : {}) });
   return {
     snapshotId: s.id,
+    takenAtMs: s.takenAtMs,
+    connectionEpoch: s.connectionEpoch,
+    goalEpoch: s.goalEpoch,
     dimension: s.dimension,
     self: { at: pos(s.self.at), health: s.self.health, food: s.self.food },
     inventory: { source: s.inventorySource ?? 'client_model', items: s.inventory },
