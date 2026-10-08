@@ -50,10 +50,12 @@ describe('harness catalog expectations follow the registered profile (C9)', () =
     });
   }
 
-  it('the automatic fixture profile adds memory, construction and survival only when automatic work runs', () => {
+  it('the scoped fixture profile adds construction for owner goals with an explicit scope; survival only when automatic work runs', () => {
     const cfg = loadConfigFile(join(PROJECT_ROOT, 'config/examples/fixture-autonomy.json')).config;
     assert.deepEqual(runProfile(cfg, true), { memory: true, locator: true, construction: true, survival: true });
-    assert.deepEqual(runProfile(cfg, false), { memory: true, locator: true, construction: false, survival: false });
+    assert.deepEqual(runProfile(cfg, false), { memory: true, locator: true, construction: true, survival: false });
+    const unscoped = loadConfigFile(join(PROJECT_ROOT, 'config/examples/fixture.json')).config;
+    assert.equal(runProfile(unscoped, true).construction, false, 'no scope is ever invented');
     const ids = expectedCapabilityIds(runProfile(cfg, true));
     for (const id of ['select_home_site', 'build_home', 'eat_safe_food', 'remember_location', 'seek_owner']) assert.ok(ids.includes(id), id);
   });

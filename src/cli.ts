@@ -15,6 +15,7 @@ import { createInterface } from 'node:readline';
 import { ConfigError, configPathFrom, loadConfigFile, type LoadedConfig } from './config/load.ts';
 import { LOCAL_COMPAT_PROFILE, PINNED_PACKAGES, installedPackageVersion, resolveVersionProfile, supportLevel } from './config/versions.ts';
 import { randomIds, systemClock } from './contracts/index.ts';
+import { homeConstructionWanted } from './app/composition.ts';
 import { ChunkbotApp } from './app/app.ts';
 import { DiagnosticConsole } from './app/diagnostics.ts';
 import { SkillRuntime } from './app/skill-runtime.ts';
@@ -189,7 +190,10 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
   const { config } = loaded;
   const autonomyConfig = AutonomyConfigSchema.parse(config.autonomy ?? {});
   const autonomy = autonomyEnablement(loaded, options.autonomy === true);
-  const scopeResolution = autonomy.enabled ? autonomyScope(loaded) : undefined;
+  // Coordinator decision (MB-PLAN-006): home construction serves ordinary OWNER goals whenever an explicit
+  // durable world scope is configured, independently of automatic progression (never an invented scope).
+  const homeWanted = homeConstructionWanted(config);
+  const scopeResolution = autonomy.enabled || homeWanted ? autonomyScope(loaded) : undefined;
   const scope = scopeResolution?.scope;
   const fileStore = new FileRunStore({
     runsDir: loaded.runsDir,
@@ -249,7 +253,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     features: {
       ...(config.locator?.enabled === false ? {} : { locator: true }),
       ...(survivalWanted ? { survival: { config: config.survival, scope } } : {}),
-      ...(autonomy.enabled && autonomyConfig.home.enabled && scope ? { home: { control, interior: autonomyConfig.home.interior as 2 | 3, maxSiteDistance: autonomyConfig.home.maxSiteDistance } } : {}),
+      ...(homeWanted && scope && !scopeResolution?.conflict ? { home: { control, interior: autonomyConfig.home.interior as 2 | 3, maxSiteDistance: autonomyConfig.home.maxSiteDistance } } : {}),
     },
     config,
     session: () => game.session(),
