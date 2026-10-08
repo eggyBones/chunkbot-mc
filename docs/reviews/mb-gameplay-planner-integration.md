@@ -13,8 +13,12 @@ Worker: P (shared planner/application writer). Branch `chunkbot/gameplay-planner
 | `78bb0fe` | Combined ordinary-goal live harness `scripts/ordinary-goal-live-check.ts` (O1–O6), lease guard test. |
 | `56cb906` | C12 shared continuation API proposal r2 (declarations only). |
 | `82c93a5` | N-G3 review corrections: trunk segmentation, bounded lineage for re-grounding and removal growth, line-of-sight-only support; regressions for touching canopies, incremental reveal and support evidence. |
+| `4409ba1` | Approved C12 shared continuation contract (declarations) — the commit S/L import. |
+| `79a53ef` | C12 shared continuation wiring (engine, predicates, app scheduler, execution hooks, Jev budget retention) + tests. |
+| `0599f19` | Owner-goal home construction with an explicit durable scope (central rule shared by CLI and harness catalog). |
+| `d1ea8ea` | Shared structural safety seams (safety owner/lease fence, preemption, actuation port, authority host). |
 
-Checks at `82c93a5` (Node 24.21.0 first in PATH, own `npm ci`): `npm run typecheck` exit 0; `npm run build` exit 0; `npm test` exit 0, 826/826. No installed live diagnostic was run (no lease; planner diagnostics would use inference).
+Checks at `d1ea8ea` (Node 24.21.0 first in PATH, own `npm ci`): `npm run typecheck` exit 0; `npm run build` exit 0; `npm test` exit 0, 846/846. No installed live diagnostic was run (no lease; planner diagnostics would use inference).
 
 ## N1 — no follow-up questions (implemented, unit evidence)
 
@@ -56,43 +60,52 @@ Implemented against W's draft (`gameplay-safety` `804e61d`, not imported):
 
 Remaining P obligations once W's stable contract commit is approved: `ExecutionOwner {kind:'safety'}` in ports.ts and lease `ownerCurrent` → `grantCurrent`; `SafetyActuationPort` over the existing `ActuatorLeases` + `SkillExecutorImpl` (`preemptCurrent` revokes a non-safety lease with `safety_preempt` without ending the goal; executor outcome identity for safety owners); `SafetyAuthority` host function (engine basis + connection/alive/travel); `attachConnection` at bot creation, `onLifecycle` before lease/ledger invalidation in `SkillRuntime.onLifecycle`; `start/close` in CLI composition independent of memory/autonomy; status/dashboard projection lines; registering W's safety skills in the catalog and updating `scripts/lib/profile-catalog.ts` expectations (C9 rule: actual registered catalog). Locator route runner holds are L's module; generic navigation is fenced by the lease preemption.
 
-## C12 — shared continuation API, P proposal r2 (declarations only; NOT implemented; for approval)
+## C12 — same-session continuation (approved seam; implemented on P side)
 
-Declarations: `src/contracts/continuation.ts` (not exported from `contracts/index.ts` and not consumed). It supersedes my r1 above (new goal id, "remaining" ceilings) and adopts S's r2 semantics (`gameplay-recovery` `d3b3e9f`), with the shared types moved to a P-owned common contract so continuation works with survival/memory/autonomy disabled. After approval S imports these types and deletes its duplicate declarations.
+**Contract commit for S/L: `4409ba1`** (`src/contracts/continuation.ts`, exported; `GoalRecord.continuation`). `79a53ef` adds plain-data `ContinuationSegment`/`ContinuationCapture` and the optional `PredicateEvaluator`/`DecisionPort` methods (P-owned).
 
-| Review point | API answer |
-| --- | --- |
-| 1 Budget identity | The SAME `goalId` is re-admitted at a fresh epoch, so Jev `perGoal` attempts, memory, journal and status keep one identity. `counters: CarriedCounters` is the full `GoalRecord.counters` type, including `questionRefusals`, the inert legacy `clarifications`, `preparationTurns` and `lookaheads`. It is carried as the SAME cumulative object, checked against the ORIGINAL `caps`; `admittedTasks` is carried too. `deadlineAtMs` is the original absolute deadline. **Obligation (decision adapter owner):** `JevDecisionAdapter.perGoal` evicts FIFO after 32 entries; support/recovery goals could evict a held job's count and refill it. It needs `retainGoalBudget(goalId, retain)` (or no eviction of held ids). P calls it at hold and release. |
-| 2 Immutable evidence | `admissionBaseline` (counts or null, with `detail`), `outcome` + `outcomeCanonical`, `anchor` and `accounting: AcquisitionEntry[]` (V recomputed against the original B0 at every interruption, evidence labeled). At admission a fresh resync gives F only for re-binding: possession `carried = min(V, max(0, F − B0))` and `acquired = carried + max(0, now − F)` (+ consumption since); effect `carried = V`; latched stays satisfied. |
-| 3 No executable data | Plain data only. Groundable: inventory_amount/delta, crafting/smelting_result, equipped, structure_state, memory_state, survival_state, and near_target/visited_location/block_state/container_state with registry/owner/owner_destination targets. `blocks_removed` is also groundable: its bound world positions are carried as `RemovalCarry` (semantic identity, not a handle). Not groundable, so the job stays held with one declarative reason: observed handles in other predicates, prior_result, remembered_anchor, memory_ref, count atoms under any/not, unknown B0. |
-| 4 Independence | P holds checkpoints in memory (`ContinuationEnginePort`). `ContinuationSurvivalPort` is optional (frozen last-alive counts, recovery-priority gate, display-only persistence). Readiness never reads the automatic latch. Explicit stop marks held checkpoints `stopped_by_owner`; any owner or operator intake marks them `superseded_by_owner` synchronously before admission. No motion after stop. |
-| 5 Preemption | W holds keep the goal admitted (TaskRuntime gate, `49f14a1`). A checkpoint is created only when ownership ENDED: `death`, `low_health` or `safety_interrupted` (continuable in v1, same connection epoch and dimension). `disconnected`, `kicked` and `dimension_change` are held only (`not_continuable_in_v1`). |
-| 6 Route lineage | `RouteCarry` copies the ORIGINAL frozen ceilings (absolute `routeDeadlineMs`), destinations, legs/distance/stalled used and any blocker. **Obligation (L):** `RoutePort.carryOut(goalEpoch): RouteCarry` before revoke, and `admit(a, { continuation: RouteCarry })`. That grant keeps `routeId`, copies the ceilings, pre-consumes the usage and never recomputes from `admittedAtMs`; an exhausted route stays exhausted. The continuation's travel anchor is the original anchor (`admitTravelAnchor(epoch, original.at)`), never the respawn position. |
+What P implemented (`79a53ef`):
 
-P implementation plan after approval (single shared writer):
-- `GoalEngine.finalize` builds the checkpoint for owner goals ending with a checkpoint interruption, synchronously and with no I/O. `GoalTerminalEvent` gains `held?: { version: 1 }`, so the supervisor and survival know the job is not finished.
-- `continueHeld()` admits through `admit()` with `extras.continuation`:
-  - original anchor and route carry go through `onGoalAdmitted`;
-  - a pre-bound outcome via a new `PredicateEvaluator.rebindContinuation(contract, { carry, removal, latched }, freshResync)`;
-  - the first planner turn kind is `continuation`, with a bounded request field (app-owned facts: carried credit, verified effects, remaining limits);
-  - the planner must repeat the accepted outcome exactly (existing check).
-- An app-owned `ContinuationScheduler` (respawn/ready/safety-clear events plus a bounded local timer, no inference) calls `continueHeld`, so manual-only profiles continue too.
-- Status shows held, continuing and blocked states with app-owned text.
+- **Checkpoint creation.** An OWNER job whose ownership ENDED by `death`, `low_health` or `safety_interrupted` is held in memory. `disconnected`/`kicked`/`dimension_change` produce a held, non-executable record (`not_continuable_in_v1`). Stop, replacement and completion never produce one.
+- **Capture at revocation.**
+  - In the synchronous revocation prefix, before lifecycle invalidation clears the ledger: effect credit, consumption since the segment start, latches, `blocks_removed` positions and identity, the ORIGINAL anchor and the route lineage export.
+  - Alive possession credit comes from a server inventory after cleanup.
+  - Death possession credit comes at readiness from S's packet-frozen counts plus incident id. Without the survival service, a counted possession job is blocked `provenance_unavailable`; groundable non-count jobs still continue.
+- **Readiness** (`continueHeld`) is code-owned and finite: deadline, at most 2 continuations, original caps, same connection and dimension, alive, no active/pending/in-flight intake, and the optional survival recovery gate. It never consults the automatic latch or an absent goal's safety authority.
+- **Admission.**
+  - SAME goal id at a fresh epoch, through the single admission path.
+  - ALL cumulative counters (spread, so legacy history fields stay), original caps, admitted-task count and absolute deadline carry over; the original baseline is displayed as provenance.
+  - The immutable outcome is pre-bound via `rebindContinuation`. The first turn kind is `continuation` with app-written facts, and it counts normally.
+  - The continuation is counted before planning; Jev's per-goal budget is retained (never evicted).
+- **Fencing and settlement.** Stop and any new owner/operator intake fence held jobs synchronously. Finished, stopped or replaced continuations settle the checkpoint.
+- **Accounting** (PredicateEngine): `restored = min(C, max(0, X − N))`, `new = max(0, now − F − ownReturnsSinceF)` (+ consumption). X is server-attributed own returns when there was an incident, else F. Effect credit survives ledger invalidation; unknown attribution makes the count unknown. Earlier ledger entries are never double-counted (`notBeforeMs`).
+- **Execution layer.** The ORIGINAL anchor is installed (dimension-guarded); there is no anchor without one. Route continuation is delegated to L (`carryOut` / `admitContinuation`, structural). Without them, NO route is granted — never a refill.
+- **App.** `ContinuationScheduler` (local, bounded, inference-free; nudged on respawn and goal end), status lines, respawn notice. The CLI composes it independently of memory/autonomy/survival and attaches S's port structurally when present.
 
-Regressions planned:
-- B0 8 + 4 verified, then death and recovery to 12 → credit 4 (completes at 18);
-- partial recovery to 9 → 1;
-- nothing recovered → 0;
-- respawn-point pickups to 17 → still 4;
-- a second death after +3 → V 7 against the original B0;
-- latched consumed milestone;
-- unknown B0 → held;
-- an observed-handle atom → held with one reason;
-- repeated death/continuation never refills Jev attempts, planner/task/replan counters, deadline, route legs/distance/time or continuations;
-- stop/new owner instruction while held → never continues;
-- disconnect → held only.
+Tests (`tests/c12-continuation.test.ts`, 19):
+- **Lineage arithmetic:** 8+4 → recover 12 (credit 4); partial 9 → 1; nothing recovered + 3 new + second death → C = 3 (never max(0, 3 − 8)); respawn-point pickups don't count; late own returns aren't new; no-incident consumption.
+- **Groundability.**
+- **Real PredicateEngine across two lossy deaths:** the full lineage, unknown attribution, and effect credit plus latched milestones after ledger invalidation.
+- **GoalEngine mechanics:** same id, fresh epoch, original deadline and anchor, cumulative turns; stop and new intake fence; provenance hold without S; S frozen credit plus the recovery gate; finite continuations; disconnect held-only; alive gate.
 
-Residual for decision: own drops picked up during a continuation by a NON-recovery skill count as new (`now − F`). Option: survival reports server collects of lost keys inside the incident radius and P subtracts them up to the unaccounted remainder.
+### Obligations for companions (from `4409ba1`)
+
+- **S (survival):**
+  - Implement `ContinuationSurvivalPort` on the survival service: `frozenInventory(connectionEpoch)` with incident id; `incidentReturns(incidentId)` with SERVER-ATTRIBUTED own regains from ANY collector (recovery or not) plus retained items, kept separate from incidental pickups; unknown attribution → `attribution: 'unknown'`.
+  - Also `continuationGate` (necessary recovery/support first; finite) and display-only `persistCheckpoint` (restart → `restart_held`, never executed).
+  - Delete the duplicate C12 r2 declarations in `survival.ts` and import `src/contracts/continuation.ts`.
+  - Treat `GoalTerminalEvent.held` as held work (not an owner decision).
+  - Replace the public `needs your decision` / `requires_owner_decision` wording with a declarative held-work message; historical state names may stay.
+- **L (locator):** `RouteController.carryOut(goalEpoch): RouteCarry | null` (exact usage: legs used, next leg index, distance account, stalled history, blocker, absolute deadline, original anchor/radius, bound own-incident identity) before any revoke, and `admitContinuation(admission, carry)`. It keeps the routeId lineage, copies ceilings and usage and never resumes an old leg. Field names may be refined in `locator.ts` with Codex; P adapts. A repeated death/continuation route-budget regression belongs with it.
+- **W (safety):** consume the structural seams below once the stable W commit is directed.
+
+## Immediate safety — shared structural seams (`d1ea8ea`; W policy not integrated)
+
+- `ExecutionOwner { kind: 'safety', grantId, episodeId, connectionEpoch }` runs through the single lease/executor. The lease fence calls `SkillRuntime.installSafetyGrantCheck` (fail closed when absent or expired). The executor skips goal-epoch/anchor checks for grant-fenced dispatches; outcome owner is `safety`.
+- `ActuatorLeases.preemptForSafety()` revokes a non-safety lease synchronously with reason `safety_preempt`; the goal stays admitted.
+- `SkillRuntime.safetyActuation()` (SafetyActuationPort shape) and `ChunkbotApp.safetyAuthority()` (W's SafetyAuthority shape: engine basis, connection, alive, travel). The TaskRuntime hold gate and engine authority hooks are from `49f14a1`.
+- Tests: `tests/safety-seams.test.ts`.
+- Remaining after the stable W commit: compose W's service — `attachConnection` before login, `onLifecycle` before lease/ledger invalidation, `start`/`close`, the TaskRuntime `safety` gate, `installSafetyGrantCheck(grantCurrent)`, the `onSafetyAuthorityChanged` nudge, catalog/profile expectations for W's skills, and status/dashboard lines.
 
 ## Combined ordinary-goal harness (not run; needs a lease and coordinator-run real planner)
 
