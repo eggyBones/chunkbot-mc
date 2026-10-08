@@ -6,7 +6,7 @@ import type { Vec } from '../perception/visibility.ts';
 import { ENTITY_REACH } from '../perception/perception.ts';
 import { admittedParameters, json, liveEntity, namedTargetUnavailable, pos3, targetScope } from './common.ts';
 import { failed, precondition, type CandidateDraft, type ExecuteContext, type SkillDefinition, type SkillResult, type Unavailable } from './definition.ts';
-import { GoalBesideBlock, assertPolicy, conservativeMovements, distanceTo, goals, navigate, standingOn } from './navigation.ts';
+import { GoalBesideBlock, GoalNearPosition, assertPolicy, conservativeMovements, distanceTo, navigate, standingOn } from './navigation.ts';
 import { HandleRefSchema, MoveTargetSchema, type MoveTarget } from './refs.ts';
 import { observeActuatorMotion } from '../execution/actuator.ts';
 
@@ -216,7 +216,7 @@ export const moveNear: SkillDefinition<{ target: MoveTarget; within: number }> =
     const at = () => tracker?.last.at ?? place.at;
     let goalAt = { x: place.at.x, y: place.at.y, z: place.at.z };
     const block = place.block;
-    const goal = block ? new GoalBesideBlock(block.x, block.y, block.z, Math.max(1, params.within - 0.5)) : new goals.GoalNear(place.at.x, place.at.y, place.at.z, Math.max(1, params.within - 0.5));
+    const goal = block ? new GoalBesideBlock(block.x, block.y, block.z, Math.max(1, params.within - 0.5)) : new GoalNearPosition(place.at.x, place.at.y, place.at.z, params.within);
     const r = await navigate(ctx.act, {
       goal,
       ...(tracker
@@ -227,7 +227,7 @@ export const moveNear: SkillDefinition<{ target: MoveTarget; within: number }> =
               if (!ctx.services.perception.withinTravel(p)) return undefined;
               if (Math.hypot(p.x - goalAt.x, p.y - goalAt.y, p.z - goalAt.z) < 1.5) return undefined;
               goalAt = { x: p.x, y: p.y, z: p.z };
-              return new goals.GoalNear(p.x, p.y, p.z, Math.max(1, params.within - 0.5));
+              return new GoalNearPosition(p.x, p.y, p.z, params.within);
             },
             abortIf: () => (tracker.lostForMs() > ctx.services.limits.ownerLossMs ? 'target_lost' : tracker.sample() === undefined || ctx.services.perception.withinTravel(tracker.last.at) ? undefined : 'target_outside_travel_bounds'),
           }
@@ -347,7 +347,7 @@ export const followEntity: SkillDefinition<{ target: MoveTarget; within: number;
             const moved = goalAt ? Math.hypot(seen.x - goalAt.x, seen.z - goalAt.z) : Infinity;
             if (moved > 1.0 || !pf.isMoving?.()) {
               goalAt = { ...seen };
-              ctx.act.setPathGoal(new goals.GoalNear(seen.x, seen.y, seen.z, Math.max(1, params.within - 0.5)), false);
+              ctx.act.setPathGoal(new GoalNearPosition(seen.x, seen.y, seen.z, params.within), false);
             }
           } else if (pf.goal) {
             ctx.act.clearPathGoal();
