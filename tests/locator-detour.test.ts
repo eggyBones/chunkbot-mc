@@ -89,6 +89,43 @@ describe('MB-LOC-002 bounded detour around observed obstacles', () => {
     if (last.status === 'succeeded') assert.ok(Math.hypot(owner.x - s.self.x, owner.z - s.self.z) <= 3.25);
   });
 
+  it('a river across the cue with a dry bridge off to the side: bounded detour to the bridge, dry crossing, reunion; never on water', async () => {
+    // River: water floor x 20..27 for all z; a 3-wide plank bridge at z 34..36 (dry floor).
+    const river = (w: ProcWorld) =>
+      w.features.push((x, y, z) => {
+        if (x < 20 || x > 27 || y !== 63) return undefined;
+        return z >= 34 && z <= 36 ? { name: 'oak_planks', stateId: 15, shapes: FULL } : { name: 'water', stateId: 8, shapes: [] };
+      });
+    const owner = { x: 140.5, y: 64, z: 0.5 };
+    const s = sim({ ownerAt: owner, obstacles: river });
+    const wet: Vec[] = [];
+    const original = s.env.move;
+    s.env.move = async (t, w, b, o) => {
+      const r = await original(t, w, b, o);
+      if (s.world.blockAt(Math.floor(s.self.x), Math.floor(s.self.y) - 1, Math.floor(s.self.z))?.name === 'water') wet.push({ ...s.self });
+      return r;
+    };
+    const results = await runWindows(s);
+    const last = results.at(-1)!;
+    assert.equal(wet.length, 0, 'never on water');
+    assert.equal(last.reason, 'owner_reached', JSON.stringify(results.map((r) => [r.status, r.reason, r.effect.slice(0, 120)])));
+    const all = results.flatMap((r) => detoursOf(r.evidence));
+    assert.ok(all.some((d) => d.obstacle === 'water_crossing'), `the detour was justified by observed water: ${JSON.stringify(all)}`);
+    // Two-sided search: the first side's budget, then the walk back plus the same search on the other side.
+    for (const d of all) assert.ok(d.steps <= 2 * MAX_DETOUR_STEPS && d.blocks <= 3 * MAX_DETOUR_BLOCKS + 32, `bounded ${JSON.stringify(d)}`);
+  });
+
+  it('an unbridged river across the cue: water_crossing blocker after a bounded dry search; never enters the water', async () => {
+    const river = (w: ProcWorld) => w.features.push((x, y) => (x >= 20 && x <= 27 && y === 63 ? { name: 'water', stateId: 8, shapes: [] } : undefined));
+    const s = sim({ ownerAt: { x: 300.5, y: 64, z: 0.5 }, obstacles: river });
+    const results = await runWindows(s);
+    const last = results.at(-1)!;
+    assert.equal(last.status, 'failed');
+    assert.equal(last.reason, 'water_crossing', last.effect);
+    assert.ok(s.self.x < 20, 'stayed on the dry near bank');
+    assert.ok(results.length <= 3, `no endless windows (${results.length})`);
+  });
+
   it('no observed obstacle (nothing observed ahead): no detour and no wandering; a declarative blocker', async () => {
     // The floor ends at x >= 3 with nothing below: nothing is observed ahead (unobserved terrain), not an observed wall/drop.
     const s = sim({ ownerAt: { x: 300.5, y: 64, z: 0.5 } });

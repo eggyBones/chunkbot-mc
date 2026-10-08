@@ -209,6 +209,8 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   const { CliProcess, CLI } = await import('./lib/cli-process.ts');
   const { rconCommand } = await import('./lib/rcon.ts');
   const { setFaultTurns, writeFaultCodex } = await import('./lib/fault-codex.ts');
+  const { catalogProblems, expectedCapabilityIds, runProfile, LOCATOR_SKILL_IDS } = await import('./lib/profile-catalog.ts');
+  const { loadConfigFile } = await import('../src/config/load.ts');
   const mineflayer = (await import('mineflayer')).default;
   type Bot = ReturnType<typeof mineflayer.createBot>;
 
@@ -542,6 +544,25 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       const loc = cli.lines.find((l) => l.text.startsWith('[chunkbot] locator: '))?.text ?? 'no locator line';
       ev.push(loc);
       assert(/locator: enabled; routes enabled for owner/.test(loc), 'locator and routes composed by the ordinary CLI');
+      // The catalog THIS run registers, verified dynamically against the profile (never a hard-coded count).
+      const expected = expectedCapabilityIds(runProfile(loadConfigFile(normalConfig).config, false));
+      const skillsLine = cli.lines.find((l) => /\[chunkbot\] skills: \d+ capabilities/.test(l.text))?.text ?? '';
+      const fromStatus = cli.length;
+      cli.send('status');
+      const statusLine = await cli.waitSince(/\[status\] adapters: .*capabilities=\d+/, fromStatus, 10_000).catch(() => '');
+      const fromDiag = cli.length;
+      cli.send('/diag catalog');
+      const diagHead = await cli.waitSince(/\[diag\] catalog \S+: \d+ capabilities/, fromDiag, 10_000).catch(() => '');
+      const diagCount = Number(/: (\d+) capabilities/.exec(diagHead)?.[1] ?? NaN);
+      let ids: string[] = [];
+      for (const deadline = Date.now() + 5_000; Date.now() < deadline; await sleep(50)) {
+        ids = cli.lines.slice(fromDiag).map((l) => /^\[diag\] {3}([a-z0-9_]+) \(/.exec(l.text)?.[1]).filter((x): x is string => Boolean(x));
+        if (Number.isFinite(diagCount) && ids.length >= diagCount) break;
+      }
+      const problems = catalogProblems({ skillsLineCount: Number(/skills: (\d+) capabilities/.exec(skillsLine)?.[1] ?? NaN) || null, statusCount: Number(/capabilities=(\d+)/.exec(statusLine)?.[1] ?? NaN) || null, diagCount: diagCount || null, ids }, expected);
+      ev.push(`${skillsLine}; ${statusLine.slice(0, 200)}; /diag catalog ${ids.length} ids; expected ${expected.length} for this profile`);
+      assert(problems.length === 0, `registered catalog disagrees with the run profile: ${problems.join('; ')}`);
+      for (const id of LOCATOR_SKILL_IDS) assert(ids.includes(id), `${id} registered in the run catalog`);
       await place('base', 90, 'ownerFarEast');
       const st = await waitEvent((e) => e.type === 'locator_owner_state' && /^tracked:/.test(String(e.state)), 15_000);
       ev.push(`locator state ${st.state} (cause ${st.cause}); view distance ${viewDistance}`);
@@ -579,8 +600,12 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       ev.push(`reunion ${reunion.ok ? 'reached' : 'NOT reached'}: server distance ${d?.toFixed(1)} after ${Math.round((Date.now() - t0) / 1000)}s; route legs ${legs.length}; route events ${routeEvents(t0).map((e) => e.type).join(',')}`);
       ev.push(`actions: ${JSON.stringify(actionsSince(t0).slice(0, 30))}`);
       ev.push(`Jev offered/chosen: ${JSON.stringify(jevLog.filter((j) => j.atMs >= t0).slice(0, 20).map((j) => `${j.offered.join('|')} -> ${j.chosen}`))}`);
-      data.reunion = { ok: reunion.ok, distance: d, legs: legs.length, anchorEvents: anchors.length, anchor: anchor.anchor };
+      const goalPrompts = prompts().filter((x) => x.atMs >= t0);
+      const catalogOffered = goalPrompts.some((x) => x.text.includes('seek_owner') && x.text.includes('route_travel'));
+      ev.push(`planner prompts for this goal ${goalPrompts.length}; locator capabilities in the model-visible catalog: ${catalogOffered}`);
+      data.reunion = { ok: reunion.ok, distance: d, legs: legs.length, anchorEvents: anchors.length, anchor: anchor.anchor, catalogOffered };
       scanPrivacy(t0, ownerAt);
+      assert(catalogOffered, 'the planner was shown seek_owner/route_travel in the shared catalog');
       assert(reunion.ok, 'reunion verified by server positions (<= 4.5 blocks)');
       assert(dist(ownerAt, b0) > 128 && legs.length >= 1, 'beyond the admission radius through counted route legs');
       assert(anchors.length === 1, 'one admission anchor for the goal (never re-anchored)');

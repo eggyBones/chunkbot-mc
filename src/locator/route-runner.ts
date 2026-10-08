@@ -107,10 +107,12 @@ const MAX_MOVE_FAILURES = 4;
  * MB-LOC-002 bounded detour around an OBSERVED obstacle (wall, drop, lava,
  * water) across the bearing. An episode starts only when no forward frontier
  * exists and the observed geometry justifies it; it keeps the cue bearing at
- * its start as a FIXED frame and one committed side (switching at most once),
- * never retreats sideways toward its origin line by more than
- * DETOUR_RETREAT_SLACK, and spends at most MAX_DETOUR_STEPS steps and
- * MAX_DETOUR_BLOCKS of walking. It clears (eventual progress) only when the bot
+ * its start as a FIXED frame and one committed side, never retreats sideways
+ * toward its origin line by more than DETOUR_RETREAT_SLACK, and spends at most
+ * MAX_DETOUR_STEPS steps and MAX_DETOUR_BLOCKS of walking on that side. If the
+ * side is closed or its budget is spent, it switches ONCE to the other side with
+ * twice the budget (the walk back past the origin plus the same search), so an
+ * episode never exceeds 3 x MAX_DETOUR_BLOCKS. It clears (eventual progress) only when the bot
  * is DETOUR_CLEAR_PROGRESS past its origin in the frame AND the current cue has
  * a forward frontier again; otherwise the observed blocker is reported. At most
  * MAX_DETOUR_EPISODES per window. Route legs/distance/time ceilings still bound
@@ -153,11 +155,30 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
   /** MB-LOC-002: NET progress along the cue, accumulated per step (conservative: see stepProgress; sideways ~0, back negative). */
   let netProgress = 0;
   /** An active detour episode: a fixed frame (the cue bearing when it began), its origin and committed side. */
-  let detour: { side: 1 | -1; steps: number; blocks: number; blocker: BlockerReport; switched: boolean; frame: number; origin: Vec3; maxLateral: number } | undefined;
+  let detour: { side: 1 | -1; steps: number; blocks: number; blocker: BlockerReport; switched: boolean; frame: number; origin: Vec3; maxLateral: number; spentBlocks: number } | undefined;
   /** Signed sideways offset of a point from the episode's frame line through its origin (positive on the committed side). */
   const lateralOf = (d: NonNullable<typeof detour>, p: Vec3) => d.side * (Math.cos(d.frame) * (p.z - d.origin.z) - Math.sin(d.frame) * (p.x - d.origin.x));
   /** A choice during an episode must not retreat sideways back across the obstacle (local-minimum backtracking). */
   const retreats = (d: NonNullable<typeof detour>, p: Vec3) => lateralOf(d, p) < d.maxLateral - DETOUR_RETREAT_SLACK;
+  /** Per-side budget: the first side gets the base budget; the second side also has to walk back past the origin. */
+  const sideBudget = (d: NonNullable<typeof detour>) => (d.switched ? { steps: 2 * MAX_DETOUR_STEPS, blocks: 2 * MAX_DETOUR_BLOCKS } : { steps: MAX_DETOUR_STEPS, blocks: MAX_DETOUR_BLOCKS });
+  const sideSpent = (d: NonNullable<typeof detour>) => d.steps >= sideBudget(d).steps || d.blocks >= sideBudget(d).blocks;
+  /**
+   * The committed side's budget is spent without clearing: search the OTHER side
+   * once (an out-of-sight opening may be on either side), else report.
+   */
+  const switchSide = (d: NonNullable<typeof detour>): boolean => {
+    if (d.switched) return false;
+    detourLog.push({ side: d.side, steps: d.steps, blocks: r1(d.blocks), obstacle: d.blocker.reason, outcome: 'side_switched' });
+    d.switched = true;
+    d.side = d.side === 1 ? -1 : 1;
+    d.spentBlocks += d.blocks;
+    d.steps = 0;
+    d.blocks = 0;
+    d.maxLateral = lateralOf(d, env.self());
+    lastDetourSide = d.side;
+    return true;
+  };
   let detourEpisodes = 0;
   /** The side of the last detour in this window (a new episode keeps it: no ping-pong). */
   let lastDetourSide: 1 | -1 | undefined;
@@ -185,7 +206,7 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
       ownerSeen,
       movedBlocks: r1(horizontal(start, env.self())),
       netProgress: r1(netProgress),
-      ...(detourLog.length > 0 || detour ? { detours: [...detourLog, ...(detour ? [{ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks), obstacle: detour.blocker.reason, outcome: 'active' }] : [])] } : {}),
+      ...(detourLog.length > 0 || detour ? { detours: [...detourLog, ...(detour ? [{ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks + detour.spentBlocks), obstacle: detour.blocker.reason, outcome: 'active' }] : [])] } : {}),
       ...(lastSteer ? { cue: { direction: lastSteer.direction, distanceBand: lastSteer.distanceBand, elevation: lastSteer.elevation, precision: lastSteer.precision, ageMs: lastSteer.ageMs } } : {}),
       route: st ? { routeId: st.routeId, state: st.state, legsUsed: st.legsUsed, maxLegs: st.maxLegs, distanceUsed: st.distanceUsed, distanceSources: st.distanceSources, maxTotalDistance: st.maxTotalDistance, remainingMs: st.remainingMs, stalledLegs: st.stalledLegs } : null,
       ...extra,
@@ -261,7 +282,7 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
         ownerSeen = true;
         if (detour) {
           // The visible owner takes over; a later cue starts afresh (no stale detour frame).
-          detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks), obstacle: detour.blocker.reason, outcome: 'owner_visible' });
+          detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks + detour.spentBlocks), obstacle: detour.blocker.reason, outcome: 'owner_visible' });
           detour = undefined;
         }
         const d = dist3(self, seen);
@@ -351,7 +372,7 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
     if (!obs || !world) return fail('not_connected', 'no current observation');
     if (detour && angleBetween(detour.frame, bearing) > Math.PI / 2) {
       // The cue itself moved to another side: the old detour frame is stale guidance.
-      detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks), obstacle: detour.blocker.reason, outcome: 'cue_changed' });
+      detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks + detour.spentBlocks), obstacle: detour.blocker.reason, outcome: 'cue_changed' });
       detour = undefined;
     }
     const floorSeenNow = (x: number, y: number, z: number) => obs.seen.has(`${x},${y},${z}`);
@@ -361,7 +382,7 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
       frontiersToward({ world, self: env.self(), bearingRad: bearing, bounds: b, radius: Math.min(env.observationRadius, 24), floorSeen: floorSeenNow, visited: env.visited(), exclude: failedFrontiers, elevation }).choices.some((c) => !retreats(detour as NonNullable<typeof detour>, c.at))
     ) {
       // Eventual progress: well past where the detour began (in its own frame) AND the current cue has a forward frontier again.
-      detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks), obstacle: detour.blocker.reason, outcome: 'cleared' });
+      detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks + detour.spentBlocks), obstacle: detour.blocker.reason, outcome: 'cleared' });
       detour = undefined;
     }
     // During a detour episode every choice is ranked in the episode's FIXED frame
@@ -401,9 +422,10 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
     let detourStep = false;
     if (pick && detour) {
       // Forward steps (in the episode frame) are part of the episode, same budget, until it clears.
-      if (detour.steps >= MAX_DETOUR_STEPS || detour.blocks >= MAX_DETOUR_BLOCKS) {
+      if (sideSpent(detour) && switchSide(detour)) continue;
+      if (sideSpent(detour)) {
         const spent = detour;
-        detourLog.push({ side: spent.side, steps: spent.steps, blocks: r1(spent.blocks), obstacle: spent.blocker.reason, outcome: 'detour_budget_spent' });
+        detourLog.push({ side: spent.side, steps: spent.steps, blocks: r1(spent.blocks + spent.spentBlocks), obstacle: spent.blocker.reason, outcome: 'detour_budget_spent' });
         detour = undefined;
         return fail(spent.blocker.reason, `${spent.blocker.detail}; a bounded detour around the observed obstacle did not get past it (detour_budget_spent)`, { blocker: spent.blocker.reason, blockerEvidence: spent.blocker.evidence as unknown as JsonValue });
       }
@@ -413,7 +435,7 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
     if (!pick) {
       const blocker = detour?.blocker ?? classifyBlocker(world, env.self(), bearing, obs.seen, { elevation, direction });
       const blockerFail = (outcome: string) => {
-        if (detour) detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks), obstacle: detour.blocker.reason, outcome });
+        if (detour) detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks + detour.spentBlocks), obstacle: detour.blocker.reason, outcome });
         detour = undefined;
         return fail(blocker.reason, outcome === 'not_justified' ? blocker.detail : `${blocker.detail}; a bounded detour around the observed obstacle did not find a way forward (${outcome})`, { blocker: blocker.reason, blockerEvidence: blocker.evidence as unknown as JsonValue });
       };
@@ -421,7 +443,10 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
       if (!detourJustified(blocker)) return blockerFail('not_justified');
       if (!detour) {
         if (detourEpisodes >= MAX_DETOUR_EPISODES) return blockerFail('episode_limit');
-      } else if (detour.steps >= MAX_DETOUR_STEPS || detour.blocks >= MAX_DETOUR_BLOCKS) return blockerFail('detour_budget_spent');
+      } else if (sideSpent(detour)) {
+        if (switchSide(detour)) continue;
+        return blockerFail('detour_budget_spent');
+      }
       let side = detour?.side ?? lastDetourSide;
       let options = detourFrontiers({ ...query(active), ...(side !== undefined ? { side } : {}) });
       if (detour) {
@@ -439,9 +464,9 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
       if (!lateral) return blockerFail(detour ? 'no_sideways_frontier' : 'no_sideways_frontier_in_sight');
       if (!detour) {
         detourEpisodes += 1;
-        detour = { side: lateral.side, steps: 0, blocks: 0, blocker, switched: false, frame, origin: env.self(), maxLateral: 0 };
+        detour = { side: lateral.side, steps: 0, blocks: 0, blocker, switched: false, frame, origin: env.self(), maxLateral: 0, spentBlocks: 0 };
       }
-      if (detour.side !== lateral.side) detour.maxLateral = 0; // switched: measure the new side afresh
+      if (detour.side !== lateral.side) detour.maxLateral = lateralOf({ ...detour, side: lateral.side }, env.self()); // switched: measure the new side from here
       detour.side = lateral.side;
       lastDetourSide = lateral.side;
       detour.steps += 1;
@@ -493,6 +518,13 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
   const moved = horizontal(start, env.self());
   if (netProgress >= MIN_WINDOW_PROGRESS || (ownerSeen && moved >= MIN_WINDOW_PROGRESS)) {
     return { status: 'partial', reason: 'route_window_elapsed', effect: `moved ${r1(moved)} blocks ${target.kind === 'owner' ? 'toward the owner cue' : `toward ${target.label}`} (${steps} steps); not there yet`, evidence: evidence() };
+  }
+  // A window that ends inside (or right after) an unsuccessful detour reports the OBSERVED obstacle, not a generic no-progress.
+  const lastDetour = detour ?? undefined;
+  if (lastDetour) {
+    detourLog.push({ side: lastDetour.side, steps: lastDetour.steps, blocks: r1(lastDetour.blocks + lastDetour.spentBlocks), obstacle: lastDetour.blocker.reason, outcome: 'window_ended' });
+    detour = undefined;
+    return fail(lastDetour.blocker.reason, `${lastDetour.blocker.detail}; the window ended during a bounded detour around the observed obstacle without net progress`, { blocker: lastDetour.blocker.reason, blockerEvidence: lastDetour.blocker.evidence as unknown as JsonValue });
   }
   return fail('no_progress', `no progress ${target.kind === 'owner' ? 'toward the owner cue' : `toward ${target.label}`} in this window`);
 }

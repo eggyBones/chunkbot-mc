@@ -11,7 +11,8 @@ Worker L: native Claude Opus 5.5 (local DSH), worktree `gameplay-follow`, branch
 | `394bec4` | Bounded observed-geometry detours, net-progress windows, reachable-cell detour search, `seek_owner` descriptor; F1 direction matrix, invalid-hint and detour tests; shared locator simulator |
 | `566ada3` | G6 F1 live direction gate in `scripts/locator-live-check.ts`; new `scripts/locator-ordinary-live-check.ts` (actual CLI, scenarios O0–O9); harness guard tests |
 | `0875031` | Ordinary-composition tests against the real `SkillRuntime` locator wiring |
-| (this document) | Review/handoff |
+| `1f27dc9` | This review/handoff |
+| second round | Two-sided bounded detour (switch once with a return-plus-search budget, ≤ 3 × 96 per episode), the observed obstacle reported when a window ends mid-detour, river/bridge dry-route tests, dynamic catalog verification in O0, model-visible catalog check in O1, P-L8 |
 
 Changed paths (ownership only): `src/locator/route-runner.ts`, `src/locator/terrain.ts`, `src/skills/locator.ts`, `scripts/locator-live-check.ts`, `scripts/locator-ordinary-live-check.ts` (new), `tests/locator-sim.ts` (new helper), `tests/locator-runner.test.ts`, `tests/locator-direction.test.ts` (new), `tests/locator-detour.test.ts` (new), `tests/locator-harness-guard.test.ts`, `tests/locator-ordinary-harness-guard.test.ts` (new), `tests/locator-composition.test.ts` (new), this file. No shared file, contract, config, vendor or `node_modules` edit.
 
@@ -56,9 +57,8 @@ Read-only inspection of the retained events of the last live run, `var/runs/run-
 
    When no forward frontier exists, a detour episode starts only if the observed-geometry classifier names a wall, drop, lava or water. A `vertical_separation` label counts only when its wall rays are observed. Each episode:
    - keeps the cue bearing at its start as a **fixed frame**, so a cue that rotates while the bot walks sideways cannot pull it back into the obstacle;
-   - commits to one side and may switch at most once;
-   - never retreats sideways toward its origin line by more than 8 blocks;
-   - is bounded by 8 steps and 96 blocks;
+   - commits to one side, never retreats sideways toward its origin line by more than 8 blocks, and spends at most 8 steps / 96 blocks there;
+   - if that side is closed or its budget is spent, switches ONCE to the other side with twice the budget (the walk back past the origin plus the same search), so one episode never exceeds 3 × 96 blocks (an opening out of sight may be on either side);
    - is limited to 3 episodes per window;
    - clears only when the bot is 8 blocks past the episode origin in its own frame **and** the current cue has a forward frontier;
    - is abandoned as `cue_changed` if the cue turns more than 90° away from the frame, and as `owner_visible` when the owner comes into sight.
@@ -69,11 +69,13 @@ Read-only inspection of the retained events of the last live run, `var/runs/run-
 4. **The visited-spot penalty is now a tie-breaker** (6, was 12), so a spot straight along the cue that has been visited before does not lose to an unvisited one about 45° off.
 5. **`seek_owner` descriptor** (model-visible). It now says when to use the skill (owner out of sight or beyond the travel radius, together with the follow/approach capabilities, instead of undirected exploration). Its limitations are truthful: it picks only dry-land waypoints, and swimming is not a supported route. The shared pathfinder's water policy remains W/P's.
 
-## Tests and checks (worktree, Node 24.21.0, HEAD `0875031`; direct exit codes)
+## Tests and checks (worktree, Node 24.21.0; direct exit codes)
+
+Method (coordinator note): every command's output is redirected to a log file and `$?` is captured immediately after it; the log is read separately. No pipeline status is used as proof. Latest run on the source of the second-round commit (below):
 
 - `npm run typecheck`: **0**.
 - `npm run build`: **0**.
-- `npm test`: **0**, 820/820. Of these, 135 are locator tests:
+- `npm test`: **0**, 822/822. The locator suites run on their own: **0**, 137/137:
   - **`locator-direction`** (20 tests, F1):
     - The cue sector equals the true sector for every combination of:
       - 8 directions plus wraparound (±179° straddles due west for `atan2(dz,dx)`; −89/−91° straddles due north, which is the azimuth payload's ±π);
@@ -90,11 +92,14 @@ Read-only inspection of the retained events of the last live run, `var/runs/run-
       - an unlisted owner UUID;
       - an old connection's packets;
       - statements voided by respawn or dimension change.
-  - **`locator-detour`** (6 tests, F3/L5):
+  - **`locator-detour`** (8 tests, F3/L5, dry routes only):
     - A wall 120 wide with the owner 40 blocks behind it: one-sided wall following, a detour step that increases the distance, then reunion.
     - A far owner behind a wall 140 wide: one-sided, `cleared`, then reunion.
     - A wall with no way around: the specific `wall` blocker with bounded walking and no crossing.
     - A lake: a dry detour that never stands on water.
+    - A river with a dry plank bridge 35 blocks to one side, out of sight: the first side is searched, then the other side; the bridge is crossed dry and the owner reached; never on water; bounded by 3 × 96.
+    - An unbridged river: `water_crossing` after a bounded dry search, the bot stays on the near bank, at most 3 windows.
+    - A window that ends during an unsuccessful detour reports the observed obstacle (not a generic `no_progress`).
     - No observed obstacle: no detour and no wander.
     - Net-progress windows.
   - **`locator-composition`** (9 tests): the real `SkillRuntime` with `features.locator`, covering:
@@ -139,8 +144,8 @@ Its oracle is RCON server positions plus run events. It also runs a **privacy sc
 
 | Scenario | What it proves |
 | --- | --- |
-| O0 | Locator and routes composed; owner tracked |
-| O1 | Far follow at 300 blocks: first movement at most 45° off the true bearing; at least one counted leg; reunion at 4.5 or less (server); one admission anchor; goal persists |
+| O0 | Locator and routes composed; owner tracked; the run's actual catalog (skills line, `status`, `/diag catalog`) verified dynamically against the shared profile expectation (`scripts/lib/profile-catalog.ts`, no hard-coded count) and contains `seek_owner`/`route_travel` |
+| O1 | Far follow at 300 blocks: the captured planner prompt offered `seek_owner`/`route_travel`; first movement at most 45° off the true bearing; at least one counted leg; reunion at 4.5 or less (server); one admission anchor; goal persists |
 | O1b | Persistent following while the owner walks 60 blocks |
 | O1c | Two sight losses (70 blocks away, cue current): the same goal reacquires through `seek_owner` with no planner turn |
 | O1d | Hidden owner (sneak): no wander, question or exploration; one declarative end within 2 or fewer planner turns |
@@ -175,6 +180,7 @@ Its oracle is RCON server positions plus run events. It also runs a **privacy sc
 | P-L5 | W/P navigation and safety composition: the safety grant must not depend on route-leg authority. An exhausted or withdrawn route returns the bot to the admission bound, which may be behind it. The water policy (`liquidCost`) decides whether a path to a dry `seek_owner` waypoint may swim. | Plan C11 and W-G3; the `seek_owner` limitation text depends on it. |
 | P-L6 | Status: the route/locator lines currently appear only through `autonomyStatusLines`. Show them in ordinary `status` even when autonomy is disabled (H6 dashboard projection later). | Truthful status (F4). |
 | P-L7 | Skills harness capability count (already P-owned, MB-FLOW-001-C9): use the profile catalog (22 with the locator). | Retained 13/33 failure. |
+| P-L8 | `src/cli.ts` `commandCatalog` builds `new SkillRegistry(allSkills())`, i.e. the foundation catalog only. It does not show the locator/memory/survival capabilities a `run` registers for the same config. Compose the same profile as `run` (or label it "foundation catalog"). | Operator truthfulness; my harness avoids it and uses `/diag catalog` inside the run. |
 
 ## Decisions requested from Codex
 
