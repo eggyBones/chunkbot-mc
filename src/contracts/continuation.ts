@@ -1,52 +1,62 @@
-// MB-FLOW-003-C12 shared continuation API — PROPOSED by P (single shared
-// writer), DECLARATIONS ONLY, NOT CONSUMED until Codex approves. Not exported
-// from contracts/index.ts yet (S's r2 declarations in survival.ts use some of
-// the same names; after approval S imports these and deletes its copies).
+// MB-FLOW-003-C12 shared continuation contract — APPROVED SEAM (coordinator
+// decisions after P r2). P (single shared writer) implements the GoalEngine /
+// predicate / app wiring; S implements ContinuationSurvivalPort; L implements
+// the route lineage export/admission against RouteCarry (structural; L may
+// refine field names in src/contracts/locator.ts with Codex, P adapts).
 //
-// Smallest shared surface, answering the joint review (points 1-6):
-//   1. SAME logical goal id re-admitted at a FRESH epoch (Jev per-goal attempts,
-//      memory, journal and status keep one identity); the FULL shared counters
-//      carried cumulatively and compared with the ORIGINAL ceilings; the ORIGINAL
-//      absolute deadline (no fresh goalDeadlineMs).
-//   2. The checkpoint carries the immutable ORIGINAL admission baseline (with its
-//      provenance; unknown stays unknown), the immutable accepted outcome, the
-//      original travel anchor and code-confirmed accounting. A fresh resync at
-//      continuation is CURRENT evidence for re-binding credit only:
-//        possession: carried = min(V, max(0, F - B0)); acquired = carried + max(0, now - F)
-//        effect:     carried = V (skill-confirmed crafts/smelts since admission)
-//      so returned original belongings never newly acquire credit.
+// Rules:
+//   1. Continuation re-admits the SAME logical goal id at a fresh, monotonically
+//      increasing epoch: Jev per-goal budget key, memory, journal and status keep
+//      one identity. ALL cumulative counters (incl. questionRefusals and the inert
+//      legacy clarifications), the ORIGINAL caps, admitted-task count, ORIGINAL
+//      absolute deadline, ORIGINAL admission inventory (with provenance) and
+//      ORIGINAL travel anchor carry over. The first continuation planner turn
+//      counts normally. Default at most 2 continuations within those limits.
+//   2. Count accounting follows the CURRENT code-verified lineage (B0 stays
+//      immutable provenance). At interruption k with held count H_k and verified
+//      progress C_k, the non-credit part is N_k = H_k - C_k. In the next segment:
+//        restored(now) = min(C_k, max(0, X(now) - N_k))
+//          X = server-attributed own-incident returns (regained + retained) when
+//              the interruption had an item-loss incident; else the fresh count F
+//        new(now)      = max(0, now - F - ownReturnedSinceF(now)) [+ consumption since rebind]
+//        progress      = restored + new
+//      so returned own belongings never become new acquisition, incidental
+//      pickups never restore credit, and genuinely new resources after a lossy
+//      death keep their own credit at the next interruption (B0 8, +4, death
+//      recovers nothing, 3 new, death again -> C = 3, never max(0, 3 - 8)).
+//      Effect atoms (crafting/smelting) carry their code-verified ledger credit.
+//      Latched milestones stay satisfied. Unknown provenance -> that count atom is
+//      held (declarative reason); groundable non-count jobs still continue.
 //   3. Plain data only: no snapshot handles, action ids, tasks, leases or epochs.
-//      Only atoms groundable from SEMANTIC identity continue; others hold the
-//      checkpoint with one declarative reason; the outcome is never rewritten.
-//   4. P holds the same-session checkpoint IN MEMORY (works with survival,
-//      memory and autonomy disabled). Survival's service is optional: frozen
-//      last-alive inventory, a recovery-priority gate, display-only persistence.
-//      Readiness never consults the automatic progression latch; explicit stop
-//      and any new owner/operator intake fence held work; nothing moves after stop.
-//   5. Immediate W preemption keeps the goal admitted (TaskRuntime hold gate);
-//      only interruptions that ENDED ownership create a checkpoint.
-//   6. Code-owned route allowance carried in the same lineage: the continuation
-//      epoch's route grant copies the ORIGINAL ceilings (absolute route deadline)
-//      and the legs/distance already used; it never refills or re-anchors.
+//      Groundability is derived from predicate SEMANTICS (never a goal intent).
+//      Observed-handle/prior-result/remembered/memory atoms stay held with one
+//      declarative reason; blocks_removed carries its bound world positions and
+//      component identity (server facts verified freshly).
+//   4. P holds the checkpoint in memory; it works with survival, memory and
+//      autonomy disabled. Readiness authority is code-owned and finite (no
+//      dependency on the automatic progression latch or on an active goal's
+//      safety authority). Explicit stop and any new owner/operator intake fence
+//      held checkpoints synchronously. Optional durable copies are display-only.
+//   5. Immediate safety preemption keeps the goal admitted; only interruptions
+//      that ENDED ownership create a checkpoint.
+//   6. Route allowance lineage transfers (exact usage state); no old leg,
+//      actuator or task resumes, nothing refills or re-anchors.
+import type { Vec3 } from './common.ts';
 import type { GoalRecord } from './goal.ts';
 import type { GoalOutcomeContract } from './predicate.ts';
-import type { Vec3 } from './common.ts';
-import type { RouteCeilings, RouteDestinationKind, RouteBlocker } from './locator.ts';
+import type { RouteBlocker, RouteCeilings, RouteDestinationKind, RouteDistanceAccount } from './locator.ts';
 
 export const CONTINUATION_VERSION = 1 as const;
+/** Default continuation allowance per owner job (within the job's original limits). */
+export const DEFAULT_MAX_CONTINUATIONS = 2;
 
-/**
- * Interruptions that ENDED goal ownership and may be continued in v1: same
- * application session, same connection epoch, original dimension. Other ends
- * (disconnect, kick, dimension change) record a held, NON-executable checkpoint
- * with reason `not_continuable_in_v1` (display only); owner stop/replacement
- * never create one.
- */
+/** Ownership ends that may be continued in v1 (same session, connection epoch and dimension). */
 export const CONTINUABLE_INTERRUPTIONS = ['death', 'low_health', 'safety_interrupted'] as const;
+/** Ownership ends recorded as held, NON-executable checkpoints (display only) in v1. */
 export const HELD_ONLY_INTERRUPTIONS = ['disconnected', 'kicked', 'dimension_change'] as const;
 export type CheckpointInterruption = (typeof CONTINUABLE_INTERRUPTIONS)[number] | (typeof HELD_ONLY_INTERRUPTIONS)[number];
 
-/** Full shared counters as the goal record stores them (incl. questionRefusals and the inert legacy `clarifications`). */
+/** Full shared counters exactly as the goal record stores them. */
 export type CarriedCounters = NonNullable<GoalRecord['counters']>;
 
 /** One atom of the immutable outcome, addressed like PredicateEngine evaluation paths ('root', 'root.0', ...). */
@@ -54,59 +64,72 @@ export interface AtomGrounding {
   path: string;
   predicate: string;
   status: 'groundable' | 'not_groundable';
-  /** `observed_handle`, `prior_result_action`, `remembered_anchor`, `memory_ref`, `count_under_any_or_not`, `baseline_unknown`. */
+  /** e.g. observed_handle, prior_result_action, remembered_anchor, memory_ref, count_under_any_or_not, baseline_unknown, provenance_unavailable. */
   reason?: string;
 }
 
-/** Code-confirmed accounting of one count atom (never planner text; uncertain data labeled, never upgraded). */
-export interface AcquisitionEntry {
+/** Code-verified count lineage of one count atom (never planner text; uncertainty labeled, never upgraded). */
+export interface CountLineage {
   path: string;
   basis: 'possession' | 'effect';
   predicate: 'inventory_delta' | 'inventory_amount' | 'crafting_result' | 'smelting_result';
   selector: string;
   atLeast: number;
-  /** B0: count matching `selector` in the ORIGINAL admission baseline (null -> not continuable). */
+  /** B0: ORIGINAL admission count matching `selector` (immutable provenance; null = unknown). */
   admissionCount: number | null;
-  /** V: prior verified progress, recomputed against the ORIGINAL B0 at every interruption. */
-  verifiedAcquired: number;
-  evidence: 'last_alive_server_packets' | 'current_server_inventory' | 'last_code_evaluation' | 'skill_confirmed_outputs' | 'unavailable';
-  /** inventory_delta mayBeConsumedLater milestone reached before the interruption: stays satisfied. */
+  /** C_k: verified progress at the latest interruption (null while pending, e.g. death awaiting frozen evidence). */
+  credited: number | null;
+  /** H_k: held count at the latest interruption (possession; null when unknown). */
+  heldAtInterruption: number | null;
+  evidence: 'current_server_inventory' | 'last_alive_server_packets' | 'skill_confirmed_outputs' | 'pending' | 'unavailable';
+  /** inventory_delta mayBeConsumedLater milestone reached: stays satisfied. */
   latched: boolean;
-  consumedSinceAdmission: number;
+  /** Item-loss incident of the latest interruption whose server-attributed own returns restore credit (null: no incident). */
+  incidentId: string | null;
+  /** Interruptions accounted so far for this atom. */
+  segments: number;
 }
 
-/** Bound target positions of a `blocks_removed` atom (world coordinates = semantic identity; not a handle). */
+/** Bound positions and component identity of a `blocks_removed` atom (world coordinates; never a handle). */
 export interface RemovalCarry {
   path: string;
   selector: string;
   dimension: string;
-  /** Bounded (<= 256) positions still bound at the interruption ("x,y,z" -> key at binding). */
+  /** Bounded (<= 256) bound positions. */
   members: Array<{ x: number; y: number; z: number; key: string }>;
-  /** Semantic component identity (perception GroupIdentity as plain data): observed anchors, other observed trunks, trunk bbox. */
   identity?: { class: string; anchors: Vec3[]; others: Vec3[]; min: Vec3; max: Vec3 };
 }
 
-/** Route allowance lineage (L's RouteController copies it into the continuation epoch's grant). */
+/**
+ * Route authorization lineage (exact usage state so nothing resets): L's
+ * RouteController exports it at the interruption and admits the continuation
+ * epoch with it. Leg numbering continues after `nextLegIndex`; the counted
+ * distance account, stalled history, blocker and ABSOLUTE deadline carry; the
+ * ORIGINAL admission anchor/radius stay. No old leg is resumed.
+ */
 export interface RouteCarry {
   routeId: string;
   originalGoalEpoch: number;
   grantedAtMs: number;
-  /** ORIGINAL frozen ceilings; `routeDeadlineMs` is absolute and never recomputed. */
   ceilings: Readonly<RouteCeilings>;
   destinations: readonly RouteDestinationKind[];
+  admissionAnchor: Vec3;
+  admissionRadius: number;
+  state: 'authorized' | 'leg_active' | 'exhausted' | 'blocked' | 'revoked';
   legsUsed: number;
-  distanceUsed: number;
+  nextLegIndex: number;
+  distance: Readonly<RouteDistanceAccount>;
   stalledLegs: number;
-  /** A route exhausted/blocked before the interruption stays so. */
-  blocker: RouteBlocker | null;
+  blocker: { reason: RouteBlocker; detail: string } | null;
+  /** Opaque frozen own-incident identity bound by the route (L-owned shape; compared, never re-bound). */
+  boundOwnDeath: unknown | null;
 }
 
-/** The same-session semantic checkpoint P holds in memory (survival may persist a copy for display only). */
+/** The same-session semantic checkpoint P holds in memory (S may persist a copy for display only). */
 export interface ContinuationCheckpoint {
   version: typeof CONTINUATION_VERSION;
   /** The SAME logical goal id for every continuation of this owner job. */
   goalId: string;
-  /** App process session; another session (restart) only displays it (`restart_held`). */
   sessionId: string;
   connectionEpoch: number;
   dimension: string;
@@ -114,70 +137,56 @@ export interface ContinuationCheckpoint {
   /** App-owned public outcome text (never planner prose). */
   publicOutcome: string;
   outcome: GoalOutcomeContract;
-  /** Canonical JSON of `outcome` (immutability check for every later proposal). */
   outcomeCanonical: string;
   admissionBaseline: { capturedAtMs: number; counts: Record<string, number> | null; detail: string };
-  /** ORIGINAL admission anchor; the continuation installs exactly this anchor (never the respawn position). */
-  anchor: { dimension: string; at: Vec3; radius: number };
+  anchor: { dimension: string; at: Vec3; radius: number } | null;
   counters: CarriedCounters;
-  /** ORIGINAL ceilings; admission compares the cumulative counters with these (nothing refilled or double-charged). */
   caps: { plannerTurns: number; tasks: number; replans: number };
   admittedTasks: number;
-  /** ORIGINAL absolute deadline; past it the checkpoint is blocked `deadline_passed`. */
   deadlineAtMs: number;
   grounding: AtomGrounding[];
-  accounting: AcquisitionEntry[];
+  counts: CountLineage[];
   removal: RemovalCarry[];
   route: RouteCarry | null;
-  /** Historical labels only (e.g. "crafted 1 crafting_table"); never action ids or handles. */
+  /** Historical labels only (e.g. "crafted 1 crafting_table"). */
   verifiedEffects: string[];
-  /** Bounded continuation allowance for this job (default 2); each continuation is counted before planning. */
   continuations: { used: number; max: number };
   interruptions: Array<{ reason: CheckpointInterruption; atMs: number; epoch: number }>;
-  state: 'held' | 'continuing' | 'completed' | 'superseded_by_owner' | 'stopped_by_owner' | 'blocked' | 'restart_held';
-  /** Code reason for `held`/`blocked` (e.g. recovery_open, not_groundable:observed_handle, deadline_passed, continuations_exhausted, not_continuable_in_v1). */
+  state: 'capturing' | 'held' | 'continuing' | 'completed' | 'superseded_by_owner' | 'stopped_by_owner' | 'blocked' | 'restart_held';
+  /** Code reason for held/blocked (e.g. waiting:recovery_open, not_groundable:observed_handle, provenance_unavailable, deadline_passed, continuations_exhausted, not_continuable_in_v1). */
   stateReason: string;
   stateAtMs: number;
 }
 
-/** Credit re-bound at the continuation admission from CURRENT evidence (fresh resync), per count atom. */
-export interface ContinuationCarry {
-  path: string;
-  basis: AcquisitionEntry['basis'];
-  selector: string;
-  atLeast: number;
-  carried: number;
-  /** F: fresh count at the continuation admission (possession basis). */
-  freshCount?: number;
-  latched: boolean;
-  detail: string;
+/** Server-attributed own-incident returns (S): regained (any collector) and retained, per item key; never foreign/incidental items. */
+export interface IncidentReturns {
+  incidentId: string;
+  connectionEpoch: number;
+  regained: Record<string, number>;
+  retained: Record<string, number>;
+  /** `server_attributed`: complete for this incident so far; `unknown`: attribution not established (count atoms stay held). */
+  attribution: 'server_attributed' | 'unknown';
 }
 
-/** Survival's OPTIONAL service contribution (absent: continuation still works; gate = clear). */
+/** S's OPTIONAL service (absent: continuation still runs; lossy-death count atoms are then held for provenance). */
 export interface ContinuationSurvivalPort {
-  /** Packet-frozen last-alive counts of the latest own death on this connection (V evidence), else null. */
-  frozenInventory(connectionEpoch: number): { counts: Record<string, number>; evidence: 'last_alive_server_packets' } | null;
-  /** Necessary recovery/support has priority: open episode or running support -> wait. */
+  /** Packet-frozen last-alive counts of the latest own death on this connection, with its incident id. */
+  frozenInventory(connectionEpoch: number): { incidentId: string; counts: Record<string, number>; evidence: 'last_alive_server_packets' } | null;
+  /** Bounded, server-attributed own-incident return lineage (late returns by ANY collector included). */
+  incidentReturns(incidentId: string): IncidentReturns | null;
+  /** Necessary recovery/support first: open episode or running support -> wait (finite, code-owned). */
   continuationGate(nowMs: number): { kind: 'clear' } | { kind: 'wait'; reason: 'recovery_open' | 'support_running' | 'not_alive'; detail: string } | { kind: 'blocked'; reason: string; detail: string };
-  /** Display-only persistence (loaded after a restart as `restart_held`; never executed). */
+  /** Display-only persistence (restart loads `restart_held`; never executed). */
   persistCheckpoint(checkpoint: ContinuationCheckpoint): void;
 }
 
-/** GoalEngine surface (P). Everything local and inference-free except the admitted goal's own later planner turns. */
+export type ContinueResult =
+  | { status: 'admitted'; goalId: string; epoch: number; continuation: number }
+  | { status: 'not_ready'; reason: string; detail: string }
+  | { status: 'blocked'; reason: string; detail: string };
+
+/** GoalEngine surface (P). */
 export interface ContinuationEnginePort {
-  /** Held/continuing checkpoints for status/dashboard (bounded copies). */
   checkpoints(): readonly ContinuationCheckpoint[];
-  /**
-   * Fresh readiness decision and, when ready, the continuation admission of
-   * the SAME goal id at a new epoch through the single admission path:
-   * original anchor + route carry via onGoalAdmitted, fresh resync -> carry
-   * re-binding via PredicateEvaluator.rebindContinuation, cumulative counters
-   * and original ceilings/deadline, first planner turn kind `continuation`.
-   * Refused (checkpoint unchanged; one declarative reason) unless: same
-   * session/connection epoch/dimension, game ready, alive, no active owner
-   * goal, no pending/in-flight owner intake, safety authority not `none`,
-   * survival gate clear (when installed), checkpoint `held` and continuable,
-   * deadline/caps/continuations remaining.
-   */
-  continueHeld(goalId: string, cause: 'respawn_ready' | 'recovery_concluded' | 'safety_clear'): Promise<{ status: 'admitted'; goalId: string; epoch: number; continuation: number } | { status: 'not_ready'; reason: string; detail: string } | { status: 'blocked'; reason: string; detail: string }>;
+  continueHeld(goalId: string, cause: 'respawn_ready' | 'recovery_concluded' | 'safety_clear' | 'scheduled'): Promise<ContinueResult>;
 }

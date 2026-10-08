@@ -18,4 +18,5 @@ export * from './predicate.ts';
 export * from './selector.ts';
 export * from './states.ts';
 export * from './survival.ts';
+export * from './continuation.ts';
 export * from './task.ts';

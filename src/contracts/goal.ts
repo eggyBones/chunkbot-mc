@@ -93,6 +93,11 @@ export const GoalRecordSchema = z
       .strict()
       .optional(),
     progress: z.string().max(BOUNDS.text).default(''),
+    /**
+     * MB-FLOW-003-C12: present on a CONTINUATION admission of the same logical
+     * goal (same id, fresh epoch). `number` is 1-based within `max`.
+     */
+    continuation: z.object({ number: z.number().int().min(1), max: z.number().int().min(1), after: z.string().regex(/^[a-z_]{1,48}$/) }).strict().optional(),
   })
   .strict();
 export type GoalRecord = z.infer<typeof GoalRecordSchema>;
