@@ -16,6 +16,7 @@ import { allSkills } from '../src/skills/index.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { setFaultTurns, writeFaultCodex, type FaultTurn } from '../scripts/lib/fault-codex.ts';
 import { existsSync } from 'node:fs';
+import { pendingRealTurn } from '../scripts/lib/ordinary-safety-oracles.ts';
 
 const catalog = new SkillRegistry(allSkills()).catalog();
 const gateRunner: CliRunner = {
@@ -43,6 +44,12 @@ const wireInfo = { disposition: 'needs_information', interpretation: 'need rules
 describe('CodexPlanner adapter (fake CLI)', () => {
   it('is not ready until its isolation gate passes; then proposes through the real transport, wire conversion and journal', async () => {
     const { p, store, journal } = planner([{ kind: 'proposal', proposal: wireInfo }]);
+    const record = store.record.bind(store);
+    const observedPending: boolean[] = [];
+    store.record = (event) => {
+      record(event);
+      if (['planner_stream_started', 'planner_response_started'].includes(event.type)) observedPending.push(Boolean(pendingRealTurn(store.events, journal.events, 'goal-0001')));
+    };
     assert.equal(p.readiness().ready, false);
     assert.equal(p.prepare().ok, true);
     assert.match(p.readiness().detail, /selected gpt-6\.1-sol\/low; server-resolved identity is not echoed/);
@@ -53,6 +60,19 @@ describe('CodexPlanner adapter (fake CLI)', () => {
     assert.ok(!(iso['envNames'] as string[]).includes('OPENROUTER_API_KEY'));
     assert.equal(store.ofType('planner_turn_completed')[0]?.['resolvedModel'], 'not echoed by the CLI (no reroute event observed)');
     assert.equal(journal.ofType('planner_proposal_raw').length, 1);
+    assert.deepEqual(observedPending, [true, false], 'actual adapter stream metadata opens/closes the harness race before process settlement');
+    const types = store.events.map((e) => e.type);
+    for (const type of ['planner_stream_started', 'planner_response_started', 'planner_stream_completed']) {
+      const rows = store.ofType(type);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]!['requestId'], 'req-0001');
+      assert.equal(rows[0]!['goalId'], 'goal-0001');
+      assert.equal(rows[0]!['subject'], 'goal-0001');
+      assert.ok(!('text' in rows[0]!) && !('content' in rows[0]!), 'metadata contains no response/reasoning content');
+    }
+    assert.ok(types.indexOf('planner_stream_started') < types.indexOf('planner_response_started'));
+    assert.ok(types.indexOf('planner_response_started') < types.indexOf('planner_stream_completed'));
+    assert.ok(types.indexOf('planner_stream_completed') < types.indexOf('planner_turn_completed'));
   });
 
   it('turns invalid output into a typed invalid_output failure with repair problems', async () => {
