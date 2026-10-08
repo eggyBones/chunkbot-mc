@@ -147,7 +147,7 @@ export function seekOwnerSkill(deps: LocatorSkillDeps): SkillDefinition<{ within
       id: 'seek_owner',
       family: 'movement',
       purpose:
-        "Find and rejoin the owner when out of sight: walk toward the owner's server locator-bar direction through safe visible frontiers (beginning counted, code-authorized route legs when the travel radius limits progress), then approach the owner once visible.",
+        "Find and rejoin the owner when they are out of sight or beyond the travel radius (e.g. while following them or coming to them): walk toward the owner's server locator-bar direction through safe visible frontiers, detouring around observed obstacles within fixed bounds and beginning counted, code-authorized route legs when the travel radius limits progress, then approach the owner once visible. Use it together with the visible-owner follow/approach capabilities instead of undirected exploration; without a current locator direction it offers nothing and reports why.",
       parameters: [
         { name: 'within', type: 'number', description: 'stop distance from the VISIBLE owner (blocks)', required: false, minimum: 1, maximum: 16 },
         { name: 'durationMs', type: 'integer', description: 'length of one seeking window before re-evaluating', required: false, minimum: 1_000, maximum: 120_000 },
@@ -163,7 +163,8 @@ export function seekOwnerSkill(deps: LocatorSkillDeps): SkillDefinition<{ within
       cancellation: 'stop clears the path goal and controls immediately through the actuator lease; used route legs are never refunded',
       limitations: [
         'a locator cue is a coarse server direction, not visibility, a target or proof of arrival',
-        'never digs, places, towers, parkours or opens doors; walls, drops, lava and height differences are reported',
+        'never digs, places, towers, parkours or opens doors; a detour around an observed wall/drop/lava/water is bounded, otherwise the specific obstacle is reported',
+        'picks only dry-land waypoints and reports water_crossing when observed water blocks the way; swimming is not a supported route',
         'no cue while the owner crouches, is invisible, wears a head item, is out of locator range, the locator bar is disabled, or after a dimension change',
         'route legs, distance and time are capped by operator policy; plans cannot change them',
       ],

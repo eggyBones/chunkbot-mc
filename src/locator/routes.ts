@@ -24,8 +24,12 @@
 import type { EventEmitter } from 'node:events';
 import type { Clock, Vec3 } from '../contracts/index.ts';
 import {
+  ROUTE_LINEAGE_VERSION,
   RoutePolicySchema,
   type RouteAdmission,
+  type RouteLineage,
+  type RouteContinuationRefusal,
+  type RouteContinuationResult,
   type RouteAuthorization,
   type RouteBlocker,
   type RouteDestinationKind,
@@ -78,6 +82,32 @@ interface RouteRecord {
   lastSample: Vec3 | null;
   /** The WHOLE own-incident identity frozen at first use (C3); any later difference is refused. */
   boundOwnDeath: FrozenOwnIncident | null;
+  /** C12: legs consumed by EARLIER epochs of the same lineage (new legs are numbered after them). */
+  legOffset: number;
+  /** C12: the last finished leg of an earlier epoch (status only). */
+  carriedLastLeg: { index: number; outcome: string; netProgress: number; displacement: number } | null;
+  /** C12: a continued lineage whose route had already begun counts own movement from admission. */
+  countFromStart: boolean;
+}
+
+type LegSummary = { index: number; outcome: string; netProgress: number; displacement: number };
+
+/** Canonical JSON (sorted keys) of plain data: the lineage fingerprint. */
+function canonical(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
+  return `{${Object.keys(v as object)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`)
+    .join(',')}}`;
+}
+
+function deepFreeze<T>(v: T): T {
+  if (v && typeof v === 'object' && !Object.isFrozen(v)) {
+    for (const k of Object.keys(v as object)) deepFreeze((v as Record<string, unknown>)[k]);
+    Object.freeze(v);
+  }
+  return v;
 }
 
 export type BeginLegResult = { ok: true; leg: RouteLegBounds; status: RouteStatus } | { ok: false; blocker: RouteBlocker; detail: string; status: RouteStatus | null };
@@ -125,6 +155,10 @@ export class RouteController implements RoutePort {
   /** Highest goal epoch ever admitted (monotonic; no re-admission of an epoch). */
   private lastAdmittedEpoch = -1;
   private detachMovement: (() => void) | undefined;
+  /** C12 lineage bookkeeping: every route this controller granted, with its latest admissible export. */
+  private readonly lineages = new Map<string, { goalId: string; latestExport: string | null; consumed: boolean }>();
+  /** Logical goal ids that ever received a route grant: a plain admit of the same id never gets a fresh allowance. */
+  private readonly goalsWithLineage = new Set<string>();
 
   constructor(options: RouteControllerOptions) {
     this.options = options;
@@ -140,6 +174,11 @@ export class RouteController implements RoutePort {
     this.lastAdmittedEpoch = a.goalEpoch;
     if (this.current && this.current.state !== 'revoked') this.revoke('replaced_by_admission');
     this.current = undefined;
+    if (this.goalsWithLineage.has(a.goalId)) {
+      // C12: the same logical goal continues ONLY through admitContinuation with its carried lineage.
+      this.options.record?.({ type: 'route_admission_refused', goalId: a.goalId, goalEpoch: a.goalEpoch, reason: 'continuation_requires_carry' });
+      return undefined;
+    }
     const p = this.policy;
     if (!p.enabled || !(p.sources as readonly string[]).includes(a.source)) {
       this.options.record?.({ type: 'route_not_authorized', goalId: a.goalId, goalEpoch: a.goalEpoch, source: a.source, reason: p.enabled ? 'source_not_in_policy' : 'routes_disabled' });
@@ -178,7 +217,12 @@ export class RouteController implements RoutePort {
       distance: { total: 0, clientPhysics: 0, serverCorrections: 0, correctionCount: 0 },
       lastSample: null,
       boundOwnDeath: null,
+      legOffset: 0,
+      carriedLastLeg: null,
+      countFromStart: false,
     };
+    this.lineages.set(auth.routeId, { goalId: a.goalId, latestExport: null, consumed: false });
+    this.goalsWithLineage.add(a.goalId);
     this.options.record?.({ type: 'route_authorized', routeId: auth.routeId, goalId: a.goalId, goalEpoch: a.goalEpoch, source: a.source, destinations: [...auth.destinations], legRadius: ceilings.legRadius, maxLegs: ceilings.maxLegs, maxTotalDistance: ceilings.maxTotalDistance, routeBudgetMs: ceilings.routeDeadlineMs - a.admittedAtMs, ownerCoordinates: this.current.ownerCoordinates.length });
     return auth;
   }
@@ -308,7 +352,7 @@ export class RouteController implements RoutePort {
    */
   sample(ctx: RouteCtx, at: Vec3, source: 'client_physics' | 'server_correction' = 'client_physics'): number {
     const r = this.current;
-    if (!r || !this.authorization(ctx) || r.legs.length === 0) return 0;
+    if (!r || !this.authorization(ctx) || (r.legs.length === 0 && !r.countFromStart)) return 0;
     let counted = 0;
     if (r.lastSample) {
       const d = horizontal(r.lastSample, at);
@@ -407,7 +451,7 @@ export class RouteController implements RoutePort {
     const c = r.auth.ceilings;
     if (r.state === 'blocked' || r.state === 'exhausted') return { ok: false, blocker: r.blocker?.reason ?? 'leg_limit', detail: r.blocker?.detail ?? 'route ended' };
     if (stalled >= c.maxStalledLegs) return { ok: false, blocker: 'stalled', detail: `${stalled} consecutive legs made less than ${c.minLegProgress} blocks of net progress toward the destination` };
-    if (r.legs.length >= c.maxLegs) return { ok: false, blocker: 'leg_limit', detail: `all ${c.maxLegs} route legs of this goal are used` };
+    if (r.legOffset + r.legs.length >= c.maxLegs) return { ok: false, blocker: 'leg_limit', detail: `all ${c.maxLegs} route legs of this goal are used` };
     if (r.distance.total >= c.maxTotalDistance) return { ok: false, blocker: 'distance_limit', detail: `${Math.round(r.distance.total)} of ${c.maxTotalDistance} route blocks of own movement are used` };
     if (now >= c.routeDeadlineMs) return { ok: false, blocker: 'time_limit', detail: 'the route time budget of this goal is spent' };
     return { ok: true };
@@ -441,11 +485,11 @@ export class RouteController implements RoutePort {
         r.state = check.blocker === 'stalled' ? 'blocked' : 'exhausted';
         r.blocker = { reason: check.blocker, detail: check.detail };
       }
-      this.options.record?.({ type: 'route_leg_refused', routeId: auth.routeId, goalEpoch: auth.goalEpoch, blocker: check.blocker, legsUsed: r.legs.length, distanceUsed: r1(r.distance.total) });
+      this.options.record?.({ type: 'route_leg_refused', routeId: auth.routeId, goalEpoch: auth.goalEpoch, blocker: check.blocker, legsUsed: r.legOffset + r.legs.length, distanceUsed: r1(r.distance.total) });
       return { ok: false, blocker: check.blocker, detail: check.detail, status: this.status(req.goalEpoch) };
     }
     const leg: LegRecord = {
-      index: r.legs.length + 1,
+      index: r.legOffset + r.legs.length + 1, // C12: monotonic across continuation epochs
       destination: req.destination,
       anchor: { x: req.at.x, y: req.at.y, z: req.at.z },
       radius: auth.ceilings.legRadius,
@@ -468,13 +512,14 @@ export class RouteController implements RoutePort {
     if (!r || (goalEpoch !== undefined && r.auth.goalEpoch !== goalEpoch)) return null;
     const a = r.auth;
     const leg = r.legs.at(-1);
-    const last = r.legs.length > 1 ? r.legs.at(-2) : undefined;
+    const prev = r.legs.length > 1 ? r.legs.at(-2) : undefined;
+    const last: LegSummary | null = prev ? { index: prev.index, outcome: prev.outcome, netProgress: prev.netProgress, displacement: prev.displacement } : r.carriedLastLeg;
     return {
       routeId: a.routeId,
       goalId: a.goalId,
       state: r.state,
       destinations: [...a.destinations],
-      legsUsed: r.legs.length,
+      legsUsed: r.legOffset + r.legs.length,
       maxLegs: a.ceilings.maxLegs,
       distanceUsed: r1(r.distance.total),
       distanceSources: { clientPhysics: r1(r.distance.clientPhysics), serverCorrections: r1(r.distance.serverCorrections), correctionCount: r.distance.correctionCount },
@@ -485,7 +530,157 @@ export class RouteController implements RoutePort {
       currentLeg: leg && r.state !== 'revoked' ? { index: leg.index, destination: leg.destination, anchor: { x: r1(leg.anchor.x), y: r1(leg.anchor.y), z: r1(leg.anchor.z) }, radius: leg.radius } : null,
       lastLeg: last ? { index: last.index, outcome: last.outcome, netProgress: r1(last.netProgress), displacement: r1(last.displacement) } : null,
       blocker: r.blocker,
+      ...(a.continuation ? { continuation: { count: a.continuation.count, originalGoalEpoch: a.continuation.originalGoalEpoch } } : {}),
     };
+  }
+
+  // ------------------------------------------------------------ C12 continuation lineage
+
+  /**
+   * The lineage of the CURRENT route of `goalEpoch`, captured BEFORE revocation.
+   * Changes no route state; it only records this export as the route's latest
+   * admissible lineage (an older export can never be admitted afterwards). An
+   * active leg is finalized conservatively as `interrupted_*` from its last own
+   * sample: it stays counted and is never executable again.
+   */
+  exportCarry(goalEpoch: number): RouteLineage | undefined {
+    const r = this.current;
+    if (!r || r.state === 'revoked' || r.auth.goalEpoch !== goalEpoch) return undefined;
+    const a = r.auth;
+    let stalled = r.stalledLegs;
+    let lastLeg: LegSummary | null = r.carriedLastLeg;
+    for (const [i, leg] of r.legs.entries()) {
+      const active = i === r.legs.length - 1 && r.state === 'leg_active';
+      const outcome = active ? (leg.netProgress >= a.ceilings.minLegProgress ? 'interrupted_progressed' : 'interrupted_stalled') : leg.outcome;
+      if (active) stalled = outcome === 'interrupted_stalled' ? stalled + 1 : 0;
+      lastLeg = { index: leg.index, outcome, netProgress: r1(leg.netProgress), displacement: r1(leg.displacement) };
+    }
+    const carry: RouteLineage = deepFreeze({
+      version: ROUTE_LINEAGE_VERSION,
+      routeId: a.routeId,
+      goalId: a.goalId,
+      originalGoalEpoch: a.continuation?.originalGoalEpoch ?? a.goalEpoch,
+      fromGoalEpoch: a.goalEpoch,
+      connectionEpoch: a.connectionEpoch,
+      dimension: a.dimension,
+      source: a.source,
+      grantedAtMs: a.grantedAtMs,
+      exportedAtMs: this.options.clock.now(),
+      destinations: [...a.destinations],
+      admissionAnchor: { ...a.admissionAnchor },
+      admissionRadius: a.admissionRadius,
+      ceilings: { ...a.ceilings },
+      legsUsed: r.legOffset + r.legs.length,
+      nextLegIndex: r.legOffset + r.legs.length + 1,
+      lastLeg,
+      stalledLegs: stalled,
+      distance: { ...r.distance },
+      state: r.state === 'exhausted' || r.state === 'blocked' ? r.state : 'authorized',
+      blocker: r.blocker ? { ...r.blocker } : null,
+      ownerCoordinates: r.ownerCoordinates.map((c) => ({ ...c })),
+      boundOwnDeath: r.boundOwnDeath ? { ...r.boundOwnDeath, at: { ...r.boundOwnDeath.at } } : null,
+      continuations: a.continuation?.count ?? 0,
+    });
+    const lineage = this.lineages.get(a.routeId);
+    if (lineage) {
+      lineage.latestExport = canonical(carry);
+      lineage.consumed = false;
+    }
+    this.options.record?.({ type: 'route_carry_exported', routeId: a.routeId, goalId: a.goalId, goalEpoch, legsUsed: carry.legsUsed, distanceUsed: r1(carry.distance.total), state: carry.state });
+    return carry;
+  }
+
+  revokeWithCarry(reason: string, goalEpoch: number): RouteLineage | undefined {
+    const carry = this.exportCarry(goalEpoch);
+    this.revoke(reason, goalEpoch);
+    return carry;
+  }
+
+  /**
+   * Continuation admission of the SAME logical goal at a FRESH epoch. Validates
+   * the lineage (latest unconsumed export of a route this controller granted),
+   * the goal id, epoch freshness, connection, dimension, exact anchor and source;
+   * then installs the original ceilings and consumed history. Exhausted, blocked
+   * or expired lineages are recorded for truthful status with NO authority.
+   */
+  admitContinuation(carry: RouteLineage, a: RouteAdmission): RouteContinuationResult {
+    if (!carry || typeof carry !== 'object' || typeof carry.routeId !== 'string' || typeof carry.fromGoalEpoch !== 'number') {
+      // Malformed (e.g. a checkpoint without a route lineage): never a grant; a fresh epoch is consumed (fail closed).
+      return this.refuseContinuation({ routeId: '' } as RouteLineage, a, 'unknown_or_stale_carry', 'not a route lineage exported by this controller', true);
+    }
+    if (a.goalEpoch <= this.lastAdmittedEpoch || a.goalEpoch <= carry.fromGoalEpoch) return this.refuseContinuation(carry, a, 'stale_epoch', `goal epoch ${a.goalEpoch} is not fresh`, false);
+    const lineage = this.lineages.get(carry.routeId);
+    let fingerprint = '';
+    try {
+      fingerprint = canonical(carry);
+    } catch {
+      fingerprint = '';
+    }
+    if (carry.version !== ROUTE_LINEAGE_VERSION || !lineage || lineage.consumed || lineage.latestExport === null || lineage.latestExport !== fingerprint || lineage.goalId !== carry.goalId) {
+      return this.refuseContinuation(carry, a, 'unknown_or_stale_carry', 'not the latest unadmitted route lineage exported by this controller', true);
+    }
+    if (a.goalId !== carry.goalId) return this.refuseContinuation(carry, a, 'goal_mismatch', 'a continuation keeps the logical goal id of its lineage', true);
+    if (a.connectionEpoch !== carry.connectionEpoch) return this.refuseContinuation(carry, a, 'connection_mismatch', 'route lineages never cross connections', true);
+    if (a.dimension !== carry.dimension) return this.refuseContinuation(carry, a, 'dimension_mismatch', `the route lineage belongs to ${carry.dimension}`, true);
+    if (!sameVec(a.admissionAnchor, carry.admissionAnchor) || a.admissionRadius !== carry.admissionRadius) return this.refuseContinuation(carry, a, 'anchor_mismatch', 'a continuation installs exactly the original admission anchor and radius', true);
+    if (a.source !== carry.source) return this.refuseContinuation(carry, a, 'source_mismatch', 'the goal source of a lineage never changes', true);
+    // Accepted: this epoch is admitted once; any other route is replaced; the export is consumed.
+    this.lastAdmittedEpoch = a.goalEpoch;
+    if (this.current && this.current.state !== 'revoked') this.revoke('replaced_by_admission');
+    lineage.consumed = true;
+    const now = this.options.clock.now();
+    const c = carry.ceilings;
+    let terminal: { state: 'exhausted' | 'blocked'; reason: RouteBlocker; detail: string } | null = null;
+    if (carry.state !== 'authorized') terminal = { state: carry.state, reason: carry.blocker?.reason ?? 'leg_limit', detail: carry.blocker?.detail ?? 'the route had already ended' };
+    else if (now >= c.routeDeadlineMs) terminal = { state: 'exhausted', reason: 'time_limit', detail: 'the original route time budget of this goal is spent' };
+    else if (carry.distance.total >= c.maxTotalDistance) terminal = { state: 'exhausted', reason: 'distance_limit', detail: `${Math.round(carry.distance.total)} of ${c.maxTotalDistance} route blocks of own movement are used` };
+    else if (carry.legsUsed >= c.maxLegs) terminal = { state: 'exhausted', reason: 'leg_limit', detail: `all ${c.maxLegs} route legs of this goal are used` };
+    else if (carry.stalledLegs >= c.maxStalledLegs) terminal = { state: 'blocked', reason: 'stalled', detail: `${carry.stalledLegs} consecutive legs made less than ${c.minLegProgress} blocks of net progress toward the destination` };
+    const auth: RouteAuthorization = deepFreeze({
+      routeId: carry.routeId,
+      goalId: carry.goalId,
+      goalEpoch: a.goalEpoch,
+      connectionEpoch: carry.connectionEpoch,
+      dimension: carry.dimension,
+      source: carry.source,
+      grantedBy: 'operator_policy' as const,
+      grantedAtMs: carry.grantedAtMs,
+      destinations: [...carry.destinations],
+      admissionAnchor: { ...carry.admissionAnchor },
+      admissionRadius: carry.admissionRadius,
+      ceilings: { ...c },
+      continuation: { originalGoalEpoch: carry.originalGoalEpoch, fromGoalEpoch: carry.fromGoalEpoch, count: carry.continuations + 1 },
+    });
+    this.current = {
+      auth,
+      state: terminal ? terminal.state : 'authorized',
+      legs: [],
+      stalledLegs: carry.stalledLegs,
+      blocker: terminal ? { reason: terminal.reason, detail: terminal.detail } : null,
+      ownerCoordinates: carry.ownerCoordinates.slice(0, 8).map((o) => ({ x: o.x, y: o.y, z: o.z, source: o.source })),
+      distance: { total: carry.distance.total, clientPhysics: carry.distance.clientPhysics, serverCorrections: carry.distance.serverCorrections, correctionCount: carry.distance.correctionCount },
+      lastSample: null, // the respawn/teleport displacement is not own movement; the chain restarts here
+      boundOwnDeath: carry.boundOwnDeath ? Object.freeze({ ...carry.boundOwnDeath, at: Object.freeze({ ...carry.boundOwnDeath.at }) }) : null,
+      legOffset: carry.legsUsed,
+      carriedLastLeg: carry.lastLeg ? { ...carry.lastLeg } : null,
+      countFromStart: carry.legsUsed > 0,
+    };
+    this.goalsWithLineage.add(carry.goalId);
+    const status = this.status(a.goalEpoch) as RouteStatus;
+    this.options.record?.({ type: terminal ? 'route_continuation_terminal' : 'route_continued', routeId: carry.routeId, goalId: carry.goalId, goalEpoch: a.goalEpoch, fromGoalEpoch: carry.fromGoalEpoch, continuation: carry.continuations + 1, legsUsed: carry.legsUsed, distanceUsed: r1(carry.distance.total), ...(terminal ? { blocker: terminal.reason } : {}) });
+    if (terminal) return { ok: false, kind: 'terminal', blocker: terminal.reason, detail: terminal.detail, status };
+    return { ok: true, authorization: auth, status };
+  }
+
+  /** Refusal: nothing is installed. A FRESH epoch is still consumed (fail closed: it can never get a fresh grant later). */
+  private refuseContinuation(carry: RouteLineage, a: RouteAdmission, reason: RouteContinuationRefusal, detail: string, freshEpoch: boolean): RouteContinuationResult {
+    if (freshEpoch && a.goalEpoch > this.lastAdmittedEpoch) {
+      this.lastAdmittedEpoch = a.goalEpoch;
+      if (this.current && this.current.state !== 'revoked') this.revoke('replaced_by_admission');
+      this.current = undefined;
+    }
+    this.options.record?.({ type: 'route_continuation_refused', routeId: String(carry?.routeId ?? ''), goalId: a.goalId, goalEpoch: a.goalEpoch, reason });
+    return { ok: false, kind: 'refused', reason, detail, status: null };
   }
 
   revoke(reason: string, goalEpoch?: number): void {
