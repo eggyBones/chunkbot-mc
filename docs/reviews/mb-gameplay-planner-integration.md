@@ -11,8 +11,10 @@ Worker: P (shared planner/application writer). Branch `chunkbot/gameplay-planner
 | `49f14a1` | Harness scenarios updated to the no-question policy (planner P4, handoff L6); P-side immediate-safety seams (GoalEngine authority basis + hooks, TaskRuntime hold gate). |
 | `cfbd609` | This review record. |
 | `78bb0fe` | Combined ordinary-goal live harness `scripts/ordinary-goal-live-check.ts` (O1–O6), lease guard test. |
+| `56cb906` | C12 shared continuation API proposal r2 (declarations only). |
+| `82c93a5` | N-G3 review corrections: trunk segmentation, bounded lineage for re-grounding and removal growth, line-of-sight-only support; regressions for touching canopies, incremental reveal and support evidence. |
 
-Checks at `78bb0fe` (Node 24.21.0 first in PATH, own `npm ci`): `npm run typecheck` exit 0; `npm test` exit 0, 822/822; `npm run build` exit 0 at `49f14a1` (later commits touch scripts/tests only). No installed live diagnostic was run (no lease; planner diagnostics would use inference).
+Checks at `82c93a5` (Node 24.21.0 first in PATH, own `npm ci`): `npm run typecheck` exit 0; `npm run build` exit 0; `npm test` exit 0, 826/826. No installed live diagnostic was run (no lease; planner diagnostics would use inference).
 
 ## N1 — no follow-up questions (implemented, unit evidence)
 
@@ -27,8 +29,21 @@ Checks at `78bb0fe` (Node 24.21.0 first in PATH, own `npm ci`): `npm run typeche
 
 - **Snapshot ordering.** Visible entities/drops are ordered by distance (ties: key, x, z, y, id) BEFORE the 32 cap; the visible owner is always reported. Previously the cap applied in client-table order, so a nearby chicken could be omitted when >32 entities were visible.
 - **Bound target survives snapshot eviction.** Only 8 snapshots are kept; a task bound to an observed handle lost its target after ~8 rounds (`named_target_not_visible`) and `entity_outcome observed_defeated` became `unknown`. Perception now retains the IDENTITY of evicted handles (bounded 4096, same connection/dimension, cleared on lifecycle) for re-grounding and predicate identity only; expired handles remain non-executable. This is a source-mechanism finding consistent with the chicken report, not a matched incident trace.
-- **Block groups.** Observations carry bounded `groups` of connected visible blocks of a code-owned class (`tree`: logs/stems/wood/hyphae + leaves, wart blocks, roots), with nearest member, bbox, counts and `support` (`grounded`/`floating`/`unknown` from loaded collision data directly beneath visible trunk members only). Group handles re-ground only to the same group (maximum member overlap), never to another.
-- **Outcome.** New predicate `blocks_removed {target: observed grp-/blk-, selector}` binds the target's member positions; bounded growth adds newly seen members of the same group near the bound area; satisfied only when the server world state (no pending prediction) shows no matching block at every bound position; unknown after lifecycle interruption. Wire, proposal checks (shown handle required), candidate hints, dashboard text updated.
+- **Block groups (corrected after review of `f506acc`; commit `82c93a5`).** A group is segmented by TRUNK: one 26-connected component of SEEN trunk voxels. A SEEN non-trunk voxel (e.g. leaves) joins only its UNIQUE nearest trunk within 4 blocks; ties join nothing. Touching canopies therefore never merge two trees. Only seen voxels are reported; groups and members are bounded (8 groups, 256 members, `truncated` per group, snapshot `truncated` when groups are cut).
+  - **Support** uses line-of-sight evidence only. `grounded`: the voxel below a lowest visible trunk voxel is SEEN, solid and not a member. `floating`: every lowest trunk voxel's bottom face is visible. Otherwise `unknown` — an ordinary tree whose soil is hidden is `unknown`, never proven grounded from hidden data. The supporting block's type is never surfaced.
+  - **Lineage** (`groupLineageScore`, shared by re-grounding and removal growth). A candidate continues a bound identity only if:
+    - its trunk touches an anchor (originally observed members, including leaves, or trunks already admitted; removed positions stay anchors);
+    - its whole trunk stays inside the original trunk bbox ±2 horizontally / ±8 vertically;
+    - it contains no trunk of another group observed with the identity.
+
+  A neighbouring tree is never pulled in, even when its leaf touches ours.
+- **Outcome.** New predicate `blocks_removed {target: observed grp-/blk-, selector}`:
+  - binds the target's matching positions plus the semantic component identity;
+  - growth admits groups of the latest observation in the lineage and adds their trunks as anchors, so logs revealed after the originally seen ones are removed join instead of being omitted;
+  - satisfied only when server world state (no pending prediction) shows no matching block at every bound position;
+  - unknown after a lifecycle interruption.
+
+  Honest limit: logs that never become visible during the work cannot be proven present or absent. Re-grounding for mining scope recomputes lineage from the original identity each round (no chaining across rounds), which is conservative: a log reachable only through a chain of later reveals yields a stale target and a replan, never another tree. Wire, proposal checks (shown handle required), candidate hints and dashboard text are updated.
 - **Scoped work.** A named group handle admits exactly its member blocks for `mine_block` (unrelated tree stays out of scope); `move_near` approaches a group's nearest observed member.
 - **"Here".** `select_home_site` accepts `near: owner` (fresh visible owner position from the snapshot); owner not visible is a declarative `owner_not_visible` blocker. An existing home project elsewhere remains the existing `home_project_exists` blocker — explicit replacement-site semantics (retire previous project) are not implemented (decision for Codex below).
 
