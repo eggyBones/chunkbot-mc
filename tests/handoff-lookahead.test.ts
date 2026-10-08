@@ -6,7 +6,7 @@
 // preempts it (one planner process at a time).
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { PlannerRequest } from '../src/contracts/index.ts';
+import type { OutcomePredicate, PlannerRequest } from '../src/contracts/index.ts';
 import { StaticCapabilityRegistry } from '../src/goals/not-ready.ts';
 import type { FlowOptions } from '../src/goals/goal-engine.ts';
 import { VersionKnowledge } from '../src/knowledge/knowledge.ts';
@@ -26,12 +26,13 @@ function harness(script: (r: PlannerRequest, i: number) => PlannerScript, flow: 
   const planner = new DelayedPlanner(script);
   const server = new FakeServer(log);
   const tasks = new FakeTaskRuntime(log);
+  const world = new FakeWorld();
   const h = makeEngine(
     {
       planner,
       outcomes: server,
       tasks,
-      observation: new FakeWorld(),
+      observation: world,
       capabilities: CAPS,
       executor: READY_EXECUTOR,
       registry: new VersionKnowledge({ version: '26.1.2' }),
@@ -40,7 +41,7 @@ function harness(script: (r: PlannerRequest, i: number) => PlannerScript, flow: 
     },
     log,
   );
-  return { ...h, planner, server, tasks, log };
+  return { ...h, planner, server, tasks, world, log };
 }
 
 /** Each window: one ordinary finite task that collects two cobblestone over TASK_MS. */
@@ -54,6 +55,68 @@ function twoWindows(lookahead: boolean) {
 }
 
 describe('H7 window lookahead', () => {
+  it('N1-R4 rejects a stale lookahead task after history eviction, then admits a fresh repair under the exact original outcome', async () => {
+    let original: OutcomePredicate;
+    let complete = false;
+    const h = harness((r, i) => {
+      const observation = r.observation!;
+      const current = { kind: 'observed', snapshotId: observation.id, handle: observation.blocks[0]!.handle } as const;
+      original ??= { predicate: 'blocks_removed', target: current, selector: 'minecraft:oak_log' };
+      const stale = r.turnKind === 'lookahead' && i === 4;
+      const completion: OutcomePredicate = stale ? original : { predicate: 'blocks_removed', target: current, selector: 'minecraft:oak_log' };
+      const objective = r.turnKind === 'repair' ? 'fresh repair' : `window ${i}`;
+      const spec = { ...task(objective, completion), targetSelectors: [current] };
+      return { kind: 'reply', proposal: finitePlan([spec], original, r.turnKind !== 'repair'), delayMs: 5 };
+    }, { lookahead: true });
+    h.server.evaluate = async () => ({ status: complete ? 'satisfied' : 'unsatisfied', predicate: 'blocks_removed', detail: 'code-owned original target', evidence: {} });
+    const translate = h.world.translateHandle.bind(h.world);
+    h.world.translateHandle = (from, handle, to) => handle === 'blk-1' ? undefined : translate(from, handle, to);
+    for (let i = 0; i < 5; i++) h.tasks.behaviors.set(`window ${i}`, runFor(40));
+    h.tasks.behaviors.set('fresh repair', async () => { complete = true; });
+    await h.engine.submit('Remove the original observed target.', OWNER);
+    await until(() => h.engine.status().goal?.state === 'completed', 5_000);
+    assert.ok(h.world.taken.length > 4, 'the original snapshot is outside bounded shown history');
+    assert.deepEqual(h.planner.requests.map((r) => r.turnKind), ['initial', 'lookahead', 'lookahead', 'lookahead', 'lookahead', 'repair']);
+    const rejection = h.store.ofType('planner_proposal_rejected');
+    assert.equal(rejection.length, 1);
+    assert.equal(rejection[0]!['kind'], 'stale_draft');
+    assert.match(String(rejection[0]!['problems']), /blk-1.*no longer observed/);
+    assert.equal(h.tasks.runs.length, 5, 'the stale lookahead task never runs');
+    assert.equal(h.tasks.runs.at(-1)!.task.spec.objective, 'fresh repair');
+    assert.notEqual((h.tasks.runs.at(-1)!.task.spec.completion as { target: { snapshotId: string } }).target.snapshotId, 'snap-0001');
+    assert.deepEqual(h.planner.requests.at(-1)!.acceptedOutcome, { kind: 'finite', outcome: original! });
+    assert.equal(h.server.boundPredicates.length, 1, 'the original bound outcome is not rewritten or rebound');
+    assert.deepEqual(h.server.boundPredicates[0], original!);
+    assert.equal(h.server.baselines.length, 1);
+    assert.equal(h.engine.status().goal!.counters!.repairs, 1);
+    assert.equal(h.engine.status().goal!.counters!.tasksAdmitted, 5);
+  });
+
+  it('a replacement goal cannot acquire a foreign accepted outcome even when its task targets are freshly shown', async () => {
+    let original: OutcomePredicate;
+    const h = harness((r) => {
+      if (r.turnKind === 'repair') return { kind: 'reply', proposal: { version: 1, disposition: 'cannot_execute', interpretation: 'The proposed outcome is unavailable.', missing: 'Current grounded outcome required.' } };
+      const observation = r.observation!;
+      const target = { kind: 'observed', snapshotId: observation.id, handle: observation.blocks[0]!.handle } as const;
+      const current: OutcomePredicate = { predicate: 'blocks_removed', target, selector: 'minecraft:oak_log' };
+      original ??= current;
+      return { kind: 'reply', proposal: finitePlan([{ ...task('hold original', current), targetSelectors: [target] }], original, false) };
+    }, { lookahead: false });
+    h.tasks.behaviors.set('hold original', holdUntilRevoked);
+    const first = await h.engine.submit('Remove the original observed target.', OWNER);
+    await until(() => h.tasks.runs.length === 1);
+    await h.engine.stop();
+    const second = await h.engine.submit('Perform a different owner job.', OWNER);
+    assert.ok(first.status === 'admitted' && second.status === 'admitted');
+    assert.notEqual(second.goal.id, first.goal.id);
+    await until(() => h.engine.status().goal?.state === 'blocked');
+    assert.equal(h.tasks.runs.length, 1, 'no foreign-goal task acquired authority');
+    const rejection = h.store.ofType('planner_proposal_rejected').at(-1)!;
+    assert.equal(rejection['kind'], 'reference');
+    assert.match(String(rejection['problems']), /outcome.*snap-0001.*invented or expired/);
+    assert.equal(h.planner.requests[1]!.acceptedOutcome, undefined, 'original acceptance is not passed to the replacement');
+    assert.equal(h.server.boundPredicates.length, 1);
+  });
   it('reduces the measured planner wait between two finite windows and uses no extra planner turn', async () => {
     const off = twoWindows(false);
     await off.engine.submit('get four cobblestone', OWNER);
