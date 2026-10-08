@@ -1,5 +1,11 @@
 # Live gameplay fixes — questions, following, survival and continuation
 
+## Corrected R14 approved; native workers continue — 20:10 UTC
+
+ROOT fully reviewed the exact `spawn_mobs` correction `74ffcc1` and corrected role `33cf5de`, then imported the three R14 harness/test paths and reconciled the role into clean private `f5f4e9d`. Exact source bytes match the committed worker paths; the role preserves all three earlier coordinator intakes and adds this review receipt. Independent typecheck and all34 focused harness controls exit0; log hashes and all six worker follow-up check hashes are verified. The earlier wrong command-name draft and its checks remain historical, not runtime acceptance. Application/dist remain the reviewed348-file digest `64c7b43efd60a5d973a3332e5b92efd9ed4f46be3971338bb6aca265f1aff02f`; no app behavior changed in this import.
+
+All named fixture leases1–48 are released and no gameplay driver is active. Personal native DSH sessions retain exactly `gpt-6.1-sol/xhigh/danger-full-access/never`: P is implementing the separately recorded post-predicate fresh-observation seam with lifecycle/connection/completion controls, while S diagnoses the transient missing-stack refusal against the complete positive46 recovery result. W/L are clean and idle. ROOT will batch stable reviewed changes into frozen combined checks and both-release ordinary locator/water/mob acceptance; no live deployment or join is authorized. Accepted live `d348d58` remains frozen and logged out. Both task-started fixtures and bounded owned keepawake95263 remain available for acceptance, with final cleanup still required.
+
 ## Current R14 review gate and restored fixtures — 19:57 UTC
 
 48 settled direct0: exact262 current source passes all33 skill cases, both actualCLI0/10cleanup, independent14scene/absence and exact original eight stable rows/zero players. ReportSHA `6b942eff3d9f362b1a825b0ec73bd60fca958f3d6ba8e551d77298dc7536a7fc`;48released, no active lease or driver. Root inspected all actual kill commands: only declared positive original S-box tag/item/orb selectors and own Chunkbot. W readings changed from current horses to current rotten-flesh bodies; their cause/fate is not established or claimed, and no W actor was targeted by these scoped commands.
