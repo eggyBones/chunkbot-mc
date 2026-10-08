@@ -231,6 +231,7 @@ describe('passive pickup while walking to the death site (C10)', () => {
     assert.equal(r.outcome.status, 'succeeded', JSON.stringify(r.outcome));
     assert.equal(r.outcome.evidence?.['countedRegained'], 20);
     assert.ok(r.collected.has(900));
+    assert.deepEqual(h.service.incidentReturns(h.service.frozenInventory(1)!.incidentId)?.regained, { 'minecraft:cobblestone': 20 }, 'the recovery collector credits this return once');
     const i = incident(h);
     assert.equal(i?.regained.reduce((n, x) => n + x.count, 0), 20);
     assert.equal(i?.missing.find((m) => m.key === 'minecraft:cobblestone'), undefined, 'cobblestone fully regained');
@@ -268,6 +269,10 @@ describe('passive pickup while walking to the death site (C10)', () => {
     const i = incident(h);
     assert.equal(i?.regained.length, 0);
     assert.deepEqual(i?.incidental?.map((x) => [x.source, x.count]), [['unplanned_collect', 7]]);
+    assert.deepEqual(r.ledger, [], 'no unknown pickup enters resource effect credit');
+    const returned = h.service.incidentReturns(h.service.frozenInventory(1)!.incidentId);
+    assert.equal(returned?.attribution, 'unknown', 'an active recovery plan cannot hide an unplaceable own collect');
+    assert.deepEqual(returned?.regained, {});
     await h.service.close();
   });
 });
@@ -282,6 +287,8 @@ describe('non-item collects are never loot (trial 8e87ec3 finding T2)', () => {
     const i = incident(h);
     assert.deepEqual(i?.incidental ?? [], []);
     assert.equal(i?.regained.length, 0);
+    assert.deepEqual(r.ledger, [], 'orb collection supplies no item effect credit');
+    assert.equal(h.service.incidentReturns(h.service.frozenInventory(1)!.incidentId)?.attribution, 'server_attributed', 'a known non-item cannot taint item-return lineage');
     await h.service.close();
   });
 });
@@ -342,4 +349,3 @@ describe('status projection bound (C10 added fields)', () => {
     await h.service.close();
   });
 });
-

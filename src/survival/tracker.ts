@@ -66,6 +66,8 @@ export type TrackerEvent =
    * which are never part of the respawn inventory).
    */
   | { type: 'respawn_ready'; connectionEpoch: number; inventory: InventoryFacts; current: InventoryFacts; packetsAfterSync: number; vitals: Vitals | null }
+  /** First full respawn inventory, for read-only loss accounting before positive health permits any action. */
+  | { type: 'respawn_inventory'; incidentId: string; inventory: InventoryFacts }
   | { type: 'inventory_changed' }
   /**
    * C12: the server says THIS bot collected an ITEM entity (other collectors and
@@ -74,6 +76,8 @@ export type TrackerEvent =
    * is the position where the server first announced the entity to this client.
    */
   | { type: 'own_item_collect'; connectionEpoch: number; entityId: number; count: number; facts: DropStackFacts | undefined; firstSeenAt: { x: number; y: number; z: number } | undefined; atMs: number }
+  /** Own collect of an entity never announced on this connection. Its kind, stack and position are unknown. */
+  | { type: 'own_unknown_collect'; connectionEpoch: number; entityId: number; count: number; facts: undefined; firstSeenAt: undefined; atMs: number }
   | { type: 'vitals_changed'; vitals: Vitals };
 
 interface RawGlobalPos {
@@ -99,6 +103,7 @@ export class SurvivalTracker {
   private fullSync = false;
   private heldHotbar: number | undefined;
   private vitalsValue: Vitals | null = null;
+  private serverHealthSeen = false;
   private selfId: number | undefined;
   private state: LifeState = 'alive';
   /** Frozen last-alive copy while dying (before the death record is finalized). */
@@ -138,7 +143,7 @@ export class SurvivalTracker {
   }
 
   get connectionEpoch(): number | undefined {
-    return this.opts?.connectionEpoch;
+    return this.source ? this.opts?.connectionEpoch : undefined;
   }
 
   get life(): LifeState {
@@ -154,6 +159,7 @@ export class SurvivalTracker {
     this.invSource = 'unavailable';
     this.fullSync = false;
     this.vitalsValue = null;
+    this.serverHealthSeen = false;
     this.selfId = undefined;
     this.state = 'alive';
     this.frozen = undefined;
@@ -196,11 +202,16 @@ export class SurvivalTracker {
     on('collect', (p: { collectedEntityId: number; collectorEntityId: number; pickupItemCount?: number }) => {
       const self = this.self();
       if (!this.opts || self === undefined || p.collectorEntityId !== self) return;
-      this.collectedKinds.set(p.collectedEntityId, this.itemEntities.has(p.collectedEntityId) ? 'item' : this.nonItemEntities.has(p.collectedEntityId) ? 'non_item' : 'unknown');
+      const kind = this.itemEntities.has(p.collectedEntityId) ? 'item' : this.nonItemEntities.has(p.collectedEntityId) ? 'non_item' : 'unknown';
+      this.collectedKinds.set(p.collectedEntityId, kind);
       if (this.collectedKinds.size > 256) this.collectedKinds.delete(this.collectedKinds.keys().next().value as number);
-      if (!this.itemEntities.has(p.collectedEntityId)) return;
+      if (kind === 'non_item') return;
       const count = Number(p.pickupItemCount);
       if (!Number.isInteger(count) || count <= 0) return;
+      if (kind === 'unknown') {
+        this.emit({ type: 'own_unknown_collect', connectionEpoch: this.opts.connectionEpoch, entityId: p.collectedEntityId, count, facts: undefined, firstSeenAt: undefined, atMs: this.now() });
+        return;
+      }
       const facts = this.drops.get(p.collectedEntityId);
       const at = this.firstSeen.get(p.collectedEntityId);
       this.emit({ type: 'own_item_collect', connectionEpoch: this.opts.connectionEpoch, entityId: p.collectedEntityId, count, facts: facts ? { ...facts, meta: { ...facts.meta } } : undefined, firstSeenAt: at ? { ...at } : undefined, atMs: this.now() });
@@ -306,6 +317,7 @@ export class SurvivalTracker {
       if (this.state === 'respawned_awaiting_sync' && this.respawnSeen && !this.respawnSync && this.opts) {
         // The authoritative respawn inventory: frozen at the first full sync after the respawn packet.
         this.respawnSync = { inv: { source: 'server_packets', connectionEpoch: this.opts.connectionEpoch, atMs: this.invAtMs, stacks: clone(this.slots), fullSync: true, ...(this.heldHotbar !== undefined ? { heldHotbar: this.heldHotbar } : {}) }, packetsAfter: 0 };
+        if (this.latestDeath) this.emit({ type: 'respawn_inventory', incidentId: this.latestDeath.captureId, inventory: this.respawnSync.inv });
       } else if (this.respawnSync) this.respawnSync.packetsAfter += 1;
       this.emit({ type: 'inventory_changed' });
       this.maybeRespawnReady();
@@ -353,10 +365,16 @@ export class SurvivalTracker {
     return this.vitalsValue ? { ...this.vitalsValue } : null;
   }
 
+  /** Current attached connection's server health packet (a ready-time library seed is insufficient). */
+  serverVitals(): Vitals | null {
+    return this.source && this.serverHealthSeen ? this.vitals() : null;
+  }
+
   // ------------------------------------------------------------ vitals / death
 
   private onHealth(p: { health: number; food: number; foodSaturation: number }): void {
     if (!this.opts) return;
+    this.serverHealthSeen = true;
     this.vitalsValue = {
       health: Math.max(0, Math.min(1_024, Number(p.health) || 0)),
       food: Math.max(0, Math.min(20, Math.round(Number(p.food) || 0))),
@@ -476,6 +494,7 @@ export class SurvivalTracker {
       this.emit({ type: 'death_location_refined', captureId: death.captureId, site: { ...death.site } });
     }
     this.state = 'respawned_awaiting_sync';
+    this.serverHealthSeen = false;
     this.respawnSeen = true;
     this.respawnSync = undefined;
     this.fullSync = false;
@@ -483,7 +502,7 @@ export class SurvivalTracker {
 
   private maybeRespawnReady(): void {
     if (this.state !== 'respawned_awaiting_sync' || !this.respawnSeen || !this.fullSync || !this.opts) return;
-    if (!this.vitalsValue || this.vitalsValue.health <= 0) return;
+    if (!this.serverHealthSeen || !this.vitalsValue || this.vitalsValue.health <= 0) return;
     this.state = 'alive';
     const inv = this.inventory();
     const sync = this.respawnSync;

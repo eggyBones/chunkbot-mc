@@ -382,7 +382,13 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (!this.cfg) return;
     const now = this.options.now();
     if (e.type === 'death_captured') return this.onDeath(e.death, now);
-    if (e.type === 'own_item_collect') return this.onOwnItemCollect(e);
+    if (e.type === 'own_item_collect' || e.type === 'own_unknown_collect') return this.onOwnCollect(e);
+    if (e.type === 'respawn_inventory') {
+      // Count lineage starts at the FIRST sync, including collects before positive health. This grants no
+      // recovery/action readiness: the episode and continuation gates still await respawn_ready.
+      this.incidents.assess(e.incidentId, e.inventory, Math.max(this.cfg.recovery.searchRadius, this.cfg.recovery.sameHazardRadius));
+      return;
+    }
     if (e.type === 'death_location_refined') {
       this.incidents.refineSite(e.captureId, e.site);
       const c = this.captures.get(e.captureId);
@@ -1049,12 +1055,13 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
 
   // ------------------------------------------------------------ C12 ContinuationSurvivalPort (approved, P 4409ba1)
 
-  /** Own item collected OUTSIDE the recovery plan: a return only with exact server evidence, else the incident becomes unknown. */
-  private onOwnItemCollect(e: Extract<TrackerEvent, { type: 'own_item_collect' }>): void {
+  /** Exact own item returns outside recovery; unplaceable own collects taint lineage through every collector path. */
+  private onOwnCollect(e: Extract<TrackerEvent, { type: 'own_item_collect' | 'own_unknown_collect' }>): void {
     const cfg = this.cfg;
     if (!cfg) return;
-    // While the bound recovery goal runs, its frozen C3 plan counts planned pickups (recordRegain) and reports the rest as incidental.
-    if (this.active?.routine === 'death_recovery' && this.active.connectionEpoch === e.connectionEpoch) return;
+    // The frozen C3 plan credits stated recovery pickups once via recordRegain. An unknown collect cannot be in
+    // that plan: keep its ambiguity even while recovery runs, independently of incidental effect reporting.
+    if (e.facts && this.active?.routine === 'death_recovery' && this.active.connectionEpoch === e.connectionEpoch) return;
     const r = this.incidents.ownCollect({ connectionEpoch: e.connectionEpoch, count: e.count, facts: e.facts, firstSeenAt: e.firstSeenAt }, this.dimensionValue, cfg.recovery.searchRadius);
     if (r.attributed) this.record({ type: 'survival_incident_return', incidentId: r.attributed.incidentId, key: r.attributed.key, count: r.attributed.count, collector: 'outside_recovery' });
     if (r.ambiguous?.length) this.record({ type: 'survival_incident_attribution_unknown', incidents: r.ambiguous, entityId: e.entityId, key: e.facts?.key ?? null, count: e.count });
@@ -1082,9 +1089,13 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (!cfg) return { kind: 'clear' };
     if (this.tracker.connectionEpoch === undefined) return { kind: 'wait', reason: 'not_alive', detail: 'no connection is attached to survival yet (no fresh server state)' };
     if (this.tracker.life !== 'alive') return { kind: 'wait', reason: 'not_alive', detail: `awaiting fresh respawn state (${this.tracker.life})` };
+    const inv = this.tracker.inventory();
+    const v = this.tracker.serverVitals();
+    if (!inv || inv.source !== 'server_packets' || !inv.fullSync || inv.connectionEpoch !== this.tracker.connectionEpoch || !v || v.connectionEpoch !== this.tracker.connectionEpoch || v.health <= 0) {
+      return { kind: 'wait', reason: 'not_alive', detail: 'awaiting a full server inventory sync and positive server health on the attached connection' };
+    }
     if (this.active) return { kind: 'wait', reason: this.active.routine === 'death_recovery' ? 'recovery_open' : 'support_running', detail: `${this.active.routine} support goal ${this.active.goalId} is running` };
-    const v = this.tracker.vitals();
-    if (v && v.connectionEpoch === this.tracker.connectionEpoch && v.health > 0 && v.health <= this.options.limits.lowHealth) return { kind: 'wait', reason: 'support_running', detail: `health ${v.health} is at or below ${this.options.limits.lowHealth}: necessary eat/rest first` };
+    if (v.health <= this.options.limits.lowHealth) return { kind: 'wait', reason: 'support_running', detail: `health ${v.health} is at or below ${this.options.limits.lowHealth}: necessary eat/rest first` };
     const e = this.book?.open();
     if (e && isOpen(e)) {
       const b = this.blocks.get('death_recovery');

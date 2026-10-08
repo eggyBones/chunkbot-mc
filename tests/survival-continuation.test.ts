@@ -16,7 +16,8 @@ import { after, describe, it } from 'node:test';
 import type { ContinuationCheckpoint } from '../src/contracts/continuation.ts';
 import type { SurvivalProposal } from '../src/contracts/survival.ts';
 import { survivalScopeDirectory } from '../src/survival/store.ts';
-import { NETHER, OW, SESSION_OW, assessInput, cleanupRoots, dieWithItems, harness, settle, slot, snapshot, type Harness, type Slot } from './survival-helpers.ts';
+import { continuationPort } from '../src/survival/wiring.ts';
+import { NETHER, OW, Packets, SESSION_OW, assessInput, cleanupRoots, dieWithItems, harness, settle, slot, snapshot, type Harness, type Slot } from './survival-helpers.ts';
 
 after(cleanupRoots);
 
@@ -128,6 +129,76 @@ describe('ContinuationSurvivalPort: incidentReturns', () => {
     assert.deepEqual(returns(unstated, idU)?.regained, {});
   });
 
+  it('S-C12-R3: actual own collect packets preserve exact returns, hold unknown entities, and ignore known non-items, with or without memory', async () => {
+    for (const scoped of [false, true]) {
+      for (const mode of ['own_item', 'unknown_entity', 'unstated_item', 'non_item'] as const) {
+        const h = harness({ scoped });
+        const id = dieAndRespawn(h, { 36: slot('bread', 4) });
+        const port = continuationPort(h.service)!;
+        const empty = { incidentId: id, connectionEpoch: 1, regained: {}, retained: {}, attribution: 'server_attributed' };
+        assert.deepEqual(port.incidentReturns(id), empty);
+        if (mode === 'own_item') h.packets.spawnItem(740, slot('bread', 4), NEAR);
+        if (mode === 'unstated_item') h.packets.spawnItemWithoutStack(740, NEAR);
+        if (mode === 'non_item') h.packets.spawnOther(740, NEAR);
+        h.packets.collect(740, 4);
+        h.packets.destroy(740);
+        // A later full inventory sync is current possession, never proof of where a collect came from.
+        h.packets.inventory({ 36: slot('bread', 4) });
+        const unknown = mode === 'unknown_entity' || mode === 'unstated_item';
+        assert.deepEqual(port.incidentReturns(id), {
+          ...empty,
+          regained: mode === 'own_item' ? { 'minecraft:bread': 4 } : {},
+          attribution: unknown ? 'unknown' : 'server_attributed',
+        }, `${mode}, scoped=${scoped}`);
+        assert.deepEqual(port.frozenInventory(1)?.counts, { 'minecraft:bread': 4 }, 'original loss evidence is unchanged');
+        assert.equal(h.events.filter((e) => e['type'] === 'survival_incident_attribution_unknown').length, unknown ? 1 : 0);
+        assert.equal(h.events.filter((e) => e['type'] === 'survival_incident_return').length, mode === 'own_item' ? 1 : 0);
+        await h.service.close();
+      }
+    }
+  });
+
+  it('S-C12-R3: an unknown own collect preserves verified partial returns; another collector cannot taint the incident', async () => {
+    const h = harness({ scoped: false });
+    const id = dieAndRespawn(h, { 36: slot('bread', 4) });
+    h.packets.collect(750, 3, 99);
+    assert.equal(returns(h, id)?.attribution, 'server_attributed');
+    h.packets.spawnItem(751, slot('bread', 1), NEAR);
+    h.packets.collect(751, 1);
+    assert.deepEqual(returns(h, id)?.regained, { 'minecraft:bread': 1 });
+    h.packets.collect(752, 3);
+    assert.deepEqual(returns(h, id), { incidentId: id, connectionEpoch: 1, regained: { 'minecraft:bread': 1 }, retained: {}, attribution: 'unknown' });
+    await h.service.close();
+  });
+
+  it('C12: a collect after the first respawn sync but before positive health cannot escape return attribution', async () => {
+    for (const mode of ['own_item', 'unknown_entity', 'unstated_item', 'non_item'] as const) {
+      const h = harness({ scoped: false });
+      const kit = { 36: slot('bread', 4) };
+      h.packets.inventory(kit);
+      h.packets.health(20, 20);
+      dieWithItems(h, kit);
+      const id = h.service.frozenInventory(1)!.incidentId;
+      h.packets.respawn({ dimensionName: OW, location: SITE_BLOCK });
+      h.service.onLifecycle({ type: 'respawn', connectionEpoch: 1, dimension: SESSION_OW });
+      h.packets.inventory({});
+      if (mode === 'own_item') h.packets.spawnItem(760, slot('bread', 4), NEAR);
+      if (mode === 'unstated_item') h.packets.spawnItemWithoutStack(760, NEAR);
+      if (mode === 'non_item') h.packets.spawnOther(760, NEAR);
+      h.packets.collect(760, 4);
+      h.packets.inventory(kit);
+      assert.equal(h.service.continuationGate(h.clock.now()).kind, 'wait', 'accounting is read-only; fresh positive health still gates continuation');
+      h.packets.health(20, 20);
+      assert.deepEqual(returns(h, id), {
+        incidentId: id, connectionEpoch: 1,
+        retained: {},
+        regained: mode === 'own_item' ? { 'minecraft:bread': 4 } : {},
+        attribution: mode === 'unknown_entity' || mode === 'unstated_item' ? 'unknown' : 'server_attributed',
+      }, mode);
+      await h.service.close();
+    }
+  });
+
   it('never a return: C10 incidental gains (respawn-point pickups), items outside the site radius, other connections, other collectors, orbs', () => {
     const h = harness({ pid: 9015 });
     h.packets.inventory(KIT);
@@ -180,6 +251,48 @@ describe('ContinuationSurvivalPort: incidentReturns', () => {
 });
 
 describe('ContinuationSurvivalPort: continuationGate (necessary recovery/support first, finite)', () => {
+  it('C12: initial attachment, ended connection and replacement seed cannot clear the gate without current server state', async () => {
+    const h = harness({ scoped: false });
+    const port = continuationPort(h.service)!;
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'attachment alone is not readiness');
+    h.packets.health(20, 20);
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'health alone is not a full inventory sync');
+    h.packets.inventory({});
+    assert.deepEqual(port.continuationGate(h.clock.now()), { kind: 'clear' });
+    h.service.onLifecycle({ type: 'ended', connectionEpoch: 1, reason: 'operator_stop', detail: 'test logout' });
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'detached old state is historical');
+    h.packets.inventory({});
+    h.packets.health(20, 20);
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'the old source has no listeners');
+    const current = new Packets();
+    h.service.attachConnection(current.client, {
+      connectionEpoch: 2, selfPosition: () => h.pos,
+      seed: { stacks: [], vitals: { health: 20, food: 20, saturation: 5 } },
+    });
+    current.login();
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'library seed cannot replace current server synchronization');
+    current.inventory({});
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'seeded health is not the replacement connection\'s health packet');
+    current.health(20, 20);
+    assert.deepEqual(port.continuationGate(h.clock.now()), { kind: 'clear' });
+    await h.service.close();
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'closing the service detaches readiness');
+  });
+
+  it('C12: a lifecycle death without a zero-health packet still requires health after respawn', async () => {
+    const h = harness({ scoped: false });
+    h.packets.inventory({});
+    h.packets.health(20, 20);
+    h.service.onLifecycle({ type: 'death', connectionEpoch: 1 });
+    h.packets.respawn({ dimensionName: OW, location: SITE_BLOCK });
+    h.service.onLifecycle({ type: 'respawn', connectionEpoch: 1, dimension: SESSION_OW });
+    h.packets.inventory({});
+    assert.equal((h.service.continuationGate(h.clock.now()) as { reason?: string }).reason, 'not_alive', 'last-alive health cannot serve as post-respawn health');
+    h.packets.health(20, 20);
+    assert.deepEqual(h.service.continuationGate(h.clock.now()), { kind: 'clear' });
+    await h.service.close();
+  });
+
   it('not alive -> wait; open recovery -> wait; running support -> wait; low health -> wait; none -> clear', async () => {
     const h = harness({ pid: 9020 });
     h.packets.health(20, 20);
