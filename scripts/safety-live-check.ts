@@ -80,7 +80,7 @@ import { safetySkills } from '../src/skills/safety.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { trialRcon } from '../src/safety/trial-rcon.ts';
 import { serverWaterSupport, type TrialWaterBlock } from '../src/safety/trial-water.ts';
-import { arenaShellPlan, insideTrialBox, mobArenaPlan, mobStageRefusals, MOB_TRIAL_ORIGIN, parseTrialUuid, refuseForeignOccupants, serverUnprovokedWolf, verifyArena, type MobTrialGate, type TrialSummon } from '../src/safety/trial-arena.ts';
+import { guardMutationVolume, insideMutationBox, mobArenaPlan, mobStageRefusals, MOB_TRIAL_ORIGIN, parseTrialUuid, SAFETY_MUTATION_BOX, serverUnprovokedWolf, trialEntitySelector, verifyArena, waterArenaPlan, type MobTrialGate, type TrialSummon } from '../src/safety/trial-arena.ts';
 import { planSafety } from '../src/safety/policy.ts';
 import { eyeOf, sessionWorld } from '../src/perception/perception.ts';
 import { isEntityVisible } from '../src/perception/visibility.ts';
@@ -100,15 +100,16 @@ const BACKUP_Y = { y1: 200, y2: 213 };
 const SCENE_BOX = `${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} ${AREA.x2} ${SCENE_Y.y2} ${AREA.z2}`;
 const BACKUP_BOX = `${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2}`;
 /** Entity selector volume == the declared owned scene. */
-const ENTITY_AREA = `x=${AREA.x1},y=${SCENE_Y.y1},z=${AREA.z1},dx=${AREA.x2 - AREA.x1},dy=${SCENE_Y.y2 - SCENE_Y.y1},dz=${AREA.z2 - AREA.z1}`;
+// Full original cleanup/readback boundary, independent of narrower staging.
+const ENTITY_AREA = trialEntitySelector([AREA.x1, SCENE_Y.y1, AREA.z1, AREA.x2, SCENE_Y.y2, AREA.z2]);
 /** Unique per-run tag for every summoned mob. */
 const MOB_TAG = `cbsafe_${Date.now().toString(36)}_${process.pid.toString(36)}`;
 /** Raised dirt platform (feet level -56) with a 7x7, 4-deep pool. */
-const PLATFORM = { y1: -60, y2: -57 };
 const POOL = { x1: 252, z1: 202, x2: 258, z2: 208 };
 const POOL_FLOOR = { x: 255.5, y: -60, z: 205.5 };
 const POOL_SURFACE = { x: 255.5, y: -57.6, z: 205.5 };
-const ARENA = { x: 264.5, y: -56, z: 195.5 };
+const ARENA = { x: 264.5, y: -56, z: 195.5 }; // original restoration teleport
+const WATER_RESCUE = { x: 264.5, y: -56, z: 199.5 }; // dry bank inside staging
 const DIFF_REPLY = /difficulty is (\w+)/i;
 
 /** True when the shared SkillOutcome contract accepts a `safety` owner (P's executor variant integrated). */
@@ -468,15 +469,9 @@ class Gate {
   }
 
   async noForeignOccupants(): Promise<void> {
-    // Includes unknown entities/clouds/other players, excluding ONLY the
-    // fixture bot, this run's summons and the declared item/xp removal box.
-    const reply = await this.rcon(`execute if entity @e[tag=!${MOB_TAG},type=!player,type=!item,type=!experience_orb,${ENTITY_AREA}]`, false);
-    const occupied = parseEntityTest(reply);
-    this.staging.push({ gate: this.phase, atMs: Date.now(), foreignOccupantsReply: reply, occupied: occupied ?? 'unknown' });
-    refuseForeignOccupants(reply);
-    const players = await this.rcon(`execute if entity @a[name=!${BOT},${ENTITY_AREA}]`, false);
-    this.staging.push({ gate: this.phase, atMs: Date.now(), foreignPlayersReply: players });
-    refuseForeignOccupants(players);
+    await guardMutationVolume((command) => this.rcon(command, false), MOB_TAG, BOT, (kind, command, reply) => {
+      this.staging.push({ gate: this.phase, atMs: Date.now(), kind, command, mutation: SAFETY_MUTATION_BOX, reply, occupied: parseEntityTest(reply) ?? 'unknown' });
+    });
   }
 
   async verifyMobArena(): Promise<void> {
@@ -484,30 +479,21 @@ class Gate {
     this.staging.push({ gate: this.phase, atMs: Date.now(), arenaVerified: true, comparisons, plan: mobArenaPlan() });
   }
 
-  /** Scene inside the owned footprint: water unchanged; mob gates replace
+  /** Staging inside the smaller mutation box: water unchanged; mob gates replace
    * the pool with a sealed luminous dry floor. Restaged/verified every gate,
    * including after a creeper can damage walls. Never kills natural mobs. */
   async scene(opts: { lid?: boolean; mobs?: boolean } = {}): Promise<void> {
     check(this.basis === 'none' && !this.leases.current, 'scene staging requires stopped ownership/controls');
     await this.noForeignOccupants(); // BEFORE removal, fill or heal
+    const plan = opts.mobs ? mobArenaPlan() : waterArenaPlan(opts.lid);
     for (const c of [
       `kill @e[tag=${MOB_TAG},${ENTITY_AREA}]`,
       `kill @e[type=item,${ENTITY_AREA}]`,
       `kill @e[type=experience_orb,${ENTITY_AREA}]`,
-      ...(opts.mobs ? mobArenaPlan().map((f) => {
-        check(insideTrialBox(f.box), 'mob fill outside original clone');
+      ...plan.map((f) => {
+        check(insideMutationBox(f.box), 'fill outside smaller staging mutation boundary');
         return `fill ${f.box.join(' ')} minecraft:${f.block}`;
-      }) : [
-        `fill ${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} ${AREA.x2} ${SCENE_Y.y1} ${AREA.z2} dirt`,
-        `fill ${AREA.x1} ${PLATFORM.y1} ${AREA.z1} ${AREA.x2} ${SCENE_Y.y2} ${AREA.z2} air`,
-        `fill ${AREA.x1} ${PLATFORM.y1} ${AREA.z1} ${AREA.x2} ${PLATFORM.y2} ${AREA.z2} dirt`,
-        `fill ${POOL.x1} ${PLATFORM.y1} ${POOL.z1} ${POOL.x2} ${PLATFORM.y2} ${POOL.z2} water`,
-        ...(opts.lid ? [`fill ${POOL.x1} ${PLATFORM.y2} ${POOL.z1} ${POOL.x2} ${PLATFORM.y2} ${POOL.z2} stone`] : []),
-        ...arenaShellPlan().map((f) => {
-          check(insideTrialBox(f.box), 'water shell fill outside original clone');
-          return `fill ${f.box.join(' ')} minecraft:${f.block}`;
-        }),
-      ]),
+      }),
       `clear ${BOT}`,
       `effect clear ${BOT}`,
       `effect give ${BOT} minecraft:instant_health 1 4 true`,
@@ -516,7 +502,7 @@ class Gate {
       await this.rcon(c);
     this.summons.clear();
     if (opts.mobs) await this.verifyMobArena();
-    else this.staging.push({ gate: this.phase, atMs: Date.now(), waterShellVerified: true, comparisons: await verifyArena((c) => this.rcon(c, false), arenaShellPlan()) });
+    else this.staging.push({ gate: this.phase, atMs: Date.now(), waterArenaVerified: true, comparisons: await verifyArena((c) => this.rcon(c, false), plan), plan });
     await this.noForeignOccupants();
     await sleep(800);
   }
@@ -770,7 +756,7 @@ async function run(outDir: string): Promise<Json> {
     const backupNonAir = await g.nonAirBlocks(BACKUP_BOX);
     check(backupNonAir === 0, `backup volume ${BACKUP_BOX} is not verified empty (${backupNonAir ?? 'unknown'} non-air blocks); refusing to change the scene`);
     backupPlanned = true;
-    journal.remember({ backupPlanned, scene: SCENE_BOX, backup: BACKUP_BOX });
+    journal.remember({ backupPlanned, scene: SCENE_BOX, backup: BACKUP_BOX, stagingMutation: SAFETY_MUTATION_BOX });
     const backupReply = await g.rcon(`clone ${SCENE_BOX} ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1}`);
     check(/cloned/i.test(backupReply) || /no blocks/i.test(backupReply), `scene backup failed: ${backupReply.slice(0, 120)}`);
     check(/passed/i.test(await g.rcon(`execute if blocks ${SCENE_BOX} ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} all`, false)), 'scene backup not verified byte-for-block; refusing scene mutation');
@@ -871,7 +857,7 @@ async function run(outDir: string): Promise<Json> {
       check(!g.leases.current, 'no lease held (no blind jump)');
       g.stop();
       ev.push('INTERVENTION (no credit): teleport rescue out of the lidded pool after the observation; never autonomous success');
-      await g.rcon(`tp ${BOT} ${ARENA.x} ${ARENA.y} ${ARENA.z} 0 0`);
+      await g.rcon(`tp ${BOT} ${WATER_RESCUE.x} ${WATER_RESCUE.y} ${WATER_RESCUE.z} 0 0`);
     });
 
     // ---------------------------------------------------------------- mobs
@@ -1048,7 +1034,7 @@ function buildReport(g: Gate, st: ReportState, extra: Json = {}): Json {
     damagePackets: g.damagePackets,
     fixture: PINS.profile,
     source,
-    footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, mobTag: MOB_TAG, addedForceload, difficulty },
+    footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, stagingMutation: SAFETY_MUTATION_BOX.join(' '), occupantSelector: trialEntitySelector(SAFETY_MUTATION_BOX), mobTag: MOB_TAG, addedForceload, difficulty },
     restoration: restoreChecks,
     pass: counted.length > 0 && counted.every((r) => r.status === 'pass'),
     results,
