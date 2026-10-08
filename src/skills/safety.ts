@@ -27,7 +27,7 @@ import type { Actuator } from '../execution/actuator.ts';
 import { ENTITY_REACH, eyeOf } from '../perception/perception.ts';
 import { entityVisibleNow } from '../safety/adapter.ts';
 import { dispositionOf, weaponFacts } from '../safety/dispositions.ts';
-import { deepWaterStepCost, findFluidExits, findOpenColumn, findRetreatTargets, fluidState, type SafetyBlockReader } from '../safety/geometry.ts';
+import { deepWaterStepCost, findFluidExits, findOpenColumn, findRetreatTargets, fluidState, hasSafeFluidSupport, type SafetyBlockReader } from '../safety/geometry.ts';
 import { defenseReadiness, fluidHazards, threatHazards } from '../safety/policy.ts';
 import type { SafetyService } from '../safety/service.ts';
 import { liveEntity, pos3 } from './common.ts';
@@ -154,8 +154,8 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
       purpose: 'Get out of deep water or lava: surface (held jump with open water above; toward a nearby open column under a ceiling), then swim to a visible dry exit.',
       parameters: [{ name: 'maxMs', type: 'integer', description: 'time bound in ms', required: false, minimum: 1_000, maximum: 30_000 }],
       targets: ['none'],
-      preconditions: ['the bot is in water/lava at swimming depth or submerged (local estimate)'],
-      effects: ['the bot surfaces and moves to a dry standable cell'],
+      preconditions: ['the bot is submerged, swimming, or briefly body-clear over a deep fluid column (local estimate)'],
+      effects: ['the bot settles on dry ground or genuine shallow solid-supported wading after controls release'],
       supportedPredicates: [],
       timeoutMs: 32_000,
       cancellation: 'stop/lifecycle clears jump/forward controls immediately through the actuator lease',
@@ -184,9 +184,10 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
       let target: { x: number; y: number; z: number; kind: 'column' | 'exit' } | undefined;
       let lastProgress = { at: clock.now(), d: Infinity };
       let surfaced = false;
+      let settledAt: number | undefined;
       const finish = (r: SkillResult): SkillResult => ({
         ...r,
-        evidence: { ...(r.evidence ?? {}), airBefore, airAfter: airEvidence(service), fluidBefore: startFluid ? { eyeIn: startFluid.eyeIn, feetIn: startFluid.feetIn, headroom: startFluid.headroom, source: 'local_estimate' } : null, position: pos3(bot.entity.position), displacement: Math.round(hyp(bot.entity.position, b.origin) * 10) / 10, serverCorrections: session.evidence.since(startSeq, 'position_correction').length },
+        evidence: { ...(r.evidence ?? {}), airBefore, airAfter: airEvidence(service), fluidBefore: startFluid ? { eyeIn: startFluid.eyeIn, feetIn: startFluid.feetIn, columnFluid: startFluid.columnFluid ?? null, support: startFluid.support, depth: startFluid.depth, wadeable: startFluid.wadeable, headroom: startFluid.headroom, onGround: startFluid.onGround, source: 'local_estimate' } : null, position: pos3(bot.entity.position), displacement: Math.round(hyp(bot.entity.position, b.origin) * 10) / 10, serverCorrections: session.evidence.since(startSeq, 'position_correction').length },
       });
       try {
         while (true) {
@@ -200,11 +201,23 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
           const eyeHeight = (bot.entity as { eyeHeight?: number }).eyeHeight ?? 1.62;
           const fs = fluidState(world, { x: p.x, y: p.y, z: p.z }, eyeHeight);
           if (fs.eyeIn === 'none' && !surfaced && startFluid?.eyeIn !== 'none') surfaced = true;
-          const deep = fs.feetIn !== 'none' && (fs.feetIn === 'lava' || fs.wadeable !== true);
-          if (fs.eyeIn === 'none' && !deep) {
-            return finish({ status: 'succeeded', effect: `out of deep fluid (local estimate)${surfaced ? ' after surfacing' : ''}; feet ${fs.feetIn}`, confirmation: 'client_only' });
+          if (fs.columnFluid === 'unknown') return finish(failed('support_unknown', 'cannot verify below-body support; unknown is not a dry exit'));
+          const supported = hasSafeFluidSupport({ ...fs, onGround: Boolean(bot.entity.onGround) });
+          const canSettle = fs.eyeIn === 'none' && (fs.columnFluid === 'none' || (fs.columnFluid === 'water' && fs.wadeable === true));
+          if (canSettle) {
+            // Landfall releases steering/jump before verifying stable ground.
+            // A surface bob never enters this branch. Settlement spends the
+            // SAME grant's deadline, displacement and action allowance.
+            releaseControls(act);
+            settledAt = supported ? settledAt ?? clock.now() : undefined;
+            if (settledAt !== undefined && clock.now() - settledAt >= 1_000) {
+              return finish({ status: 'succeeded', effect: `settled on ${fs.columnFluid === 'water' ? 'shallow wading' : 'dry'} solid support for 1000ms after control release (local estimate)`, confirmation: 'client_only', evidence: { fluidAfter: { ...fs, onGround: true }, settledMs: clock.now() - settledAt } });
+            }
+            await act.sleep(100);
+            continue;
           }
-          const fluid = fs.eyeIn !== 'none' ? fs.eyeIn : fs.feetIn === 'none' ? 'water' : fs.feetIn;
+          settledAt = undefined;
+          const fluid = fs.eyeIn !== 'none' ? fs.eyeIn : fs.columnFluid === 'lava' ? 'lava' : 'water';
           if (fs.eyeIn !== 'none' && fs.headroom === 'ceiling') {
             // Never jump blindly under a solid ceiling: steer to an observed open column.
             const col = target?.kind === 'column' ? target : (() => {
@@ -229,6 +242,8 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
             }
           }
           // Controls: jump while in fluid; forward toward a target if any.
+          const head = world.blockAt(Math.floor(p.x), Math.floor(p.y + eyeHeight + 0.4), Math.floor(p.z));
+          if (!head || head.name === 'unconfirmed_prediction') return finish(failed('headroom_unknown', 'cannot verify jump clearance; no blind upward control'));
           if (target) {
             await act.look(yawTo(p, target), 0);
             act.setControl('forward', true);
@@ -236,7 +251,7 @@ export function safetySkills(service: SafetyService | undefined): AnySkill[] {
             act.setControl('forward', false);
           }
           act.setControl('sprint', false);
-          act.setControl('jump', fs.headroom !== 'ceiling');
+          act.setControl('jump', fs.headroom !== 'ceiling' && head.shapes.length === 0);
           await act.sleep(100);
           if (target) {
             const d = hyp(bot.entity.position, target);
