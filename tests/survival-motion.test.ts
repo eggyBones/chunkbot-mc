@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { after, it } from 'node:test';
-import { systemClock } from '../src/contracts/index.ts';
+import { systemClock, type JsonValue } from '../src/contracts/index.ts';
 import type { SurvivalProposal } from '../src/contracts/survival.ts';
 import { clearSharedControls, SkillExecutorImpl } from '../src/execution/executor.ts';
 import { EvidenceLedger } from '../src/execution/ledger.ts';
@@ -18,9 +18,9 @@ import { precondition, type AnySkill } from '../src/skills/definition.ts';
 import { ID, OW, SESSION_OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, settle, slot, snapshot, type Slot } from './survival-helpers.ts';
 
 after(cleanupRoots);
-type Scenario = 'own' | 'resync_foreign' | 'moving_foreign' | 'late_foreign' | 'unknown' | 'orb' | 'merge' | 'cancel' | 'moving_own' | 'wrong_identity' | 'reuse' | 'identity_count' | 'identity_neighbors' | 'foreign_recedes' | 'reuse_gap' | 'reuse_gap_collect' | 'collected_destroyed';
+type Scenario = 'own' | 'resync_foreign' | 'moving_foreign' | 'late_foreign' | 'unknown' | 'orb' | 'merge' | 'cancel' | 'moving_own' | 'wrong_identity' | 'reuse' | 'identity_count' | 'identity_neighbors' | 'foreign_recedes' | 'reuse_gap' | 'reuse_gap_collect' | 'collected_destroyed' | 'unstated_drop' | 'missing_origin' | 'foreign_origin' | 'unsought' | 'reuse_stated' | 'merge_stated' | 'veto_cancel';
 
-async function run(scenario: Scenario, route = false) {
+async function run(scenario: Scenario, route: boolean | 'site' = false) {
   const h = harness();
   const splitIdentity = scenario === 'identity_count' || scenario === 'identity_neighbors';
   const kit = { 37: slot('bread', 4), ...(splitIdentity ? { 38: slot('bread', 4, [{ type: 'custom_name', data: 'own named bread' }]) } : {}) };
@@ -51,10 +51,20 @@ async function run(scenario: Scenario, route = false) {
   h.packets.spawnItem(25, slot('bread', scenario === 'identity_count' ? 8 : 4, scenario === 'wrong_identity' ? [{ type: 'custom_name', data: 'foreign bread' }] : []), own.position);
   const foreign = fake.addEntity({ id: 68, name: 'item', type: 'other', height: 0.25, at: { x: 34.5, y: 64, z: 10.5 } });
   if (scenario === 'resync_foreign' || scenario === 'moving_foreign' || scenario === 'late_foreign') h.packets.spawnItem(68, slot('bread', 64), foreign.position);
-  else if (scenario === 'foreign_recedes') { foreign.position = vec3(30.5, 64, 11.5); h.packets.spawnItem(68, slot('bread', 64), foreign.position); }
+  else if (scenario === 'foreign_recedes' || scenario === 'veto_cancel') { foreign.position = vec3(30.5, 64, 11.5); h.packets.spawnItem(68, slot('bread', 64), foreign.position); }
   else if (scenario === 'identity_neighbors') { foreign.position = vec3(30.5, 64, 11.5); h.packets.spawnItem(68, slot('bread', 4), foreign.position); }
+  else if (scenario === 'unstated_drop' || scenario === 'missing_origin' || scenario === 'foreign_origin' || scenario === 'unsought') {
+    foreign.position = vec3(25.5, 64, 10.5);
+    if (scenario === 'unstated_drop') h.packets.spawnItemWithoutStack(68, foreign.position);
+    if (scenario === 'foreign_origin') {
+      h.packets.spawnItem(68, slot('bread', 4), { x: 0, y: 64, z: 0 });
+      client.emit('sync_entity_position', { entityId: 68, x: 25.5, y: 64, z: 10.5 });
+    }
+    if (scenario === 'unsought') h.packets.spawnItem(68, slot('dirt', 4), foreign.position);
+  }
   else delete bot.entities[68];
   if (scenario === 'late_foreign') delete bot.entities[68]; // no local entity remains; packet history still supplies settlement identity
+  const statedBefore = { own: h.service.dropFacts(1, 25), neighbour: h.service.dropFacts(1, 68) };
   let goal: { x: number; z: number } | null = null;
   let controls = false;
   let clearCount = 0;
@@ -90,7 +100,16 @@ async function run(scenario: Scenario, route = false) {
     if (name === 'window_click') {
       // An unavoidable server collect arrives only during the post-stop correlated resync, without new metadata.
       if (scenario === 'reuse_gap_collect' && metadataGapAt !== undefined && !collected.includes(25)) collect(25, 4);
-      if (scenario === 'foreign_recedes' && starts === 0) { foreign.position = vec3(34.5, 64, 10.5); client.emit('sync_entity_position', { entityId: 68, x: 34.5, y: 64, z: 10.5 }); events.emit('entityMoved', foreign); }
+      if (scenario === 'foreign_recedes' && starts === 0) {
+        h.clock.advance(50);
+        foreign.position = vec3(34.5, 64, 10.5);
+        client.emit('sync_entity_position', { entityId: 68, x: 34.5, y: 64, z: 10.5 });
+        client.emit('entity_metadata', { entityId: 68, metadata: [{ key: 8, type: 'item_stack', value: slot('dirt', 1) }] });
+        events.emit('entityMoved', foreign);
+        events.emit('entityUpdate', foreign);
+      }
+      // Revoke after the already-issued resync write returns, not inside its synchronous fake transport.
+      if (scenario === 'veto_cancel') queueMicrotask(() => abort.abort());
       if (scenario === 'late_foreign' && starts > 0 && !collected.includes(68)) collect(68, 64);
       if (scenario === 'resync_foreign' && starts === 0) {
         // Item moved during the real correlated inventory await, after initial target preflight.
@@ -120,6 +139,7 @@ async function run(scenario: Scenario, route = false) {
     clock: systemClock, ledger, limits: { travelRadius: 128 },
     perception: {
       travelAnchorGoalEpoch: () => 5, latest: () => snap, withinTravel: () => true, travelBounds: () => undefined,
+      recordVisited: () => undefined,
       resolve: () => ({ target: { kind: 'drop', entityId: 25, item: 'minecraft:bread' } }),
     },
   };
@@ -139,7 +159,17 @@ async function run(scenario: Scenario, route = false) {
       return { status: r.pickup.incidental.length ? 'partial' : r.veto ? 'failed' : 'succeeded', ...(r.veto ? { reason: r.veto } : {}), confirmation: r.pickup.counted || r.pickup.incidental.length ? 'server_packet' : 'client_only', effect: 'route leg settled', evidence: { counted: r.pickup.counted, byKey: r.pickup.byKey } };
     },
   };
-  const executor = new SkillExecutorImpl({ registry: new SkillRegistry(route ? [routeProbe] : skills), leases, session: () => session as never, services: services as never, goalEpoch: () => 5, store: new MemoryRunStore(), settleMs: 0 });
+  const diagnostics: Array<{ receipt: JsonValue; provenance: string | undefined }> = [];
+  const observedSkills = (route === true ? [routeProbe] : skills).map((skill): AnySkill => ({
+    ...skill,
+    execute(ctx, params) {
+      return skill.execute({ ...ctx, progress(e, provenance) {
+        if (e['recoveryPickupVeto'] !== undefined) diagnostics.push({ receipt: structuredClone(e['recoveryPickupVeto']), provenance });
+        ctx.progress(e, provenance);
+      } }, params);
+    },
+  }));
+  const executor = new SkillExecutorImpl({ registry: new SkillRegistry(observedSkills), leases, session: () => session as never, services: services as never, goalEpoch: () => 5, store: new MemoryRunStore(), settleMs: 0 });
   const interval = setInterval(() => {
     if (!starts) return;
     ticks += 1;
@@ -164,6 +194,16 @@ async function run(scenario: Scenario, route = false) {
       h.packets.spawnItem(25, slot('bread', 4), own.position);
       collect(25, 4);
     }
+    if (ticks === 1 && scenario === 'reuse_stated') {
+      h.packets.destroy(25);
+      h.packets.spawnItem(25, slot('bread', 4), own.position);
+      events.emit('entitySpawn', own);
+      events.emit('entityUpdate', own);
+    }
+    if (ticks === 1 && scenario === 'merge_stated') {
+      client.emit('entity_metadata', { entityId: 25, metadata: [{ key: 8, type: 'item_stack', value: slot('bread', 64) }] });
+      events.emit('entityUpdate', own);
+    }
     if (ticks === 1 && (scenario === 'reuse_gap' || scenario === 'reuse_gap_collect')) {
       metadataGapAt = bot.entity.position.x;
       h.packets.destroy(25);
@@ -183,8 +223,8 @@ async function run(scenario: Scenario, route = false) {
     events.emit('physicsTick');
   }, 20);
   try {
-    const outcome = await executor.execute({ id: 'act-r400', capability: route ? 'recovery_route_probe' : 'recover_lost_items', connectionEpoch: 1, goalEpoch: 5, timeoutMs: 2_000, parameters: route ? {} : { target: { snapshotId: 'snap-r400', handle: 'drp-1' } } } as never, abort.signal, { kind: 'goal', goalId: 'goal-r400', goalEpoch: 5, taskId: 'task-r400' });
-    return { outcome, starts, controls, clearCount, collected, at: bot.entity.position.x, cancelledAt, stoppedAt, metadataGapAt, gapHadFacts, motionAfterGap, authorityBefore, authorityAfter: authority(), returns: h.service.incidentReturns(incidentId), incident: h.service.status(h.clock.now()).incidents[0], effects: ledger.since(0), listeners: events.eventNames().filter((e) => e !== 'physicsTick'), tickListeners: events.listenerCount('physicsTick') };
+    const outcome = await executor.execute({ id: 'act-r400', capability: route === true ? 'recovery_route_probe' : route === 'site' ? 'go_to_death_site' : 'recover_lost_items', connectionEpoch: 1, goalEpoch: 5, timeoutMs: 2_000, parameters: route ? {} : { target: { snapshotId: 'snap-r400', handle: 'drp-1' } } } as never, abort.signal, { kind: 'goal', goalId: 'goal-r400', goalEpoch: 5, taskId: 'task-r400' });
+    return { outcome, diagnostics, statedBefore, starts, controls, clearCount, collected, at: bot.entity.position.x, cancelledAt, stoppedAt, metadataGapAt, gapHadFacts, motionAfterGap, authorityBefore, authorityAfter: authority(), returns: h.service.incidentReturns(incidentId), incident: h.service.status(h.clock.now()).incidents[0], effects: ledger.since(0), currentFacts: h.service.dropFacts(1, 68), listeners: events.eventNames().filter((e) => e !== 'physicsTick'), tickListeners: events.listenerCount('physicsTick') };
   } finally {
     clearInterval(interval);
     evidence.detach();
@@ -382,5 +422,208 @@ it('R6: a legitimate frozen collect then destroy and entity event retains exact 
     assert.deepEqual(r.effects.filter((e) => e.kind === 'picked_up').map((e) => e.count), [4]);
     assert.deepEqual(r.authorityAfter, r.authorityBefore);
     assert.equal(r.controls, false);
+  }
+});
+
+type MotionResult = Awaited<ReturnType<typeof run>>;
+function object(value: JsonValue | undefined): Record<string, JsonValue> {
+  assert.ok(value && typeof value === 'object' && !Array.isArray(value), JSON.stringify(value));
+  return value;
+}
+function receipt(r: MotionResult): Record<string, JsonValue> {
+  assert.equal(r.diagnostics.length, 1, JSON.stringify(r.outcome));
+  assert.equal(r.diagnostics[0]!.provenance, 'local');
+  const v = object(r.outcome.evidence['recoveryPickupVeto'] ?? object(r.outcome.evidence['localProgress'])['recoveryPickupVeto']);
+  assert.deepEqual(v, r.diagnostics[0]!.receipt, 'the outcome retains the first captured receipt');
+  assert.ok(JSON.stringify(v).length < 1_600, 'one bounded receipt, independent of stack components/entity dumps');
+  assert.equal(v['provenance'], 'local');
+  assert.equal(v['goalId'], 'goal-r400');
+  assert.equal(v['goalEpoch'], 5);
+  assert.equal(v['connectionEpoch'], 1);
+  assert.equal(v['dimension'], SESSION_OW);
+  assert.equal(typeof v['atMs'], 'number');
+  assert.equal(object(v['localDistances'])['provenance'], 'local');
+  return v;
+}
+function noPickup(r: MotionResult) {
+  assert.deepEqual(r.collected, []);
+  assert.deepEqual(r.returns?.regained, {});
+  assert.equal(r.returns?.attribution, 'server_attributed', 'a refusal alone is not an unknown collect');
+  assert.deepEqual(r.effects.filter((e) => e.kind === 'picked_up'), []);
+  assert.deepEqual(r.authorityAfter, r.authorityBefore);
+  assert.equal(r.controls, false);
+  assert.deepEqual(r.listeners, []);
+  assert.equal(r.tickListeners, 1);
+}
+
+it('R14: unknown stack and absent origin retain null facts and distinct reasons through actual route and local navigation', async () => {
+  for (const scenario of ['unstated_drop', 'missing_origin'] as const) {
+    for (const mode of [true, 'site'] as const) {
+      const r = await run(scenario, mode);
+      noPickup(r);
+      assert.equal(r.starts, 0, JSON.stringify(r.outcome));
+      const v = receipt(r);
+      assert.equal(v['entityId'], 68);
+      assert.equal(v['reason'], scenario === 'unstated_drop' ? 'stack_facts_unknown' : 'foreign_drop_origin');
+      assert.equal(v['region'], 'bot');
+      assert.equal(v['reference'], 'bot');
+      for (const value of Object.values(object(v['serverStack']))) assert.equal(value, null);
+      assert.equal(v['remainingCountUsed'], null);
+      assert.equal(v['remainingIdentityCountUsed'], null);
+      const origin = object(v['firstOrigin']);
+      if (scenario === 'missing_origin') for (const value of Object.values(origin)) assert.equal(value, null);
+      else {
+        assert.equal(origin['provenance'], 'server_spawn');
+        assert.equal(origin['distanceToSite'], 5);
+        assert.equal(origin['withinSearchRadius'], true);
+      }
+      assert.deepEqual(object(v['localDistances'])['toBot'], { horizontal: 1, vertical: 0 });
+      assert.equal(r.outcome.confirmation, mode === true ? 'client_only' : 'none');
+    }
+  }
+});
+
+it('R14: moved foreign-origin and unsought items expose actual packet facts without consulting identity room or adding authority', async () => {
+  for (const scenario of ['foreign_origin', 'unsought'] as const) {
+    const r = await run(scenario, true);
+    noPickup(r);
+    assert.equal(r.starts, 0);
+    const v = receipt(r);
+    assert.equal(v['reason'], scenario === 'foreign_origin' ? 'foreign_drop_origin' : 'not_sought');
+    const stack = object(v['serverStack']);
+    const stated = r.statedBefore.neighbour!;
+    assert.equal(stack['key'], stated.key);
+    assert.equal(stack['count'], stated.count);
+    assert.equal(stack['incarnation'], stated.incarnation);
+    assert.equal(stack['digest'], stated.meta.digest);
+    assert.equal(stack['packetAtMs'], stated.atMs);
+    assert.equal(stack['provenance'], 'server_packet');
+    assert.equal(stack['incarnationProvenance'], 'tracker_spawn_sequence');
+    assert.equal(stack['digestProvenance'], 'derived_from_server_stack');
+    assert.equal(stack['packetTimeProvenance'], 'local_packet_receipt');
+    assert.equal(v['remainingCountUsed'], scenario === 'foreign_origin' ? null : 0);
+    assert.equal(v['remainingIdentityCountUsed'], null);
+    if (scenario === 'foreign_origin') {
+      assert.equal(object(v['firstOrigin'])['distanceToSite'], Math.hypot(30.5, 10.5));
+      assert.equal(object(v['firstOrigin'])['withinSearchRadius'], false);
+      assert.deepEqual(object(v['localDistances'])['toBot'], { horizontal: 1, vertical: 0 });
+    }
+  }
+});
+
+it('R14: exact mismatch/oversized reasons and only consulted key/identity room survive both executor entry points', async () => {
+  for (const scenario of ['wrong_identity', 'identity_count', 'identity_neighbors'] as const) {
+    for (const route of [false, true]) {
+      const r = await run(scenario, route);
+      noPickup(r);
+      assert.equal(r.starts, 0);
+      const v = receipt(r);
+      assert.equal(v['reason'], scenario === 'wrong_identity' ? 'metadata_mismatch' : 'oversized_stack');
+      assert.equal(v['entityId'], scenario === 'identity_neighbors' ? 68 : 25);
+      assert.equal(v['remainingCountUsed'], scenario === 'identity_count' ? 8 : 4);
+      assert.equal(v['remainingIdentityCountUsed'], scenario === 'wrong_identity' ? null : scenario === 'identity_count' ? 4 : 0);
+      assert.equal(object(v['serverStack'])['count'], scenario === 'identity_count' ? 8 : 4);
+      assert.equal(v['region'], 'site');
+      assert.equal(v['reference'], route ? 'site' : 'pickup_target');
+      const serialized = JSON.stringify(v);
+      assert.equal(serialized.includes('foreign bread'), false);
+      assert.equal(serialized.includes('own named bread'), false);
+      assert.equal(serialized.includes('components'), false);
+    }
+  }
+});
+
+it('R14: first refusal remains one immutable receipt after later packet and local position changes', async () => {
+  const r = await run('foreign_recedes', true);
+  noPickup(r);
+  assert.equal(r.starts, 0);
+  const v = receipt(r);
+  assert.equal(v['reason'], 'not_sought'); // own bread4 is already reserved; foreign bread cannot reuse it
+  assert.equal(v['entityId'], 68);
+  assert.equal(v['remainingCountUsed'], 0);
+  assert.equal(v['remainingIdentityCountUsed'], null);
+  assert.equal(object(v['serverStack'])['key'], 'minecraft:bread');
+  assert.equal(object(v['serverStack'])['count'], 64);
+  assert.equal(object(v['serverStack'])['packetAtMs'], r.statedBefore.neighbour!.atMs);
+  assert.deepEqual(object(v['localDistances'])['toSite'], { horizontal: 1, vertical: 0 });
+  assert.equal(r.currentFacts?.key, 'minecraft:dirt');
+  assert.equal(r.currentFacts?.count, 1);
+  assert.ok(r.currentFacts!.atMs > r.statedBefore.neighbour!.atMs);
+});
+
+it('R14: frozen missing/replaced/merged stacks record current facts only and revoke approach before another tick', async () => {
+  for (const scenario of ['reuse_gap', 'reuse_stated', 'merge_stated'] as const) {
+    for (const route of [false, true]) {
+      const r = await run(scenario, route);
+      noPickup(r);
+      assert.equal(r.starts, 1);
+      assert.equal(r.at, 24.5);
+      const v = receipt(r);
+      assert.equal(v['reason'], 'target_changed');
+      assert.equal(v['entityId'], 25);
+      assert.equal(v['remainingCountUsed'], null, 'frozen identity fence does not consult remaining room');
+      assert.equal(v['remainingIdentityCountUsed'], null);
+      const stack = object(v['serverStack']);
+      if (scenario === 'reuse_gap') for (const value of Object.values(stack)) assert.equal(value, null);
+      else {
+        assert.equal(stack['key'], 'minecraft:bread');
+        assert.equal(stack['count'], scenario === 'reuse_stated' ? 4 : 64);
+        assert.equal(stack['incarnation'], r.statedBefore.own!.incarnation + (scenario === 'reuse_stated' ? 1 : 0));
+        assert.equal(stack['digest'], r.statedBefore.own!.meta.digest);
+      }
+    }
+  }
+});
+
+it('R14: a veto diagnostic alone never confirms partial effects when ownership is then cancelled', async () => {
+  const r = await run('veto_cancel', true);
+  noPickup(r);
+  assert.equal(r.starts, 0);
+  assert.equal(r.outcome.status, 'cancelled');
+  assert.equal(r.outcome.confirmation, 'none');
+  assert.equal(r.outcome.evidence['recoveryPickupVeto'], undefined);
+  assert.equal(object(r.outcome.evidence['partialEffects'])['confirmed'], 'none');
+  assert.equal(object(r.outcome.evidence['localProgress'])['provenance'], 'client model / local samples (not server-confirmed)');
+  assert.equal(receipt(r)['reason'], 'not_sought');
+  assert.equal(r.outcome.evidence['commandsAfterRevoke'], 0);
+});
+
+it('R14: legitimate own pickup remains exactly once; a post-collect approach fence does not rewrite settlement', async () => {
+  for (const route of [false, true]) {
+    const r = await run('own', route);
+    if (route) {
+      assert.deepEqual(r.diagnostics, []);
+      assert.equal(r.outcome.evidence['recoveryPickupVeto'], undefined);
+    } else {
+      // Existing local navigation checks the frozen target after its legitimate collect/destroy.
+      const v = receipt(r);
+      assert.equal(v['reason'], 'target_changed');
+      for (const value of Object.values(object(v['serverStack']))) assert.equal(value, null);
+      for (const [key, value] of Object.entries(object(v['localDistances']))) if (key !== 'provenance') assert.equal(value, null);
+    }
+    assert.equal(r.starts, 1);
+    assert.deepEqual(r.collected, [25]);
+    assert.equal(r.outcome.status, 'succeeded');
+    assert.deepEqual(r.returns?.regained, { 'minecraft:bread': 4 });
+    assert.equal(r.returns?.attribution, 'server_attributed');
+    assert.deepEqual(r.effects.filter((e) => e.kind === 'picked_up').map((e) => e.count), [4]);
+    assert.deepEqual(r.authorityAfter, r.authorityBefore);
+    assert.equal(r.controls, false);
+  }
+});
+
+it('R14: a packet-driven destination veto records the refusal before the next physics movement or collect', async () => {
+  for (const route of [false, true]) {
+    const r = await run('moving_foreign', route);
+    noPickup(r);
+    assert.equal(r.starts, 1);
+    assert.equal(r.at, 24.5);
+    const v = receipt(r);
+    assert.equal(v['entityId'], 68);
+    assert.equal(v['reason'], 'not_sought');
+    assert.equal(v['region'], 'site');
+    assert.equal(object(v['serverStack'])['count'], 64);
+    assert.deepEqual(object(v['localDistances'])['toSite'], { horizontal: 1, vertical: 0 });
+    assert.deepEqual(object(v['localDistances'])['toBot'], { horizontal: Math.hypot(6, 1), vertical: 0 });
   }
 });

@@ -202,6 +202,7 @@ async function walk(h: Harness, loot: Loot[], opts: { unannouncedCollect?: { ent
     act,
     session,
     services: {
+      clock: h.clock,
       perception: { latest: () => snap, withinTravel: () => true, travelBounds: () => undefined, recordVisited: () => undefined },
       limits: { travelRadius: 128 },
       ledger: { add: (e: { item: string; count: number }) => ledger.push(e) },
