@@ -117,6 +117,16 @@ describe('safety gate harness guard', () => {
     assert.match(code, /staging: g\.staging/);
   });
 
+  it('W-H6 wires the tested ordered snapshot/effect control before admission, rechecks after awaits and refuses target loss', () => {
+    const prereq = code.slice(code.indexOf('async mobPrerequisites('), code.indexOf('episodeAfter('));
+    assert.match(prereq, /readMobStage\(gate,/);
+    assert.match(prereq, /now: \(\) => Date\.now\(\)/);
+    assert.equal((prereq.match(/this\.creeperEffects\(gate,/g) ?? []).length, 2, 'check both before waiting and after server geometry/occupancy awaits');
+    assert.match(prereq, /current tagged identity lost during prerequisite wait/);
+    assert.match(code.slice(code.indexOf('async summon('), code.indexOf('async arm(')), /trialSummonEffects\(kind, tag\)/);
+    assert.match(prereq, /verifyEffectFreeCreeper\(\(command\) => this\.rcon\(command, false\)/);
+  });
+
   it('W1 forbids an RCON rescue: no teleport between admission and the W1 verdict', () => {
     const w1 = code.slice(code.indexOf("g.gate('W1',"), code.indexOf("g.gate('W1s',"));
     const admit = w1.indexOf('g.admit(');

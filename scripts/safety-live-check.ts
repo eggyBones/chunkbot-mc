@@ -80,7 +80,8 @@ import { safetySkills } from '../src/skills/safety.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { trialRcon } from '../src/safety/trial-rcon.ts';
 import { serverWaterSupport, type TrialWaterBlock } from '../src/safety/trial-water.ts';
-import { guardMutationVolume, insideMutationBox, mobArenaPlan, mobStageRefusals, MOB_TRIAL_ORIGIN, parseTrialUuid, SAFETY_MUTATION_BOX, serverUnprovokedWolf, trialEntitySelector, verifyArena, waterArenaPlan, type MobTrialGate, type TrialSummon } from '../src/safety/trial-arena.ts';
+import { guardMutationVolume, insideMutationBox, mobArenaPlan, MOB_TRIAL_ORIGIN, parseTrialUuid, SAFETY_MUTATION_BOX, serverUnprovokedWolf, trialEntitySelector, verifyArena, waterArenaPlan, type MobTrialGate, type TrialSummon } from '../src/safety/trial-arena.ts';
+import { readMobStage, trialSummonEffects, verifyEffectFreeCreeper } from '../src/safety/trial-mobs.ts';
 import { planSafety } from '../src/safety/policy.ts';
 import { eyeOf, sessionWorld } from '../src/perception/perception.ts';
 import { isEntityVisible } from '../src/perception/visibility.ts';
@@ -366,7 +367,10 @@ class Gate {
     } finally {
       // The full (bounded) gate evidence goes to stdout too, so a killed process still leaves it in the log.
       try {
-        this.staging.push({ gate: id, atMs: Date.now(), verdict: this.results.at(-1)?.status, status: this.safety.status(Date.now()), damage: [...this.safety.tracker.damage], visible: this.reader.entities(this.safety.config.mobs) });
+        const readStartedAtMs = Date.now();
+        const status = this.safety.status(readStartedAtMs);
+        const visible = this.reader.entities(this.safety.config.mobs);
+        this.staging.push({ gate: id, readStartedAtMs, atMs: Date.now(), verdict: this.results.at(-1)?.status, status, damage: [...this.safety.tracker.damage], visible });
       } catch (error) { this.staging.push({ gate: id, evidenceUnavailable: String(error) }); }
       for (const line of evidence.slice(0, 16)) process.stdout.write(`  ${line.slice(0, 400)}\n`);
       this.stop();
@@ -515,8 +519,8 @@ class Gate {
   async summon(kind: string, at: { x: number; y: number; z: number }, nbt = ''): Promise<string> {
     const tag = `${MOB_TAG}_${kind}_${Math.floor(Math.random() * 1e6).toString(36)}`;
     await this.rcon(`summon minecraft:${kind} ${at.x} ${at.y} ${at.z} {Tags:["${MOB_TAG}","${tag}"],PersistenceRequired:1b${nbt}}`);
-    // Daylight must not end a zombie trial early (no time change): fire resistance on the tagged mob only.
-    await this.rcon(`effect give @e[tag=${tag},${ENTITY_AREA}] minecraft:fire_resistance infinite 0 true`);
+    // Zombies need daylight protection; creepers/neutral controls need none.
+    for (const command of trialSummonEffects(kind, tag)) await this.rcon(command);
     this.summons.set(tag, `minecraft:${kind}`);
     return tag;
   }
@@ -558,22 +562,28 @@ class Gate {
         unprovoked = serverUnprovokedWolf(anger, target);
         this.staging.push({ gate, atMs: Date.now(), tag, anger, target, unprovoked });
       }
-      summons.push({ tag, uuid, entityId: raw.id, key, visible: false, ...(unprovoked !== undefined ? { unprovoked } : {}) });
+      if (key === 'minecraft:creeper') await this.creeperEffects(gate, tag);
+      summons.push({ tag, uuid, entityId: raw.id, key, visible: false, ...(unprovoked !== undefined ? { unprovoked } : {}), ...(key === 'minecraft:creeper' ? { effectFree: true } : {}) });
     }
     let last: Json = {};
     const snapshot = () => {
-      const now = Date.now();
-      const self = this.reader.self();
-      check(self, 'fresh self facts unavailable');
-      const visible = this.reader.entities(this.safety.config.mobs);
-      for (const summon of summons) {
-        const raw = s.bot.entities[summon.entityId];
-        summon.visible = !!raw && raw.uuid === summon.uuid && isEntityVisible(sessionWorld(s), eyeOf(s.bot), raw.position, raw.height ?? 1);
-      }
-      const plan = planSafety(self, visible, this.safety.policyContext(self));
-      const refusals = mobStageRefusals(gate, summons, visible, plan, now);
-      last = { gate, atMs: now, summons, visible, self, plan, refusals, damage: [...this.safety.tracker.damage], counters: { ...this.safety.counters } };
-      return refusals.length === 0;
+      const facts = readMobStage(gate, {
+        now: () => Date.now(),
+        self: () => this.reader.self(),
+        visible: () => this.reader.entities(this.safety.config.mobs),
+        summons: () => summons.map((summon) => {
+          const raw = s.bot.entities[summon.entityId];
+          if (!raw || raw.uuid !== summon.uuid) {
+            this.staging.push({ gate, atMs: Date.now(), targetLost: summon, reason: 'current tagged identity missing/replaced; no defeat or cloud ownership is inferred' });
+            throw new Error('staging_unready: current tagged identity lost during prerequisite wait');
+          }
+          summon.visible = isEntityVisible(sessionWorld(s), eyeOf(s.bot), raw.position, raw.height ?? 1);
+          return { ...summon };
+        }),
+        plan: (self, visible) => planSafety(self, visible, this.safety.policyContext(self)),
+      });
+      last = { ...facts, damage: [...this.safety.tracker.damage], counters: { ...this.safety.counters } };
+      return facts.refusals.length === 0;
     };
     await this.waitFor('exact isolated mob prerequisites', snapshot, ms).catch((error: unknown) => {
       this.staging.push(structuredClone(last));
@@ -582,11 +592,18 @@ class Gate {
     // Re-read occupants and geometry after the asynchronous engagement wait.
     await this.noForeignOccupants();
     await this.verifyMobArena();
+    for (const summon of summons) if (summon.key === 'minecraft:creeper') await this.creeperEffects(gate, summon.tag);
     const stillReady = snapshot(); // revalidate vitals/target AFTER those awaits
     this.staging.push(structuredClone(last));
     check(stillReady, `staging_unready: prerequisites changed during server verification: ${JSON.stringify(last['refusals'])}`);
     ev.push(`staging verified: ${JSON.stringify({ summons: last['summons'], visible: last['visible'], plan: last['plan'], damage: last['damage'], counters: last['counters'] })}`);
     return summons;
+  }
+
+  private async creeperEffects(gate: MobTrialGate, tag: string): Promise<void> {
+    await verifyEffectFreeCreeper((command) => this.rcon(command, false), tag, (command, reply) => {
+      this.staging.push({ gate, atMs: Date.now(), tag, command, reply, effectFree: parseEntityTest(reply) === false });
+    });
   }
 
   episodeAfter(startCount: number) {

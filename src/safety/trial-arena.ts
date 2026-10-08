@@ -146,7 +146,7 @@ export function serverUnprovokedWolf(anger: string, target: string): boolean {
   return /^[^\n]+ has the following entity data: -1L$/.test(anger.trim()) && parseEntityTest(target) === false;
 }
 
-export interface TrialSummon { tag: string; uuid: string; entityId: number; key: string; visible: boolean; unprovoked?: boolean }
+export interface TrialSummon { tag: string; uuid: string; entityId: number; key: string; visible: boolean; unprovoked?: boolean; effectFree?: boolean }
 export type MobTrialGate = 'M1' | 'M2' | 'M2b' | 'M3' | 'M3b' | 'M4';
 
 /** Current visible facts and the SAME real policy plan, evaluated with no
@@ -159,7 +159,7 @@ export function mobStageRefusals(gate: MobTrialGate, summons: readonly TrialSumm
   const expected = gate === 'M3b' ? 'minecraft:cow,minecraft:wolf' : gate === 'M3' ? 'minecraft:creeper' : 'minecraft:zombie';
   if (keys !== expected || ids.size !== summons.length || summons.some((s) => !s.visible)) why.push('summon_identity_or_visibility');
   if (visible.some((e) => !ids.has(e.entityId))) why.push('unexpected_visible_entity');
-  if (visible.some((e) => nowMs - e.observedAtMs > 500 || e.observedAtMs > nowMs)) why.push('stale_visible_evidence');
+  if (!Number.isFinite(nowMs) || visible.some((e) => !Number.isFinite(e.observedAtMs) || nowMs - e.observedAtMs > 500 || e.observedAtMs > nowMs)) why.push('stale_visible_evidence');
   const target = visible.find((e) => e.entityId === summons.find((s) => s.key !== 'minecraft:cow')?.entityId);
   if (!target || target.key !== summons.find((s) => s.key !== 'minecraft:cow')?.key) why.push('target_not_currently_visible');
   if (gate === 'M3b') {
@@ -167,6 +167,7 @@ export function mobStageRefusals(gate: MobTrialGate, summons: readonly TrialSumm
     if (!target || target.disposition !== 'neutral' || target.damagedSelfAtMs !== null || target.aggressive === true) why.push('neutral_provocation_or_unknown_identity');
     if (plan.kind !== 'none') why.push('neutral_control_has_hazard');
   } else {
+    if (gate === 'M3' && summons.find((s) => s.key === 'minecraft:creeper')?.effectFree !== true) why.push('server_creeper_effects_unverified');
     const response = gate === 'M2' || gate === 'M2b' ? 'defend' : 'retreat';
     if (plan.kind !== 'respond' || plan.response !== response) why.push(`policy_prerequisite_${response}`);
     if (plan.kind !== 'none' && plan.hazards.some((h) => h.entityIds.some((id) => !ids.has(id)))) why.push('unexpected_active_threat');
