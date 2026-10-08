@@ -161,7 +161,7 @@ export function fluidState(world: SafetyBlockReader, pos: Vec3, eyeHeight = 1.62
       if (support === 'solid') floorTop = y + Math.max(...b.shapes.map((s) => s[4] ?? 1));
       break;
     }
-    depth = n;
+    depth = support === 'unknown' ? null : n;
     // Up from the feet block to the top of the fluid column.
     let top = seedY;
     let surfaceKnown = false;
