@@ -19,8 +19,9 @@
 //
 // Healthy sustained actions (a skill whose definition declares `sustained`,
 // e.g. following, furnace processing) are continued locally while their
-// window simply elapsed and an equivalent candidate still exists: stable
-// waiting triggers no repeated inference and is not counted as a stall.
+// window simply elapsed and an equivalent candidate still exists. Elapsed time
+// grants no progress: an unmet condition still needs outcome or owned motion
+// progress before the existing stall deadline. No repeated inference is needed.
 import type {
   ActionCandidate,
   AdmittedTask,
@@ -52,6 +53,7 @@ import { LIMIT_KINDS, NOT_READY_KINDS, isDecisionError } from '../decision/error
 import { MAX_REQUEST_BYTES } from '../decision/pricing.ts';
 import { publicTaskLabel } from '../goals/public-text.ts';
 import type { SafetyPort } from '../contracts/safety.ts';
+import type { TaskMotionProgressPort } from './motion-progress.ts';
 
 /** Skill-owned continuation policy (see SkillDefinition.sustained). */
 export interface SustainPolicy {
@@ -116,6 +118,8 @@ export interface TaskRuntimeDeps {
    * `blocked/safety_blocked` (one declarative blocker, no retry loop).
    */
   safety?: TaskSafetyGate;
+  /** Code-owned client motion receipts: only the stall guard, never completion or effect credit. */
+  motionProgress?: TaskMotionProgressPort;
 }
 
 /** Consumer subset of the reviewed immediate-safety contract (src/contracts/safety.ts SafetyPort). */
@@ -265,6 +269,17 @@ export class TaskRuntime implements TaskExecutionPort {
     const assertCurrent = () => {
       if (!task.isCurrent() || task.signal.aborted) throw new Revoked();
     };
+    const executeOwned = async (candidate: ActionCandidate, source: 'jev' | 'local_continuation', requestId?: string) => {
+      const unwatch = deps.motionProgress?.watch(task, candidate, (receipt) => {
+        if (!task.isCurrent() || task.signal.aborted || candidate.connectionEpoch !== deps.connectionEpoch() || deps.safety?.hold()) return;
+        if (receipt.provenance !== 'client_only' || !Number.isFinite(receipt.atMs) || !Number.isFinite(receipt.netProgress) || receipt.atMs <= lastProgressAt || receipt.atMs > clock.now()) return;
+        lastProgressAt = receipt.atMs; // actual useful sample time, never the end of a window
+        unproductive.clear();
+        emit('task_motion_progress', { actionId: candidate.id, capability: candidate.capability, sampledAtMs: receipt.atMs, netProgress: Math.round(receipt.netProgress * 10) / 10, provenance: receipt.provenance });
+      });
+      try { return await this.execute(task, candidate, source, recent, emit, requestId); }
+      finally { unwatch?.(); }
+    };
     const exhausted = () => [...failures.entries()].filter(([, n]) => n > deps.limits.perTargetRetries).map(([k]) => clip(k, 160));
     const finish = (status: TaskResultStatus, reason: string, detail: string): TaskResult => {
       const feedback: TaskFeedback = {
@@ -321,7 +336,7 @@ export class TaskRuntime implements TaskExecutionPort {
         if (task.mode === 'maintain' && evaluation.status === 'satisfied') lastProgressAt = clock.now();
         // 3. Guards: no meaningful progress on the unmet outcome within the window; low health.
         if (clock.now() - lastProgressAt > deps.limits.noProgressMs) {
-          return finish('blocked', 'no_progress', `no verified progress for ${Math.round((clock.now() - lastProgressAt) / 1000)}s (window ${Math.round(deps.limits.noProgressMs / 1000)}s); last completion check: ${evaluation.detail}`);
+          return finish('blocked', 'no_progress', `no outcome or owned-motion progress for ${Math.round((clock.now() - lastProgressAt) / 1000)}s (window ${Math.round(deps.limits.noProgressMs / 1000)}s); last completion check: ${evaluation.detail}`);
         }
         // MB-FLOW-003 narrow allowance: at the guard, only a survival-issued grant for THIS goal
         // epoch lets the round continue, and then only with its capabilities/items.
@@ -362,7 +377,7 @@ export class TaskRuntime implements TaskExecutionPort {
             if (!gate.ok) return finish('blocked', 'low_health', gate.detail);
             localContinuations += 1;
             emit('task_local_continuation', { round: rounds, actionId: next.id, capability: next.capability, continues: sustain.jevActionId, snapshotId: snapshot.id });
-            const outcome = await this.dispatchCounted(task, next, gate.allowanceId, () => this.execute(task, next, 'local_continuation', recent, emit));
+            const outcome = await this.dispatchCounted(task, next, gate.allowanceId, () => executeOwned(next, 'local_continuation'));
             actions += 1;
             sustain = this.afterOutcome(task, next, outcome, failures, succeeded, unproductive, sustain.jevActionId, () => (lastProgressAt = clock.now()));
             continue;
@@ -453,7 +468,7 @@ export class TaskRuntime implements TaskExecutionPort {
           continue; // regenerate next round; nothing was executed
         }
         // 6. Execute the frozen candidate under the single actuator lease.
-        const outcome = await this.dispatchCounted(task, chosen, gate.allowanceId, () => this.execute(task, chosen, 'jev', recent, emit, requestId));
+        const outcome = await this.dispatchCounted(task, chosen, gate.allowanceId, () => executeOwned(chosen, 'jev', requestId));
         actions += 1;
         sustain = this.afterOutcome(task, chosen, outcome, failures, succeeded, unproductive, chosen.id, () => (lastProgressAt = clock.now()));
       }

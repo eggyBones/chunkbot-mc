@@ -15,7 +15,7 @@
 // berry bushes/powder snow/wither roses, deep water refused, shallow wading allowed.
 import pathfinderPkg from 'mineflayer-pathfinder';
 import type { GameSession } from '../game/connection.ts';
-import type { Actuator } from '../execution/actuator.ts';
+import { observeActuatorMotion, type Actuator } from '../execution/actuator.ts';
 import type { Vec } from '../perception/visibility.ts';
 import { safetyWorld } from '../safety/adapter.ts';
 import type { SafetyBlockReader } from '../safety/geometry.ts';
@@ -212,6 +212,7 @@ export async function navigate(act: Actuator, options: NavigateOptions): Promise
   try {
     // The live travel guard runs before every success path, including "already there".
     if (outside()) return result('out_of_bounds');
+    observeActuatorMotion(act);
     if (options.arrived()) return result('arrived');
     act.setPathGoal(options.goal, options.dynamic ?? false);
     while (true) {
@@ -219,6 +220,7 @@ export async function navigate(act: Actuator, options: NavigateOptions): Promise
       if (outside()) return result('out_of_bounds');
       const abort = options.abortIf?.();
       if (abort) return result('stuck', abort);
+      observeActuatorMotion(act);
       const next = options.retarget?.();
       if (next !== undefined) {
         noPath = false;
@@ -230,6 +232,7 @@ export async function navigate(act: Actuator, options: NavigateOptions): Promise
         // settle briefly so a server position correction can show up
         await act.sleep(200);
         if (outside()) return result('out_of_bounds');
+        observeActuatorMotion(act);
         if (options.arrived()) return result('arrived');
       }
       const pos = bot.entity.position;

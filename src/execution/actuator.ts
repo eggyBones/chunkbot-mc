@@ -32,6 +32,14 @@ export class InterfaceBusyError extends Error {
 }
 
 type Bot = GameSession['bot'];
+
+/** Private application observation of OWN motion; never server/effect evidence. */
+export interface ActuatorMotionSample {
+  atMs: number;
+  self: { x: number; y: number; z: number };
+  correctionSeq: number;
+  commandsIssued: number;
+}
 export type Window = NonNullable<Bot['currentWindow']>;
 
 const DIRECTION_CODE: Record<FaceName, number> = { down: 0, up: 1, north: 2, south: 3, west: 4, east: 5 };
@@ -124,6 +132,14 @@ export interface ConfirmedWindow {
   cursor: { key: string; count: number } | null;
 }
 
+// Only real actuator construction can install sampling. Minimal diagnostic/test
+// doubles have no sampler; their outcome claims cannot become motion evidence.
+const motionSamplers = new WeakMap<Actuator, () => void>();
+export function observeActuatorMotion(act: Actuator): void {
+  act.fence();
+  motionSamplers.get(act)?.();
+}
+
 export class Actuator {
   readonly session: GameSession;
   readonly lease: Lease;
@@ -136,10 +152,14 @@ export class Actuator {
   /** Per-connection attribution of interfaces opened by use packets. */
   readonly gate: InterfaceGate;
 
-  constructor(session: GameSession, lease: Lease, clock: Clock) {
+  private readonly onMotion: ((sample: ActuatorMotionSample) => void) | undefined;
+
+  constructor(session: GameSession, lease: Lease, clock: Clock, onMotion?: (sample: ActuatorMotionSample) => void) {
     this.session = session;
     this.lease = lease;
     this.clock = clock;
+    this.onMotion = onMotion;
+    if (onMotion) motionSamplers.set(this, () => this.observeMotion());
     this.gate = interfaceGate(session, clock);
     lease.onRevoke('close_owned_windows', () => this.closeOwnedWindowsUnfenced());
   }
@@ -162,6 +182,14 @@ export class Actuator {
 
   fence(): void {
     this.lease.fence();
+  }
+
+  /** Called only inside fenced navigation, using current self position and correction journal. */
+  private observeMotion(): void {
+    this.fence();
+    if (!this.onMotion) return;
+    const p = this.bot.entity.position;
+    this.onMotion({ atMs: this.clock.now(), self: { x: p.x, y: p.y, z: p.z }, correctionSeq: this.session.evidence.latest('position_correction')?.seq ?? 0, commandsIssued: this.issued });
   }
 
   /** Total commands issued by this actuator (monotonic; `commands` keeps only the latest 200). */

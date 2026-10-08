@@ -535,4 +535,21 @@ describe('task runtime: immediate-safety hold seam (MB-FLOW-003-C11/C13 shared w
     assert.equal(h.executed.length, 1, 'the deferred choice was never executed; one fresh dispatch after clear');
     assert.ok(h.store.events.some((e) => e['type'] === 'task_choice_deferred'));
   });
+  it('safety-owned time rejects ordinary motion receipts and the execution always disposes its observer', async () => {
+    const h = new Harness(), safety = new FakeSafety();
+    h.world.set('blk-1', log('blk-1', 1));
+    let publish: ((r: { atMs: number; netProgress: number; provenance: 'client_only' }) => void) | undefined;
+    let watched = 0, disposed = 0;
+    h.outcome = () => {
+      h.t += 31_000;
+      safety.held = { reason: 'episode', detail: 'safety owns control', episodeId: 'se-0003' };
+      publish?.({ atMs: h.t, netProgress: 10_000, provenance: 'client_only' });
+      return { status: 'partial', confirmation: 'client_only' };
+    };
+    const result = await new TaskRuntime(h.deps({ safety, motionProgress: { watch: (_task, _candidate, f) => { watched++; publish = f; return () => { disposed++; publish = undefined; }; } } })).run(h.task());
+    assert.equal(result.reason, 'no_progress'); assert.equal(safety.waits, 1);
+    assert.equal(h.decisions.length, 1); assert.equal(h.executed.length, 1);
+    assert.equal(watched, 1); assert.equal(disposed, 1);
+    assert.ok(!h.store.events.some((e) => e.type === 'task_motion_progress'));
+  });
 });

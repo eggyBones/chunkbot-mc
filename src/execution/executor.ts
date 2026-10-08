@@ -19,7 +19,7 @@ import {
 import type { GameSession } from '../game/connection.ts';
 import type { SkillServices } from '../skills/definition.ts';
 import { removalScopeAllows } from '../skills/common.ts';
-import { Actuator, InterfaceBusyError, sleepAbortable } from './actuator.ts';
+import { Actuator, InterfaceBusyError, sleepAbortable, type ActuatorMotionSample } from './actuator.ts';
 import { interfaceGate } from './interface-gate.ts';
 import { LeaseBusyError, LeaseRevokedError, type ActuatorLeases } from './lease.ts';
 import type { SkillRegistry } from './registry.ts';
@@ -87,11 +87,27 @@ export interface ExecutorDeps {
   onOutcome?: (outcome: SkillOutcome) => void;
 }
 
+export interface OwnedMotionSample extends ActuatorMotionSample {
+  actionId: string;
+  capability: string;
+  owner: ExecutionOwner;
+  leaseId: number;
+  connectionEpoch: number;
+  dimension: string;
+}
+
 export class SkillExecutorImpl implements SkillExecutor {
   private readonly deps: ExecutorDeps;
+  private readonly motionObservers = new Set<(sample: OwnedMotionSample) => void>();
 
   constructor(deps: ExecutorDeps) {
     this.deps = deps;
+  }
+
+  /** Internal read-only seam; outcomes/model evidence cannot publish these samples. */
+  observeMotion(observer: (sample: OwnedMotionSample) => void): () => void {
+    this.motionObservers.add(observer);
+    return () => { this.motionObservers.delete(observer); };
   }
 
   readiness(): Readiness {
@@ -182,7 +198,13 @@ export class SkillExecutorImpl implements SkillExecutor {
       if (error instanceof LeaseBusyError) return finish({ status: 'precondition_failed', reason: 'actuator_busy', effect: error.message });
       throw error;
     }
-    const act = new Actuator(session, lease, clock);
+    const act = new Actuator(session, lease, clock, this.motionObservers.size ? (sample) => {
+      const owned: OwnedMotionSample = { ...sample, actionId: candidate.id, capability: candidate.capability, owner, leaseId: lease.id, connectionEpoch: session.connectionEpoch, dimension: String(session.bot.game.dimension) };
+      for (const observer of this.motionObservers) {
+        try { observer(owned); }
+        catch (error) { this.deps.store.record({ type: 'motion_observer_error', actionId: candidate.id, message: error instanceof Error ? error.message.slice(0, 300) : String(error) }); }
+      }
+    } : undefined);
     let revokedAtMs: number | undefined;
     const onAbort = () => {
       revokedAtMs = clock.now();
