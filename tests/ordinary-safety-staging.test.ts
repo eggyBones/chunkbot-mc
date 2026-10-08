@@ -37,7 +37,7 @@ class Replay implements OrdinaryHarnessIO {
     this.calls.push(c);
     const override = this.override?.(c);
     if (override !== undefined) return override;
-    if (c === 'gamerule do_mob_spawning') return `Gamerule do_mob_spawning is currently set to: ${this.spawned}`;
+    if (c === 'gamerule spawn_mobs') return `Gamerule spawn_mobs is currently set to: ${this.spawned}`;
     if (c === 'difficulty') return 'The difficulty is normal';
     if (c.startsWith('execute if loaded ') && !c.includes(' if block ')) return 'Test passed';
     if (c.includes('if block ')) {
@@ -111,9 +111,9 @@ it('actual extended preparation deliberately rebuilds water then dry then water 
 });
 
 it('spawn suppression is a read-only declared precondition, never a rule/settings change or an ambient removal', async () => {
-  for (const reply of ['Gamerule do_mob_spawning is currently set to: true', 'Unknown gamerule', '', 'Gamerule another_rule is currently set to: false']) {
+  for (const reply of ['Gamerule spawn_mobs is currently set to: true', 'Unknown gamerule', '', 'Gamerule another_rule is currently set to: false', 'Gamerule do_mob_spawning is currently set to: false', 'Incorrect argument for commandgamerule do_mob_spawning<--[HERE]']) {
     const { h, io }=make(); h.scenario='O7P'; h.beginExtendedSafetyCase('O7P');
-    io.override=(c) => c === 'gamerule do_mob_spawning' ? reply : undefined;
+    io.override=(c) => c === 'gamerule spawn_mobs' ? reply : undefined;
     await assert.rejects(h.prepareExtendedSafetyGeometry('water'), /coordinator must record/);
     assert.deepEqual(mutations(io), []);
     assert.deepEqual(h.extendedSafetyReport().stagedCases, []);
