@@ -10,6 +10,7 @@
 // A9  survival code_task / revoke_unsafe through the same engine; the allowance is bound at admission
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { ownerQuestionIn } from '../src/goals/declarative.ts';
 import type { PlannerProposal, SurvivalProposal } from '../src/contracts/index.ts';
 import { until } from './helpers.ts';
 import { FakeSurvival, OWNER, autonomyHarness } from './autonomy-fakes.ts';
@@ -293,6 +294,10 @@ describe('A9 survival support through the same engine', () => {
     await settle();
     assert.equal(h.supervisor.status().ownerIntent?.state, 'interrupted');
     assert.equal(h.supervisor.status().session.safetyRevocations, 1);
+    // MB-PLAN-006: the interruption notice is declarative (never asks the owner what to do).
+    const notice = h.notices.find((n) => /interrupted/.test(n))!;
+    assert.ok(notice, h.notices.join(' | '));
+    assert.equal(ownerQuestionIn(notice), undefined, notice);
     survival.decision = { kind: 'none', reason: 'safe now' };
     await h.supervisor.assessNow();
     assert.equal(h.automaticRequests().length, 0, 'unrelated progression waits for the owner');

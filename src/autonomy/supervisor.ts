@@ -378,22 +378,27 @@ export class AutonomySupervisor {
       return;
     }
     const interrupted = INTERRUPTION_REASONS.has(end.reason);
+    // MB-FLOW-003-C12: a same-session HELD job that continues on its own needs no owner decision.
+    const continues = end.held?.continuable === true;
     this.ownerIntent = {
       goalId: end.goalId,
       instruction: clip(end.instruction ?? intent?.instruction ?? '', 400),
       state: interrupted ? 'interrupted' : 'blocked',
       reason: end.reason,
-      detail: clip(end.detail, 300),
+      detail: clip(continues ? `held: continues when it is safe (continuation ${end.held!.continuations.used + 1} of at most ${end.held!.continuations.max})` : end.held ? `held, not continued automatically (${end.held.reason.replace(/[_:]/g, ' ')})` : end.detail, 300),
       sinceMs: now,
       ...(end.outcome ? { outcome: end.outcome } : {}),
       ...(end.interpretation ? { interpretation: end.interpretation } : {}),
-      requiresOwnerDecision: true,
+      requiresOwnerDecision: !continues,
     };
-    this.deps.record({ type: 'autonomy_owner_intent', goalId: end.goalId, state: this.ownerIntent.state, reason: end.reason });
+    this.deps.record({ type: 'autonomy_owner_intent', goalId: end.goalId, state: this.ownerIntent.state, reason: end.reason, ...(end.held ? { held: end.held } : {}) });
+    // App-written, declarative (MB-PLAN-006): never a question or a request for a reply.
     this.deps.notify(
-      interrupted
-        ? `Your instruction was interrupted (${end.reason}); I'm keeping it in view and won't resume it on my own or start unrelated automatic work. Tell me what to do next (repeat it to start it again).`
-        : `Your instruction is blocked (${end.reason}); I'll keep it in view and won't start unrelated automatic work until you give a new instruction.`,
+      continues
+        ? `Your instruction was interrupted (${end.reason.replace(/_/g, ' ')}); it is held and continues on its own when it is safe, after any necessary recovery. Unrelated automatic work waits. Stop cancels it; a new instruction replaces it.`
+        : interrupted
+          ? `Your instruction was interrupted (${end.reason.replace(/_/g, ' ')}); it is held and is not continued automatically. Unrelated automatic work waits; a new instruction replaces it.`
+          : `Your instruction is blocked (${end.reason.replace(/_/g, ' ')}); it stays in view and unrelated automatic work waits until a new instruction replaces it.`,
     );
     // Support (eating, rest, recovery) may still run while the intent waits for the owner.
     if (!LIFECYCLE_REASONS.has(end.reason)) this.schedule(0, `owner goal ${end.reason}`);

@@ -203,8 +203,8 @@ describe('dashboard viewer formatting', () => {
     f.accept(ok(next(pub.snapshot())));
     const v = vm(f, clock.t);
     assert.match(v.directive.pause!.text, /^Automatic work paused; a manual goal can still execute/);
-    assert.match(v.directive.clarification!, /^q2: Oak or birch\?/);
-    assert.equal(v.directive.phase, 'Waiting for your answer');
+    assert.equal(v.directive.clarification, null, 'MB-PLAN-006: a legacy question is never shown or answered');
+    assert.equal(v.directive.phase, 'Held (no reply is used)');
     const pos = v.identity.find((r) => r.label === 'Position')!;
     assert.equal(pos.value, '1 2 3 (client)');
     assert.match(pos.title!, /none on this connection/);

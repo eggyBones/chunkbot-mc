@@ -279,7 +279,8 @@ const PHASE_LABEL: Record<string, string> = {
   idle: 'Idle',
   planning: 'Planning',
   executing: 'Executing',
-  awaiting_owner: 'Waiting for your answer',
+  // MB-PLAN-006: a legacy state from older releases only; never a request for a reply.
+  awaiting_owner: 'Held (no reply is used)',
   stopping: 'Stopping',
   completed: 'Completed (verified)',
   cancelled: 'Cancelled',
@@ -369,7 +370,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
     ? [
         `Automatic work: ${au.mode.replace(/_/g, ' ')} — ${au.detail}`,
         `Stop latch: ${au.latch.paused ? `paused (${au.latch.source ?? 'stop'}; durable ${au.latch.durable}) — say resume to allow automatic work` : `clear (durable ${au.latch.durable})`}; scope ${au.scope ?? 'none'} (${au.persistence.state})`,
-        ...(au.ownerIntent ? [`Your ${au.ownerIntent.state.replace(/_/g, ' ')} instruction: "${au.ownerIntent.instruction}"${au.ownerIntent.requiresOwnerDecision ? ' — needs your decision (a new instruction replaces it)' : ''}`] : []),
+        ...(au.ownerIntent ? [`Your ${au.ownerIntent.state.replace(/_/g, ' ')} instruction: "${au.ownerIntent.instruction}"${au.ownerIntent.requiresOwnerDecision ? ' — held, not continued automatically (a new instruction replaces it)' : ' — held; continues when it is safe (stop cancels it)'}`] : []),
         `Session: progression ${au.session.progressionGoals}/${au.session.maxProgressionGoals}, support ${au.session.supportGoals}/${au.session.maxSupportGoals}, automatic planner turns ${au.session.plannerTurns}/${au.session.maxPlannerTurns}, verified ${au.session.completed}`,
         ...(au.blocker ? [`Waiting on: ${au.blocker.code.replace(/_/g, ' ')} — ${au.blocker.detail}`] : []),
         ...(au.home ? [`Home: ${au.home.state} at ${au.home.at.x} ${au.home.at.y} ${au.home.at.z} (${au.home.dimension}); own blocks ${au.home.ownConfirmed}/${au.home.cells}; ${au.home.verified ? `last check ${au.home.verified}` : 'not checked yet'}`] : []),
@@ -517,7 +518,8 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
       details,
       task: dir?.task.current ? { objective: dir.task.current.objective, detail: `${dir.task.current.mode} task · started ${new Date(dir.task.current.startedAtMs).toISOString().slice(11, 19)} UTC` } : null,
       lastTask: dir?.task.last ? `${dir.task.last.status} (${dir.task.last.reason.replace(/_/g, ' ')}) — ${dir.task.last.detail}` : null,
-      clarification: goal?.clarification ? `${goal.clarification.ref}: ${goal.clarification.question} — reply with "answer ${goal.clarification.ref} …"` : null,
+      // MB-PLAN-006: legacy question text (older releases) is never re-shown or answered.
+      clarification: null,
       pending: dir?.pending ? { instruction: dir.pending.instruction, state: dir.pending.state.replace(/_/g, ' '), detail: dir.pending.detail ?? 'Not started — the current directive continues until the switch.' } : null,
       pendingInstalled: Boolean(s?.integrations.handoff),
       outcomeTechnical: outcome?.technical ?? null,
