@@ -44,6 +44,31 @@ export function trialEntitySelector(box: TrialBox): string {
   return `x=${box[0]},y=${box[1]},z=${box[2]},dx=${box[3] - box[0]},dy=${box[4] - box[1]},dz=${box[5] - box[2]}`;
 }
 
+/** Initial guard for the FULL original clone, independent of selected staging.
+ * Require the six original horizontal chunks to be loaded, then refuse every
+ * unowned non-player body (including preexisting item/xp) and other players.
+ * Positive delta selectors include the last block and body intersections.
+ * This is read-only and sequential; unknown evidence never proves absence. */
+export async function guardOriginalTrialVolume(read: (command: string) => Promise<string>, runTag: string, bot: string, record: (kind: 'loaded' | 'entities' | 'players', command: string, reply: string) => void): Promise<void> {
+  if (!/^[A-Za-z0-9_]+$/.test(runTag) || !/^[A-Za-z0-9_]+$/.test(bot)) throw new Error('invalid trial identity');
+  const [x1, y1, z1, x2, , z2] = SAFETY_TRIAL_BOX;
+  for (let cx = Math.floor(x1 / 16); cx <= Math.floor(x2 / 16); cx += 1) for (let cz = Math.floor(z1 / 16); cz <= Math.floor(z2 / 16); cz += 1) {
+    const command = `execute if loaded ${Math.max(x1, cx * 16)} ${y1} ${Math.max(z1, cz * 16)}`;
+    const reply = await read(command);
+    record('loaded', command, reply);
+    if (parseEntityTest(reply) !== true) throw new Error('staging_unready: original scene chunk not verified loaded; refusing clone/staging');
+  }
+  const area = trialEntitySelector(SAFETY_TRIAL_BOX);
+  for (const [kind, command] of [
+    ['entities', `execute if entity @e[tag=!${runTag},type=!player,${area}]`],
+    ['players', `execute if entity @a[name=!${bot},${area}]`],
+  ] as const) {
+    const reply = await read(command);
+    record(kind, command, reply);
+    refuseForeignOccupants(reply);
+  }
+}
+
 /** The same leased-harness guard is exercised with a voxel/entity server in
  * tests. Queries are sequential; unknown/concatenated replies refuse before
  * the caller may fill, heal or remove anything. Partial evidence is retained. */

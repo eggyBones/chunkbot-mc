@@ -44,6 +44,8 @@
 //
 // OWNED WRITE FOOTPRINT — every block/entity write stays inside these:
 //   scene   x 240..270, y -61..-48, z 190..220 (blocks; tagged mobs; item/xp drops)
+//           FULL original-volume loaded/body preflight before backup/staging;
+//           a foreign lower body refuses even when outside the raised stage.
 //   backup  x 240..270, y 200..213, z 190..220 (pre-trial copy; must be verified
 //           EMPTY before use, else the trial refuses to start; restored, cleared
 //           and re-verified at the end)
@@ -80,7 +82,7 @@ import { safetySkills } from '../src/skills/safety.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { trialRcon } from '../src/safety/trial-rcon.ts';
 import { serverWaterSupport, type TrialWaterBlock } from '../src/safety/trial-water.ts';
-import { guardMutationVolume, guardedStageMutation, insideMutationBox, mobArenaPlan, mobTrialOrigin, parseTrialUuid, SAFETY_BASE_LAYOUT, SAFETY_RAISED_LAYOUT, serverUnprovokedWolf, trialEntitySelector, verifyArena, waterArenaPlan, type MobTrialGate, type TrialSummon } from '../src/safety/trial-arena.ts';
+import { guardOriginalTrialVolume, guardMutationVolume, guardedStageMutation, insideMutationBox, mobArenaPlan, mobTrialOrigin, parseTrialUuid, SAFETY_BASE_LAYOUT, SAFETY_RAISED_LAYOUT, SAFETY_TRIAL_BOX, serverUnprovokedWolf, trialEntitySelector, verifyArena, waterArenaPlan, type MobTrialGate, type TrialSummon } from '../src/safety/trial-arena.ts';
 import { readMobStage, trialSummonEffects, verifyEffectFreeCreeper } from '../src/safety/trial-mobs.ts';
 import { planSafety } from '../src/safety/policy.ts';
 import { eyeOf, sessionWorld } from '../src/perception/perception.ts';
@@ -492,6 +494,20 @@ class Gate {
     }, LAYOUT);
   }
 
+  /** Full original-volume preflight AFTER exact chunk loading, BEFORE any
+   * backup clone or scene mutation. A body below the raised floor still
+   * refuses the whole trial; nonintersection is no preservation receipt. */
+  async originalScenePreflight(): Promise<void> {
+    const reads: Json[] = [];
+    await guardOriginalTrialVolume((command) => this.rcon(command, false), MOB_TAG, BOT, (kind, command, reply) => {
+      const row = { gate: this.phase, atMs: Date.now(), kind, command, originalScene: SAFETY_TRIAL_BOX, reply, test: parseEntityTest(reply) ?? 'unknown' };
+      reads.push(row);
+      this.staging.push(row);
+      this.journal?.remember({ originalScenePreflight: { complete: false, reads } });
+    });
+    this.journal?.remember({ originalScenePreflight: { complete: true, reads } });
+  }
+
   async verifyMobArena(): Promise<void> {
     const comparisons = await verifyArena((command) => this.rcon(command, false), mobArenaPlan(LAYOUT), LAYOUT);
     this.staging.push({ gate: this.phase, atMs: Date.now(), arenaVerified: true, comparisons, plan: mobArenaPlan(LAYOUT) });
@@ -785,6 +801,7 @@ async function run(outDir: string): Promise<Json> {
       }
     }
     await sleep(1_000);
+    await g.originalScenePreflight();
     const backupNonAir = await g.nonAirBlocks(BACKUP_BOX);
     check(backupNonAir === 0, `backup volume ${BACKUP_BOX} is not verified empty (${backupNonAir ?? 'unknown'} non-air blocks); refusing to change the scene`);
     backupPlanned = true;
@@ -1066,7 +1083,7 @@ function buildReport(g: Gate, st: ReportState, extra: Json = {}): Json {
     damagePackets: g.damagePackets,
     fixture: PINS.profile,
     source,
-    footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, stagingMutation: LAYOUT.mutation.join(' '), layout: LAYOUT === SAFETY_RAISED_LAYOUT ? 'raised' : 'original', feetY: LAYOUT.feetY, occupantSelector: trialEntitySelector(LAYOUT.mutation), mobTag: MOB_TAG, addedForceload, difficulty },
+    footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, originalSceneOccupantSelector: ENTITY_AREA, stagingMutation: LAYOUT.mutation.join(' '), layout: LAYOUT === SAFETY_RAISED_LAYOUT ? 'raised' : 'original', feetY: LAYOUT.feetY, occupantSelector: trialEntitySelector(LAYOUT.mutation), mobTag: MOB_TAG, addedForceload, difficulty },
     restoration: restoreChecks,
     pass: counted.length > 0 && counted.every((r) => r.status === 'pass'),
     results,
