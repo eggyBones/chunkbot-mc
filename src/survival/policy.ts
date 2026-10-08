@@ -18,6 +18,8 @@ import {
   type SurvivalStatePredicate,
   type TrackedStack,
   type Vitals,
+  manifestRemaining,
+  manifestSought,
 } from '../contracts/survival.ts';
 import { visibleThreat } from './allowance.ts';
 import { siteIsHazard } from './death-cause.ts';
@@ -112,7 +114,8 @@ export function evalEat(ctx: PolicyContext): RoutineEval {
   if (foods.length === 0) return blocked('eat', `eat:none:${v.food}`, 'no_safe_food', `food ${v.food}/20 and no suitable owned food (risky and precious foods are never eaten automatically)`);
   if (ctx.snapshot) {
     const threat = visibleThreat(ctx.snapshot, ctx.cfg.lowHealthAllowance.threatRadius);
-    if (threat && v.health <= ctx.lowHealth) return blocked('eat', `eat:threat:${threat.key}:${Math.round(threat.distance)}`, 'threat_nearby', `visible ${threat.key} ${threat.distance} blocks away at low health; eating here is unsafe and no escape capability is supported`, true);
+    // Eating in place is unsafe near a visible hostile at low health AND for a health-support meal (it may run inside the ordinary cooldown).
+    if (threat && (v.health <= ctx.lowHealth || healthNeedsFood)) return blocked('eat', `eat:threat:${threat.key}:${Math.round(threat.distance)}`, 'threat_nearby', `visible ${threat.key} ${threat.distance} blocks away at health ${v.health}; eating here is unsafe and no escape capability is supported`, true);
   }
   const low = v.health <= ctx.lowHealth;
   const priority: SurvivalPriority = low || v.food <= 6 ? 'safety' : 'support';
@@ -239,9 +242,9 @@ export function evalRecovery(ctx: PolicyContext): RoutineEval {
     if (!imp.improved) return blocked('death_recovery', sig(`prep:${prep.armorPoints}:${prep.routePolicy}:${Math.floor(self.x / 16)},${Math.floor(self.z / 16)}`), 'no_material_improvement', `attempt ${used + 1} needs a materially better preparation or route: ${imp.why}`);
   }
   const sought = new Map<string, number>();
-  for (const m of e.manifest?.missing ?? []) if (m.state === 'missing' && m.count > 0) sought.set(m.key, m.count);
+  for (const m of e.manifest?.missing ?? []) if (manifestSought(m)) sought.set(m.key, manifestRemaining(m));
   if (sought.size === 0) return conclude(e.regained.length ? 'recovered' : 'no_loss', 'nothing_sought', 'nothing remains to recover');
-  const valuables = (e.manifest?.missing ?? []).filter((m) => m.state === 'missing' && m.valuable).map((m) => strip(m.key));
+  const valuables = (e.manifest?.missing ?? []).filter((m) => manifestSought(m) && m.valuable).map((m) => strip(m.key));
   const dir = compass(self, site.at);
   const signature = sig(`attempt:${used + 1}:${prep.armorPoints}:${prep.routePolicy}`);
   const facts = [

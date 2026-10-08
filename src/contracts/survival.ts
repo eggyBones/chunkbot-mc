@@ -27,7 +27,21 @@ import type { RouteDestinationProvider } from './locator.ts';
 import type { OutcomePredicate, PredicateEvaluation } from './predicate.ts';
 import type { TaskMode, TaskSpec } from './task.ts';
 
-export const SURVIVAL_SCHEMA_VERSION = 1 as const;
+/**
+ * Durable store schema. v2 (MB-FLOW-003-C9/C10): a manifest item keeps its
+ * ORIGINAL lost `count` immutable and records server-confirmed regains in a
+ * separate `regained` counter (v1 decremented `count`, which reached 0 after a
+ * whole-key pickup and made every later write fail schema validation);
+ * episodes record incidental (not-attributed) inventory effects and attempts
+ * whose effects became unknown. v1 files are read (checksum on the raw body)
+ * and migrated by `migrateV1Body`: lost = v1 remaining + the episode's recorded
+ * regains of that key, regained = those recorded regains, state derived;
+ * nothing is invented. v3 (MB-FLOW-003-C12) adds display-only continuation
+ * checkpoint records (v2 bodies read with none). A newer schema is read-only,
+ * never overwritten.
+ */
+export const SURVIVAL_SCHEMA_VERSION = 3 as const;
+export const SURVIVAL_READABLE_SCHEMA_VERSIONS: readonly number[] = [1, 2, 3];
 export const SURVIVAL_FILE_FORMAT = 'chunkbot-survival' as const;
 
 const atMs = z.number().int().nonnegative();
@@ -40,6 +54,8 @@ export const SURVIVAL_BOUNDS = {
   episodes: 16,
   relatedIncidents: 8,
   attemptHistory: 4,
+  /** Incidental (not recovery-attributed) inventory effects kept per episode. */
+  incidental: 16,
   hazards: 8,
   regained: 32,
   manifestItems: BOUNDS.listMedium + 9,
@@ -357,15 +373,28 @@ export const RECOVERY_PHASES = ['awaiting_respawn', 'assessing', 'ready', 'prepa
 export const RecoveryPhaseSchema = z.enum(RECOVERY_PHASES);
 export type RecoveryPhase = z.infer<typeof RecoveryPhaseSchema>;
 
+/**
+ * Per-item loss state (C10: distinct, never merged into one "recovered" label).
+ * `missing`: lost, nothing regained yet, still sought. `partially_regained`:
+ * some regained by server-confirmed pickups, the rest still sought.
+ * `regained`: every lost unit regained. `likely_destroyed`: cause mechanics
+ * suggest destruction (unverified). `unknown`: the bounded search/episode ended
+ * with the remainder unaccounted for — NOT proof of despawn or destruction.
+ * Possessions kept through respawn never appear here (`LossManifest.retained`).
+ */
+export const MANIFEST_ITEM_STATES = ['missing', 'partially_regained', 'regained', 'likely_destroyed', 'unknown'] as const;
+
 export const ManifestItemSchema = z
   .object({
     key: RegistryKeySchema,
+    /** ORIGINAL lost count (last-alive minus fresh respawn sync). Immutable after assessment except related-death additions. */
     count: z.number().int().positive(),
+    /** Server-confirmed regained units of this incident (never above `count`). */
+    regained: z.number().int().nonnegative().default(0),
     /** Tools/armor/enchanted/named items or configured valuables. */
     valuable: z.boolean(),
     metadata: z.enum(['server_slot', 'unknown']),
-    /** `missing`, `regained`, `likely_destroyed` (cause mechanics, unverified), `unknown`. */
-    state: z.enum(['missing', 'regained', 'likely_destroyed', 'unknown']),
+    state: z.enum(MANIFEST_ITEM_STATES),
     /**
      * Valuable items only (C3): the server identity digest of each still-missing
      * stack, one entry per stack. A valuable drop counts only when its server
@@ -374,8 +403,59 @@ export const ManifestItemSchema = z
      */
     identities: z.array(z.object({ digest: z.string().regex(/^[0-9a-f]{16}$/), count: z.number().int().positive() }).strict()).max(8).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((m, ctx) => {
+    // State/count consistency (C9 coordinator review): the label must agree with the counters.
+    const bad = (message: string, path: string) => ctx.addIssue({ code: 'custom', message, path: [path] });
+    if (m.regained > m.count) return bad('regained exceeds the lost count', 'regained');
+    switch (m.state) {
+      case 'missing':
+        if (m.regained !== 0) bad('a missing item cannot have regained units (use partially_regained)', 'state');
+        break;
+      case 'partially_regained':
+        if (m.regained === 0 || m.regained >= m.count) bad('partially_regained needs 0 < regained < lost count', 'state');
+        break;
+      case 'regained':
+        if (m.regained !== m.count) bad('regained needs every lost unit regained (a partial regain is not complete)', 'state');
+        break;
+      default:
+        // likely_destroyed / unknown: some remainder is unaccounted for.
+        if (m.regained >= m.count) bad(`${m.state} needs a remainder (a fully regained item is regained)`, 'state');
+    }
+  });
 export type ManifestItem = z.infer<typeof ManifestItemSchema>;
+
+/** Units of a manifest item still unaccounted for (lost minus server-confirmed regains). */
+export function manifestRemaining(m: Pick<ManifestItem, 'count' | 'regained'>): number {
+  return Math.max(0, m.count - (m.regained ?? 0));
+}
+
+/** A manifest item is still SOUGHT by recovery (never `likely_destroyed`/`unknown`/`regained`). */
+export function manifestSought(m: Pick<ManifestItem, 'count' | 'regained' | 'state'>): boolean {
+  return (m.state === 'missing' || m.state === 'partially_regained') && manifestRemaining(m) > 0;
+}
+
+/**
+ * C10: an inventory effect that is NOT attributed to this incident's recovery
+ * (reported truthfully, never counted as regained or retained).
+ * `after_respawn_sync`: gained after the fresh respawn window sync and before
+ * any recovery action (e.g. passive pickup at the respawn point).
+ * `unplanned_collect`: a server collect packet (collector = bot) of an item
+ * entity outside the frozen recovery plan, during recovery travel or pickup.
+ * `key` is absent when the server never stated that entity's stack.
+ */
+export const IncidentalEffectSchema = z
+  .object({
+    source: z.enum(['after_respawn_sync', 'unplanned_collect']),
+    key: RegistryKeySchema.optional(),
+    count: z.number().int().positive(),
+    atMs,
+    /** Recovery goal during which it happened (absent before any attempt). */
+    goalId: z.string().regex(/^goal-[a-z0-9]{4,32}$/).optional(),
+    detail: shortText,
+  })
+  .strict();
+export type IncidentalEffect = z.infer<typeof IncidentalEffectSchema>;
 
 /** Identity check of one drop against the manifest (C3). */
 export type DropIdentity = 'not_required' | 'match' | 'mismatch' | 'unproven';
@@ -435,6 +515,13 @@ export const RecoveryAttemptSchema = z
     regained: z.number().int().nonnegative().default(0),
     /** The bot reached the site and the bounded visible search ended (nothing scoped remained visible). */
     searchedSite: z.boolean().default(false),
+    /**
+     * C9: this attempt may have changed the inventory after the last durable
+     * revision (the process ended while it ran, so its last pickups may never
+     * have been saved). Such effects are UNKNOWN, never assumed regained or
+     * missing; status says so.
+     */
+    effectsUnknown: z.boolean().default(false),
   })
   .strict();
 export type RecoveryAttempt = z.infer<typeof RecoveryAttemptSchema>;
@@ -536,6 +623,8 @@ export const RecoveryEpisodeSchema = z
     lastAlive: LastAliveSchema,
     manifest: LossManifestSchema.optional(),
     regained: z.array(z.object({ key: RegistryKeySchema, count: z.number().int().positive(), atMs, provenance: z.enum(['scoped_visible_drop']) }).strict()).max(SURVIVAL_BOUNDS.regained),
+    /** C10: inventory effects NOT attributed to recovery (bounded, newest kept). */
+    incidental: z.array(IncidentalEffectSchema).max(SURVIVAL_BOUNDS.incidental).default([]),
     attempts: z.array(RecoveryAttemptSchema).max(SURVIVAL_BOUNDS.attemptHistory),
     maxAttempts: z.number().int().min(1).max(SURVIVAL_BOUNDS.maxAttemptsCeiling),
     budget: EpisodeBudgetSchema,
@@ -548,6 +637,31 @@ export const RecoveryEpisodeSchema = z
   .strict();
 export type RecoveryEpisode = z.infer<typeof RecoveryEpisodeSchema>;
 
+/**
+ * MB-FLOW-003-C12: DISPLAY-ONLY projection of a held continuation checkpoint
+ * (src/contracts/continuation.ts). Deliberately not the executable checkpoint:
+ * no outcome contract, lineage, route carry, epochs or handles are stored, so a
+ * restart can only show it (`restart_held`), never continue it.
+ */
+export const CHECKPOINT_RECORD_STATES = ['capturing', 'held', 'continuing', 'completed', 'superseded_by_owner', 'stopped_by_owner', 'blocked', 'restart_held'] as const;
+export const CheckpointRecordSchema = z
+  .object({
+    goalId: z.string().regex(/^goal-[a-z0-9]{4,32}$/),
+    sessionId: z.string().min(1).max(64),
+    instruction: z.string().max(BOUNDS.text),
+    publicOutcome: z.string().max(BOUNDS.text),
+    state: z.enum(CHECKPOINT_RECORD_STATES),
+    stateReason: shortText,
+    stateAtMs: atMs,
+    deadlineAtMs: atMs,
+    continuations: z.object({ used: z.number().int().nonnegative(), max: z.number().int().nonnegative() }).strict(),
+    interruptions: z.array(z.object({ reason: z.string().regex(/^[a-z_]{1,48}$/), atMs }).strict()).max(8),
+    counters: z.object({ plannerTurns: z.number().int().nonnegative(), tasksAdmitted: z.number().int().nonnegative(), replans: z.number().int().nonnegative() }).strict(),
+    savedAtMs: atMs,
+  })
+  .strict();
+export type CheckpointRecord = z.infer<typeof CheckpointRecordSchema>;
+
 export const SurvivalStoreBodySchema = z
   .object({
     scope: MemoryScopeSchema,
@@ -557,6 +671,8 @@ export const SurvivalStoreBodySchema = z
     interrupted: z.array(InterruptedDirectiveSchema).max(4),
     nextEpisode: z.number().int().positive(),
     evicted: z.number().int().nonnegative(),
+    /** C12 display-only checkpoint projections (newest kept). */
+    checkpoints: z.array(CheckpointRecordSchema).max(4).default([]),
   })
   .strict();
 export type SurvivalStoreBody = z.infer<typeof SurvivalStoreBodySchema>;
@@ -564,7 +680,8 @@ export type SurvivalStoreBody = z.infer<typeof SurvivalStoreBodySchema>;
 export const SurvivalStoreFileSchema = z
   .object({
     format: z.literal(SURVIVAL_FILE_FORMAT),
-    schemaVersion: z.literal(SURVIVAL_SCHEMA_VERSION),
+    /** v1 is read and migrated (see SURVIVAL_SCHEMA_VERSION); every new write is v2. */
+    schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(SURVIVAL_SCHEMA_VERSION)]),
     revision: z.number().int().positive(),
     writtenAtMs: atMs,
     checksum: z.string().regex(/^sha256:[0-9a-f]{64}$/),
@@ -913,8 +1030,15 @@ export interface SurvivalIncidentStatus {
   cause: { hazard: DeathCause['hazard']; translationKey?: string };
   phase: RecoveryPhase;
   status: RecoveryStatus;
-  missing: Array<{ key: string; count: number; state: ManifestItem['state'] }>;
+  /** `count`: units still unaccounted for (lost minus server-confirmed regains); `lost`/`regained` per item (C9/C10). */
+  missing: Array<{ key: string; count: number; state: ManifestItem['state']; lost?: number; regained?: number }>;
   regained: Array<{ key: string; count: number }>;
+  /** Kept through respawn (never regained/recovered evidence). */
+  retained?: Array<{ key: string; count: number }>;
+  /** C10: inventory effects NOT attributed to this incident's recovery. */
+  incidental?: Array<{ source: IncidentalEffect['source']; key?: string; count: number }>;
+  /** C9: an attempt's effects after its last durable revision are unknown (process ended mid-attempt). */
+  effectsUnknown?: boolean;
   manifestPartial: boolean;
   attempts: { used: number; max: number };
   budget: EpisodeBudget & { ceilings: { plannerTurns: number; tasks: number; replans: number; deadlineMs: number } };
@@ -931,6 +1055,8 @@ export interface SurvivalStatus {
   vitals?: { health: number; food: number; saturation: number; ageS: number };
   incidents: SurvivalIncidentStatus[];
   interrupted: Array<{ goalId: string; instruction: string; reason: string; continuation: InterruptedDirective['continuation']; state: InterruptedDirective['state']; ageS: number }>;
+  /** C12 display-only checkpoint records (other application sessions show as `restart_held`). */
+  checkpoints?: Array<{ goalId: string; instruction: string; state: CheckpointRecord['state']; stateReason: string; continuations: { used: number; max: number }; ageS: number }>;
   blocked: Array<{ routine: SurvivalRoutine; reason: string; detail: string; retryInS?: number }>;
   cooldowns: Array<{ routine: SurvivalRoutine; key?: string; remainingS: number }>;
   admissionsLastHour: number;

@@ -79,6 +79,14 @@ export class Packets {
   spawnItemWithoutStack(entityId: number, at = { x: 0, y: 64, z: 0 }): void {
     this.client.emit('spawn_entity', { entityId, type: ITEM_ENTITY_TYPE, x: at.x, y: at.y, z: at.z });
   }
+  /** Server collect packet (default collector: the bot, entity 42). */
+  collect(entityId: number, count: number, collector = 42): void {
+    this.client.emit('collect', { collectedEntityId: entityId, collectorEntityId: collector, pickupItemCount: count });
+  }
+  /** A non-item entity (e.g. an experience orb, type 70 here). */
+  spawnOther(entityId: number, at = { x: 0, y: 64, z: 0 }): void {
+    this.client.emit('spawn_entity', { entityId, type: 70, x: at.x, y: at.y, z: at.z });
+  }
   destroy(...entityIds: number[]): void {
     this.client.emit('entity_destroy', { entityIds });
   }
@@ -155,7 +163,7 @@ export interface Harness {
   snap: { value: ObservationSnapshot | undefined };
 }
 
-export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; root?: string; clock?: TestClock; farRoute?: () => string | undefined; pid?: number; connectionEpoch?: number; beforeRename?: (tmp: string) => void | Promise<void>; memory?: FakeMemory } = {}): Harness {
+export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; root?: string; clock?: TestClock; farRoute?: () => string | undefined; pid?: number; connectionEpoch?: number; beforeRename?: (tmp: string) => void | Promise<void>; memory?: FakeMemory; sessionId?: string } = {}): Harness {
   const clock = opts.clock ?? new TestClock();
   const root = opts.root ?? tempRoot();
   const memory = opts.memory ?? fakeMemory();
@@ -173,6 +181,7 @@ export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; 
     latestSnapshot: () => snap.value,
     ...(opts.farRoute ? { farRoute: opts.farRoute } : {}),
     store: { pid: opts.pid ?? 4242, isAlive: () => false, ...(opts.beforeRename ? { beforeRename: opts.beforeRename } : {}) },
+    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
   });
   service.open();
   const packets = new Packets();
@@ -228,6 +237,7 @@ export function sampleEpisode(over: Partial<RecoveryEpisode> = {}): RecoveryEpis
     cause: { kind: 'unknown', hazard: 'unknown' },
     lastAlive: { source: 'server_packets', frozenAt: 'combat_kill_packet', capturedAtMs: NOW, ageMsAtDeath: 5, stacks: [], clearingPacketsAfterFreeze: 0 },
     regained: [],
+    incidental: [],
     attempts: [],
     maxAttempts: 2,
     budget: { plannerTurns: 0, tasks: 0, replans: 0, admissions: 0, activeMs: 0 },

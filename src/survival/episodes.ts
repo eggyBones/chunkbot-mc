@@ -10,8 +10,10 @@ import type { MemoryScope } from '../contracts/memory.ts';
 import {
   SURVIVAL_BOUNDS,
   type Blocker,
+  type CheckpointRecord,
   type DeathCause,
   type HazardRecord,
+  type IncidentalEffect,
   type InterruptedDirective,
   type DropIdentity,
   type InventoryFacts,
@@ -25,6 +27,8 @@ import {
   type SurvivalConfig,
   type SurvivalStoreBody,
   type TrackedStack,
+  manifestRemaining,
+  manifestSought,
 } from '../contracts/survival.ts';
 import { destroysDrops } from './death-cause.ts';
 import { armorPoints, counts, isValuable, mk, sameDimension, strip, type SurvivalItemRegistry, isSafeFood } from './items.ts';
@@ -48,7 +52,7 @@ export class EpisodeBook {
   private readonly relatedLoss = new Map<string, TrackedStack[]>();
 
   constructor(scope: MemoryScope, nowMs: number, body?: SurvivalStoreBody) {
-    this.body = body ? structuredClone(body) : { scope, createdAtMs: nowMs, episodes: [], interrupted: [], nextEpisode: 1, evicted: 0 };
+    this.body = body ? structuredClone(body) : { scope, createdAtMs: nowMs, episodes: [], interrupted: [], nextEpisode: 1, evicted: 0, checkpoints: [] };
   }
 
   snapshot(): SurvivalStoreBody {
@@ -114,6 +118,7 @@ export class EpisodeBook {
       cause: { ...death.cause },
       lastAlive: structuredClone(death.lastAlive),
       regained: [],
+      incidental: [],
       attempts: [],
       maxAttempts: Math.min(cfg.recovery.maxAttempts, SURVIVAL_BOUNDS.maxAttemptsCeiling),
       budget: { plannerTurns: 0, tasks: 0, replans: 0, admissions: 0, activeMs: 0 },
@@ -164,7 +169,7 @@ export class EpisodeBook {
         const state: ManifestItem['state'] = destroy === 'void' || (destroy === 'burn' && !fireproof) ? 'likely_destroyed' : 'missing';
         const valuable = e.lastAlive.stacks.some((x) => x.key === key && isValuable(key, x.meta, valuableExtra));
         const identities = valuable ? lostIdentities(e.lastAlive.stacks.filter((x) => x.key === key), freshCounts ? (fresh?.stacks ?? []).filter((x) => x.key === key) : []) : undefined;
-        missing.push({ key, count: lost, valuable, metadata: s?.meta.metadata ?? 'unknown', state, ...(identities ? { identities } : {}) });
+        missing.push({ key, count: lost, regained: 0, valuable, metadata: s?.meta.metadata ?? 'unknown', state, ...(identities ? { identities } : {}) });
       }
       const partial = e.lastAlive.source !== 'server_packets' || !freshCounts || !immediateRespawn;
       e.manifest = {
@@ -204,8 +209,9 @@ export class EpisodeBook {
         if (lost <= 0) continue;
         const m = e.manifest.missing.find((x) => x.key === key && x.state !== 'likely_destroyed');
         if (m) {
+          // The lost count grows by the related loss; earlier regains stay recorded (C9: never decremented).
           m.count += lost;
-          m.state = 'missing';
+          m.state = (m.regained ?? 0) > 0 ? 'partially_regained' : 'missing';
           // Related losses carry their own identities; any unproven stack makes the whole key unproven.
           const rel = lostIdentities(related.filter((x) => x.key === key), (fresh?.stacks ?? []).filter((x) => x.key === key));
           if (m.valuable || related.some((x) => x.key === key && isValuable(key, x.meta, valuableExtra))) {
@@ -216,7 +222,7 @@ export class EpisodeBook {
         } else if (e.manifest.missing.length < SURVIVAL_BOUNDS.manifestItems) {
           const valuable = related.some((x) => x.key === key && isValuable(key, x.meta, valuableExtra));
           const identities = valuable ? lostIdentities(related.filter((x) => x.key === key), (fresh?.stacks ?? []).filter((x) => x.key === key)) : undefined;
-          e.manifest.missing.push({ key, count: lost, valuable, metadata: related.find((x) => x.key === key)?.meta.metadata ?? 'unknown', state: 'missing', ...(identities ? { identities } : {}) });
+          e.manifest.missing.push({ key, count: lost, regained: 0, valuable, metadata: related.find((x) => x.key === key)?.meta.metadata ?? 'unknown', state: 'missing', ...(identities ? { identities } : {}) });
         }
       }
       if (e.phase !== 'concluded') e.phase = 'ready';
@@ -230,37 +236,43 @@ export class EpisodeBook {
     return e.manifest;
   }
 
-  /** Outstanding items still sought (missing state only), after verified regains. */
+  /** Outstanding units still sought per key (lost minus server-confirmed regains; never destroyed/unknown). */
   sought(e: RecoveryEpisode): Map<string, number> {
     const out = new Map<string, number>();
-    for (const m of e.manifest?.missing ?? []) if (m.state === 'missing' && m.count > 0) out.set(m.key, m.count);
+    for (const m of e.manifest?.missing ?? []) if (manifestSought(m)) out.set(m.key, manifestRemaining(m));
     return out;
   }
 
-  /** A server-confirmed pickup of a scoped drop (key must still be sought). Returns the counted amount. */
   /** C3: may a drop with these server facts count as this incident's item? */
   identityStatus(e: RecoveryEpisode, key: string, meta: ItemMetadata | undefined): DropIdentity {
-    const m = e.manifest?.missing.find((x) => x.key === mk(key) && x.state === 'missing' && x.count > 0);
+    const m = e.manifest?.missing.find((x) => x.key === mk(key) && manifestSought(x));
     if (!m) return 'mismatch';
     if (!m.valuable) return 'not_required';
     if (!m.identities || !meta || meta.metadata !== 'server_slot' || !meta.digest) return 'unproven';
     return m.identities.some((i) => i.digest === meta.digest && i.count > 0) ? 'match' : 'mismatch';
   }
 
+  /**
+   * A server-confirmed pickup of a scoped drop (key must still be sought).
+   * Returns the counted amount. C9: the lost `count` is never decremented; the
+   * regain is recorded in `regained` (<= count), so the durable body stays valid
+   * when a whole key is regained.
+   */
   regain(e: RecoveryEpisode, key: string, count: number, nowMs: number, meta?: ItemMetadata): number {
-    const m = e.manifest?.missing.find((x) => x.key === mk(key) && x.state === 'missing');
-    if (!m || count <= 0) return 0;
+    const m = e.manifest?.missing.find((x) => x.key === mk(key) && manifestSought(x));
+    if (!m || !Number.isInteger(count) || count <= 0) return 0;
     const identity = this.identityStatus(e, key, meta);
     if (identity === 'mismatch' || identity === 'unproven') return 0;
-    let counted = Math.min(m.count, count);
+    let counted = Math.min(manifestRemaining(m), count);
     if (identity === 'match' && m.identities) {
       const i = m.identities.find((x) => x.digest === meta?.digest && x.count > 0) as { digest: string; count: number };
       counted = Math.min(counted, i.count);
       i.count -= counted;
       m.identities = m.identities.filter((x) => x.count > 0);
     }
-    m.count -= counted;
-    if (m.count === 0) m.state = 'regained';
+    if (counted <= 0) return 0;
+    m.regained = (m.regained ?? 0) + counted;
+    m.state = manifestRemaining(m) === 0 ? 'regained' : 'partially_regained';
     e.regained.push({ key: m.key, count: counted, atMs: nowMs, provenance: 'scoped_visible_drop' });
     if (e.regained.length > SURVIVAL_BOUNDS.regained) e.regained.splice(0, e.regained.length - SURVIVAL_BOUNDS.regained);
     const running = e.attempts.find((a) => a.endedAtMs === undefined);
@@ -286,7 +298,7 @@ export class EpisodeBook {
     if (e.attempts.some((a) => a.endedAtMs === undefined)) return undefined;
     const used = countedAttempts(e);
     if (used >= e.maxAttempts) return undefined;
-    const attempt: RecoveryAttempt = { attempt: used + 1, goalId, startedAtMs: nowMs, preparation, regained: 0, searchedSite: false };
+    const attempt: RecoveryAttempt = { attempt: used + 1, goalId, startedAtMs: nowMs, preparation, regained: 0, searchedSite: false, effectsUnknown: false };
     e.attempts.push(attempt);
     if (e.attempts.length > SURVIVAL_BOUNDS.attemptHistory) e.attempts.splice(0, e.attempts.length - SURVIVAL_BOUNDS.attemptHistory);
     e.phase = 'traveling';
@@ -325,6 +337,14 @@ export class EpisodeBook {
     e.phase = 'concluded';
     if (blocker) e.blocker = blocker;
     else delete e.blocker;
+    // C10: whatever is still sought when the bounded episode ends is UNACCOUNTED FOR (not proof of despawn).
+    for (const m of e.manifest?.missing ?? []) if (manifestSought(m)) m.state = 'unknown';
+    this.touch(e, nowMs);
+  }
+
+  /** C10: an inventory effect NOT attributed to recovery (bounded; never counted as regained/retained). */
+  addIncidental(e: RecoveryEpisode, effect: IncidentalEffect, nowMs: number): void {
+    e.incidental = [...(e.incidental ?? []), effect].slice(-SURVIVAL_BOUNDS.incidental);
     this.touch(e, nowMs);
   }
 
@@ -335,6 +355,16 @@ export class EpisodeBook {
 
   interrupted(): InterruptedDirective[] {
     return this.body.interrupted;
+  }
+
+  /** C12 display-only checkpoint records (upsert by goal id; newest 4 kept). */
+  checkpointRecords(): CheckpointRecord[] {
+    return this.body.checkpoints ?? [];
+  }
+
+  putCheckpointRecord(r: CheckpointRecord): void {
+    this.body.checkpoints = [r, ...(this.body.checkpoints ?? []).filter((x) => x.goalId !== r.goalId)].sort((a, b) => b.savedAtMs - a.savedAtMs).slice(0, 4);
+    this.version += 1;
   }
 
   addInterrupted(d: InterruptedDirective): void {
@@ -350,6 +380,8 @@ export class EpisodeBook {
         if (a.endedAtMs !== undefined) continue;
         a.endedAtMs = nowMs;
         a.outcome = 'restart_interrupted';
+        // C9: pickups after the last durable revision of this attempt are not known (never assumed either way).
+        a.effectsUnknown = true;
         n += 1;
       }
       if (n > 0 && isOpen(e) && e.phase !== 'awaiting_respawn') e.phase = 'ready';

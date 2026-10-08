@@ -182,6 +182,14 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
       if (!services.perception.withinTravel(t.site.at)) return precondition('outside_travel_bounds', 'the death site is outside the travel radius');
       const site = t.site.at;
       const bounds = services.perception.travelBounds();
+      const owner = { goalId: ctx.owner.goalId, goalEpoch: ctx.owner.goalEpoch, connectionEpoch: session.connectionEpoch };
+      const fence = { goalEpoch: owner.goalEpoch, connectionEpoch: owner.connectionEpoch, dimension: String(bot.game.dimension) };
+      // C10: walking can pick items up passively. Own acceptable drops near the path join a frozen plan (counted
+      // only from server collect packets); any other item entity within pickup range stops the walk first.
+      const plan: PickupPlan = pickupPlan(fence, new Map(t.sought));
+      const self = service.selfEntityId(owner.connectionEpoch) ?? bot.entity.id;
+      const startSeq = session.evidence.seq;
+      let guard: string | undefined;
       const r = await navigate(ctx.act, {
         goal: new goals.GoalNear(site.x, site.y, site.z, Math.max(1, t.arrivalWithin - 0.5)),
         arrived: () => distanceTo(bot, site) <= t.arrivalWithin + 0.25,
@@ -190,13 +198,26 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
         searchRadius: Math.min(services.limits.travelRadius, Math.ceil(distanceTo(bot, site)) + 24),
         inBounds: () => services.perception.withinTravel(bot.entity.position),
         ...(bounds ? { bounds } : {}),
+        abortIf: () => {
+          for (const id of itemsNear(bot as never, bot.entity.position, PICKUP_GUARD)) {
+            const why = plan.admit(id);
+            if (why) return (guard = why);
+          }
+          return undefined;
+        },
       });
       services.perception.recordVisited();
-      const evidence: Record<string, JsonValue> = { finalDistance: r.finalDistance, position: pos3(bot.entity.position), site: pos3(site), elapsedMs: r.elapsedMs, serverCorrections: r.corrections };
-      if (r.status === 'arrived') {
-        service.markArrived({ goalId: ctx.owner.goalId, goalEpoch: ctx.owner.goalEpoch, connectionEpoch: session.connectionEpoch });
-        return { status: 'succeeded', effect: `arrived within ${t.arrivalWithin} of the own death site (distance ${r.finalDistance}); the items there are NOT verified`, confirmation: 'client_only', evidence };
+      const settled = plan.settle(session.evidence.since(startSeq, 'collect', (e) => e.collectorEntityId === self), owner, ctx);
+      const evidence: Record<string, JsonValue> = { finalDistance: r.finalDistance, position: pos3(bot.entity.position), site: pos3(site), elapsedMs: r.elapsedMs, serverCorrections: r.corrections, plannedEntities: plan.size, countedRegained: settled.counted, incidentalCollected: settled.incidental, nonItemCollected: settled.nonItem };
+      const extra = `${settled.counted ? `; regained ${settled.counted} own item(s) on the way (server collect packets)` : ''}${settled.incidental.length ? `; ALSO passively collected loot that is NOT this incident's (${settled.incidental.join(', ')}), not counted` : ''}`;
+      const near = distanceTo(bot, site) <= t.arrivalWithin + 1.5;
+      if (r.status === 'arrived' || (guard === 'unrelated_loot_nearby' && near)) {
+        service.markArrived(owner);
+        const effect = r.status === 'arrived' ? `arrived within ${t.arrivalWithin} of the own death site (distance ${r.finalDistance}); the items there are NOT verified${extra}` : `stopped ${r.finalDistance} blocks from the own death site because loot that is not this incident's is within pickup range; the search continues from here${extra}`;
+        if (settled.incidental.length) return { status: 'partial', reason: 'incidental_pickup', effect, confirmation: 'server_packet', evidence };
+        return { status: 'succeeded', effect, confirmation: settled.counted ? 'server_packet' : 'client_only', evidence };
       }
+      if (guard) return failed(guard === 'target_changed' ? 'target_changed' : 'unrelated_loot_on_route', `stopped ${r.finalDistance} blocks from the death site: ${guard === 'target_changed' ? 'a planned own drop changed' : 'loot that is not this incident\'s lies within pickup range on the route'} (never walked over it)${extra}`, evidence, settled.counted || settled.incidental.length ? 'server_packet' : 'none');
       if (r.status === 'out_of_bounds') return failed('outside_travel_bounds', 'stopped at the travel radius on the way to the death site', evidence);
       if (r.status === 'no_path') return failed('no_safe_path', `no safe walking path to the death site; stopped ${r.finalDistance} blocks away`, evidence);
       return failed(r.status === 'timeout' ? 'timeout' : 'stuck', `${r.status} on the way to the death site (${r.finalDistance} blocks away)`, evidence);
@@ -231,6 +252,74 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
     }
     return out;
   };
+
+  /**
+   * C3/C10: the frozen pickup plan of ONE recovery action. An item entity
+   * joins the plan only when its server-stated stack is acceptable for the
+   * still-missing items (and is then frozen); anything else within pickup
+   * range is refused before the bot walks over it. `settle` counts only
+   * planned collects (regained prior possessions) and reports every other
+   * own collect as an incidental effect, never as regained.
+   */
+  type PickupPlan = ReturnType<typeof pickupPlan>;
+  const svc = service;
+  function pickupPlan(fence: { goalEpoch: number; connectionEpoch: number; dimension: string }, remaining: Map<string, number>) {
+    const plan = new Map<number, DropStackFacts>();
+    /** Server facts of entities seen near the bot (an unplanned collect is reported with its key when known). */
+    const seen = new Map<number, DropStackFacts>();
+    const freeze = (id: number, facts: DropStackFacts): void => {
+      plan.set(id, facts);
+      remaining.set(facts.key, (remaining.get(facts.key) ?? 0) - facts.count);
+    };
+    return {
+      get size(): number {
+        return plan.size;
+      },
+      /** Freezes an acceptable entity into the plan (target first). */
+      freeze,
+      /** undefined when the entity is (now) planned and unchanged; else why the action must stop. */
+      admit(id: number): string | undefined {
+        const now = svc.dropFacts(fence.connectionEpoch, id);
+        if (now) seen.set(id, now);
+        if (plan.has(id)) {
+          const was = plan.get(id) as DropStackFacts;
+          if (now && (now.count !== was.count || now.key !== was.key || now.meta.digest !== was.meta.digest)) return 'target_changed';
+          return undefined;
+        }
+        const c = classify(fence, id, remaining);
+        if (!c.ok) return 'unrelated_loot_nearby';
+        freeze(id, c.facts);
+        return undefined;
+      },
+      settle(collects: ReadonlyArray<{ collectedEntityId: number; count: number; atMs: number }>, owner: { goalId: string; goalEpoch: number; connectionEpoch: number }, ctx: { services: { ledger: { add(e: { kind: 'picked_up'; item: string; count: number; atMs: number }): void } }; candidate: { id: string }; progress(p: Record<string, JsonValue>, c: 'server_packet'): void }): { counted: number; incidental: string[]; nonItem: string[]; byKey: Record<string, number> } {
+        let counted = 0;
+        const incidental: string[] = [];
+        const nonItem: string[] = [];
+        const byKey: Record<string, number> = {};
+        for (const c of collects) {
+          const f = plan.get(c.collectedEntityId);
+          if (!f && svc.collectedKind(owner.connectionEpoch, c.collectedEntityId) === 'non_item') {
+            // T2: the server announced this entity as a non-item (e.g. an experience orb): not loot, not incidental.
+            nonItem.push(`entity ${c.collectedEntityId} x${c.count}`);
+            continue;
+          }
+          if (!f) {
+            const key = seen.get(c.collectedEntityId)?.key ?? svc.dropFacts(owner.connectionEpoch, c.collectedEntityId)?.key;
+            incidental.push(`${key ?? `entity ${c.collectedEntityId} (stack never stated)`} x${c.count}`);
+            if (key) ctx.services.ledger.add({ kind: 'picked_up', item: key, count: c.count, atMs: c.atMs });
+            svc.recordIncidental(owner, { ...(key ? { key } : {}), count: c.count, detail: `server collect packet of an item entity outside the frozen recovery plan${key ? '' : ' (its stack was never stated)'}` });
+            continue;
+          }
+          ctx.services.ledger.add({ kind: 'picked_up', item: f.key, count: c.count, atMs: c.atMs });
+          ctx.progress({ collected: f.key, count: c.count }, 'server_packet');
+          const n = svc.recordRegain(owner, f.key, Math.min(c.count, f.count), ctx.candidate.id, f.meta);
+          counted += n;
+          if (n > 0) byKey[f.key] = (byKey[f.key] ?? 0) + n;
+        }
+        return { counted, incidental, nonItem, byKey };
+      },
+    };
+  }
 
   const recoverLostItems: SkillDefinition<{ target: { snapshotId: string; handle: string } }> = {
     descriptor: {
@@ -322,22 +411,10 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
       const remaining = new Map(t.sought);
       const own = classify(fence, targetId, remaining);
       if (!own.ok) return precondition(own.reason, own.detail);
-      remaining.set(own.facts.key, (remaining.get(own.facts.key) ?? 0) - own.facts.count);
       /** Entities whose collection would be counted (target + acceptable neighbours), with their server facts frozen now. */
-      const plan = new Map<number, DropStackFacts>([[targetId, own.facts]]);
-      const admit = (id: number): string | undefined => {
-        if (plan.has(id)) {
-          const now = service.dropFacts(owner.connectionEpoch, id);
-          const was = plan.get(id) as DropStackFacts;
-          if (now && (now.count !== was.count || now.key !== was.key || now.meta.digest !== was.meta.digest)) return 'target_changed';
-          return undefined;
-        }
-        const c = classify(fence, id, remaining);
-        if (!c.ok) return 'unrelated_loot_nearby';
-        remaining.set(c.facts.key, (remaining.get(c.facts.key) ?? 0) - c.facts.count);
-        plan.set(id, c.facts);
-        return undefined;
-      };
+      const plan: PickupPlan = pickupPlan(fence, remaining);
+      plan.freeze(targetId, own.facts);
+      const admit = (id: number): string | undefined => plan.admit(id);
       for (const id of itemsNear(bot as never, live.position, PICKUP_GUARD)) {
         const why = admit(id);
         if (why) return precondition(why, why === 'unrelated_loot_nearby' ? 'other loot within pickup range of the drop is not this incident\'s (nothing was collected)' : 'the drop changed before collection');
@@ -373,21 +450,10 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
         },
       });
       const collects = session.evidence.since(startSeq, 'collect', (e) => e.collectorEntityId === self);
-      let counted = 0;
-      const unscoped: string[] = [];
-      for (const c of collects) {
-        const f = plan.get(c.collectedEntityId);
-        if (!f) {
-          unscoped.push(`entity ${c.collectedEntityId} x${c.count}`);
-          continue;
-        }
-        services.ledger.add({ kind: 'picked_up', item: f.key, count: c.count, atMs: c.atMs });
-        ctx.progress({ collected: f.key, count: c.count }, 'server_packet');
-        counted += service.recordRegain(owner, f.key, Math.min(c.count, f.count), ctx.candidate.id, f.meta);
-      }
+      const { counted, incidental: unscoped, nonItem, byKey } = plan.settle(collects, owner, ctx);
       const after = await confirmInventory(act, services);
       const delta = before && after ? (after.counts.get(own.facts.key) ?? 0) - (before.counts.get(own.facts.key) ?? 0) : null;
-      const evidence: Record<string, JsonValue> = { target: { key: own.facts.key, count: own.facts.count, digest: own.facts.meta.digest ?? null }, plannedEntities: plan.size, collects: collects.length, countedRegained: counted, unscopedCollected: unscoped, confirmedDelta: delta, position: pos3(bot.entity.position) };
+      const evidence: Record<string, JsonValue> = { target: { key: own.facts.key, count: own.facts.count, digest: own.facts.meta.digest ?? null }, plannedEntities: plan.size, collects: collects.length, countedRegained: counted, unscopedCollected: unscoped, nonItemCollected: nonItem, countedByKey: byKey, confirmedDelta: delta, position: pos3(bot.entity.position) };
       const target = collectedTarget();
       if (!target || target.collectorEntityId !== self) {
         if (guard === 'unrelated_loot_nearby') return failed('unrelated_loot_nearby', 'stopped: other loot came within pickup range on the way (nothing unrelated was intentionally collected)', evidence, collects.length ? 'server_packet' : 'none');
@@ -397,7 +463,8 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
         if (r.status === 'out_of_bounds') return failed('outside_travel_bounds', 'stopped at the travel radius before collecting', evidence);
         return failed(r.status === 'no_path' ? 'no_safe_path' : 'not_collected', `did not collect ${own.facts.key} (${r.status})`, evidence);
       }
-      const effect = `collected ${own.facts.key} x${target.count} (server collect packet); counted ${counted} as regained prior possessions (not new acquisition); confirmed inventory change ${delta ?? 'unknown'}`;
+      const countedText = Object.entries(byKey).map(([k, n]) => `${n} ${k}`).join(', ') || '0';
+      const effect = `collected ${own.facts.key} x${target.count} (server collect packet); counted as regained prior possessions (not new acquisition): ${countedText}${Object.keys(byKey).length > 1 ? ' (planned neighbouring own drops collected in the same action)' : ''}; confirmed ${own.facts.key} inventory change ${delta ?? 'unknown'}`;
       if (unscoped.length) return { status: 'partial', reason: 'unscoped_item_collected', effect: `${effect}; ALSO collected unplanned loot (${unscoped.join(', ')}), not counted`, confirmation: 'server_packet', evidence };
       return { status: 'succeeded', effect, confirmation: after ? 'server_sync' : 'server_packet', evidence };
     },

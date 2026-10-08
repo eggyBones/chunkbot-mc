@@ -11,7 +11,7 @@ import { cleanupRoots, sampleEpisode, tempRoot } from './survival-helpers.ts';
 after(cleanupRoots);
 
 const scope = { worldProfile: 'w', worldRevision: 1, botProfile: 'b' };
-const body = (n: number) => ({ scope, createdAtMs: 1, episodes: [sampleEpisode({ episodeId: `rep-${String(n).padStart(4, '0')}` })], interrupted: [], nextEpisode: n + 1, evicted: 0 });
+const body = (n: number) => ({ scope, createdAtMs: 1, episodes: [sampleEpisode({ episodeId: `rep-${String(n).padStart(4, '0')}` })], interrupted: [], nextEpisode: n + 1, evicted: 0, checkpoints: [] });
 const store = (dir: string, pid = 111, isAlive = () => false) => new SurvivalFileStore({ dir, scope, now: () => 5, pid, isAlive });
 
 describe('survival store', () => {
