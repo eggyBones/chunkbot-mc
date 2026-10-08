@@ -419,6 +419,10 @@ export interface SafetyGrant {
   readonly maxDisplacement: number;
   /** Work suspended when issued (informational; never authority). */
   readonly suspended: { goalId: string; goalEpoch: number } | null;
+  /** Authority basis at issue (the grant stays valid only while the CURRENT basis is not `none`). */
+  readonly basis: SafetyAuthorityBasis;
+  /** Defense steps only: the single code-bound visible target (never a model-supplied id). */
+  target: { entityId: number; key: string } | null;
   revoked?: string;
 }
 
@@ -555,7 +559,7 @@ export interface SafetyPort {
 /** Lifecycle/latch hooks (synchronous; never awaited on the revocation path). */
 export interface SafetyLifecyclePort {
   /** `onBotCreated`: attach the packet tracker before login (own id, air, health, equipment, damage). */
-  attachConnection(source: SafetyPacketSource, ctx: { connectionEpoch: number }): void;
+  attachConnection(source: SafetyPacketSource, ctx: { connectionEpoch: number; /** The bot's minecraft-data registry (`bot.registry`), read lazily per packet. */ registry: () => unknown }): void;
   /** Called by SkillRuntime.onLifecycle BEFORE lease/ledger invalidation: death/ended/dimension_change/respawn revoke the grant. */
   onLifecycle(event: GameLifecycleEvent): void;
   /**
