@@ -75,7 +75,7 @@ describe('MB-LOC-001-C4 declared footprint, flat baseline and restoration', () =
     assert.ok(!/rcon\(`tp /.test(code), 'no raw tp');
     const keys = [...code.matchAll(/(?:ownerAt\(|tp\([^,]+,)\s*'([A-Za-z0-9]+)'/g)].map((m) => m[1]!);
     assert.ok(keys.length >= 15);
-    for (const k of keys) assert.ok(k === 'netherRoof' || k in harness.TELEPORTS, `undeclared teleport key ${k}`);
+    for (const k of keys) assert.ok(k === 'netherRoof' || k in harness.TELEPORTS || k in harness.F1_TELEPORTS, `undeclared teleport key ${k}`);
     const ownerOffsets = [...code.matchAll(/'(owner[A-Za-z0-9]+)'/g)].map((m) => m[1]!);
     for (const k of ownerOffsets) assert.ok(k in harness.TELEPORTS, `undeclared ${k}`);
   });
@@ -115,6 +115,35 @@ describe('MB-LOC-001-C4 declared footprint, flat baseline and restoration', () =
     assert.ok(/G5-baseline/.test(runBody) && runBody.indexOf('G5-baseline') < runBody.indexOf("scenario('G5-lava'"), 'baseline proven before any scene write');
     assert.ok(/restoreFailures\.length === 0/.test(runBody), 'a failed restoration fails the whole report');
     assert.ok(/throw new Error\(`scene restoration not verified/.test(runBody), 'restoration is re-verified, not assumed');
+  });
+});
+
+describe('MB-LOC-002 G6 F1 direction-matrix footprint', () => {
+  const F = harness.LOCATOR_FOOTPRINT;
+  it('every G6 destination is in its own negative-coordinate box, disjoint from the other harness boxes; the bot envelope holds the base', () => {
+    for (const [name, at] of Object.entries(harness.F1_TELEPORTS)) {
+      assert.ok(harness.insideBox(F.f1Teleports, at), `${name} ${JSON.stringify(at)}`);
+      assert.ok(at.x < 0 && at.z < 0, `${name} uses negative coordinates`);
+    }
+    assert.ok(harness.insideBox(F.g6BotEnvelope, harness.F1_BASE));
+    const ov = (a: { x1: number; x2: number; z1: number; z2: number }, b: { x1: number; x2: number; z1: number; z2: number }) => a.x1 <= b.x2 && b.x1 <= a.x2 && a.z1 <= b.z2 && b.z1 <= a.z2;
+    for (const k of ['overworldTeleports', 'g3BotEnvelope', 'scene', 'sceneReference', 'netherTeleports'] as const) assert.ok(!ov(F.f1Teleports, F[k]), k);
+  });
+
+  it('eight directions plus wraparound at each variant distance; the true sectors of the destinations are all eight', () => {
+    const sectors = new Set<string>();
+    for (const b of harness.F1_BEARINGS) {
+      for (const v of ['vec3i', 'chunk', 'azimuth'] as const) {
+        const at = harness.F1_TELEPORTS[harness.f1Key(v, b)]!;
+        const d = Math.hypot(at.x - harness.F1_BASE.x, at.z - harness.F1_BASE.z);
+        assert.ok(Math.abs(d - harness.F1_DISTANCES[v]) < 1.5, `${v} ${b}: ${d}`);
+        const a = (Math.atan2(at.z - harness.F1_BASE.z, at.x - harness.F1_BASE.x) * 180) / Math.PI;
+        assert.ok(Math.abs(((a - b + 540) % 360) - 180) < 2, `${v} ${b}: bearing ${a.toFixed(1)}`);
+        sectors.add(['east', 'south_east', 'south', 'south_west', 'west', 'north_west', 'north', 'north_east'][((Math.round(a / 45) % 8) + 8) % 8]!);
+      }
+    }
+    assert.equal(sectors.size, 8);
+    assert.ok(harness.F1_DISTANCES.azimuth > 332 && harness.F1_DISTANCES.vec3i < 6 * 16, 'distances select azimuth / block precision at view distance 6');
   });
 });
 
