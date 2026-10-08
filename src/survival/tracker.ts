@@ -103,6 +103,7 @@ export class SurvivalTracker {
   private fullSync = false;
   private heldHotbar: number | undefined;
   private vitalsValue: Vitals | null = null;
+  private serverHealthSeen = false;
   private selfId: number | undefined;
   private state: LifeState = 'alive';
   /** Frozen last-alive copy while dying (before the death record is finalized). */
@@ -142,7 +143,7 @@ export class SurvivalTracker {
   }
 
   get connectionEpoch(): number | undefined {
-    return this.opts?.connectionEpoch;
+    return this.source ? this.opts?.connectionEpoch : undefined;
   }
 
   get life(): LifeState {
@@ -158,6 +159,7 @@ export class SurvivalTracker {
     this.invSource = 'unavailable';
     this.fullSync = false;
     this.vitalsValue = null;
+    this.serverHealthSeen = false;
     this.selfId = undefined;
     this.state = 'alive';
     this.frozen = undefined;
@@ -363,10 +365,16 @@ export class SurvivalTracker {
     return this.vitalsValue ? { ...this.vitalsValue } : null;
   }
 
+  /** Current attached connection's server health packet (a ready-time library seed is insufficient). */
+  serverVitals(): Vitals | null {
+    return this.source && this.serverHealthSeen ? this.vitals() : null;
+  }
+
   // ------------------------------------------------------------ vitals / death
 
   private onHealth(p: { health: number; food: number; foodSaturation: number }): void {
     if (!this.opts) return;
+    this.serverHealthSeen = true;
     this.vitalsValue = {
       health: Math.max(0, Math.min(1_024, Number(p.health) || 0)),
       food: Math.max(0, Math.min(20, Math.round(Number(p.food) || 0))),
@@ -486,6 +494,7 @@ export class SurvivalTracker {
       this.emit({ type: 'death_location_refined', captureId: death.captureId, site: { ...death.site } });
     }
     this.state = 'respawned_awaiting_sync';
+    this.serverHealthSeen = false;
     this.respawnSeen = true;
     this.respawnSync = undefined;
     this.fullSync = false;
@@ -493,7 +502,7 @@ export class SurvivalTracker {
 
   private maybeRespawnReady(): void {
     if (this.state !== 'respawned_awaiting_sync' || !this.respawnSeen || !this.fullSync || !this.opts) return;
-    if (!this.vitalsValue || this.vitalsValue.health <= 0) return;
+    if (!this.serverHealthSeen || !this.vitalsValue || this.vitalsValue.health <= 0) return;
     this.state = 'alive';
     const inv = this.inventory();
     const sync = this.respawnSync;

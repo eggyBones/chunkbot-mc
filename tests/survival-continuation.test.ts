@@ -17,7 +17,7 @@ import type { ContinuationCheckpoint } from '../src/contracts/continuation.ts';
 import type { SurvivalProposal } from '../src/contracts/survival.ts';
 import { survivalScopeDirectory } from '../src/survival/store.ts';
 import { continuationPort } from '../src/survival/wiring.ts';
-import { NETHER, OW, SESSION_OW, assessInput, cleanupRoots, dieWithItems, harness, settle, slot, snapshot, type Harness, type Slot } from './survival-helpers.ts';
+import { NETHER, OW, Packets, SESSION_OW, assessInput, cleanupRoots, dieWithItems, harness, settle, slot, snapshot, type Harness, type Slot } from './survival-helpers.ts';
 
 after(cleanupRoots);
 
@@ -251,6 +251,48 @@ describe('ContinuationSurvivalPort: incidentReturns', () => {
 });
 
 describe('ContinuationSurvivalPort: continuationGate (necessary recovery/support first, finite)', () => {
+  it('C12: initial attachment, ended connection and replacement seed cannot clear the gate without current server state', async () => {
+    const h = harness({ scoped: false });
+    const port = continuationPort(h.service)!;
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'attachment alone is not readiness');
+    h.packets.health(20, 20);
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'health alone is not a full inventory sync');
+    h.packets.inventory({});
+    assert.deepEqual(port.continuationGate(h.clock.now()), { kind: 'clear' });
+    h.service.onLifecycle({ type: 'ended', connectionEpoch: 1, reason: 'operator_stop', detail: 'test logout' });
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'detached old state is historical');
+    h.packets.inventory({});
+    h.packets.health(20, 20);
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'the old source has no listeners');
+    const current = new Packets();
+    h.service.attachConnection(current.client, {
+      connectionEpoch: 2, selfPosition: () => h.pos,
+      seed: { stacks: [], vitals: { health: 20, food: 20, saturation: 5 } },
+    });
+    current.login();
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'library seed cannot replace current server synchronization');
+    current.inventory({});
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'seeded health is not the replacement connection\'s health packet');
+    current.health(20, 20);
+    assert.deepEqual(port.continuationGate(h.clock.now()), { kind: 'clear' });
+    await h.service.close();
+    assert.equal(port.continuationGate(h.clock.now()).kind, 'wait', 'closing the service detaches readiness');
+  });
+
+  it('C12: a lifecycle death without a zero-health packet still requires health after respawn', async () => {
+    const h = harness({ scoped: false });
+    h.packets.inventory({});
+    h.packets.health(20, 20);
+    h.service.onLifecycle({ type: 'death', connectionEpoch: 1 });
+    h.packets.respawn({ dimensionName: OW, location: SITE_BLOCK });
+    h.service.onLifecycle({ type: 'respawn', connectionEpoch: 1, dimension: SESSION_OW });
+    h.packets.inventory({});
+    assert.equal((h.service.continuationGate(h.clock.now()) as { reason?: string }).reason, 'not_alive', 'last-alive health cannot serve as post-respawn health');
+    h.packets.health(20, 20);
+    assert.deepEqual(h.service.continuationGate(h.clock.now()), { kind: 'clear' });
+    await h.service.close();
+  });
+
   it('not alive -> wait; open recovery -> wait; running support -> wait; low health -> wait; none -> clear', async () => {
     const h = harness({ pid: 9020 });
     h.packets.health(20, 20);

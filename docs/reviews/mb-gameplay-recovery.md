@@ -32,13 +32,40 @@ Worker S: native DSH Codex, personal ChatGPT account, `gpt-6.1-sol` / `xhigh`, `
 | `266b648` | Trial findings T2/T4 corrected (collects of server-announced non-item entities such as experience orbs are never loot or incidental; the pickup effect names every counted key); `createSurvivalService` passes `sessionId` through |
 | `5a4b560` | Coordinator rerun recorded; `continuationPort()` accessor with a type pin to P's contract; the gate waits (`not_alive`) while no connection is attached; exact P integration inputs |
 | `c4ae9b5` | S-C12-R3: unknown own collect reaches incident lineage, including during recovery; exact positive/unknown/non-item packet and executor controls |
-| (first-sync correction, this commit) | C12 incident accounting starts at the first full respawn inventory sync; a pickup before positive health cannot disappear from return lineage |
+| `1046ebf` | C12 incident accounting starts at the first full respawn inventory sync; a pickup before positive health cannot disappear from return lineage |
+| (readiness correction, this commit) | C12 gate requires the attached connection's full server inventory and positive server health; detached/seeded/last-alive health cannot clear it |
 
 ### First-sync packet boundary correction
 
 After `c4ae9b5`, the remaining packet-order review reproduced a known own bread return of 4 arriving after the first empty respawn inventory sync but before positive health. The service waited for `respawn_ready` to assess incident loss, so the collect found no assessed incident and vanished; a later inventory sync could not repair that attribution. The discriminating regression exits 1 before correction (expected regained 4, actual empty).
 
-The tracker now emits an internal `respawn_inventory` event exactly at the first full sync. Only the read-only continuation incident book is assessed there. Recovery episode assessment, support admission and continuation readiness still await positive health; the later `respawn_ready` assessment is idempotent and cannot refill or replace the first-sync baseline. Four actual tracker/service packet controls cover exact own return, unannounced entity, announced item without stack, and known orb in that interval. A second full inventory sync cannot turn returned items into retained possessions. The public P port remains unchanged. Focused tests exit 0 (38/38) and typecheck exits 0; final offline checks are recorded with the completed native handoff.
+The tracker now emits an internal `respawn_inventory` event exactly at the first full sync. Only the read-only continuation incident book is assessed there. Recovery episode assessment, support admission and continuation readiness still await positive health; the later `respawn_ready` assessment is idempotent and cannot refill or replace the first-sync baseline. Four actual tracker/service packet controls cover exact own return, unannounced entity, announced item without stack, and known orb in that interval. A second full inventory sync cannot turn returned items into retained possessions. The public P port remains unchanged. Focused tests exit 0 (38/38) and typecheck exits 0; final offline checks are recorded below.
+
+### Current connection readiness correction
+
+The final S-owned boundary review reproduced `continuationGate: clear` on initial attachment before any inventory/health packets (test exit 1), and found that `detach()` retained the old epoch via tracker options. The gate now requires a current attached connection, a full `server_packets` inventory sync, and that connection's positive server health packet. Library seed data alone cannot clear it. The tracker exposes no current epoch after detach; its bounded death/return evidence remains historical. The existing shared `SkillRuntime.onBotCreated` hook attaches before login and must be retained by P, so join-time packets are observed rather than requiring an invented health refresh.
+
+A second adverse packet test (exit 1 before correction) demonstrated that a lifecycle death without a zero-health packet reused last-alive health at respawn. Post-death respawn now resets the server-health gate; `respawn_ready` requires a health packet after respawn. This changes neither incident evidence nor any goal, travel, task, provider or episode allowance. Packet controls cover initial partial readiness, logout/detach, late old-source packets, a new epoch with library seed, current inventory then current health, service close, and lifecycle death with no zero-health packet. Focused tracker/continuation/incidental/wiring tests exit 0 (47/47); typecheck exits 0.
+
+P integration remains exact: retain its newer common continuation declarations; use `continuationPort(skillRuntime.survival)`; pass `sessionId: options.store.runId` to `createSurvivalService` in `src/app/skill-runtime.ts`; retain pre-login attachment and synchronous death capture; read returns at each fresh rebind/evaluation and treat unknown lineage as held. P owns acquisition arithmetic, original immutable outcome/baseline/anchor/counters, stop/supersession and L's canonical route carry. No shared application or common continuation file was edited in this native correction chain. New world/provider acceptance requires the coordinator's named exclusive fixture lease and combined immutable build; all earlier S leases remain released.
+
+### Final native offline evidence
+
+All commands ran in S's own worktree with `/opt/homebrew/Cellar/node@24/24.21.0/bin` first in PATH; exit codes are direct tool results, without a success-hiding pipeline.
+
+| Check | Exit / evidence |
+| --- | --- |
+| `node --test --test-reporter=spec tests/survival-tracker.test.ts tests/survival-continuation.test.ts tests/survival-incidental.test.ts tests/survival-wiring.test.ts` | 0, 47/47 |
+| `npm run typecheck` | 0 |
+| `npm run build` | 0 |
+| `npm test` | 0, 816/816; complete log `var/native-recovery-review/final-npm-test-v2.log` (the earlier 815/815 pre-final-health-reset log is retained separately) |
+| `npm run doctor -- --config config/examples/fixture.json` | 0; `var/native-recovery-review/final-doctor-261.log` |
+| `npm run doctor -- --config config/examples/fixture-26.2.json` | 0; `var/native-recovery-review/final-doctor-262.log`; missing local fixture JRE/jar are warnings, no setup performed |
+| `git diff --check` | 0 |
+
+The final application source is in this readiness correction commit, on top of `1046ebf` and `c4ae9b5`, over the unchanged handoff `9f15b55` / preserved source `5a4b560`. Only S-owned tracker/service, three dedicated test files and this role review changed in the native chain. `dist/` was rebuilt from that final application source before these documentation-only evidence edits. Its 152 JavaScript files have path/content sha256 `3fa13d42aa5b2817960b12656b0b1115733e15b70bdd0f3903841c696b7ef015` (sorted relative path + NUL + contents + NUL). No application was launched from it; the accepted live artifact remains `d348d58`, logged out. No native draft, unrelated work, earlier commit, failed world report or fixture was reset/discarded.
+
+**S-owned state:** recovery/continuation service corrections implemented and verified offline, ready for combined coordinator review. **Remaining external dependencies:** P's common GoalEngine/accounting/wiring corrections and combined ordinary RC1–RC4 world/provider acceptance. This is not integrated-feature acceptance. No new world harness, real gameplay Codex/Jev turn, vault helper, controls, online account/config/cache or server/client/world operation ran during the native handoff.
 
 Owned paths changed:
 - `src/contracts/survival.ts`

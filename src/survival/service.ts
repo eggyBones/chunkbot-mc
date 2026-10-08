@@ -1089,9 +1089,13 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (!cfg) return { kind: 'clear' };
     if (this.tracker.connectionEpoch === undefined) return { kind: 'wait', reason: 'not_alive', detail: 'no connection is attached to survival yet (no fresh server state)' };
     if (this.tracker.life !== 'alive') return { kind: 'wait', reason: 'not_alive', detail: `awaiting fresh respawn state (${this.tracker.life})` };
+    const inv = this.tracker.inventory();
+    const v = this.tracker.serverVitals();
+    if (!inv || inv.source !== 'server_packets' || !inv.fullSync || inv.connectionEpoch !== this.tracker.connectionEpoch || !v || v.connectionEpoch !== this.tracker.connectionEpoch || v.health <= 0) {
+      return { kind: 'wait', reason: 'not_alive', detail: 'awaiting a full server inventory sync and positive server health on the attached connection' };
+    }
     if (this.active) return { kind: 'wait', reason: this.active.routine === 'death_recovery' ? 'recovery_open' : 'support_running', detail: `${this.active.routine} support goal ${this.active.goalId} is running` };
-    const v = this.tracker.vitals();
-    if (v && v.connectionEpoch === this.tracker.connectionEpoch && v.health > 0 && v.health <= this.options.limits.lowHealth) return { kind: 'wait', reason: 'support_running', detail: `health ${v.health} is at or below ${this.options.limits.lowHealth}: necessary eat/rest first` };
+    if (v.health <= this.options.limits.lowHealth) return { kind: 'wait', reason: 'support_running', detail: `health ${v.health} is at or below ${this.options.limits.lowHealth}: necessary eat/rest first` };
     const e = this.book?.open();
     if (e && isOpen(e)) {
       const b = this.blocks.get('death_recovery');
