@@ -2,7 +2,8 @@
 // and readiness sections. Text is bounded and passed through the evidence
 // redactor; nothing here calls an adapter beyond the engine's status read.
 import { isActiveGoalState, type Readiness } from '../contracts/index.ts';
-import { DASHBOARD_BOUNDS, type DashboardAutonomy, type DashboardGoal, type DashboardMemorySummary, type DashboardPause, type DashboardPendingDirective, type DashboardStatus } from '../contracts/dashboard.ts';
+import { DASHBOARD_BOUNDS, type DashboardAutonomy, type DashboardGoal, type DashboardMemorySummary, type DashboardPause, type DashboardPendingDirective, type DashboardSafety, type DashboardStatus } from '../contracts/dashboard.ts';
+import type { SafetyStatus } from '../contracts/safety.ts';
 import type { AutonomyStatus } from '../contracts/autonomy.ts';
 import type { LocatorHint } from '../contracts/locator.ts';
 import type { EngineStatus } from '../goals/goal-engine.ts';
@@ -13,6 +14,20 @@ export const clipText = (s: string, max: number = DASHBOARD_BOUNDS.text): string
   return r.length > max ? `${r.slice(0, max - 1)}…` : r;
 };
 const clipShort = (s: string) => clipText(s, DASHBOARD_BOUNDS.shortText);
+
+/** Read-only whitelist. Excludes raw vitals, threat identities, locations and history. */
+export function projectSafety(s: SafetyStatus, now: number): DashboardSafety {
+  return {
+    source: 'app_state', observedAtMs: now, connectionEpoch: s.connectionEpoch,
+    enabled: s.enabled, state: s.state, authority: s.authority.basis,
+    response: s.state === 'responding' ? s.episode?.response ?? null : null,
+    reason: s.blocker ? clipShort(s.blocker.reason) : s.episode ? clipShort(s.episode.hazards.join(', ')) : null,
+    detail: clipText(s.blocker?.detail ?? s.authority.detail),
+    episodeId: s.episode ? clipShort(s.episode.episodeId) : null,
+    suspendedGoalId: s.episode?.suspended ? clipShort(s.episode.suspended.goalId) : null,
+    counters: { episodes: s.counters.episodes, preemptions: s.counters.preemptions, retreats: s.counters.retreats, defenses: s.counters.defenses, attacksSent: s.counters.attacksSent, hitsConfirmed: s.counters.hitsConfirmed, defeatsConfirmed: s.counters.defeatsConfirmed },
+  };
+}
 
 export type DirectiveSection = DashboardStatus['directive'];
 export type ReadinessSection = DashboardStatus['readiness'];

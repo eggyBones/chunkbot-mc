@@ -5,11 +5,13 @@
 //   - loopback RCON for server-originated spoofs and lifecycle events.
 // No model inference is performed. Writes a report under var/live-check/.
 //
-//   npm run build && npm run fixture -- start && npm run live-check
+//   npm run live-check -- --fixture-lease <coordinator-granted-id> [--fixture 26.2]
+// Import-safe. The lease guard precedes report writes, secret reads and joins.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import mineflayer from 'mineflayer';
 import { DEFAULT_FIXTURE_PROFILE, PROJECT_ROOT, fixturePaths, fixturePins, fixtureProfileFromArgv } from '../src/app/fixture-layout.ts';
@@ -26,7 +28,6 @@ type Bot = ReturnType<typeof mineflayer.createBot>;
 const fx = fixturePaths(PROJECT_ROOT, FIXTURE_PINS);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${FIXTURE_SUFFIX}`);
-mkdirSync(outDir, { recursive: true });
 // Foundation checks run the INFERENCE-FREE profile (planner disabled by explicit configuration);
 // doctor still validates the normal fixture configuration with the real planner route.
 const FIXTURE_CONFIG = join(PROJECT_ROOT, FIXTURE_PINS.inferenceFreeConfig);
@@ -40,6 +41,35 @@ interface Result {
   evidence: string[];
 }
 const results: Result[] = [];
+
+export const RETIRED_REPLY_NOTICE = /^\[chunkbot\] Reply not applied: no question is pending: Chunkbot does not ask follow-up questions, so this reply was not applied and nothing changed\. Send a new instruction to change what Chunkbot is doing\.$/;
+export const IDLE_RESPAWN_NOTICE = /^\[chunkbot\] respawned in overworld; idle \(nothing to continue\)$/;
+type JournalEvent = Record<string, unknown>;
+
+/** Current no-question policy: terminal status and executable authority remain unchanged. */
+export function verifyNoQuestionOrReplay(lines: readonly string[], events: readonly JournalEvent[]): void {
+  const question = lines.find((l) => /^\[chunkbot\] (?:Question q\d+|.*\(reply: answer)|awaiting_owner/.test(l));
+  if (question) throw new Error(`unexpected executable question: ${question}`);
+  const authority = events.find((e) => ['goal_admitted', 'task_admitted', 'task_action', 'planner_request', 'goal_continuation_bound', 'continuation_checkpoint', 'continuation_readiness'].includes(String(e['type'])));
+  if (authority) throw new Error(`unexpected ownership/work: ${authority['type']}`);
+  if (lines.some((l) => /^\[status\] (?:task:|owner job |pending instruction:)/.test(l))) throw new Error('unexpected active task, held job or pending instruction');
+}
+
+export function verifyStaleReply(before: string, after: string, lines: readonly string[], events: readonly JournalEvent[], expected: { surface: string; ref: string | null }): void {
+  if (before !== after) throw new Error('stale reply changed goal status/counters');
+  if (!lines.some((l) => RETIRED_REPLY_NOTICE.test(l))) throw new Error('current declarative refusal not observed');
+  verifyNoQuestionOrReplay(lines, events);
+  const replies = events.filter((e) => e['type'] === 'answer_retired');
+  if (replies.length !== 1 || replies[0]!['surface'] !== expected.surface || replies[0]!['ref'] !== expected.ref || replies[0]!['activeGoalId'] !== null || replies[0]!['pendingIntentId'] !== null) throw new Error('stale reply did not positively retire without acquiring ownership');
+}
+
+export function verifyIdleRespawn(before: string, after: string, lines: readonly string[], beforeEvents: readonly JournalEvent[], events: readonly JournalEvent[]): void {
+  if (before !== after) throw new Error('idle lifecycle changed the previous terminal goal/counters');
+  if (beforeEvents.some((e) => e['type'] === 'continuation_checkpoint')) throw new Error('idle trial has a checkpoint precondition');
+  if (!lines.includes('[chunkbot] bot died; no active goal') || !lines.some((l) => IDLE_RESPAWN_NOTICE.test(l))) throw new Error('no-held-job death/respawn not observed');
+  if (!events.some((e) => e['type'] === 'connection_death') || !events.some((e) => e['type'] === 'connection_respawn')) throw new Error('death/respawn journal evidence missing');
+  verifyNoQuestionOrReplay(lines, events);
+}
 
 function rconPassword(): string {
   const line = readFileSync(fx.properties, 'utf8').split('\n').find((l) => l.startsWith('rcon.password='));
@@ -104,6 +134,15 @@ class CliProcess {
     this.cursor = this.lines.length;
   }
 
+  events(): JournalEvent[] {
+    const line = this.lines.find((l) => /^\[chunkbot\] run run-\S+; evidence: /.test(l));
+    const path = line?.split('; evidence: ')[1];
+    if (!path) throw new Error('owned CLI evidence path missing');
+    const absolute = resolve(PROJECT_ROOT, path);
+    if (!absolute.startsWith(`${join(outDir, 'data', 'runs')}/`)) throw new Error('CLI evidence path is outside this trial');
+    return readFileSync(absolute, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as JournalEvent);
+  }
+
   save(): void {
     writeFileSync(join(outDir, `${this.name}.log`), `${this.lines.join('\n')}\n`);
   }
@@ -159,7 +198,7 @@ async function waitMessage(messages: string[], pattern: RegExp, timeoutMs = 10_0
 function writeTempConfig(name: string, mutate: (cfg: Record<string, Record<string, unknown>>) => void): string {
   const cfg = JSON.parse(readFileSync(FIXTURE_CONFIG, 'utf8')) as Record<string, Record<string, unknown>>;
   mutate(cfg);
-  const dir = join(PROJECT_ROOT, 'var', 'live-check', stamp, 'config');
+  const dir = join(outDir, 'config');
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${name}.json`);
   writeFileSync(path, JSON.stringify(cfg, null, 2));
@@ -186,6 +225,7 @@ function serverLogLines(pattern: RegExp): string[] {
 }
 
 async function main(): Promise<void> {
+  mkdirSync(outDir, { recursive: true });
   process.stdout.write(`live-check: fixture ${FIXTURE_PINS.host}:${FIXTURE_PINS.port}; report dir ${outDir}\n`);
   const reply = await rcon('list').catch((error: unknown) => {
     throw new Error(`fixture not reachable over RCON (${String(error)}); run npm run fixture -- start`);
@@ -249,7 +289,14 @@ async function main(): Promise<void> {
   });
 
   // ---------------------------------------------------------------- main run session
-  const chunkbot = new CliProcess('run-main', ['run', '--no-autonomy', '--config', FIXTURE_CONFIG]);
+  const runConfig = writeTempConfig('run-main', (c) => { c['storage'] = { ...c['storage'], dataDir: join(outDir, 'data') }; });
+  const chunkbot = new CliProcess('run-main', ['run', '--no-autonomy', '--config', runConfig]);
+  const goalStatus = async (): Promise<string> => {
+    chunkbot.mark(); chunkbot.send('status');
+    const line = await chunkbot.waitFor(/^\[status\] goal: /);
+    await sleep(100); // Capture the remainder of the same bounded status output.
+    return line;
+  };
   let owner: { bot: Bot; messages: string[] } | undefined;
   let guest: { bot: Bot; messages: string[] } | undefined;
   try {
@@ -289,9 +336,14 @@ async function main(): Promise<void> {
       ev.push(await chunkbot.waitFor(/\[status\] goal: goal-\S+ blocked/));
       ev.push(`owner in-game reply: ${await waitMessage(owner.messages, /Status: ready/)}`);
       await sleep(400);
+      const before = await goalStatus();
+      const journalStart = chunkbot.events().length, linesStart = chunkbot.lines.length;
       owner.bot.chat('!chunkbot answer q1 iron');
-      ev.push(await chunkbot.waitFor(/Answer not applied: there is no pending question/));
+      ev.push(await chunkbot.waitFor(RETIRED_REPLY_NOTICE));
       await sleep(400);
+      const after = await goalStatus();
+      verifyStaleReply(before, after, chunkbot.lines.slice(linesStart), chunkbot.events().slice(journalStart), { surface: 'chat', ref: 'q1' });
+      ev.push('journal answer_retired; same terminal goal/counters; no question, pending job, task or ownership admission');
       owner.bot.chat('!chunkbot stop');
       ev.push(await chunkbot.waitFor(/Nothing to stop; Chunkbot is idle/));
       await sleep(400);
@@ -325,21 +377,31 @@ async function main(): Promise<void> {
       ev.push(await chunkbot.waitFor(/Instruction not accepted: instruction has \d+ characters; the limit is 500; nothing was changed/));
       chunkbot.send('status');
       ev.push(await chunkbot.waitFor(/\[status\] goal: goal-\S+ blocked "collect stone and smelt it into smooth stone"/));
+      const before = await goalStatus();
+      const journalStart = chunkbot.events().length, linesStart = chunkbot.lines.length;
       chunkbot.send('answer yes');
-      ev.push(await chunkbot.waitFor(/Answer not applied: there is no pending question/));
+      ev.push(await chunkbot.waitFor(RETIRED_REPLY_NOTICE));
+      const after = await goalStatus();
+      verifyStaleReply(before, after, chunkbot.lines.slice(linesStart), chunkbot.events().slice(journalStart), { surface: 'terminal', ref: null });
+      ev.push('journal answer_retired; same terminal goal/counters; no question/task/ownership alteration');
       chunkbot.send('stop');
       ev.push(await chunkbot.waitFor(/Nothing to stop; Chunkbot is idle/));
     });
 
     await check('L9', 'death and dimension change end ownership; respawn stays idle', async (ev) => {
+      const before = await goalStatus();
+      const beforeEvents = chunkbot.events(), linesStart = chunkbot.lines.length;
       chunkbot.mark();
       ev.push(`rcon kill: ${await rcon('kill Chunkbot')}`);
       ev.push(await chunkbot.waitFor(/bot died; no active goal/));
-      ev.push(await chunkbot.waitFor(/respawned in overworld; idle \(goals never auto-resume\)/));
+      ev.push(await chunkbot.waitFor(IDLE_RESPAWN_NOTICE));
       ev.push(`rcon tp nether: ${await rcon('execute in minecraft:the_nether run tp Chunkbot 0 128 0')}`);
       ev.push(await chunkbot.waitFor(/dimension changed overworld -> the_nether; no active goal/));
       ev.push(`rcon tp overworld: ${await rcon('execute in minecraft:overworld run tp Chunkbot 0 -60 0')}`);
       ev.push(await chunkbot.waitFor(/dimension changed the_nether -> overworld/));
+      const after = await goalStatus();
+      verifyIdleRespawn(before, after, chunkbot.lines.slice(linesStart), beforeEvents, chunkbot.events().slice(beforeEvents.length));
+      ev.push('no checkpoint existed or was created; death/respawn journal proven; terminal goal/counters unchanged; no goal/task replay');
     });
 
     await check('L10', 'kick ends the connection; /reconnect rejoins idle without resuming', async (ev) => {
@@ -501,7 +563,14 @@ async function main(): Promise<void> {
   process.exitCode = summary.passed === summary.total ? 0 : 1;
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`live-check error: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  const index = process.argv.indexOf('--fixture-lease');
+  const lease = index >= 0 ? process.argv[index + 1] : undefined;
+  if (!lease || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{2,80}$/.test(lease)) {
+    process.stderr.write('live-check refusing to run: pass --fixture-lease <coordinator-granted-id> before any fixture access.\n');
+    process.exitCode = 2;
+  } else main().catch((error: unknown) => {
+    process.stderr.write(`live-check error: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}

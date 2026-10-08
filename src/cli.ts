@@ -40,7 +40,7 @@ import type { PlannerPort, RunStore } from './contracts/index.ts';
 import { continuationPort } from './survival/wiring.ts';
 import { createDashboardRuntime, type DashboardRuntime } from './dashboard/runtime.ts';
 import { VIEWER_USAGE, parseViewerArgs, runDashboardViewer } from './dashboard/viewer-command.ts';
-import { memorySummaryFrom, pauseFrom, pendingDirectiveFrom } from './app/status.ts';
+import { memorySummaryFrom, pauseFrom, pendingDirectiveFrom, safetyStatusLine } from './app/status.ts';
 import { inspectMemory, renderMemoryReport } from './memory/report.ts';
 import { memoryRoot } from './memory/service.ts';
 import { join } from 'node:path';
@@ -324,6 +324,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     planner: () => codex,
     pending: () => pendingDirectiveFrom(appRef?.engine.status()),
     pause: () => pauseFrom(appRef?.engine.status()),
+    ...(runtime.safety ? { safety: () => runtime.safety!.status(systemClock.now()) } : {}),
     // MB-FLOW-001/003/LOC-001 read-only status (no controls).
     autonomy: () => {
       if (!supervisor) return undefined;
@@ -362,7 +363,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
       if (memory) lines.push(...memory.statusLines());
       if (runtime.safety) {
         const s = runtime.safety.status(systemClock.now());
-        lines.push(`safety: ${s.enabled ? runtime.safety.hold()?.detail ?? 'clear' : 'disabled'}; episodes ${s.counters.episodes}, retreats ${s.counters.retreats}, defenses ${s.counters.defenses}`);
+        lines.push(safetyStatusLine(s));
       }
       const navigation = runtime.routeView(appRef?.engine.currentEpoch ?? 0);
       lines.push(...navigationStatusLines(navigation?.status ?? null, { locator: runtime.locator?.ownerHint() ?? null, admission: navigation?.admission ?? null }));

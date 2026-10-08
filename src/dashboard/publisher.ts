@@ -23,7 +23,8 @@ import {
 } from '../contracts/dashboard.ts';
 import type { EvidenceEvent, GameLifecycleEvent, Readiness, Unsubscribe } from '../contracts/index.ts';
 import type { EngineStatus } from '../goals/goal-engine.ts';
-import { clipText, projectDirective, projectMemory, projectReadiness, type AutonomyView, type SurvivalSummary } from './directive.ts';
+import type { SafetyStatus } from '../contracts/safety.ts';
+import { clipText, projectDirective, projectMemory, projectReadiness, projectSafety, type AutonomyView, type SurvivalSummary } from './directive.ts';
 import { writeAtomic } from './files.ts';
 import { InventoryTracker, type EvidenceSource } from './inventory.ts';
 import { ChangeClock, readVitals, type BotView, type VitalsEvidence } from './vitals.ts';
@@ -62,6 +63,7 @@ export interface DashboardPublisherOptions {
   memory?: () => DashboardMemorySummary | undefined;
   /** MB-FLOW-003 seam. Undefined: not installed. */
   survival?: () => SurvivalSummary | undefined;
+  safety?: () => SafetyStatus | undefined;
   /** Pause latch seam (automatic work paused; manual goals may still run). Undefined: not reported. */
   pause?: () => DashboardPause | undefined;
   /** MB-FLOW-001 read-only supervisor status (undefined: not composed). */
@@ -241,6 +243,7 @@ export class DashboardStatusPublisher {
       }
     };
     const memory = safe(this.o.memory);
+    const safety = safe(this.o.safety);
     const ready = this.o.game.state === 'ready';
     const status: DashboardStatus = {
       schema: DASHBOARD_STATUS_SCHEMA,
@@ -270,11 +273,11 @@ export class DashboardStatusPublisher {
       },
       vitals: this.sections.vitals,
       inventory: this.sections.inventory,
-      directive: projectDirective(engine, safe(this.o.pending), safe(this.o.survival), safe(this.o.pause), safe(this.o.autonomy)),
+      directive: { ...projectDirective(engine, safe(this.o.pending), safe(this.o.survival), safe(this.o.pause), safe(this.o.autonomy)), ...(safety ? { safety: projectSafety(safety, now) } : {}) },
       readiness: projectReadiness(engine, decision),
       usage: { jev: this.usage.jevUsage(), planner: this.usage.plannerUsage() },
       memory: !this.o.memory ? unknown('memory feature not installed') : memory ? known(projectMemory(memory), 'app_state', now) : unknown('memory summary unavailable'),
-      integrations: { handoff: Boolean(this.o.pending), memory: Boolean(this.o.memory), survival: Boolean(this.o.survival), pause: Boolean(this.o.pause), autonomy: Boolean(this.o.autonomy) },
+      integrations: { handoff: Boolean(this.o.pending), memory: Boolean(this.o.memory), survival: Boolean(this.o.survival), pause: Boolean(this.o.pause), autonomy: Boolean(this.o.autonomy), safety: Boolean(this.o.safety) },
     };
     return status;
   }
