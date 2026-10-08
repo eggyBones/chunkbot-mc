@@ -13,7 +13,7 @@ import { offlinePlayerUuid } from '../src/game/identity.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { ackSequenced, evidenceFor, fakeClient, fakeMineflayerBot, vec3 } from './skill-fakes.ts';
 
-function composition(moving: () => boolean, policy: { maxTotalDistance?: number; hintMaxAgeMs?: number } = {}) {
+function composition(moving: () => boolean, policy: { maxTotalDistance?: number; hintMaxAgeMs?: number; fixedDestination?: boolean } = {}) {
   const client = fakeClient((name, data) => {
     if (name === 'window_click' && data['stateId'] === -1) setImmediate(() => client.emit('window_items', { windowId: 0, stateId: 3, items: Array.from({ length: 46 }, () => ({ itemCount: 0 })) }));
     ackSequenced(client, name, data);
@@ -37,13 +37,13 @@ function composition(moving: () => boolean, policy: { maxTotalDistance?: number;
   config.limits.noProgressMs = 700; // shorter than a seeking window: reproduces the actual seam
   config.limits.observationRadius = 16;
   config.limits.travelRadius = 8;
-  config.locator = LocatorConfigSchema.parse({ ...(policy.hintMaxAgeMs ? { hintMaxAgeMs: policy.hintMaxAgeMs } : {}), routes: { legRadius: 32, maxLegs: 4, maxTotalDistance: policy.maxTotalDistance ?? 256, maxRouteMs: 20_000 } });
+  config.locator = LocatorConfigSchema.parse({ ...(policy.hintMaxAgeMs ? { hintMaxAgeMs: policy.hintMaxAgeMs } : {}), routes: { ...(policy.fixedDestination ? { destinations: ['owner', 'owner_destination'] } : {}), legRadius: 32, maxLegs: 4, maxTotalDistance: policy.maxTotalDistance ?? 256, maxRouteMs: 20_000 } });
   const runtime = new SkillRuntime({ config, session: () => session, connectionEpoch: () => session.connectionEpoch, goalEpoch: () => epoch, diagnosticCurrent: () => false, admission: () => ({ serverOnlineMode: false }), store, clock: systemClock, ids: sequentialIds(), decision, emitTask: (kind) => onTaskEvent(kind), features: { locator: true } });
   runtime.onBotCreated(fake.bot, 1);
   client.emit('login', {});
   runtime.onLifecycle({ type: 'ready', connectionEpoch: 1, info: { serverVersion: '26.1.2', protocolVersion: 775, dimension: 'overworld', position: { x: 0.5, y: 0, z: 0.5 }, gameMode: 'survival', serverOnlineMode: false } });
   const now = Date.now();
-  runtime.onGoalAdmitted({ goalId: 'goal-0001', epoch: 1, admittedAtMs: now, deadlineAtMs: now + 20_000, source: { kind: 'owner' }, instruction: 'arbitrary open-ended owner instruction' });
+  runtime.onGoalAdmitted({ goalId: 'goal-0001', epoch: 1, admittedAtMs: now, deadlineAtMs: now + 20_000, source: { kind: 'owner' }, instruction: 'arbitrary open-ended owner instruction', ...(policy.fixedDestination ? { ownerCoordinates: [{ x: 120.5, y: 0, z: 0.5, source: 'instruction' as const }] } : {}) });
   let lastStatementAt = 0;
   const cue = () => { lastStatementAt = Date.now(); client.emit('tracked_waypoint', { operation: 'track', waypoint: { hasUUID: true, uuid, icon: { style: 'minecraft:default' }, type: 'vec3i', data: { x: 2000, y: 0, z: 0 } } }); };
   cue();
@@ -58,6 +58,13 @@ function composition(moving: () => boolean, policy: { maxTotalDistance?: number;
   const statements = setInterval(() => { if (refresh) cue(); }, 100);
   const abort = new AbortController();
   const spec: TaskSpec = { objective: 'Maintain proximity to the owner.', decisionInstruction: 'Use an offered option.', allowedCapabilities: ['follow_entity', 'move_near', 'seek_owner'], targetSelectors: [{ kind: 'owner' }], parameters: { durationMs: 1_000 }, completion: { predicate: 'near_target', target: { kind: 'owner' }, within: 3 } };
+  if (policy.fixedDestination) {
+    spec.objective = 'Perform an open-ended task with a supplied destination.';
+    spec.allowedCapabilities = ['route_travel'];
+    spec.targetSelectors = [{ kind: 'owner_destination', dimension: 'overworld', at: { x: 120.5, y: 0, z: 0.5 }, ownerText: '120.5 0 0.5' }];
+    // An unrelated completion remains unsatisfied. Motion cannot credit items.
+    spec.completion = { predicate: 'inventory_amount', selector: 'minecraft:bread', mode: 'possess', atLeast: 1 };
+  }
   const task: AdmittedTask = { goalId: 'goal-0001', goalEpoch: 1, taskId: 'task-0001', mode: 'maintain', spec, signal: abort.signal, isCurrent: () => epoch === 1 && !abort.signal.aborted };
   return { runtime, fake, client, session, store, abort, task, pathfinder, onTaskEvent: (f: typeof onTaskEvent) => { onTaskEvent = f; }, decisions: () => decisions, expireCue: () => { refresh = false; return lastStatementAt; }, withdraw: () => { refresh = false; client.emit('tracked_waypoint', { operation: 'untrack', waypoint: { hasUUID: true, uuid, icon: { style: 'minecraft:default' }, type: 'empty' } }); }, replace: () => { epoch = 2; runtime.leases.revokeCurrent('new_goal'); }, close: () => { clearInterval(physical); clearInterval(statements); abort.abort(); runtime.onLifecycle({ type: 'ended', connectionEpoch: 1, reason: 'operator_stop', detail: 'test cleanup' }); session.evidence.detach(); } };
 }
@@ -194,5 +201,42 @@ describe('P-LOC-R2 owned motion through production SkillRuntime/TaskRuntime', ()
       assert.equal(result.status, interruption === 'withdraw' ? 'blocked' : 'cancelled');
       assert.equal(h.runtime.leases.current, undefined); assert.equal(h.pathfinder.goal, null);
     } finally { clearTimeout(timeout); h.close(); }
+  });
+});
+
+describe('fixed destinations through the same production task/executor motion seam', () => {
+  it('useful current route motion continues locally without owner cues or inventory/completion credit', async () => {
+    const h = composition(() => true, { fixedDestination: true });
+    h.task.mode = 'complete'; h.withdraw();
+    const original = structuredClone(h.task.spec), auth = structuredClone(h.runtime.routes!.authorization({ goalEpoch: 1, connectionEpoch: 1, dimension: 'overworld' }));
+    let continued = false;
+    h.onTaskEvent((kind) => { if (kind === 'task_local_continuation') continued = true; if (kind === 'task_motion_progress' && continued) h.abort.abort(new Error('owner_stop')); });
+    const timer = setTimeout(() => h.abort.abort(new Error('test_timeout')), 9_000);
+    try {
+      const result = await h.runtime.tasks.run(h.task);
+      assert.equal(result.status, 'cancelled'); assert.equal(h.decisions(), 1);
+      assert.ok(result.localContinuations >= 1, JSON.stringify(result));
+      assert.ok(h.store.events.some((e) => e.type === 'skill_outcome' && e['capability'] === 'route_travel' && e['reason'] === 'route_window_elapsed' && e['confirmation'] === 'client_only'));
+      const receipts = h.store.events.filter((e) => e.type === 'task_motion_progress');
+      assert.ok(receipts.length >= 2 && receipts.every((e) => e['provenance'] === 'client_only'));
+      assert.ok(h.store.events.filter((e) => e.type === 'task_completion').every((e) => e['status'] !== 'satisfied'));
+      assert.equal(h.runtime.locator!.ownerHint().actionable, false);
+      assert.deepEqual(h.task.spec, original); assert.deepEqual(h.runtime.routes!.authorization({ goalEpoch: 1, connectionEpoch: 1, dimension: 'overworld' }), auth);
+      const status = h.runtime.routes!.status(1)!;
+      assert.ok(status.legsUsed > 0 && status.distanceUsed > 0 && status.distanceUsed < status.maxTotalDistance);
+      assert.equal(h.runtime.ledger.result(String(receipts[0]!['actionId'])), undefined);
+      assert.ok(receipts.every((e) => !JSON.stringify(e).includes('120.5')), 'private destination never enters motion telemetry');
+      assert.equal(h.runtime.leases.current, undefined); assert.equal(h.pathfinder.goal, null);
+    } finally { clearTimeout(timer); h.close(); }
+  });
+  it('a stagnant fixed-destination window still blocks instead of manufacturing progress from its elapsed outcome', async () => {
+    const h = composition(() => false, { fixedDestination: true }); h.task.mode = 'complete'; h.withdraw();
+    const timer = setTimeout(() => h.abort.abort(new Error('test_timeout')), 9_000);
+    try {
+      const result = await h.runtime.tasks.run(h.task);
+      assert.equal(result.status, 'blocked'); assert.equal(result.reason, 'no_progress'); assert.equal(h.decisions(), 1);
+      assert.equal(h.store.events.filter((e) => e.type === 'task_motion_progress').length, 0);
+      assert.equal(h.runtime.leases.current, undefined); assert.equal(h.pathfinder.goal, null);
+    } finally { clearTimeout(timer); h.close(); }
   });
 });
