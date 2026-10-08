@@ -33,6 +33,11 @@ export interface ObserverSample {
   runId: string;
   atMs: number; serverAtMs: number; bot: Point; owner: Point | null;
   snapshot: Row; dashboard: Row; scenario: string;
+  capture?: {
+    requestedAtMs: number; receivedAtMs: number; runId: string;
+    connectionEpochBefore: number; connectionEpochAfter: number;
+    before: OwnerServerRead; after: OwnerServerRead;
+  };
 }
 export interface Trip { fromMs: number; toMs: number; goalId: string; goalEpoch: number; connectionEpoch: number }
 
@@ -63,14 +68,60 @@ export function reacquisitionProof(events: readonly Row[], observations: readonl
   return { pass: errors.length === 0, errors, actionIds: authorized.map((a) => a.actionId), hiddenSamples: hidden.length, visibleSamples: visible.length };
 }
 
-export interface HistoryProof { runId: string; anchorId: string; at: Point; dimension: string; connectionEpoch: number; observedAtMs: number; snapshotId: string; serverAtMs: number }
+export interface OwnerIdentity { name: string; uuid: string }
+export interface OwnerServerRead extends OwnerIdentity {
+  at: Point; dimension: string; fromMs: number; toMs: number;
+  replies: { position: string; uuid: string; dimension: string };
+}
 
-/** Only history co-stated with an actual visible owner AND independently sampled server position is trusted. */
-export function verifiedHistory(observations: readonly ObserverSample[]): HistoryProof[] {
+/** Parse only successful named-player readbacks; errors/absence are never coordinates or identity. */
+export function parseOwnerServerRead(name: string, replies: OwnerServerRead['replies'], fromMs: number, toMs: number): OwnerServerRead {
+  const data = (reply: string) => {
+    const prefix = `${name} has the following entity data: `;
+    if (!reply.startsWith(prefix)) throw new Error(`unverified server read for ${name}`);
+    return reply.slice(prefix.length).trim();
+  };
+  const pos = /^\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]$/.exec(data(replies.position));
+  const ids = /^\[I;\s*(-?\d+),\s*(-?\d+),\s*(-?\d+),\s*(-?\d+)\]$/.exec(data(replies.uuid));
+  const dimension = /^"minecraft:([a-z_]+)"$/.exec(data(replies.dimension));
+  if (!pos || !ids || !dimension) throw new Error(`unreadable server point/UUID/dimension for ${name}`);
+  const at = { x: Number(pos[1]), y: Number(pos[2]), z: Number(pos[3]) };
+  const words = ids.slice(1).map(Number);
+  if (!point(at) || words.some((n) => !Number.isInteger(n) || n < -2_147_483_648 || n > 2_147_483_647)) throw new Error('invalid server point/UUID');
+  const hex = words.map((n) => (n >>> 0).toString(16).padStart(8, '0')).join('');
+  const uuid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return { name, uuid, at, dimension: dimension[1]!, fromMs, toMs, replies };
+}
+
+export interface HistoryProof {
+  runId: string; anchorId: string; at: Point; dimension: string; connectionEpoch: number;
+  observedAtMs: number; snapshotId: string; serverAtMs: number; goalEpoch: number;
+  ownerIdentity: OwnerIdentity; ownerHandle: string; capture: NonNullable<ObserverSample['capture']>;
+}
+
+/** Snapshot start precedes remember(). Its timestamp must lie INSIDE the actual bounded read, never beyond read completion. */
+export function verifiedHistory(observations: readonly ObserverSample[], ownerIdentity: OwnerIdentity): HistoryProof[] {
   return observations.flatMap((o) => {
-    const s = o.snapshot;
-    if (s.owner?.visible !== true || !point(s.owner.at) || !o.owner || !same(s.owner.at, o.owner) || Math.abs(s.takenAtMs - o.serverAtMs) > 1_500 || distance(o.bot, o.owner) > 32.2) return [];
-    return (s.remembered ?? []).filter((r: Row) => r.label === 'owner last seen' && r.source === 'observed' && point(r.at) && same(r.at, s.owner.at) && dim(r.dimension) === dim(s.dimension) && r.observedAtMs <= s.takenAtMs && s.takenAtMs - r.observedAtMs <= 1_500).map((r: Row) => ({ runId: o.runId, anchorId: r.anchorId, at: r.at, dimension: dim(r.dimension), connectionEpoch: s.connectionEpoch, observedAtMs: r.observedAtMs, snapshotId: s.id, serverAtMs: o.serverAtMs }));
+    const s = o.snapshot, c = o.capture;
+    if (!c || c.runId !== o.runId || c.connectionEpochBefore !== s.connectionEpoch || c.connectionEpochAfter !== s.connectionEpoch) return [];
+    if (o.atMs !== s.takenAtMs || typeof s.id !== 'string' || !s.id || !Number.isInteger(s.connectionEpoch) || s.connectionEpoch < 1) return [];
+    // Reparse retained raw replies; caller-supplied point/identity labels alone cannot prove anything.
+    let before: OwnerServerRead, after: OwnerServerRead;
+    try {
+      before = parseOwnerServerRead(ownerIdentity.name, c.before.replies, c.before.fromMs, c.before.toMs);
+      after = parseOwnerServerRead(ownerIdentity.name, c.after.replies, c.after.fromMs, c.after.toMs);
+    } catch { return []; }
+    if ([before, after].some((r, i) => {
+      const stated = i === 0 ? c.before : c.after;
+      return stated.name !== r.name || stated.uuid !== r.uuid || stated.dimension !== r.dimension || !point(stated.at) || distance(stated.at, r.at) > 0.000001;
+    })) return [];
+    if ([before, after].some((r) => r.uuid !== ownerIdentity.uuid || dim(r.dimension) !== dim(s.dimension))) return [];
+    const times = [before.fromMs, before.toMs, c.requestedAtMs, s.takenAtMs, c.receivedAtMs, after.fromMs, after.toMs];
+    if (times.some((t, i) => !Number.isFinite(t) || (i > 0 && t < times[i - 1]!)) || after.toMs - before.fromMs > 1_500) return [];
+    if (s.owner?.visible !== true || !point(s.owner.at) || !o.owner || !same(s.owner.at, before.at) || !same(o.owner, before.at) || distance(before.at, after.at) > 0.000001 || o.serverAtMs !== before.toMs || distance(o.bot, before.at) > 32.2) return [];
+    const entity = (s.entities ?? []).find((e: Row) => e.label === 'owner' && e.key === 'minecraft:player' && typeof e.handle === 'string' && point(e.at) && same(e.at, s.owner.at));
+    if (!entity || !Number.isInteger(s.goalEpoch)) return [];
+    return (s.remembered ?? []).filter((r: Row) => r.label === 'owner last seen' && r.source === 'observed' && typeof r.anchorId === 'string' && point(r.at) && same(r.at, s.owner.at) && dim(r.dimension) === dim(s.dimension) && Number.isFinite(r.observedAtMs) && r.observedAtMs >= s.takenAtMs && r.observedAtMs <= c.receivedAtMs).map((r: Row) => ({ runId: o.runId, anchorId: r.anchorId, at: r.at, dimension: dim(r.dimension), connectionEpoch: s.connectionEpoch, goalEpoch: s.goalEpoch, observedAtMs: r.observedAtMs, snapshotId: s.id, serverAtMs: o.serverAtMs, ownerIdentity, ownerHandle: entity.handle, capture: c }));
   });
 }
 
@@ -82,7 +133,7 @@ export function parsePlannerInput(text: string): Row {
 }
 
 /** Keep the old numeric match strength, but authorize each occurrence with its exact field/point provenance. */
-export function privacyOracle(input: Row, context: { runId: string; atMs: number; owner: Point; bot: Point; connectionEpoch: number; dimension: string; history: readonly HistoryProof[] }): { findings: PrivacyMatch[]; allowed: PrivacyMatch[] } {
+export function privacyOracle(input: Row, context: { runId: string; atMs: number; owner: Point; bot: Point; ownerIdentity: OwnerIdentity; connectionEpoch: number; dimension: string; history: readonly HistoryProof[] }): { findings: PrivacyMatch[]; allowed: PrivacyMatch[] } {
   const findings: PrivacyMatch[] = [], allowed: PrivacyMatch[] = [];
   const values = new Set<number>();
   for (const v of [context.owner.x, context.owner.z]) for (const b of [Math.floor(v), Math.round(v)]) for (const d of [-1, 0, 1]) values.add(b + d);
@@ -95,12 +146,13 @@ export function privacyOracle(input: Row, context: { runId: string; atMs: number
       let proof: HistoryProof | undefined;
       if (historical && point(row.at) && row.source === 'observed' && Number.isFinite(row.ageSeconds) && row.ageSeconds > 0) {
         const observed = context.atMs - row.ageSeconds * 1_000;
-        proof = context.history.find((h) => h.runId === context.runId && h.anchorId === row.anchorId && h.connectionEpoch === context.connectionEpoch && dim(row.dimension) === h.dimension && h.dimension === dim(context.dimension) && same(h.at, row.at) && h.observedAtMs < context.atMs && h.serverAtMs < context.atMs && Math.abs(h.observedAtMs - observed) <= 1_500);
+        proof = context.history.find((h) => h.runId === context.runId && h.ownerIdentity.name === context.ownerIdentity.name && h.ownerIdentity.uuid === context.ownerIdentity.uuid && h.anchorId === row.anchorId && h.connectionEpoch === context.connectionEpoch && dim(row.dimension) === h.dimension && h.dimension === dim(context.dimension) && same(h.at, row.at) && h.observedAtMs < context.atMs && h.serverAtMs < context.atMs && h.capture.after.toMs < context.atMs && Math.abs(h.observedAtMs - observed) <= 1_500);
       }
       if (historical && !proof) findings.push({ path, value: JSON.stringify(row.at), reason: 'owner history lacks earlier visible observation/server proof' });
       for (const [k, x] of Object.entries(row)) {
         if (k === 'at' && point(x) && historical && proof) {
           for (const axis of ['x', 'y', 'z'] as const) if (matches(x[axis])) allowed.push({ path: `${path}.at.${axis}`, value: String(x[axis]), reason: 'verified earlier visible owner', evidence: proof });
+          allowed.push({ path, value: JSON.stringify(x), reason: 'verified earlier visible owner history (not current presence)', evidence: proof });
           for (const [extra, value] of Object.entries(x)) if (!['x', 'y', 'z'].includes(extra)) visit(value, `${path}.at.${extra}`, x, extra);
         } else visit(x, path ? `${path}.${k}` : k, row, k);
       }
