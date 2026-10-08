@@ -73,7 +73,7 @@ import { SkillRegistry } from '../src/execution/registry.ts';
 import { MineflayerConnection } from '../src/game/connection.ts';
 import { createSafetyRuntime } from '../src/safety/wiring.ts';
 import type { SafetyService } from '../src/safety/service.ts';
-import type { SessionSafetyReader } from '../src/safety/adapter.ts';
+import { exactSafetyVersion, type SafetySession, type SessionSafetyReader } from '../src/safety/adapter.ts';
 import { SafetyTrialJournal, cleanupOnce, parseEntityTest, parseForceload, sameChunks } from '../src/safety/trial-journal.ts';
 import { allSkills } from '../src/skills/index.ts';
 import { safetySkills } from '../src/skills/safety.ts';
@@ -596,7 +596,8 @@ class Gate {
         }),
         plan: (self, visible) => planSafety(self, visible, this.safety.policyContext(self)),
       });
-      last = { ...facts, damage: [...this.safety.tracker.damage], counters: { ...this.safety.counters }, pairing: { clientVersion: s.bot._client.version, botVersion: s.bot.version, counts: { ...this.safety.tracker.counts }, visible: facts.visible.map((e) => ({ entityId: e.entityId, proof: this.safety.tracker.pairingEvidence(e.entityId) })) } };
+      const reported = (s as SafetySession).serverReported;
+      last = { ...facts, damage: [...this.safety.tracker.damage], counters: { ...this.safety.counters }, pairing: { clientVersion: s.bot._client.version, botVersion: s.bot.version, serverReported: reported ? { ...reported } : null, exactVersion: exactSafetyVersion(s.bot, reported) ?? null, counts: { ...this.safety.tracker.counts }, visible: facts.visible.map((e) => ({ entityId: e.entityId, proof: this.safety.tracker.pairingEvidence(e.entityId) })) } };
       return facts.refusals.length === 0;
     };
     await this.waitFor('exact isolated mob prerequisites', snapshot, ms).catch((error: unknown) => {

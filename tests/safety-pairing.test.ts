@@ -1,27 +1,27 @@
-// R8: installed byte decoder, bundle dispatcher, Mineflayer loader/entities,
+// R8/R9: installed real constructor, byte decoder, bundle dispatcher, loader/entities,
 // tracker and visible reader. No sockets, joins, credentials or inference.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
-import type { GameSession } from '../src/game/connection.ts';
 import { ServerEvidence } from '../src/game/server-evidence.ts';
-import { SessionSafetyReader, registryFactsOf } from '../src/safety/adapter.ts';
+import { SessionSafetyReader, registryFactsOf, type SafetySession } from '../src/safety/adapter.ts';
 import { SafetyTracker } from '../src/safety/tracker.ts';
 import { planSafety } from '../src/safety/policy.ts';
 import { fakeClient, fakeMineflayerBot } from './skill-fakes.ts';
 import { policyCtx, self } from './safety-helpers.ts';
 
 const require = createRequire(import.meta.url);
-// The installed internal Client constructor does not create/connect a socket.
-const Client = require('minecraft-protocol/src/client');
 const { createSerializer } = require('minecraft-protocol/src/transforms/serializer');
 const mineflayer = require('mineflayer');
 const injectEntities = require('mineflayer/lib/plugins/entities');
 const UUID = '11111111-1111-1111-1111-111111111111';
 
 function rig(version: string) {
-  const client = new Client(false, version, undefined, true);
-  const bot = mineflayer.createBot({ client, version, loadInternalPlugins: false, logErrors: false });
+  let connectRequests = 0;
+  // Exercise the actual Mineflayer -> protocol createClient construction path.
+  // Its injected connect hook performs no socket/DNS/world operation.
+  const bot = mineflayer.createBot({ username: 'SafetyOffline', auth: 'offline', version, connect: () => { connectRequests++; }, loadInternalPlugins: false, hideErrors: true, logErrors: false });
+  const client = bot._client;
   client.state = 'play';
   const serializer = createSerializer({ isServer: true, version, state: 'play' });
   const tracker = new SafetyTracker(); const facts = registryFactsOf(bot.registry);
@@ -31,8 +31,10 @@ function rig(version: string) {
   fake.fill(-15, -1, -15, 15, -1, 15, 'stone');
   Object.assign(bot, { world: fake.bot.world, game: fake.bot.game, entity: fake.bot.entity, inventory: fake.bot.inventory, quickBarSlot: 0, health: 20, food: 20 });
   const evidence = new ServerEvidence(client, bot.registry); evidence.attach();
-  const session = { bot, connectionEpoch: 1, evidence } as GameSession;
-  const reader = new SessionSafetyReader({ session: () => session, perception: { isOwnerEntity: () => false }, tracker, now: () => 1000 });
+  // Synthetic code-owned ping seam for this offline test, never a fixture fact.
+  const session = { bot, connectionEpoch: 1, evidence, serverReported: { version, protocol: version === '26.1.2' ? 775 : 776 } } as SafetySession;
+  let current: SafetySession | undefined = session;
+  const reader = new SessionSafetyReader({ session: () => current, perception: { isOwnerEntity: () => false }, tracker, now: () => 1000 });
   const order: string[] = [];
   client.on('packet', (_p: unknown, m: { name: string }) => order.push(m.name));
   const send = (name: string, params: unknown = {}) => client.deserializer.write(serializer.createPacketBuffer({ name, params }));
@@ -41,15 +43,16 @@ function rig(version: string) {
   const visible = () => reader.entities({ scanRadius: 16, approachWindowMs: 1500, provokedWindowMs: 6000 }).find((e) => e.entityId === 50);
   const response = () => planSafety(self(), visible() ? [{ ...visible()!, aggressive: true }] : [], policyCtx());
   const close = () => { tracker.detach(); evidence.detach(); client.removeAllListeners(); bot.removeAllListeners(); client.serializer.destroy(); client.deserializer.destroy(); serializer.destroy(); };
-  return { client, bot, session, tracker, send, spawn, meta, visible, response, order, close };
+  return { client, bot, session, tracker, send, spawn, meta, visible, response, order, close, connectRequests, setSession: (next: SafetySession | undefined) => { current = next; } };
 }
 
-for (const version of ['26.1.2', '26.2']) describe(`R8 installed pairing/reader (${version})`, () => {
-  it('retains exact client release through library normalization; only closed omitted age admits adult defense', () => {
+for (const version of ['26.1.2', '26.2']) describe(`R8/R9 installed constructor/pairing/reader (${version})`, () => {
+  it('both library labels normalize; exact current ping plus closed omitted pairing admits adult defense', () => {
     const r = rig(version);
     try {
-      assert.equal(r.client.version, version);
+      assert.equal(r.client.version, version === '26.1.2' ? '26.1' : '26.2');
       assert.equal(r.bot.version, version === '26.1.2' ? '26.1' : '26.2');
+      assert.equal(r.connectRequests, 1); assert.equal(r.client.socket, undefined);
       r.send('bundle_delimiter'); r.spawn();
       assert.equal(r.visible(), undefined, 'installed decoder buffers the incomplete pairing');
       r.send('bundle_delimiter');
@@ -89,12 +92,57 @@ for (const version of ['26.1.2', '26.2']) describe(`R8 installed pairing/reader 
       r.send('entity_destroy', { entityIds: [50] }); r.send('bundle_delimiter'); r.spawn(); r.send('bundle_delimiter');
       const key = r.bot.registry.entitiesByName.zombie.metadataKeys.indexOf('baby');
       r.bot.entities[50].metadata[key] = null; assert.equal(r.visible()?.ageEvidence, 'unknown'); delete r.bot.entities[50].metadata[key];
-      r.client.version = version === '26.1.2' ? '26.1' : '26.2.1'; assert.equal(r.visible()?.ageEvidence, 'unknown'); r.client.version = version;
+      const report = r.session.serverReported;
+      delete (r.session as { serverReported?: unknown }).serverReported;
+      assert.equal(r.visible()?.ageEvidence, 'unknown', 'aliases/exact library labels without ping are not exact release proof');
+      Object.assign(r.session, { serverReported: report });
       const registry = r.bot.registry; r.bot.registry = require('minecraft-data')(version === '26.1.2' ? '26.2' : '26.1.2');
       assert.equal(r.visible()?.ageEvidence, 'unknown'); r.bot.registry = registry;
       delete r.bot.entities[50].uuid; assert.equal(r.visible()?.ageEvidence, 'unknown', 'missing current identity is not proof');
       assert.equal(r.tracker.counts.ageSpawns, 2); assert.equal(r.tracker.counts.explicitAgeValues, 1);
       assert.deepEqual(r.tracker.pairingEvidence(50), { complete: true, age: 'omitted', uuidKnown: true });
+    } finally { r.close(); }
+  });
+
+  it('missing/alias/ambiguous/unsupported/mismatched reports or protocols never admit an omitted adult', () => {
+    const r = rig(version);
+    try {
+      r.send('bundle_delimiter'); r.spawn(); r.send('bundle_delimiter');
+      const report = r.session.serverReported;
+      for (const serverReported of [undefined, { version: '26.1', protocol: 775 }, { version: 'vanilla 26.1.2', protocol: 775 }, { version: '26.1.2 / 26.2', protocol: 775 }, { version: '26.1.3', protocol: 775 }, { version: '26.2.1', protocol: 776 }, { version: '26.3', protocol: 777 }, { version, protocol: version === '26.1.2' ? 776 : 775 }, { version, protocol: NaN }, { version: version === '26.1.2' ? '26.2' : '26.1.2', protocol: version === '26.1.2' ? 776 : 775 }]) {
+        Object.assign(r.session, { serverReported });
+        assert.equal(r.visible()?.ageEvidence, 'unknown', JSON.stringify(serverReported));
+        const p = r.response(); assert.equal(p.kind === 'respond' ? p.response : p.kind, 'retreat');
+      }
+      Object.assign(r.session, { serverReported: report });
+      assert.equal(r.visible()?.ageEvidence, 'vanilla_spawn_default');
+      const protocol = r.bot.protocolVersion; r.bot.protocolVersion = 774;
+      assert.equal(r.visible()?.ageEvidence, 'unknown'); r.bot.protocolVersion = protocol;
+      const clientVersion = r.client.version; r.client.version = '26.2.1';
+      assert.equal(r.visible()?.ageEvidence, 'unknown'); r.client.version = clientVersion;
+      const botVersion = r.bot.version; r.bot.version = '26.2.1';
+      assert.equal(r.visible()?.ageEvidence, 'unknown'); r.bot.version = botVersion;
+      const registryProtocol = r.bot.registry.version.version; r.bot.registry.version.version = 774;
+      assert.equal(r.visible()?.ageEvidence, 'unknown'); r.bot.registry.version.version = registryProtocol;
+      assert.equal(r.visible()?.ageEvidence, 'vanilla_spawn_default');
+    } finally { r.close(); }
+  });
+
+  it('a prior ready report cannot authorize an absent/replaced session, old epoch or foreign current entity', () => {
+    const r = rig(version);
+    try {
+      r.send('bundle_delimiter'); r.spawn(); r.send('bundle_delimiter');
+      r.setSession(undefined); assert.equal(r.visible(), undefined);
+      r.setSession({ ...r.session, connectionEpoch: 2 });
+      assert.equal(r.visible()?.ageEvidence, 'unknown');
+      r.setSession(r.session); assert.equal(r.visible()?.ageEvidence, 'vanilla_spawn_default');
+      r.bot.entities[50].uuid = '22222222-2222-2222-2222-222222222222';
+      assert.equal(r.visible()?.ageEvidence, 'unknown');
+      r.send('entity_destroy', { entityIds: [50] });
+      r.spawn(50, 'zombie', '22222222-2222-2222-2222-222222222222');
+      assert.equal(r.visible()?.ageEvidence, 'unknown', 'unbundled reuse cannot inherit the old current report/pairing');
+      r.client.emit('respawn', {}); assert.equal(r.visible()?.ageEvidence, 'unknown');
+      r.tracker.detach(); assert.equal(r.visible()?.ageEvidence, 'unknown');
     } finally { r.close(); }
   });
 
