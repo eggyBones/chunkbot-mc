@@ -255,6 +255,25 @@ describe('episodes', () => {
     assert.equal(h.service.hold(), null, 'hazard gone: blocker cleared');
   });
 
+  it('a configured 17-episode ceiling is enforced across new manual goals (history cannot refill it)', async () => {
+    const h = harness({ config: { episodes: { maxPerWindow: 17 } } });
+    for (let i = 0; i < 17; i += 1) {
+      h.state.self = self(submerged());
+      h.state.authority = { ...h.state.authority, goal: { goalId: `goal-${i + 10}`, goalEpoch: i + 10, source: 'owner' } };
+      h.service.onAuthorityChanged('owner_goal_admitted');
+      assert.equal(h.pending.length, i + 1);
+      h.state.self = self();
+      h.pending.at(-1)!.resolve({ status: 'succeeded' });
+      await h.flush();
+    }
+    h.state.self = self(submerged());
+    h.service.tick();
+    assert.equal(h.pending.length, 17, 'the 18th episode is blocked, even after replacements');
+    assert.match(h.service.hold()?.detail ?? '', /repeated_hazard/);
+    assert.equal(h.service.counters.episodes, 17);
+    await h.service.close();
+  });
+
   it('defense downgrades to retreat when readiness changes mid-episode', async () => {
     const h = harness();
     const z = mob('zombie', 2.5, { aggressive: true });
