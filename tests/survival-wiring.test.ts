@@ -6,7 +6,9 @@ import { after, describe, it } from 'node:test';
 import type { ActionCandidate } from '../src/contracts/action.ts';
 import { TaskSpecSchema } from '../src/contracts/task.ts';
 import { minecraftDataRegistry } from '../src/survival/registry.ts';
-import { allowedUnderAllowance, createSurvivalService, librarySeed, supportGoalSource, supportTaskSpec } from '../src/survival/wiring.ts';
+import { allowedUnderAllowance, continuationPort, createSurvivalService, librarySeed, supportGoalSource, supportTaskSpec } from '../src/survival/wiring.ts';
+import type { ContinuationSurvivalPort } from '../src/contracts/continuation.ts';
+import type { SurvivalService } from '../src/survival/service.ts';
 import { assessInput, cleanupRoots, harness, slot, tempRoot } from './survival-helpers.ts';
 
 after(cleanupRoots);
@@ -71,5 +73,21 @@ describe('survival wiring', () => {
     assert.equal(a?.maxDurability('minecraft:iron_pickaxe'), 250);
     assert.equal(b?.food('minecraft:bread')?.foodPoints, 5);
     assert.equal(a?.food('minecraft:iron_pickaxe'), undefined);
+  });
+
+  it('C12: continuationPort exposes the approved port only when survival is enabled (type pinned to P 4409ba1)', async () => {
+    // Compile-time: the service structurally satisfies the exact common contract.
+    const pinned: (s: SurvivalService) => ContinuationSurvivalPort = (s) => s;
+    void pinned;
+    const base = { minecraftVersion: '26.1.2', limits: { lowHealth: 8, travelRadius: 128 }, now: () => 1_000 };
+    assert.equal(continuationPort(undefined), undefined);
+    assert.equal(continuationPort(createSurvivalService({ ...base, survival: { enabled: false }, scope: undefined, dataDir: undefined })), undefined);
+    const s = createSurvivalService({ ...base, survival: {}, scope: undefined, dataDir: undefined });
+    const port = continuationPort(s);
+    assert.ok(port);
+    assert.equal(port.frozenInventory(1), null);
+    assert.equal(port.incidentReturns('dcap-1-1'), null);
+    assert.deepEqual(Object.keys(port.continuationGate(1_000)), ['kind', 'reason', 'detail'], 'no tracker attached yet: a finite wait, never a throw');
+    await s?.close();
   });
 });

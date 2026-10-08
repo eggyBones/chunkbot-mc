@@ -1080,6 +1080,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   continuationGate(nowMs: number): { kind: 'clear' } | { kind: 'wait'; reason: 'recovery_open' | 'support_running' | 'not_alive'; detail: string } | { kind: 'blocked'; reason: string; detail: string } {
     const cfg = this.cfg;
     if (!cfg) return { kind: 'clear' };
+    if (this.tracker.connectionEpoch === undefined) return { kind: 'wait', reason: 'not_alive', detail: 'no connection is attached to survival yet (no fresh server state)' };
     if (this.tracker.life !== 'alive') return { kind: 'wait', reason: 'not_alive', detail: `awaiting fresh respawn state (${this.tracker.life})` };
     if (this.active) return { kind: 'wait', reason: this.active.routine === 'death_recovery' ? 'recovery_open' : 'support_running', detail: `${this.active.routine} support goal ${this.active.goalId} is running` };
     const v = this.tracker.vitals();

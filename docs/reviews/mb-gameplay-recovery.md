@@ -2,7 +2,7 @@
 
 Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree `/Users/jakewilcox/code/worktrees/chunkbot-mc/gameplay-recovery`, branch `chunkbot/gameplay-recovery`, common base `37c4c170199b4c9d867f720e64561a63a816d14c`. Plans: [survival-routines-plan.md](../survival-routines-plan.md) (C7–C12, R1–R10) and [live-gameplay-fixes-plan.md](../live-gameplay-fixes-plan.md).
 
-**Delivery state: offline corrections are complete and verified. One leased 26.1.2 module trial ran on frozen `8e87ec3` and FAILED (exit 1) on G3 only; G1, G2, G2b and G1k passed and every restoration step verified** (see [Leased trial 26.1.2](#leased-trial-2612-gameplay-s-261-c8910-01)). There was no provider call or model inference, and nothing touched the 26.2 fixture. The G3 correction (`ac5da9b`) is being rerun by the coordinator on 26.1.2 in an immutable checkout (lease `gameplay-root-261-recovery-02`); its result is not recorded here yet. C12: the S side of P's approved `ContinuationSurvivalPort` is implemented and tested offline (`82d7ede` and later); P's engine/accounting integration, real ordinary continuation and the 26.2 gate are not done, and no C12 claim rests on live evidence.
+**Delivery state: offline corrections are complete and verified. One leased 26.1.2 module trial ran on frozen `8e87ec3` and FAILED (exit 1) on G3 only; G1, G2, G2b and G1k passed and every restoration step verified** (see [Leased trial 26.1.2](#leased-trial-2612-gameplay-s-261-c8910-01)). There was no provider call or model inference, and nothing touched the 26.2 fixture. **The coordinator's rerun of the G3 correction `ac5da9b` on 26.1.2 PASSED (exit 0)**: G1, G2, G2b, G1k, G3 and RESTORE pass; G4/G4n explicitly skipped (see [Coordinator rerun](#coordinator-rerun-2612-ac5da9b-gameplay-root-261-recovery-02)). This closes C8/C9/C10 and the G3 finding as **module evidence on 26.1.2 only**; the 26.2 recovery gate follows, and ordinary continuation is not accepted. C12: the S side of P's approved `ContinuationSurvivalPort` is implemented and tested offline (`82d7ede` and later); P's engine/accounting integration, real ordinary continuation and the 26.2 gate are not done, and no C12 claim rests on live evidence.
 
 ## Commits
 
@@ -19,7 +19,8 @@ Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree
 | `07a3b65` | Docs: first leased 26.1.2 trial record and corrected build provenance |
 | `ac5da9b` | G3 correction: health-support meal exempt from the ordinary eat cooldown (fresh vitals/food/threat checks kept); harness decision evidence and drift-free low-health staging; discriminating tests. **Frozen candidate for a 26.1.2 rerun.** |
 | `82d7ede` | C12: P's continuation contract restored verbatim from `4409ba1`; duplicate S declarations removed; `ContinuationSurvivalPort` implemented (in-memory incident return ledger, gate, display-only checkpoint records, store schema v3) with tests |
-| (this commit) | Trial findings T2/T4 corrected (collects of server-announced non-item entities such as experience orbs are never loot or incidental; the pickup effect names every counted key); `createSurvivalService` passes `sessionId` through |
+| `266b648` | Trial findings T2/T4 corrected (collects of server-announced non-item entities such as experience orbs are never loot or incidental; the pickup effect names every counted key); `createSurvivalService` passes `sessionId` through |
+| (this commit) | Coordinator rerun recorded; `continuationPort()` accessor with a type pin to P's contract; the gate waits (`not_alive`) while no connection is attached; exact P integration inputs |
 
 Owned paths changed:
 - `src/contracts/survival.ts`
@@ -155,7 +156,7 @@ Official sources: the 26.1.2 and 26.2 `server.jar` files, read from the coordina
 
 ## Checks (Node 24.21.0, this worktree's own `npm ci`)
 
-Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the T2/T4 + sessionId commit: typecheck 0, build 0, `npm test` 0 with 809/809, survival 0 with 152/152; adverse: T2 non-item branch removed → only the orb test fails (exit 1), restored. Previous run, on the C12 commit (G3 candidate `ac5da9b` ran the same checks: typecheck 0, build 0, `npm test` 0 with 793/793, survival 0 with 136/136):
+Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the P-inputs commit: typecheck 0, build 0, `npm test` 0 with 810/810, survival 0 with 153/153. Before that, on the T2/T4 + sessionId commit: typecheck 0, build 0, `npm test` 0 with 809/809, survival 0 with 152/152; adverse: T2 non-item branch removed → only the orb test fails (exit 1), restored. Previous run, on the C12 commit (G3 candidate `ac5da9b` ran the same checks: typecheck 0, build 0, `npm test` 0 with 793/793, survival 0 with 136/136):
 
 | Command | Exit | Log summary |
 | --- | --- | --- |
@@ -200,7 +201,19 @@ The common contract is P's `4409ba1` (`src/contracts/continuation.ts`), restored
 - **`persistCheckpoint(checkpoint)`:** stores a bounded DISPLAY-ONLY projection (`CheckpointRecordSchema`: goal id, session, clipped instruction/public outcome, state and reason, deadline, continuations, interruption reasons, three counters). No outcome contract, lineage, route carry, anchor, epochs or handles are written. The newest 4 are kept; records from another application session (or an unknown session) are shown as `restart_held`, "never continued". No durable store → no-op (P's in-memory checkpoint remains authoritative). The store schema is v3 (reads v1 with migration, v2 as-is).
 - `SurvivalServiceOptions.sessionId` (new, optional) identifies the application session for that display.
 
-**P integration notes:** construct the service with `createSurvivalService({ ..., sessionId: <app run id> })` (the pass-through is in S-owned `src/survival/wiring.ts`; without it all records display as `restart_held`). Pass the service as the optional `ContinuationSurvivalPort`. Call `persistCheckpoint` on checkpoint state changes (optional). `incidentId` from `frozenInventory` is the key for `incidentReturns`. P's `src/dashboard/viewmodel.ts:372` and `src/autonomy/status-text.ts:14` still print "needs your decision".
+**Exact inputs for P (stable at this commit; types from `src/contracts/continuation.ts` = P `4409ba1`, unchanged):**
+
+| P needs | S provides | Semantics |
+| --- | --- | --- |
+| The optional port | `continuationPort(service: SurvivalService \| undefined): ContinuationSurvivalPort \| undefined` (`src/survival/wiring.ts`) | `undefined` when survival is absent/disabled (P then holds lossy count atoms for provenance). The service structurally satisfies the exact contract (type-pinned test). |
+| Session identity | `createSurvivalService({ ..., sessionId })` | Records persisted by other sessions display as `restart_held`. |
+| Frozen evidence at a death | `frozenInventory(connectionEpoch)` → `{ incidentId, counts, evidence: 'last_alive_server_packets' } \| null` | Latest own death on THAT connection; `incidentId` = capture id `dcap-<connection>-<n>`; `null` without a server-stated copy. Call after the death lifecycle event (capture is synchronous). |
+| Own returns | `incidentReturns(incidentId)` → `IncidentReturns \| null` | `regained`/`retained` per item key (never above the loss); `attribution: 'unknown'` until the first respawn sync and whenever a return cannot be placed (P holds the count atom). `null` for an unknown id. Values only grow; read freshly at each rebind/evaluation. |
+| Readiness input | `continuationGate(nowMs)` | `wait not_alive` (no connection attached, dead, awaiting fresh respawn), `wait support_running` (support goal running or health ≤ `lowHealth`), `wait recovery_open` (recovery goal running or open episode that can still act), else `clear`. Finite: a non-transiently blocked recovery clears. Disabled → `clear`. |
+| Display persistence | `persistCheckpoint(checkpoint)` | Optional, idempotent upsert by goal id; bounded projection only; no-op without a durable store. |
+| Evidence events (run store) | `survival_incident_return` `{incidentId, key, count, collector}`, `survival_incident_attribution_unknown` `{incidents, entityId, key, count}`, `survival_checkpoint_rejected` | Read-only diagnostics. |
+
+P's `src/dashboard/viewmodel.ts:372` and `src/autonomy/status-text.ts:14` still print "needs your decision".
 
 ## Lease request (after review): module gate, no model calls
 
@@ -257,6 +270,20 @@ The common contract is P's `4409ba1` (`src/contracts/continuation.ts`), restored
 - **T2 (incidental attribution) — corrected after the trial:** the tracker now remembers what each own collect took (server-announced item / server-announced non-item / never announced); a collect of a server-announced NON-item (26.1.2 `experience_orb` = entity type 49, item = 71; orbs arrive as `spawn_entity`) is reported as `nonItemCollected` evidence, never as loot or incidental; a collect of an entity never announced stays incidental (conservative). Regression: an orb collected while walking leaves the outcome `succeeded` with no incidental entry (fails without the fix). Original finding: walking collected entity 39 "stack never stated" ×1. It was reported as incidental `unplanned_collect` with no key (never regained) and did not appear in the five tracked item counts. It is most likely an experience orb from the death; `collect` is also sent for orbs, but this is not proven. Candidate correction: count only server-announced ITEM entities as loot in the pickup plan and report orb collects separately.
 - **T3 (authority gaps between pickups):** after the passive sword regain, the memory update made the death fact `pending`, so the resolver briefly offered nothing (`incident_write_pending`) and the G2 loop ended. In the integrated runtime this would be a transient no-candidate round, not a blocker. It is conservative and correct under C5, but recorded.
 - **T4 (outcome text) — corrected:** the effect now reads "counted as regained prior possessions: 1 minecraft:iron_pickaxe, 4 minecraft:bread, 20 minecraft:cobblestone (planned neighbouring own drops collected in the same action)" with `countedByKey` evidence. Original finding: the G2b effect "collected iron_pickaxe x1 … counted 25" is accurate, because the planned neighbours were collected in the same action, but the text could name them.
+
+## Coordinator rerun 26.1.2 (`ac5da9b`, gameplay-root-261-recovery-02)
+
+Run by the coordinator in an immutable `ac5da9b` checkout (source `{head: ac5da9b…, dirty: 0}`), direct exit 0. Report (read-only): root `var/gameplay-fixes/acceptance-recovery/var/live-check/2026-10-08T02-21-02-431Z-survival/report.json`, sha256 `110eab7bbda625efac065b7eb16b6c54ea028d4a05b955f4b4b4cfd1f44b43e0`. All executed gates and RESTORE pass; G4/G4n skipped with the R8 reason; all 8 restoration checks verified; root 0 players; lease released. G3 server facts from the decision lines:
+
+| Stage | Server state at the decision | Decision / result |
+| --- | --- | --- |
+| (a) ordinary hunger | health 20, food 10, no cooldown | eat (support, no allowance); food 10 → 15 → 20, satisfied |
+| (b1) health-support | health 11.5, food 17, eat cooldown 54 s | eat (support, no allowance, "health 11.5 needs food to regenerate"); food 17 → 20, satisfied |
+| (b2) low-health | health 7, food 17, eat cooldown 56 s | eat (safety, 4-action allowance); check allowed; reserve counted 1/4 before dispatch; food 17 → 20 |
+| rest, regeneration on | health 8.833 | health → 12.000 (server) |
+| rest, regeneration off | health 8.000 | `no_regeneration` after 10 058 ms, health unchanged |
+
+The first `8e87ec3` exit-1 report stays unchanged as the failed evidence.
 
 ## G3 correction (after the first 26.1.2 trial)
 
