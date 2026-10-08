@@ -1,11 +1,22 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { actionIntervals, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, type ObserverSample } from '../scripts/lib/locator-ordinary-oracles.ts';
+import { actionIntervals, parseOwnerServerRead, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, type ObserverSample } from '../scripts/lib/locator-ordinary-oracles.ts';
+import { offlinePlayerUuid } from '../src/game/identity.ts';
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const event = (type: string, ms: number, fields: Row = {}): Row => ({ type, t: new Date(ms).toISOString(), ...fields });
 const p = (x: number, z: number) => ({ x, y: -60, z });
 const goalId = 'goal-original';
+const ownerIdentity = { name: 'FixtureOwner', uuid: offlinePlayerUuid('FixtureOwner') };
+const serverRead = (fromMs: number, toMs: number, at: ReturnType<typeof p>, uuid = ownerIdentity.uuid, dimension = 'overworld') => {
+  const bytes = Buffer.from(uuid.replaceAll('-', ''), 'hex');
+  const prefix = `${ownerIdentity.name} has the following entity data: `;
+  return parseOwnerServerRead(ownerIdentity.name, {
+    position: `${prefix}[${at.x}d, ${at.y}d, ${at.z}d]`,
+    uuid: `${prefix}[I; ${[0, 4, 8, 12].map((offset) => bytes.readInt32BE(offset)).join(', ')}]`,
+    dimension: `${prefix}"minecraft:${dimension}"`,
+  }, fromMs, toMs);
+};
 const sample = (ms: number, visible: boolean): ObserverSample => ({
   runId: 'run-original', atMs: ms, serverAtMs: ms, scenario: 'O1c', bot: p(visible ? 2299 : 2200, 2043.5), owner: p(2301.5, 2043.5),
   snapshot: { id: `snap-${ms}`, takenAtMs: ms, goalEpoch: 1, connectionEpoch: 1, dimension: 'overworld', owner: visible ? { visible: true, at: p(2301.5, 2043.5) } : { visible: false }, remembered: [] },
@@ -59,10 +70,13 @@ describe('L-H7 actual code-owned seek intervals', () => {
 
 describe('L-H8 field-level historical coordinate provenance', () => {
   const originalAt = p(2297.5, 2042.5);
-  const witnessed = (): ObserverSample => ({ ...sample(110_000, true), bot: p(2295, 2042.5), owner: originalAt, snapshot: { id: 'snap-visible', takenAtMs: 110_000, connectionEpoch: 1, dimension: 'overworld', owner: { visible: true, at: originalAt }, remembered: [{ anchorId: 'anchor-1', label: 'owner last seen', source: 'observed', at: originalAt, dimension: 'overworld', observedAtMs: 110_000 }] } });
-  const history = () => verifiedHistory([witnessed()]);
+  // Real L-H9 ordering: snapshot starts before the visible-owner remember() timestamp.
+  const witnessed = (): ObserverSample => ({ ...sample(110_000, true), serverAtMs: 109_999, bot: p(2295, 2042.5), owner: originalAt,
+    snapshot: { id: 'snap-visible', takenAtMs: 110_000, goalEpoch: 5, connectionEpoch: 1, dimension: 'overworld', owner: { visible: true, at: originalAt }, entities: [{ handle: 'ent-owner', key: 'minecraft:player', label: 'owner', at: originalAt }], remembered: [{ anchorId: 'anchor-1', label: 'owner last seen', source: 'observed', at: originalAt, dimension: 'overworld', observedAtMs: 110_031 }] },
+    capture: { requestedAtMs: 110_000, receivedAtMs: 110_041, runId: 'run-original', connectionEpochBefore: 1, connectionEpochAfter: 1, before: serverRead(109_997, 109_999, originalAt), after: serverRead(110_041, 110_043, originalAt) } });
+  const history = () => verifiedHistory([witnessed()], ownerIdentity);
   const input = (): Row => ({ observation: { dimension: 'overworld', self: { at: p(2000.5, 2000.5) }, owner: { visible: false }, remembered: [{ anchorId: 'anchor-1', label: 'owner last seen', source: 'observed', at: originalAt, dimension: 'overworld', ageSeconds: 390 }] } });
-  const context = () => ({ runId: 'run-original', atMs: 500_000, owner: p(2301.5, 2043.5), bot: p(2000.5, 2000.5), connectionEpoch: 1, dimension: 'overworld', history: history() });
+  const context = () => ({ runId: 'run-original', atMs: 500_000, owner: p(2301.5, 2043.5), bot: p(2000.5, 2000.5), ownerIdentity, connectionEpoch: 1, dimension: 'overworld', history: history() });
 
   it('allows exactly the corroborated historical tuple and retains source field/path/evidence', () => {
     const result = privacyOracle(input(), context());
@@ -70,13 +84,18 @@ describe('L-H8 field-level historical coordinate provenance', () => {
     assert.equal(result.allowed[0]!.path, 'observation.remembered[0].at.z');
     assert.equal(result.allowed[0]!.value, '2042.5');
     assert.equal(result.allowed[0]!.evidence!.snapshotId, 'snap-visible');
-    assert.equal(result.allowed[0]!.evidence!.serverAtMs, 110_000);
+    assert.equal(result.allowed[0]!.evidence!.serverAtMs, 109_999);
+    assert.equal(result.allowed[0]!.evidence!.observedAtMs, 110_031);
+    assert.equal(result.allowed[0]!.evidence!.capture.receivedAtMs, 110_041);
+    assert.equal(result.allowed[0]!.evidence!.ownerIdentity.uuid, ownerIdentity.uuid);
   });
   it('a source:observed label alone grants no exception', () => {
     assert.ok(privacyOracle(input(), { ...context(), history: [] }).findings.some((f) => f.reason.includes('history lacks')));
   });
   for (const [name, mutate] of [
     ['hidden current owner coordinates', (i: Row) => { i.observation.owner.at = p(2301.5, 2043.5); }],
+    ['hidden coordinates in admission anchor', (i: Row) => { i.admission = { anchor: p(2301.5, 2043.5) }; }],
+    ['hidden coordinates in target context', (i: Row) => { i.targetContext = { target: p(2301.5, 2043.5) }; }],
     ['forged history tuple sharing z', (i: Row) => { i.observation.remembered[0].at = p(2301.5, 2042.5); }],
     ['off-axis hidden coordinate', (i: Row) => { i.observation.other = { x: 2043.5, y: -60, z: 17 }; }],
     ['off-axis forged history', (i: Row) => { i.observation.remembered[0].at = p(2042.5, 2297.5); }],
@@ -98,10 +117,73 @@ describe('L-H8 field-level historical coordinate provenance', () => {
       (o: ObserverSample) => { o.snapshot.owner.visible = false; },
       (o: ObserverSample) => { o.serverAtMs = 100_000; },
     ]) {
-      const o = witnessed(); mutate(o); assert.deepEqual(verifiedHistory([o]), []);
+      const o = witnessed(); mutate(o); assert.deepEqual(verifiedHistory([o], ownerIdentity), []);
     }
     for (const overrides of [{ dimension: 'the_nether' }, { connectionEpoch: 2 }, { runId: 'run-restarted' }]) assert.ok(privacyOracle(input(), { ...context(), ...overrides }).findings.length > 0);
     assert.ok(privacyOracle(input(), { ...context(), history: history().map((h) => ({ ...h, serverAtMs: 500_001 })) }).findings.length > 0, 'future observation cannot authorize earlier model history');
+    const early = input(); early.observation.remembered[0].ageSeconds = 1;
+    assert.deepEqual(privacyOracle(early, { ...context(), atMs: 110_044 }).findings, []);
+    assert.ok(privacyOracle(early, { ...context(), atMs: 110_042 }).findings.length > 0, 'the complete independent server bracket must precede the model request');
+    assert.ok(privacyOracle(input(), { ...context(), ownerIdentity: { ...ownerIdentity, uuid: offlinePlayerUuid('FixtureGuest') } }).findings.length > 0, 'wrong owner UUID cannot reuse history');
+  });
+  it('accepts a remember timestamp only inside the actual read completion bracket, with exact stationary server identity/point', () => {
+    assert.equal(history().length, 1);
+    const bounded = witnessed(); bounded.capture!.after.toMs = 111_497;
+    assert.equal(verifiedHistory([bounded], ownerIdentity).length, 1, 'inclusive 1500ms maximum');
+    for (const mutate of [
+      (o: ObserverSample) => { delete o.capture; }, // old report lacks the new bracket, remains unproven
+      (o: ObserverSample) => { o.snapshot.remembered[0].observedAtMs = 110_042; }, // 1ms future of response
+      (o: ObserverSample) => { o.snapshot.remembered[0].observedAtMs = 109_999; },
+      (o: ObserverSample) => { o.capture!.requestedAtMs = 110_001; },
+      (o: ObserverSample) => { o.capture!.after.toMs = 111_498; }, // 1501ms total
+      (o: ObserverSample) => { o.capture!.before.toMs = 110_001; },
+      (o: ObserverSample) => { o.capture!.after.fromMs = 110_040; },
+      (o: ObserverSample) => { o.capture!.connectionEpochAfter = 2; },
+      (o: ObserverSample) => { o.capture!.runId = 'other-run'; },
+      (o: ObserverSample) => { o.capture!.after = serverRead(110_041, 110_043, p(2297.6, 2042.5)); },
+      (o: ObserverSample) => { o.capture!.after = serverRead(110_041, 110_043, originalAt, offlinePlayerUuid('FixtureGuest')); },
+      (o: ObserverSample) => { o.capture!.after = serverRead(110_041, 110_043, originalAt, ownerIdentity.uuid, 'the_nether'); },
+      (o: ObserverSample) => { o.capture!.after.at = p(2301.5, 2043.5); },
+      (o: ObserverSample) => { o.capture!.after.replies.uuid = 'No entity was found'; },
+      (o: ObserverSample) => { o.snapshot.entities[0].label = 'player'; },
+      (o: ObserverSample) => { o.snapshot.entities[0].at = p(1801.5, 2000.5); },
+    ]) {
+      const o = witnessed(); mutate(o); assert.deepEqual(verifiedHistory([o], ownerIdentity), []);
+    }
+  });
+  it('server parser refuses absent/error/foreign/malformed coordinate, identity and dimension replies', () => {
+    const read = serverRead(1, 2, originalAt);
+    assert.equal(read.uuid, ownerIdentity.uuid);
+    for (const replies of [
+      { ...read.replies, position: 'No entity was found' },
+      { ...read.replies, uuid: read.replies.uuid.replace('FixtureOwner', 'FixtureGuest') },
+      { ...read.replies, uuid: 'FixtureOwner has the following entity data: [I; 2147483648, 0, 0, 0]' },
+      { ...read.replies, dimension: 'FixtureOwner has the following entity data: "unknown"' },
+      { ...read.replies, position: 'FixtureOwner has the following entity data: [1d, NaNd, 2d]' },
+    ]) assert.throws(() => parseOwnerServerRead(ownerIdentity.name, replies, 1, 2));
+  });
+  it('correlates the actual L-H9 O3/O4 tuples and ages across goals only with newly captured independent brackets', () => {
+    // These point/anchor/start/remember/response values are from the unchanged failed report/log.
+    // Server UUID/bracket readbacks below are synthetic new-format data, NOT retroactive world acceptance.
+    const row = (start: number, rememberedAt: number, end: number, at: ReturnType<typeof p>, anchorId: string, goalEpoch: number) => {
+      const o = witnessed();
+      o.atMs = start; o.serverAtMs = start; o.bot = p(at.x + 2, at.z - 1); o.owner = at;
+      o.snapshot = { ...o.snapshot, id: `snap-${anchorId}`, takenAtMs: start, goalEpoch, owner: { visible: true, at }, entities: [{ handle: `ent-${anchorId}`, key: 'minecraft:player', label: 'owner', at }], remembered: [{ anchorId, label: 'owner last seen', source: 'observed', dimension: 'overworld', at, observedAtMs: rememberedAt }] };
+      o.capture = { ...o.capture!, requestedAtMs: start, receivedAtMs: end, before: serverRead(start - 2, start, at), after: serverRead(end, end + 2, at) };
+      return o;
+    };
+    const a = row(1791445358069, 1791445358088, 1791445358088, p(1821.5, 2121.5), 'anchor-1', 6);
+    const b = row(1791445428451, 1791445428472, 1791445428472, p(2017.5, 1737.5), 'anchor-2', 10);
+    const i = input();
+    i.observation.remembered = [a, b].map((o, n) => ({ ...o.snapshot.remembered[0], observedAtMs: undefined, ageSeconds: n === 0 ? 75 : 4 }));
+    const ctx = { ...context(), atMs: 1791445432956, history: verifiedHistory([a, b], ownerIdentity) };
+    const result = privacyOracle(i, ctx);
+    assert.deepEqual(result.findings, []);
+    assert.deepEqual(result.allowed.map((x) => x.path), ['observation.remembered[0]', 'observation.remembered[1]']);
+    assert.deepEqual(result.allowed.map((x) => x.evidence!.goalEpoch), [6, 10]);
+    assert.deepEqual(result.allowed.map((x) => x.evidence!.at), [p(1821.5, 2121.5), p(2017.5, 1737.5)]);
+    for (const o of [a, b]) delete o.capture;
+    assert.equal(privacyOracle(i, { ...ctx, history: verifiedHistory([a, b], ownerIdentity) }).findings.length, 2, 'old report stays missing the new corroboration');
   });
   it('a shared local axis is allowed only for a complete sampled local point; hidden owner and invented self still fail', () => {
     const i = input(); i.observation.self.at = p(2000.5, 2043.5);
