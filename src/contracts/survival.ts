@@ -1024,3 +1024,190 @@ export const SURVIVAL_CAPABILITIES = {
 } as const satisfies Record<string, string>;
 
 export const SurvivalCapabilityIdSchema = CapabilityIdSchema;
+
+// ================================================================ MB-FLOW-003-C12 (PROPOSED — NOT CONSUMED)
+//
+// Typed continuation checkpoint/service seam proposed to Codex for approval
+// together with the shared GoalEngine writer (P). Nothing in this repository
+// consumes these declarations yet; survival implements them only after
+// approval. Design rules (survival-routines-plan C12):
+//   - The checkpoint is NON-EXECUTABLE data: original instruction, immutable
+//     accepted outcome, original admission inventory baseline and travel
+//     anchor, verified effects, counters and remaining allowances, and
+//     stop/supersession state. No handles, actions, tasks, leases or epochs.
+//   - Continuation is a CODE-OWNED P GoalEngine admission of a ticket (fresh
+//     goal epoch/connection bindings, same catalog/task runtime/actuator
+//     lease/SpendLedger), never a resubmitted sentence, saved-task replay or
+//     new acquisition baseline.
+//   - Recovered prior possessions never count as newly acquired: carried
+//     acquisition credit is capped by what was verified before the
+//     interruption AND by what is actually held again above the original
+//     admission baseline (fresh server inventory).
+//   - A durable continuation-attempt counter (like the C5 recovery attempt)
+//     is committed before a continuation may act; restart stores the
+//     checkpoint but never runs it (other application session -> held).
+
+/** Interruptions that may hold an owner goal as a continuation checkpoint (never an owner decision such as stop/replace). */
+export const CHECKPOINT_INTERRUPTIONS = ['death', 'low_health', 'safety_interrupted', 'dimension_change', 'disconnected', 'kicked'] as const;
+export type CheckpointInterruption = (typeof CHECKPOINT_INTERRUPTIONS)[number];
+
+/**
+ * Accounting of ONE count-based atomic predicate of the accepted outcome at the
+ * interruption (code-evaluated). `path` addresses the atom inside the outcome
+ * tree exactly like the PredicateEngine's evaluation paths ("0", "0.1", ...).
+ *   possession-backed: inventory_delta / inventory_amount(collect_additional)
+ *     verifiedAcquired = acquired since the ORIGINAL admission baseline, taken
+ *     from the server inventory frozen at the interruption (death: survival's
+ *     packet-frozen last-alive copy; otherwise the current server inventory)
+ *     plus ledger-confirmed consumption when mayBeConsumedLater.
+ *   effect-backed: crafting_result / smelting_result
+ *     verifiedAcquired = skill-confirmed outputs since admission (historical
+ *     effects; they stay done even if the outputs were lost).
+ */
+export interface AcquisitionEntry {
+  path: string;
+  basis: 'possession' | 'effect';
+  predicate: 'inventory_delta' | 'inventory_amount' | 'crafting_result' | 'smelting_result';
+  /** Registry key or tag (inventory selector, or crafting/smelting output). */
+  selector: string;
+  atLeast: number;
+  /** Original server-confirmed admission count matching `selector` (possession basis; null = unknown -> unsupported). */
+  admissionCount: number | null;
+  verifiedAcquired: number;
+  /** inventory_delta mayBeConsumedLater milestone already reached before the interruption (stays satisfied). */
+  latched: boolean;
+  consumedSinceAdmission: number;
+}
+
+/** What P hands survival when an OWNER goal ends by a checkpoint interruption (plain data; synchronous; no I/O awaited). */
+export interface CheckpointCapture {
+  goalId: string;
+  instruction: string;
+  interpretation?: string;
+  /** The accepted immutable outcome contract (absent when none was accepted before the interruption). */
+  outcome?: import('./predicate.ts').GoalOutcomeContract;
+  /** Original server-confirmed admission inventory (counts null when unknown). */
+  admissionBaseline?: { capturedAtMs: number; counts: Record<string, number> | null };
+  /** Original admission travel anchor proof (never re-anchored by continuation). */
+  anchor?: { dimension: string; at: { x: number; y: number; z: number }; radius: number };
+  /** Last code evaluation of the outcome before the interruption (latches; never planner text). */
+  lastEvaluation?: { atMs: number; status: 'satisfied' | 'unsatisfied' | 'unknown'; latchedPaths: string[] };
+  /** Ledger facts since admission that are not visible in possession: consumption and confirmed outputs. */
+  ledgerSinceAdmission: { consumed: Record<string, number>; crafted: Record<string, number>; smelted: Record<string, number> };
+  /** Verified prior results (historical labels only; e.g. "placed crafting_table at 210,-60,205"). Bounded. */
+  verifiedEffects: string[];
+  /** GoalRecord.counters at the interruption (never reset by continuation). */
+  counters: { plannerTurns: number; tasksAdmitted: number; replans: number; knowledgeRounds: number; repairs: number; retries: number; windows: number };
+  /** Per-goal ceilings that applied to the original goal. */
+  caps: { plannerTurns: number; tasks: number; replans: number };
+  /** Active (owned) time already used by the original goal and its earlier continuations. */
+  activeMsUsed: number;
+  /** Configured goal deadline length (the active-time ceiling). */
+  goalDeadlineMs: number;
+  reason: CheckpointInterruption;
+  interruptedAtMs: number;
+  connectionEpoch: number;
+  dimension: string;
+  /** Selector matcher (tags resolved by the exact-version knowledge; pure). */
+  matches: (itemKey: string, selector: string) => boolean;
+}
+
+/** Durable held checkpoint (stored inside the survival store; nothing executable). */
+export interface ContinuationCheckpoint {
+  checkpointId: string;
+  originalGoalId: string;
+  /** Application session that may continue it (restart never runs another session's checkpoint). */
+  sessionId: string;
+  instruction: string;
+  interpretation?: string;
+  outcome?: import('./predicate.ts').GoalOutcomeContract;
+  outcomeKind: 'finite' | 'persistent' | 'none';
+  admissionBaseline?: { capturedAtMs: number; counts: Record<string, number> | null };
+  anchor?: { dimension: string; at: { x: number; y: number; z: number }; radius: number };
+  accounting: AcquisitionEntry[];
+  verifiedEffects: string[];
+  counters: CheckpointCapture['counters'];
+  remaining: { plannerTurns: number; tasks: number; replans: number; activeMs: number };
+  /** Durable attempt guard: continuation admissions committed so far (C5-style; counted before acting). */
+  continuations: { used: number; max: number; lastGoalId?: string };
+  /** Recovery episode created by the same death (continuation waits until it is concluded). */
+  episodeId?: string;
+  interruptions: Array<{ reason: CheckpointInterruption; atMs: number }>;
+  compatibility: { status: 'compatible' | 'unsupported'; reasons: string[] };
+  state: 'held' | 'continuing' | 'completed' | 'superseded_by_owner' | 'dismissed_by_owner' | 'stopped_by_owner' | 'blocked' | 'restart_held';
+  stateDetail: string;
+  stateAtMs: number;
+  /** A held checkpoint is not continued after this time (bounded; declarative blocker `checkpoint_expired`). */
+  holdUntilMs: number;
+}
+
+/**
+ * Nonexecutable admission ticket for P's code-owned continuation path. Valid
+ * only for the connection epoch it was issued on and until `expiresAtMs`.
+ */
+export interface ContinuationTicket {
+  ticketId: string;
+  checkpointId: string;
+  originalGoalId: string;
+  /** 1-based continuation number (already counted durably by beginContinuation). */
+  continuation: number;
+  connectionEpoch: number;
+  instruction: string;
+  interpretation?: string;
+  outcome: import('./predicate.ts').GoalOutcomeContract;
+  anchor: { dimension: string; at: { x: number; y: number; z: number }; radius: number };
+  counters: CheckpointCapture['counters'];
+  /** Ceilings of the continuation goal: the ORIGINAL goal's remaining allowances (never refilled). */
+  ceilings: { plannerTurns: number; tasks: number; replans: number; deadlineMs: number };
+  /** Planner context (code-written facts): verified effects, credit carried, what remains. */
+  context: { facts: string[]; rules: string[] };
+  expiresAtMs: number;
+}
+
+/** Credit carried into the continuation's predicate binding, per atom path (P binds `acquired = credit + (now - continuationBaseline)`). */
+export interface ContinuationCarry {
+  path: string;
+  basis: AcquisitionEntry['basis'];
+  selector: string;
+  atLeast: number;
+  /** possession: min(verifiedAcquired, max(0, freshCount - admissionCount)); effect: verifiedAcquired. */
+  credit: number;
+  /** The milestone was latched before the interruption (stays satisfied). */
+  latched: boolean;
+  detail: string;
+}
+
+export type ContinuationReadiness =
+  | { kind: 'none' }
+  /** Bounded wait, no inference, no blocker text to the owner (recovery/support running, durable write pending, not alive, paused). */
+  | { kind: 'wait'; reason: 'recovery_open' | 'support_running' | 'durable_write_pending' | 'not_alive' | 'paused' | 'owner_intake_pending'; detail: string; retryAfterMs?: number }
+  /** One declarative held blocker (never a question): unsupported outcome, other session, exhausted, expired, outside the original travel bounds/dimension, store failure. */
+  | { kind: 'blocked'; checkpointId: string; reason: string; detail: string; signature: string }
+  | { kind: 'ready'; ticket: ContinuationTicket };
+
+/**
+ * Survival-side C12 service (proposed additions to SurvivalPolicyPort; every
+ * method synchronous, local, inference-free). P owns the GoalEngine
+ * continuation admission, the predicate carry binding and the status
+ * composition; survival owns the durable checkpoint, accounting and
+ * readiness.
+ */
+export interface ContinuationServicePort {
+  /** Replaces onOwnerGoalEnd for checkpoint interruptions: holds (or refreshes) the durable checkpoint; queues the write; never awaits I/O. */
+  holdCheckpoint(capture: CheckpointCapture): { checkpointId: string; compatibility: ContinuationCheckpoint['compatibility'] };
+  /** Fresh code decision (call from the supervisor guard after survival's own assess returned none/blocked for necessary support). */
+  continuationReadiness(input: { nowMs: number; connection: { ready: boolean; connectionEpoch: number; dimension: string } | null; selfAt: { x: number; y: number; z: number } | null; autonomyAllowed: boolean; ownerIntakePending: boolean; supportRunning: boolean }): ContinuationReadiness;
+  /**
+   * P admitted the ticket through the single admission path and captured the
+   * FRESH server inventory baseline. Increments the durable continuation
+   * counter (counted even if the goal later fails) and returns the carry the
+   * predicate binding must use. Refuses stale/expired/other-connection tickets.
+   */
+  beginContinuation(ticketId: string, admission: { goalId: string; goalEpoch: number; connectionEpoch: number; admittedAtMs: number }, freshBaseline: { capturedAtMs: number; counts: Record<string, number> }): { ok: true; carry: ContinuationCarry[] } | { ok: false; reason: string; detail: string };
+  /** C5-style authority: actions of the continuation goal may run only when its counted attempt is durable. */
+  continuationAuthority(goalId: string, goalEpoch: number): 'durable' | 'pending' | 'failed' | 'not_a_continuation';
+  /** Terminal of a continuation goal: completed / stopped_by_owner / re-held with accumulated counters (another interruption) / blocked. */
+  onContinuationTerminal(end: { goalId: string; goalEpoch: number; state: string; reason: string; detail: string; counters: CheckpointCapture['counters']; activeMs: number; endedAtMs: number; recheckpoint?: CheckpointCapture }): void;
+  /** Held/continuing checkpoints for status/dashboard (bounded, read-only). */
+  checkpoints(nowMs: number): ReadonlyArray<{ checkpointId: string; originalGoalId: string; instruction: string; state: ContinuationCheckpoint['state']; compatibility: ContinuationCheckpoint['compatibility']['status']; continuations: { used: number; max: number }; detail: string }>;
+}
