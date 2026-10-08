@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Vec } from '../src/perception/visibility.ts';
-import { MAX_DETOUR_BLOCKS, MAX_DETOUR_STEPS, runRoute } from '../src/locator/route-runner.ts';
+import { DETOUR_POLL_SLACK, MAX_DETOUR_BLOCKS, MAX_DETOUR_STEPS, runRoute } from '../src/locator/route-runner.ts';
 import { FULL, runWindows, sim, type ProcWorld } from './locator-sim.ts';
 
 type Detour = { side: number; steps: number; blocks: number; obstacle: string; outcome: string };
@@ -41,7 +41,7 @@ describe('MB-LOC-002 bounded detour around observed obstacles', () => {
     // the end, the nearby owner's cue rotated more than 90 degrees from the episode frame): both mean it got around.
     assert.ok(all.some((d) => d.obstacle === 'wall' && (d.outcome === 'cleared' || d.outcome === 'cue_changed')), `a wall detour got around: ${JSON.stringify(all)}`);
     assert.ok(all.every((d) => d.side === all[0]!.side), `one committed side, no ping-pong: ${JSON.stringify(all)}`);
-    for (const d of all) assert.ok(d.steps <= MAX_DETOUR_STEPS && d.blocks <= MAX_DETOUR_BLOCKS + 32, `bounded episode ${JSON.stringify(d)}`);
+    for (const d of all) assert.ok(d.steps <= 2 * MAX_DETOUR_STEPS && d.blocks <= 3 * MAX_DETOUR_BLOCKS + 2 * DETOUR_POLL_SLACK, `bounded episode ${JSON.stringify(d)}`);
   });
 
   it('a far owner behind a wall 70 blocks wide: one-sided wall following, around the end, then straight on (cleared)', async () => {
@@ -57,7 +57,21 @@ describe('MB-LOC-002 bounded detour around observed obstacles', () => {
 
   it('a wall with no way around within the detour budget: the specific observed blocker, bounded sideways walking, no crossing', async () => {
     const s = sim({ ownerAt: { x: 300.5, y: 64, z: 0.5 }, obstacles: wall(2_000) });
+    // External path oracle: every simulated step of the bot, independent of the runner's own accounting.
+    let path = 0;
+    let prev = { ...s.self };
+    const original = s.env.move;
+    s.env.move = async (t, w, b, o) =>
+      original(t, w, b, {
+        ...o,
+        abortIf: () => {
+          path += Math.hypot(s.self.x - prev.x, s.self.z - prev.z);
+          prev = { ...s.self };
+          return o.abortIf?.();
+        },
+      });
     const results = await runWindows(s);
+    path += Math.hypot(s.self.x - prev.x, s.self.z - prev.z);
     const last = results.at(-1)!;
     assert.equal(last.status, 'failed');
     assert.equal(last.reason, 'wall', last.effect);
@@ -68,6 +82,11 @@ describe('MB-LOC-002 bounded detour around observed obstacles', () => {
     // The whole attempt is bounded: per-window episodes x per-episode budget (+ one frontier step of slack).
     assert.ok(Math.abs(s.self.z) <= 3 * (MAX_DETOUR_BLOCKS + 24), `sideways walking bounded (z ${s.self.z.toFixed(1)})`);
     assert.ok(results.length <= 3, `no endless windows (${results.length})`);
+    // Honest finite bound of the whole attempt: the approach to the wall (one forward frontier, at most the
+    // 24-block search radius) plus one two-sided episode (3 x budget + one poll of slack per side).
+    const bound = 24 + 3 * MAX_DETOUR_BLOCKS + 2 * DETOUR_POLL_SLACK;
+    assert.ok(path <= bound, `walked path ${path.toFixed(1)} <= ${bound} (detour evidence ${JSON.stringify(ds)})`);
+    for (const d of ds) assert.ok(d.blocks <= 3 * MAX_DETOUR_BLOCKS + 2 * DETOUR_POLL_SLACK, JSON.stringify(d));
   });
 
   it('a lake across the cue with dry land around it: a dry detour along the shore, never standing in water', async () => {
@@ -112,7 +131,7 @@ describe('MB-LOC-002 bounded detour around observed obstacles', () => {
     const all = results.flatMap((r) => detoursOf(r.evidence));
     assert.ok(all.some((d) => d.obstacle === 'water_crossing'), `the detour was justified by observed water: ${JSON.stringify(all)}`);
     // Two-sided search: the first side's budget, then the walk back plus the same search on the other side.
-    for (const d of all) assert.ok(d.steps <= 2 * MAX_DETOUR_STEPS && d.blocks <= 3 * MAX_DETOUR_BLOCKS + 32, `bounded ${JSON.stringify(d)}`);
+    for (const d of all) assert.ok(d.steps <= 2 * MAX_DETOUR_STEPS && d.blocks <= 3 * MAX_DETOUR_BLOCKS + 2 * DETOUR_POLL_SLACK, `bounded ${JSON.stringify(d)}`);
   });
 
   it('an unbridged river across the cue: water_crossing blocker after a bounded dry search; never enters the water', async () => {

@@ -109,10 +109,12 @@ const MAX_MOVE_FAILURES = 4;
  * exists and the observed geometry justifies it; it keeps the cue bearing at
  * its start as a FIXED frame and one committed side, never retreats sideways
  * toward its origin line by more than DETOUR_RETREAT_SLACK, and spends at most
- * MAX_DETOUR_STEPS steps and MAX_DETOUR_BLOCKS of walking on that side. If the
- * side is closed or its budget is spent, it switches ONCE to the other side with
- * twice the budget (the walk back past the origin plus the same search), so an
- * episode never exceeds 3 x MAX_DETOUR_BLOCKS. It clears (eventual progress) only when the bot
+ * MAX_DETOUR_STEPS steps and MAX_DETOUR_BLOCKS of walked PATH on that side. If
+ * the side is closed or its budget is spent, it switches ONCE to the other side
+ * with twice the budget (the walk back past the origin plus the same search).
+ * The allowance is enforced DURING each step (the move is aborted when the polled
+ * path reaches it), so an episode's path is at most 3 x MAX_DETOUR_BLOCKS plus
+ * one movement poll per side (DETOUR_POLL_SLACK documents that finite slack). It clears (eventual progress) only when the bot
  * is DETOUR_CLEAR_PROGRESS past its origin in the frame AND the current cue has
  * a forward frontier again; otherwise the observed blocker is reported. At most
  * MAX_DETOUR_EPISODES per window. Route legs/distance/time ceilings still bound
@@ -123,6 +125,13 @@ const MAX_MOVE_FAILURES = 4;
 export const MAX_DETOUR_STEPS = 8;
 export const MAX_DETOUR_BLOCKS = 96;
 export const MAX_DETOUR_EPISODES = 3;
+/**
+ * Honest overshoot of a detour allowance: the movement between two abort polls.
+ * The shared navigate() polls abortIf every 100 ms (300 ms around its arrival
+ * settle), i.e. under 2 blocks at walking speed; the test simulator moves at most
+ * sqrt(2) per poll. Per side, at most once.
+ */
+export const DETOUR_POLL_SLACK = 2;
 /** Sideways retreat (blocks) toward the episode origin's frame line that a choice may make during an episode. */
 export const DETOUR_RETREAT_SLACK = 8;
 /** Progress in the episode's frame beyond its origin that clears a detour (the obstacle line is behind). */
@@ -297,6 +306,27 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
         }
         let lostSince: number | undefined;
         let goalAt = seen;
+        // MB-LOC-002: conservative progress while approaching the VISIBLE owner,
+        // sampled at every movement poll. A displacement between two polls is
+        // credited only by the smaller of its projections on the bearing to the
+        // owner seen at both ends; while the owner is not visible nothing can be
+        // credited (only lost: min(0, projection on the last visible bearing)).
+        // Hidden owner positions are never read: ownerVisible() is visibility-first.
+        let lastSelf = env.self();
+        let lastBearing = Math.atan2(seen.z - self.z, seen.x - self.x);
+        const trackVisible = () => {
+          const now = env.self();
+          const o = env.ownerVisible();
+          const dx = now.x - lastSelf.x;
+          const dz = now.z - lastSelf.z;
+          const onLast = dx * Math.cos(lastBearing) + dz * Math.sin(lastBearing);
+          if (o) {
+            const b2 = Math.atan2(o.z - now.z, o.x - now.x);
+            netProgress += Math.min(onLast, dx * Math.cos(b2) + dz * Math.sin(b2));
+            lastBearing = b2;
+          } else netProgress += Math.min(0, onLast);
+          lastSelf = now;
+        };
         const res = await move(seen, params.within, active, {
           timeoutMs: Math.max(5_000, params.durationMs - (env.now() - started)),
           retarget: () => {
@@ -307,6 +337,7 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
             return p;
           },
           abortIf: () => {
+            trackVisible();
             if (env.ownerVisible()) {
               lostSince = undefined;
               return undefined;
@@ -315,6 +346,7 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
             return env.now() - lostSince > env.ownerLossMs ? 'owner_lost' : undefined;
           },
         });
+        trackVisible();
         env.recordVisited();
         if (res.aborted === 'route_budget' && budgetStop) return budgetFail(budgetStop);
         if (res.aborted === 'destination_invalid' && destinationStop) return destinationFail(destinationStop);
@@ -477,9 +509,18 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
     // 4. Walk to it; stop on a withdrawn cue, switch on a visible owner.
     const steerSeq = target.kind === 'owner' ? deps.locator?.steering()?.statementSeq : undefined;
     const before = env.self();
+    // MB-LOC-002: a detour step may walk only the episode's remaining path allowance
+    // (polled path length; the honest bound is the allowance plus one poll's movement).
+    const allowance = detourStep && detour ? sideBudget(detour).blocks - detour.blocks : Number.POSITIVE_INFINITY;
+    let walked = 0;
+    let lastPoll = before;
     const res = await move(pick.at, 2, active, {
       timeoutMs: Math.min(60_000, Math.max(5_000, params.durationMs - (env.now() - started))),
       abortIf: () => {
+        const now = env.self();
+        walked += horizontal(lastPoll, now);
+        lastPoll = now;
+        if (walked >= allowance) return 'detour_allowance';
         if (target.kind !== 'owner') return undefined;
         if (env.ownerVisible()) return 'owner_visible';
         const s = deps.locator?.steering();
@@ -492,8 +533,9 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
     const st = routeStatus();
     const after = env.self();
     netProgress += stepProgress(before, after, bearing);
+    walked += horizontal(lastPoll, after);
     if (detourStep && detour) {
-      detour.blocks += horizontal(before, after);
+      detour.blocks += walked; // polled PATH length, not straight displacement
       detour.maxLateral = Math.max(detour.maxLateral, lateralOf(detour, after));
     }
     env.progress({ routeSteps: steps, movedBlocks: r1(horizontal(start, after)), netProgress: r1(netProgress), legsUsed: st?.legsUsed ?? 0, distanceUsed: st?.distanceUsed ?? 0, ...(detour ? { detourSteps: detour.steps } : {}) });
@@ -511,12 +553,12 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
     if (moveFailures > MAX_MOVE_FAILURES) return fail('no_safe_path', `walking ${direction} repeatedly failed (${res.status}); no safe walkable route found`);
   }
 
-  // Window ended without reaching the target. MB-LOC-002: a cue-only window
-  // continues locally only with NET progress along the cue (wandering sideways
-  // or back and forth is not progress); a window that approached the VISIBLE
-  // owner counts its own movement.
+  // Window ended without reaching the target. MB-LOC-002: a window continues
+  // locally only with conservative NET progress — along the cue, or toward the
+  // owner while freshly visible. Raw movement (sideways, back and forth, or after
+  // the owner was lost) is never progress.
   const moved = horizontal(start, env.self());
-  if (netProgress >= MIN_WINDOW_PROGRESS || (ownerSeen && moved >= MIN_WINDOW_PROGRESS)) {
+  if (netProgress >= MIN_WINDOW_PROGRESS) {
     return { status: 'partial', reason: 'route_window_elapsed', effect: `moved ${r1(moved)} blocks ${target.kind === 'owner' ? 'toward the owner cue' : `toward ${target.label}`} (${steps} steps); not there yet`, evidence: evidence() };
   }
   // A window that ends inside (or right after) an unsuccessful detour reports the OBSERVED obstacle, not a generic no-progress.

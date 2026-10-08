@@ -12,7 +12,7 @@ Worker L: native Claude Opus 5.5 (local DSH), worktree `gameplay-follow`, branch
 | `566ada3` | G6 F1 live direction gate in `scripts/locator-live-check.ts`; new `scripts/locator-ordinary-live-check.ts` (actual CLI, scenarios O0–O9); harness guard tests |
 | `0875031` | Ordinary-composition tests against the real `SkillRuntime` locator wiring |
 | `1f27dc9` | This review/handoff |
-| second round | Two-sided bounded detour (switch once with a return-plus-search budget, ≤ 3 × 96 per episode), the observed obstacle reported when a window ends mid-detour, river/bridge dry-route tests, dynamic catalog verification in O0, model-visible catalog check in O1, P-L8 |
+| `283179a` | Two-sided bounded detour (switch once with a return-plus-search budget, ≤ 3 × 96 per episode), the observed obstacle reported when a window ends mid-detour, river/bridge dry-route tests, dynamic catalog verification in O0, model-visible catalog check in O1, P-L8 |
 
 Changed paths (ownership only): `src/locator/route-runner.ts`, `src/locator/terrain.ts`, `src/skills/locator.ts`, `scripts/locator-live-check.ts`, `scripts/locator-ordinary-live-check.ts` (new), `tests/locator-sim.ts` (new helper), `tests/locator-runner.test.ts`, `tests/locator-direction.test.ts` (new), `tests/locator-detour.test.ts` (new), `tests/locator-harness-guard.test.ts`, `tests/locator-ordinary-harness-guard.test.ts` (new), `tests/locator-composition.test.ts` (new), this file. No shared file, contract, config, vendor or `node_modules` edit.
 
@@ -69,9 +69,63 @@ Read-only inspection of the retained events of the last live run, `var/runs/run-
 4. **The visited-spot penalty is now a tie-breaker** (6, was 12), so a spot straight along the cue that has been visited before does not lose to an unvisited one about 45° off.
 5. **`seek_owner` descriptor** (model-visible). It now says when to use the skill (owner out of sight or beyond the travel radius, together with the follow/approach capabilities, instead of undirected exploration). Its limitations are truthful: it picks only dry-land waypoints, and swimming is not a supported route. The shared pathfinder's water policy remains W/P's.
 
+## Coordinator corrections to `394bec4` (third round)
+
+**LOC2-C1 — no raw-movement credit after seeing the owner.** The window-end rule `ownerSeen && moved >= 4` latched after ANY visible-owner moment and then credited arbitrary sideways or backward movement, including movement after the owner was lost.
+- Removed. A window now continues locally only when its conservative NET progress is at least 4 blocks.
+- While approaching a visible owner, progress is credited at every movement poll. Each displacement between two polls counts by the smaller of its projections on the bearings to the owner's FRESH visible position at both ends.
+- While the owner is not visible, nothing can be credited: only `min(0, projection on the last visible bearing)` is added, so movement can be debited but never credited.
+- The owner position comes only from `ownerVisible()`, which is visibility-first. A source check in the test proves no other position source.
+
+`tests/locator-progress.test.ts` covers:
+- visible → lost → 25 blocks sideways: not continued;
+- visible → lost → wrong way: debited;
+- a visible owner walking away north while the bot walks south: negative;
+- a positive control: following an owner who keeps walking ahead is credited and the window continues.
+
+Mutation check: restoring the old fallback makes the three negative tests fail (exit 1); the source was restored byte-identical (`cmp` 0).
+
+**LOC2-C2 — honest detour bound.** The budget used to be checked only before a step, and each step could then walk a full extra frontier move; tests allowed +32.
+- The episode's remaining PATH allowance is now enforced during dispatch: the move is aborted (`detour_allowance`) when the polled path reaches it. The episode records polled path length, not straight displacement.
+- Honest finite bound per episode: 96 path blocks on the first side, plus 192 after the single side switch, plus `DETOUR_POLL_SLACK` (2 blocks) per side. That is at most 3 × 96 + 4 = 292.
+- Where the slack comes from: the shared `navigate()` polls `abortIf` every 100 ms (300 ms around its arrival settle), which is under 2 blocks at walking speed; the simulator moves at most √2 per poll.
+- Tests assert exactly this bound. In the no-way-around scene, an EXTERNAL per-step path oracle (independent of the runner's accounting) shows the whole attempt within 24 + 292 blocks.
+- Mutation check: removing the in-dispatch abort makes it fail (walked 338.1 > 316, exit 1); the source was restored (`cmp` 0).
+- The whole-route ceilings (cumulative movement, legs, fixed deadline) remain the outer bound. They are never reset across windows, legs or replans (C1/C2, unchanged; composition test).
+
+**Requirement for P's integration of W:** safety must protect route legs and sustained follow windows. A safety grant may suspend a `seek_owner`/`follow_entity` window but must not depend on, refund, reset or re-anchor route authority. After safety, the remaining route budget and admission anchor apply unchanged. An exhausted route must not disable the safety reflex (P-L5).
+
+**Third-round checks** (direct exits, each output redirected to a log and `$?` captured immediately):
+
+| Check | Exit | Result |
+| --- | --- | --- |
+| `npm run typecheck` | 0 | |
+| `npm run build` | 0 | |
+| `npm test` | 0 | 827/827 |
+| locator suites (12 files) | 0 | 142/142 |
+| `npm run doctor -- --config config/examples/fixture.json` | 0 | |
+
+`dist/cli.js` sha256 `de9409f3ddb24e918274db15435ad1a15d1c5a2896f93149e7799b58e0fa7553`. Nothing is running.
+
+## Fixture footprint and restoration (for guard review; no lease requested before it)
+
+| Harness | Teleport box (checked before every RCON tp) | Bot envelope (abort) | World writes | Settings | Players |
+| --- | --- | --- | --- | --- | --- |
+| G6 (`locator-live-check.ts --gates g6`) | x −1401..−600, y −60, z −1401..−600 (`f1Teleports`, 37 named points) | x/z −1100..−900 | none (flat chunk generation only) | none | Chunkbot (harness connection), FixtureOwner |
+| Ordinary (`locator-ordinary-live-check.ts`) | x 1700..2400, y −60, z 1700..2300 (7 named points + checked owner steps); nether roof (0.5, 128, 0.5) for the owner only | x 1600..2500, z 1600..2400 | none (flat chunk generation only) | none (owner sneak via client control only) | Chunkbot (actual CLI), FixtureOwner, FixtureGuest (O5) |
+
+**Restoration:**
+- **G6.** The owner returns to `ownerStart` and the bot to `base`. The existing `finally` restorations still apply (owner effects/head/sneak cleared, fake players disconnected, harness connection closed); a failure fails the report.
+- **Ordinary.** In `finally`: owner sneak and effects cleared; guest disconnected; Chunkbot teleported back to the starting position recorded at the run's start (dimension included) and VERIFIED by a server read; CLI `/quit` (SIGKILL after 15 s); owner disconnected; loopback Jev closed. A failed restoration or a privacy finding fails the report.
+
+**Guards:**
+- Both harnesses refuse (exit 2) without `--fixture-lease`. This happens before any password read, RCON, join, child process or output directory, and is tested.
+- Footprints are disjoint from the skills scene and the reviewed locator boxes (tested).
+- No `fill`/`setblock`/`clone`/`gamerule`/`attribute`/`difficulty`/`summon`/`kill` appears in the ordinary harness (tested).
+
 ## Tests and checks (worktree, Node 24.21.0; direct exit codes)
 
-Method (coordinator note): every command's output is redirected to a log file and `$?` is captured immediately after it; the log is read separately. No pipeline status is used as proof. Latest run on the source of the second-round commit (below):
+Method (coordinator note): every command's output is redirected to a log file and `$?` is captured immediately after it; the log is read separately. No pipeline status is used as proof. Latest results are in the third-round section below; the list that follows describes the suites.
 
 - `npm run typecheck`: **0**.
 - `npm run build`: **0**.
