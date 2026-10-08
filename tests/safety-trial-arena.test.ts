@@ -137,7 +137,7 @@ describe('W-H4 exact visible scenario prerequisites', () => {
     for (const gate of ['M1', 'M4'] as const) assert.deepEqual(mobStageRefusals(gate, [summon(50, 'zombie')], [z], planSafety(unarmed, [z], policyCtx()), 1000), []);
     for (const gate of ['M2', 'M2b'] as const) assert.deepEqual(mobStageRefusals(gate, [summon(50, 'zombie')], [z], planSafety(armed, [z], policyCtx()), 1000), []);
     const c = mob('creeper', 5, { entityId: 60 });
-    assert.deepEqual(mobStageRefusals('M3', [summon(60, 'creeper')], [c], planSafety(armed, [c], policyCtx()), 1000), []);
+    assert.deepEqual(mobStageRefusals('M3', [summon(60, 'creeper', { effectFree: true })], [c], planSafety(armed, [c], policyCtx()), 1000), []);
     const w = mob('wolf', 2, { entityId: 70, aggressive: false });
     assert.deepEqual(mobStageRefusals('M3b', [summon(71, 'cow'), summon(70, 'wolf', { unprovoked: true })], [w], planSafety(armed, [w], policyCtx()), 1000), []);
   });
