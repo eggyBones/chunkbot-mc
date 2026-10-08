@@ -11,7 +11,7 @@ Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree
 | `2ffdf10` | C8/C9/C10 corrections, harness, offline tests |
 | `549ce47` | The proposed C12 typed seam (declarations only, not consumed) and this review |
 | `41733b2` | The status projection enforces the declared 4,000-character bound (C10 added fields) |
-| (this commit) | Coordinator schema review: state/count consistency invariants, v1 migration that reconstructs the original lost count from recorded regains, old-revision fallback tests |
+| `08c9d89` | Coordinator schema review: state/count consistency invariants, v1 migration that reconstructs the original lost count from recorded regains, old-revision fallback tests |
 
 Owned paths changed:
 - `src/contracts/survival.ts`
