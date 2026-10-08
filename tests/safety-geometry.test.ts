@@ -79,6 +79,7 @@ describe('fluid state (local estimate)', () => {
     const missingFloor = { blockAt: (x: number, y: number, z: number) => y < 0 ? null : w.blockAt(x, y, z) };
     const unknown = fluidState(missingFloor, { x: 0.5, y: 3.84, z: 0.5 });
     assert.equal(unknown.support, 'unknown');
+    assert.equal(unknown.depth, null, 'a partial column does not assert its complete depth');
     assert.equal(unknown.wadeable, null);
     assert.equal(hasSafeFluidSupport({ ...unknown, onGround: true }), false);
     assert.equal(fluidState({ blockAt: () => null }, { x: 0.5, y: 0, z: 0.5 }).columnFluid, 'unknown');
