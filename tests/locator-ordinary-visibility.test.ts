@@ -1,12 +1,16 @@
 // L-H11: retained actual input reproduction and separate synthetic bracket/adverse controls. No world/inference.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { offlinePlayerUuid } from '../src/game/identity.ts';
 import { sequentialIds, type DecisionRequest, type ObservationSnapshot } from '../src/contracts/index.ts';
 import { TaskRuntime, type TaskRuntimeDeps } from '../src/tasks/task-runtime.ts';
-import { MemoryRunStore } from '../src/telemetry/run-store.ts';
-import { parseOwnerServerRead, privacyOracle, visibleOwnerConsistency, type ObserverSample, type OwnerIdentity, type Point, type ServerVisibilityRead, type VisibilityContext } from '../scripts/lib/locator-ordinary-oracles.ts';
+import { FileRunStore } from '../src/telemetry/run-store.ts';
+import { snapshotSummary } from '../src/decision/context.ts';
+import { renderObservation } from '../src/planner/prompt.ts';
+import { modelObservationBinding, parseOwnerServerRead, privacyOracle, visibleOwnerConsistency, type ObserverSample, type OwnerIdentity, type Point, type ServerVisibilityRead, type VisibilityContext } from '../scripts/lib/locator-ordinary-oracles.ts';
 import { startVisibilityCapture, VISIBILITY_CAPTURE } from '../scripts/lib/locator-ordinary-visibility-capture.ts';
 
 type Row = Record<string, any>;
@@ -29,6 +33,51 @@ function rawRead(s: ReturnType<typeof synthetic>, fromMs: number): ServerVisibil
   const scope = { runId: s.context.runId, goalEpoch: s.context.goalEpoch, connectionEpoch: s.context.connectionEpoch };
   return { scopeBefore: { ...scope }, scopeAfter: { ...scope }, owner: server(ownerIdentity, s.owner, fromMs, fromMs + 1), bot: server(botIdentity, s.bot, fromMs + 1, fromMs + 2) };
 }
+function metadataCase(source: 'jev_request' | 'planner_prompt') {
+  const s = synthetic();
+  const frame: ObservationSnapshot = { id: s.observation.snapshotId, takenAtMs: s.observation.takenAtMs, connectionEpoch: s.observation.connectionEpoch, goalEpoch: s.observation.goalEpoch, dimension: 'overworld', self: { at: s.bot, health: 20, food: 20 }, owner: { visible: true, at: s.owner, distance: d(s.bot, s.owner) }, entities: s.observation.entities.map((e: Row) => ({ ...e, distance: d(s.bot, e.at) })), inventory: [], equipment: {}, blocks: [], drops: [], blockSummary: [], remembered: [], frontiers: [] };
+  const observation = (source === 'jev_request' ? snapshotSummary(frame) : renderObservation(frame)) as Row;
+  const context = { source, runId: s.context.runId, atMs: s.context.atMs, connectionEpoch: s.context.connectionEpoch };
+  const journal: Row = { run: context.runId, t: new Date(1015).toISOString(), type: source === 'jev_request' ? 'task_round' : 'planner_turn_started', requestId: 'req-binding', snapshotId: frame.id, snapshotTakenAtMs: frame.takenAtMs, connectionEpoch: frame.connectionEpoch, goalEpoch: source === 'jev_request' ? 29 : frame.goalEpoch, ...(source === 'jev_request' ? { snapshotGoalEpoch: frame.goalEpoch, taskId: 'task-current', goalId: 'goal-current' } : { subject: 'goal-current', subjectGoalEpoch: 29 }) };
+  return { ...s, observation, source, journal, bindingContext: context };
+}
+
+describe('L-H11 approved P 28796a1 convention through actual context renderers (synthetic brackets only)', () => {
+  for (const source of ['jev_request', 'planner_prompt'] as const) {
+    it(`binds exact ${source} observation scope independently from ownership and retains the raw journal in the bracket proof`, () => {
+      const s = metadataCase(source), binding = modelObservationBinding(s.observation, [s.journal], s.bindingContext)!;
+      assert.ok(binding); assert.equal(binding.goalEpoch, 1); assert.equal(s.journal[source === 'jev_request' ? 'goalEpoch' : 'subjectGoalEpoch'], 29);
+      const result = visibleOwnerConsistency(s.observation, [], { ...s.context, ...binding, binding }, [rawRead(s, 1000), rawRead(s, 1010)]);
+      assert.deepEqual(result.errors, []); assert.deepEqual(result.proof?.binding?.journal, s.journal);
+      assert.equal(result.proof?.binding?.requestId, 'req-binding'); assert.equal(result.proof?.takenAtMs, 1005);
+    });
+    for (const [name, mutate] of [
+      ['foreign run', (s: ReturnType<typeof metadataCase>) => { s.journal.run = 'run-other'; }],
+      ['foreign snapshot', (s: ReturnType<typeof metadataCase>) => { s.journal.snapshotId = 'snap-other'; }],
+      ['missing timestamp', (s: ReturnType<typeof metadataCase>) => { delete s.journal.snapshotTakenAtMs; }],
+      ['request-time substitution', (s: ReturnType<typeof metadataCase>) => { s.journal.snapshotTakenAtMs = s.bindingContext.atMs; }],
+      ['body timestamp alteration', (s: ReturnType<typeof metadataCase>) => { s.observation.takenAtMs++; }],
+      ['foreign connection', (s: ReturnType<typeof metadataCase>) => { s.journal.connectionEpoch++; }],
+      ['body epoch rewritten to ownership', (s: ReturnType<typeof metadataCase>) => { s.observation.goalEpoch = 29; }],
+      ['missing observation epoch', (s: ReturnType<typeof metadataCase>) => { delete s.journal[s.source === 'jev_request' ? 'snapshotGoalEpoch' : 'goalEpoch']; }],
+      ['future journal', (s: ReturnType<typeof metadataCase>) => { s.journal.t = new Date(s.bindingContext.atMs + 1).toISOString(); }],
+      ['snapshot after journal', (s: ReturnType<typeof metadataCase>) => { s.journal.t = new Date(s.observation.takenAtMs - 1).toISOString(); }],
+      ['absent request identity', (s: ReturnType<typeof metadataCase>) => { delete s.journal.requestId; }],
+    ] as const) it(`${source} refuses ${name}`, () => {
+      const s = metadataCase(source); mutate(s); assert.equal(modelObservationBinding(s.observation, [s.journal], s.bindingContext), undefined);
+    });
+    it(`${source} refuses the newest contradictory binding instead of falling back to an older valid row`, () => {
+      const s = metadataCase(source), bad = { ...s.journal, connectionEpoch: 2, t: new Date(1016).toISOString() };
+      assert.equal(modelObservationBinding(s.observation, [s.journal, bad], s.bindingContext), undefined);
+    });
+  }
+  it('preparation retains a string subject and null subject epoch without inventing admitted ownership', () => {
+    const s = metadataCase('planner_prompt'); s.journal.subject = 'intent-preparation'; s.journal.subjectGoalEpoch = null;
+    const binding = modelObservationBinding(s.observation, [s.journal], s.bindingContext)!;
+    assert.equal(binding.goalEpoch, 1); assert.equal(binding.journal.subjectGoalEpoch, null); assert.equal(binding.journal.subject, 'intent-preparation');
+    s.journal.subject = { goalEpoch: 1 }; assert.equal(modelObservationBinding(s.observation, [s.journal], s.bindingContext), undefined);
+  });
+});
 
 describe('L-H11 faithful retained trial41 reproduction', () => {
   it('reproduces the actual old scan assertion from the complete affected Jev body and exact selected sample', () => {
@@ -45,6 +94,7 @@ describe('L-H11 faithful retained trial41 reproduction', () => {
     assert.equal(obs.connectionEpoch, undefined); assert.equal(obs.goalEpoch, undefined);
     const event = retained.events.find((e: Row) => e.type === 'task_round' && e.snapshotId === obs.snapshotId);
     assert.equal(event.snapshotTakenAtMs, undefined);
+    assert.equal(modelObservationBinding(obs, retained.events, { source: 'jev_request', runId: 'run-bb219ea4fe96', atMs: request.atMs, connectionEpoch: 1 }), undefined, 'new P metadata cannot be invented for the retained old wire');
     assert.ok(retained.events.some((e: Row) => e.type === 'task_choice_stale' && e.requestId === event.requestId && e.reasons[0].startsWith('no_visible_entity')));
     const proof = visibleOwnerConsistency(obs, retained.observations, { runId: 'run-bb219ea4fe96', atMs: request.atMs, snapshotId: event.snapshotId, takenAtMs: event.snapshotTakenAtMs, goalEpoch: event.goalEpoch, connectionEpoch: 1, ownerIdentity, botIdentity });
     assert.equal(proof.proof, undefined); assert.deepEqual(proof.errors, ['visible_owner_snapshot_scope_unproven']);
@@ -60,11 +110,13 @@ describe('L-H11 faithful retained trial41 reproduction', () => {
     assert.deepEqual(r.errors, ['visible_owner_position_disagrees_with_bracket']);
     assert.equal(r.proof, undefined, 'no fabricated bot reads or retrospective acceptance of the old artifact');
   });
-  it('actual TaskRuntime fences dispatch across the reproduced asynchronous visibility change', async () => {
+  it('actual TaskRuntime and FileRunStore correlate exact P metadata and fence the reproduced asynchronous visibility change', async (t) => {
     // Controlled async-boundary reproduction, not a claim about the missing creation time in trial41.
     const old = retained.observations.find((o: Row) => o.atMs === 1791483171121).snapshot;
     let now = old.takenAtMs, hidden = false, takes = 0, executed = 0;
-    const requests: DecisionRequest[] = [], ids = sequentialIds(), store = new MemoryRunStore();
+    const requests: DecisionRequest[] = [], ids = sequentialIds(), dir = mkdtempSync(join(tmpdir(), 'locator-lh11-metadata-'));
+    const store = new FileRunStore({ runsDir: join(dir, 'runs'), runId: 'run-lh11-control', clock: { now: () => now }, maxEvents: 100, maxEventChars: 16000, keepRuns: 1 });
+    t.after(async () => { await store.close({ test: true }); rmSync(dir, { recursive: true, force: true }); });
     const snapshot = (): ObservationSnapshot => ({ ...structuredClone(old), id: ids.next('snap'), takenAtMs: now, owner: hidden ? { visible: false } : structuredClone(old.owner), entities: hidden ? [] : structuredClone(old.entities), inventory: [], equipment: {}, blocks: [], drops: [], blockSummary: [], frontiers: [] }) as ObservationSnapshot;
     const deps: TaskRuntimeDeps = {
       perception: { take: () => { takes++; return snapshot(); }, resolve: () => ({ error: 'not_visible_now' }) },
@@ -82,8 +134,13 @@ describe('L-H11 faithful retained trial41 reproduction', () => {
       const wire = requests[0]!.state as Row;
       assert.equal(wire.observation.owner.visible, true); assert.deepEqual(wire.observation.owner.at, old.owner.at);
       assert.equal(wire.progress.status, 'unknown');
-      if (wire.observation.takenAtMs !== undefined) assert.equal(wire.observation.takenAtMs, old.takenAtMs);
-      assert.ok(store.events.some((e) => e['type'] === 'task_choice_stale'));
+      assert.equal(wire.observation.takenAtMs, old.takenAtMs);
+      const events = readFileSync(store.eventsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Row);
+      const binding = modelObservationBinding(wire.observation, events, { source: 'jev_request', runId: store.runId, atMs: now, connectionEpoch: 1 });
+      assert.equal(binding?.requestId, requests[0]!.requestId); assert.equal(binding?.takenAtMs, old.takenAtMs);
+      assert.equal(binding?.goalEpoch, old.goalEpoch); assert.equal(binding?.connectionEpoch, old.connectionEpoch);
+      assert.equal(binding?.journal.snapshotGoalEpoch, old.goalEpoch); assert.equal(binding?.journal.goalEpoch, 1);
+      assert.ok(events.some((e) => e['type'] === 'task_choice_stale'));
     }
     assert.ok(takes >= 2); assert.equal(executed, 0); assert.equal(result.actions, 0);
   });

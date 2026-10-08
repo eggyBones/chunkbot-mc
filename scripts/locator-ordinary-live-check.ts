@@ -63,7 +63,7 @@ import { execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { insideBox, isEntryPoint, type Box } from './locator-live-check.ts';
 import type { FaultTurn } from './lib/fault-codex.ts';
-import { actionIntervals, parseOwnerServerRead, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, visibleOwnerConsistency, type ObserverSample } from './lib/locator-ordinary-oracles.ts';
+import { actionIntervals, modelObservationBinding, parseOwnerServerRead, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, visibleOwnerConsistency, type ObserverSample } from './lib/locator-ordinary-oracles.ts';
 import { startVisibilityCapture } from './lib/locator-ordinary-visibility-capture.ts';
 import { captureStationaryPosition, originalPositionTarget, POSITION_SETTLE, type PlayerPositionRead, type PositionScope, type PositionTarget, type StationaryPositionProof } from './lib/locator-ordinary-origin.ts';
 
@@ -563,7 +563,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     const history = verifiedHistory(observations, ownerIdentity);
     const allowed: Json[] = [];
     let hiddenRequests = 0;
-    const scan = (text: string, atMs: number, source: string) => {
+    const scan = (text: string, atMs: number, source: 'jev_request' | 'planner_prompt') => {
       const input = source === 'planner_prompt' ? parsePlannerInput(text) : JSON.parse(text) as Json;
       const sample = window.filter((x) => x.atMs <= atMs + 1_500).sort((a, b) => Math.abs(a.atMs - atMs) - Math.abs(b.atMs - atMs))[0];
       const own = input.observation?.self?.at ?? input.state?.observation?.self?.at;
@@ -575,10 +575,11 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       const obs = input.observation ?? input.state?.observation;
       let visibility;
       if (obs.owner?.visible === true) {
-        const binding = source === 'jev_request'
-          ? events().filter((e) => e.type === 'task_round' && e.snapshotId === obs.snapshotId && tOf(e) <= atMs).at(-1)
-          : events().filter((e) => e.type === 'planner_turn_started' && e.snapshotId === obs.snapshotId && tOf(e) <= atMs).at(-1);
-        const consistency = visibleOwnerConsistency(obs, observations, { runId: basename(dirname(eventsPath)), atMs, goalEpoch: binding?.goalEpoch ?? binding?.snapshotGoalEpoch, connectionEpoch: ready.connectionEpoch, snapshotId: binding?.snapshotId, takenAtMs: binding?.snapshotTakenAtMs, ownerIdentity, botIdentity: { name: BOT, uuid: offlinePlayerUuid(BOT) } }, visibilityCapture?.reads ?? []);
+        const runId = basename(dirname(eventsPath));
+        const binding = modelObservationBinding(obs, events(), { source, runId, atMs, connectionEpoch: ready.connectionEpoch });
+        const consistency = binding
+          ? visibleOwnerConsistency(obs, observations, { ...binding, binding, runId, atMs, ownerIdentity, botIdentity: { name: BOT, uuid: offlinePlayerUuid(BOT) } }, visibilityCapture?.reads ?? [])
+          : { errors: ['visible_owner_journal_binding_unproven'], proof: undefined };
         visibility = consistency.proof;
         if (!visibility) privacyFindings.push({ scenario, source, atMs, path: 'observation.owner', value: JSON.stringify(obs.owner), reason: consistency.errors.join('; '), snapshotId: obs.snapshotId, claimedTakenAtMs: obs.takenAtMs ?? null });
         else allowed.push({ source, atMs, path: 'observation.owner.at', reason: 'identified visible owner independently bracketed at observation time', visibility });

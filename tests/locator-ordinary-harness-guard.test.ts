@@ -144,7 +144,9 @@ describe('MB-LOC-002 ordinary harness scripted planner turns and privacy helper'
   });
   it('requires actual snapshot time/scope, retains independent server reads and scans all visible-request fields', () => {
     assert.match(code, /visibleOwnerConsistency\(obs, observations,/);
-    assert.match(code, /takenAtMs: binding\?\.snapshotTakenAtMs/);
+    assert.match(code, /modelObservationBinding\(obs, events\(\), \{ source, runId, atMs, connectionEpoch: ready.connectionEpoch \}\)/);
+    assert.match(code, /\{ \.\.\.binding, binding, runId, atMs,/);
+    assert.ok(!/binding\?\.goalEpoch \?\? binding\?\.snapshotGoalEpoch/.test(code));
     assert.match(code, /visibilityCapture\?\.reads/);
     assert.match(code, /retainedLH11Failure:/);
     const visible = code.slice(code.indexOf('if (obs.owner?.visible === true)'), code.indexOf('for (const hit of result.findings)'));
