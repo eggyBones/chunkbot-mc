@@ -255,7 +255,10 @@ export function evalRecovery(ctx: PolicyContext): RoutineEval {
     `attempt ${used + 1} of ${e.maxAttempts}; episode budget left: ${rem.plannerTurns} planner turns, ${rem.tasks} tasks`,
     ...(e.manifest?.partial ? ['the loss manifest is partial (some pre-death or fresh inventory evidence was unavailable)'] : []),
   ];
-  const instruction = `Automatic support routine (not an owner request): recover my own belongings lost at death incident ${e.originalIncidentFactId ?? e.episodeId}, about ${d} blocks ${dir}. Use go_to_death_site, then recover_lost_items to pick up only the matching visible drops near the site; finish when survival_state death_recovery is concluded.`;
+  const travel = routePolicy === 'local'
+    ? 'Use go_to_death_site within its local goal travel bound'
+    : 'Use the separately registered route_travel with destination own_death under its code-owned route legs and cumulative limits; go_to_death_site remains local only and is unnecessary at route arrival';
+  const instruction = `Automatic support routine (not an owner request): recover my own belongings lost at death incident ${e.originalIncidentFactId ?? e.episodeId}, about ${d} blocks ${dir}. ${travel}, then recover_lost_items to pick up only the matching visible drops near the site; finish when survival_state death_recovery is concluded.`;
   return {
     routine: 'death_recovery',
     need: true,
@@ -273,7 +276,7 @@ export function evalRecovery(ctx: PolicyContext): RoutineEval {
         context: {
           routine: 'death_recovery',
           facts,
-          suggestedCapabilities: [SURVIVAL_CAPABILITIES.goToDeathSite, SURVIVAL_CAPABILITIES.recoverLostItems],
+          suggestedCapabilities: [...(routePolicy === 'local' ? [] : ['route_travel']), SURVIVAL_CAPABILITIES.goToDeathSite, SURVIVAL_CAPABILITIES.recoverLostItems],
           rules: [
             'pick up only drops offered by recover_lost_items (scoped to the death site and the missing items); never sweep other loot',
             'items may have despawned, burned or been taken: never promise their return, an exact despawn time or experience restoration',

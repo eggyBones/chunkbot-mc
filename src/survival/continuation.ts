@@ -175,7 +175,7 @@ export class IncidentLedgerBook {
       return { ambiguous: candidates.map((l) => l.incidentId) };
     }
     const l = candidates[0] as Ledger;
-    if (c.count > (l.unreturned.get(id) ?? 0)) {
+    if (!Number.isInteger(c.count) || c.count <= 0 || c.count > c.facts.count || c.facts.count > (l.unreturned.get(id) ?? 0)) {
       l.ambiguous ??= 'collected_pile_exceeds_unreturned_loss';
       return { ambiguous: [l.incidentId] };
     }
