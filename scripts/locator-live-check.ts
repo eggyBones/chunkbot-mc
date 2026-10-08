@@ -21,6 +21,12 @@
 //       through counted legs, reunion verified by SERVER positions (RCON).
 //   G5  (needs --approve-scene <id>) negative route scenes inside the declared
 //       footprint (lava / wall / drop), restored in finally.
+//   G6  MB-LOC-002 F1 direction matrix at a NEGATIVE-coordinate base: the owner
+//       in all eight directions plus bearing wraparound at block (40), chunk
+//       (200) and azimuth (400) distance with varied bot yaw; the coarse cue
+//       sector and server-chosen variant are checked against SERVER positions;
+//       then a short seek_owner window per direction: the first movement
+//       (server positions) must agree with the true bearing. No block writes.
 //
 // Safety: importing this module runs nothing. main() refuses (exit 2) before
 // any fixture password read, RCON command, join or output setup unless
@@ -32,6 +38,7 @@
 //   npm run build   (source/build frozen for the run)
 //   node scripts/locator-live-check.ts --fixture-lease <id> --fixture 26.2 [--gates g1,g2,g3,g5] [--approve-rules <id>] [--approve-scene <id>]
 //   node scripts/locator-live-check.ts --fixture-lease <id> --gates g1   (26.1.2 broadcast sanity)
+//   node scripts/locator-live-check.ts --fixture-lease <id> [--fixture 26.2] --gates g6   (MB-LOC-002 F1 direction matrix)
 //
 // Footprint (MB-LOC-001-C4; every bound is declared in LOCATOR_FOOTPRINT and
 // enforced before any RCON teleport/fill):
@@ -40,6 +47,8 @@
 //   netherTeleports     the dimension trip: nether (0.5, 128, 0.5) on the
 //                       bedrock roof, x 0..1, y 128, z 0..1
 //   g3BotEnvelope       G3 seeking aborts if the bot leaves x 900..1400, z 900..1140
+//   f1Teleports         G6 destinations: x -1401..-600, y -60, z -1401..-600
+//   g6BotEnvelope       G6 seeking aborts if the bot leaves x -1100..-900, z -1100..-900
 //   scene               G5 writes ONLY x 1000..1040, y -64..-50, z 1100..1140
 //   sceneReference      read-only comparison region x 1060..1100 (same y/z)
 // G3 makes no block writes. G5 first proves the scene equals the dedicated flat
@@ -76,6 +85,8 @@ export const LOCATOR_FOOTPRINT = {
   overworldTeleports: { x1: 600, x2: 1301, y1: -60, y2: -46, z1: 958, z2: 1201 },
   netherTeleports: { x1: 0, x2: 1, y1: 128, y2: 128, z1: 0, z2: 1 },
   g3BotEnvelope: { x1: 900, x2: 1400, y1: -64, y2: 320, z1: 900, z2: 1140 },
+  f1Teleports: { x1: -1401, x2: -600, y1: -60, y2: -60, z1: -1401, z2: -600 },
+  g6BotEnvelope: { x1: -1100, x2: -900, y1: -64, y2: 320, z1: -1100, z2: -900 },
   scene: { x1: 1000, x2: 1040, y1: -64, y2: -50, z1: 1100, z2: 1140 },
   sceneReference: { x1: 1060, x2: 1100, y1: -64, y2: -50, z1: 1100, z2: 1140 },
 } as const satisfies Record<string, Box>;
@@ -124,6 +135,61 @@ export const TELEPORTS: Record<string, { x: number; y: number; z: number }> = {
   scenePlatform: { x: 1001.5, y: -55, z: 1120.5 },
   sceneOwner: { x: 1034.5, y: -60, z: 1120.5 },
 };
+
+/**
+ * MB-LOC-002 F1 (G6): a negative-coordinate base, eight bearings plus
+ * wraparound (degrees, +x east / +z south: +/-179 straddle due west, -89/-91
+ * straddle due north = the azimuth payload's +/-pi) and one distance per
+ * server-selected variant (view distance 6 in the dedicated fixtures).
+ */
+export const F1_BASE = { x: -1000.5, y: -60, z: -1000.5 };
+export const F1_BEARINGS = [0, 45, 90, 135, 180, -135, -90, -45, 179, -179, -89, -91] as const;
+export const F1_DISTANCES = { vec3i: 40, chunk: 200, azimuth: 400 } as const;
+export const F1_YAWS = [0, 90, 180, -90, 135, -45] as const;
+export const f1Key = (variant: keyof typeof F1_DISTANCES, bearing: number) => `f1_${variant}_${bearing < 0 ? `m${-bearing}` : bearing}`;
+/**
+ * G6 staging point (8 blocks east of the base: block precision, a payload that
+ * differs from every measured target). Before EACH measured target the owner is
+ * staged here and that statement is required, so the target then necessarily
+ * produces a NEW statement: the official chunk connection sends an update only
+ * when the source CHUNK changes, so two consecutive targets in one chunk (the
+ * +/-179 and -89/-91 wrap pairs at chunk distance) yield no new packet although
+ * the current cue stays correct (first 26.2 G6 run, a9f3e00).
+ */
+export const F1_STAGE = { x: F1_BASE.x + 8, y: F1_BASE.y, z: F1_BASE.z };
+export const F1_TELEPORTS: Record<string, { x: number; y: number; z: number }> = Object.fromEntries([
+  ['f1Base', F1_BASE],
+  ['f1Stage', F1_STAGE],
+  ...(Object.keys(F1_DISTANCES) as Array<keyof typeof F1_DISTANCES>).flatMap((variant) =>
+    F1_BEARINGS.map((b) => [f1Key(variant, b), { x: F1_BASE.x + Math.round(Math.cos((b * Math.PI) / 180) * F1_DISTANCES[variant]), y: F1_BASE.y, z: F1_BASE.z + Math.round(Math.sin((b * Math.PI) / 180) * F1_DISTANCES[variant]) }] as const),
+  ),
+]);
+
+/**
+ * The waypoint payloads the official 26.x rule may transmit for an owner at
+ * `owner` seen by a receiver at `bot` (static source: azimuth beyond 332 blocks,
+ * updated when the angle changes by more than 0.5 degrees; chunk precision when
+ * the owner's chunk is outside the receiver's view distance, updated only when
+ * the chunk changes; otherwise block precision, updated when the block changes).
+ * Near the view-distance border both chunk and block are possible. Two positions
+ * CERTAINLY produce different payloads (so moving between them must send a new
+ * statement) only when their key sets are disjoint.
+ */
+export function f1PayloadKeys(owner: { x: number; y: number; z: number }, bot: { x: number; y: number; z: number }, viewDistanceChunks: number): Set<string> {
+  const d = Math.hypot(owner.x - bot.x, owner.y - bot.y, owner.z - bot.z);
+  if (d > 332) {
+    const deg = (Math.atan2(bot.x - owner.x, -(bot.z - owner.z)) * 180) / Math.PI;
+    return new Set([`azimuth:${Math.round(deg / 0.5)}`]);
+  }
+  const block = `vec3i:${Math.floor(owner.x)},${Math.floor(owner.y)},${Math.floor(owner.z)}`;
+  const chunk = `chunk:${Math.floor(owner.x / 16)},${Math.floor(owner.z / 16)}`;
+  const chunks = Math.hypot(Math.floor(owner.x / 16) - Math.floor(bot.x / 16), Math.floor(owner.z / 16) - Math.floor(bot.z / 16));
+  if (chunks <= viewDistanceChunks - 1) return new Set([block]);
+  if (chunks >= viewDistanceChunks + 2) return new Set([chunk]);
+  return new Set([block, chunk]);
+}
+
+export const payloadsDisjoint = (a: Set<string>, b: Set<string>) => [...a].every((k) => !b.has(k));
 
 export function insideBox(b: Box, p: { x: number; y: number; z: number }): boolean {
   return p.x >= b.x1 && p.x <= b.x2 + 1 && p.y >= b.y1 && p.y <= b.y2 && p.z >= b.z1 && p.z <= b.z2 + 1;
@@ -304,8 +370,10 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       await rcon(`execute in minecraft:the_nether run tp ${player} ${NETHER_ROOF.x} ${NETHER_ROOF.y} ${NETHER_ROOF.z}`);
       return;
     }
-    const at = TELEPORTS[key];
-    assert(at && insideBox(LOCATOR_FOOTPRINT.overworldTeleports, at), `teleport ${String(key)} outside the declared footprint`);
+    // MB-LOC-002 G6 destinations live in their own declared (negative-coordinate) box.
+    const f1 = key in F1_TELEPORTS;
+    const at = f1 ? F1_TELEPORTS[key] : TELEPORTS[key];
+    assert(at && insideBox(f1 ? LOCATOR_FOOTPRINT.f1Teleports : LOCATOR_FOOTPRINT.overworldTeleports, at), `teleport ${String(key)} outside the declared footprint`);
     await rcon(`execute in minecraft:overworld run tp ${player} ${at.x} ${at.y} ${at.z}${extra}`);
   };
   const ownerAt = (key: keyof typeof TELEPORTS) => tp(OWNER, key);
@@ -582,6 +650,100 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       });
     }
 
+    if (gates.has('g6')) {
+      // MB-LOC-002 F1 live: cue sector/variant for every direction and yaw at a negative base, then first movement.
+      await tp(BOT, 'f1Base', ' 0 0');
+      await tp(OWNER, 'f1Base');
+      await sleep(3_000);
+      const placed = await serverPos(BOT);
+      lifecycleLog.push({ dtMs: Date.now() - startedAt, type: `g6_base:${Math.hypot(placed.x - F1_BASE.x, placed.z - F1_BASE.z) < 1.5 ? 'verified' : 'mismatch'}` });
+      let yawIndex = 0;
+      for (const variant of Object.keys(F1_DISTANCES) as Array<keyof typeof F1_DISTANCES>) {
+        await check(`G6-cue-${variant}`, `F1 cue sector and server variant for 8 directions + wraparound at ${F1_DISTANCES[variant]} blocks (negative coordinates, varied yaw)`, async (ev) => {
+          const misses: string[] = [];
+          for (const bearing of F1_BEARINGS) {
+            const yaw = F1_YAWS[yawIndex++ % F1_YAWS.length]!;
+            await tp(BOT, 'f1Base', ` ${yaw} 0`);
+            // Deterministic staging: a block-precision statement at f1Stage FIRST, so the
+            // measured target must produce a genuinely NEW statement (see F1_STAGE).
+            const ts = Date.now();
+            await tp(OWNER, 'f1Stage');
+            const staged = await waitOwner(ts, (x) => x.op !== 'untrack' && x.variant === 'vec3i', 5_000);
+            if (!staged) {
+              ev.push(`${bearing}deg yaw ${yaw}: staging produced no new block-precision owner statement  <-- MISMATCH`);
+              misses.push(`${bearing}(staging)`);
+              continue;
+            }
+            await sleep(300);
+            const t0 = Date.now();
+            await tp(OWNER, f1Key(variant, bearing));
+            await sleep(600);
+            const or = await oracle();
+            const p = await waitOwner(t0, (x) => x.op !== 'untrack' && or.variants.includes(x.variant), 5_000);
+            await sleep(300);
+            const h = hint();
+            const want = (await oracle()).sector;
+            const ok = Boolean(p) && h.actionable && h.direction === want;
+            ev.push(`${bearing}deg yaw ${yaw}: staged ${staged.op}:${staged.variant}; ${or.text}; expected NEW ${or.variants.join('/')} ${want}; got ${p ? `${p.op}:${p.variant}` : 'no new statement'} cue ${h.reason} ${h.direction ?? '-'} ${h.distanceBand} ${h.precision}${ok ? '' : '  <-- MISMATCH'}`);
+            if (!ok) misses.push(`${bearing}`);
+          }
+          assert(misses.length === 0, `cue/variant mismatches at bearings ${misses.join(', ')}`);
+        });
+      }
+      await check('G6-first-move', 'F1 first movement of a short seek_owner window agrees with the true bearing (server positions), 8 directions + wraparound', async (ev) => {
+        const misses: string[] = [];
+        for (const bearing of F1_BEARINGS) {
+          const variant = bearing % 2 === 0 ? 'chunk' : 'azimuth';
+          const yaw = F1_YAWS[yawIndex++ % F1_YAWS.length]!;
+          await tp(BOT, 'f1Base', ` ${yaw} 0`);
+          await tp(OWNER, f1Key(variant, bearing));
+          await sleep(1_500);
+          const b0 = await serverPos(BOT);
+          const o0 = await serverPos(OWNER);
+          const truth = Math.atan2(o0.z - b0.z, o0.x - b0.x);
+          epoch += 1;
+          const goalId = `goal-locf${epoch}`;
+          runtime.onGoalAdmitted({ goalId, epoch, admittedAtMs: Date.now() });
+          const bounds = runtime.perception.travelBounds();
+          const s = game.session()!;
+          assert(bounds, 'admission anchor');
+          routes.admit({ goalId, goalEpoch: epoch, admittedAtMs: Date.now(), source: 'owner', goalDeadlineMs: Date.now() + config.limits.goalDeadlineMs, connectionEpoch: s.connectionEpoch, dimension: String(s.bot.game.dimension), admissionAnchor: bounds.anchor, admissionRadius: bounds.radius, ownerCoordinates: [] });
+          const snap = runtime.perception.take(epoch);
+          assert(snap, 'observation');
+          const task = { objective: 'Rejoin the owner.', decisionInstruction: 'Seek the owner.', allowedCapabilities: ['seek_owner'], targetSelectors: [{ kind: 'owner' as const }], parameters: { durationMs: 6_000 }, completion: { predicate: 'near_target' as const, target: { kind: 'owner' as const }, within: 3 } };
+          const set = candidates.generate(task, snap);
+          const c = set.candidates.find((x) => x.capability === 'seek_owner');
+          if (!c) {
+            ev.push(`${bearing}deg: no seek option (${set.unavailable.map((u) => `${u.capability}:${u.reason}`).join(', ')})  <-- MISS`);
+            misses.push(`${bearing}`);
+            continue;
+          }
+          const envelope = new AbortController();
+          const watch = setInterval(() => {
+            const p = game.session()?.bot.entity.position;
+            if (p && !insideBox(LOCATOR_FOOTPRINT.g6BotEnvelope, p)) envelope.abort();
+          }, 250);
+          let o;
+          try {
+            o = await executor.execute(c, envelope.signal, { kind: 'goal', goalEpoch: epoch, goalId, taskId: randomIds.next('task') });
+          } finally {
+            clearInterval(watch);
+            routes.revoke('goal_terminal', epoch);
+          }
+          const b1 = await serverPos(BOT);
+          const moved = Math.hypot(b1.x - b0.x, b1.z - b0.z);
+          const off = Math.abs(((Math.atan2(b1.z - b0.z, b1.x - b0.x) - truth + 3 * Math.PI) % (2 * Math.PI)) - Math.PI);
+          const progress = (b1.x - b0.x) * Math.cos(truth) + (b1.z - b0.z) * Math.sin(truth);
+          const ok = moved >= 6 && off <= Math.PI / 4 && progress >= 5;
+          ev.push(`${bearing}deg (${variant}, yaw ${yaw}): ${o.status}${o.reason ? `/${o.reason}` : ''}; moved ${moved.toFixed(1)} blocks, ${(off * 180 / Math.PI).toFixed(1)}deg off, progress ${progress.toFixed(1)}${ok ? '' : '  <-- MISS'}${envelope.signal.aborted ? ' (envelope abort)' : ''}`);
+          if (!ok) misses.push(`${bearing}`);
+        }
+        assert(misses.length === 0, `first movement disagreed with the true bearing at ${misses.join(', ')}`);
+      });
+      await tp(OWNER, 'ownerStart');
+      await tp(BOT, 'base');
+    }
+
     if (gates.has('g5')) {
       if (!approveScene) skip('G5', 'negative route scenes (lava/wall/drop)', 'not run: requires --approve-scene <coordinator approval id> for the declared footprint');
       else {
@@ -684,7 +846,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   const locatorEvents = store.events.filter((e) => String(e.type).startsWith('locator_') || String(e.type).startsWith('route_')).slice(-200);
   writeFileSync(
     join(outDir, 'report.json'),
-    `${JSON.stringify({ check: 'MB-LOC-001 locator live gates (pre-integration harness)', fixture: PINS.profile, lease, approvals: { rules: approveRules ?? null, scene: approveScene ?? null }, footprint: LOCATOR_FOOTPRINT, teleports: TELEPORTS, flatBaseline: FLAT_BASELINE, viewDistance, pass, restoreFailures, lifecycle: lifecycleLog, results, setup: setupLog, packetEvidence: { count: packets.length, sample: packets.slice(0, 400).map((p) => ({ dtMs: p.t - (packets[0]?.t ?? p.t), op: p.op, variant: p.variant, who: p.who })) }, locatorEvents }, null, 2)}\n`,
+    `${JSON.stringify({ check: 'MB-LOC-001/002 locator live gates (module harness)', fixture: PINS.profile, lease, approvals: { rules: approveRules ?? null, scene: approveScene ?? null }, footprint: LOCATOR_FOOTPRINT, teleports: TELEPORTS, f1Teleports: F1_TELEPORTS, flatBaseline: FLAT_BASELINE, viewDistance, pass, restoreFailures, lifecycle: lifecycleLog, results, setup: setupLog, packetEvidence: { count: packets.length, sample: packets.slice(0, 400).map((p) => ({ dtMs: p.t - (packets[0]?.t ?? p.t), op: p.op, variant: p.variant, who: p.who })) }, locatorEvents }, null, 2)}\n`,
   );
   process.stdout.write(`${pass ? 'PASS' : 'FAIL'} locator live check: ${counted.filter((r) => r.pass === true).length}/${counted.length} (${results.length - counted.length} skipped) — ${outDir}\n`);
   return pass ? 0 : 1;
