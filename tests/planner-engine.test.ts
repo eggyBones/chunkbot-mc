@@ -122,14 +122,14 @@ describe('rolling planner/task windows', () => {
     assert.equal(r3.turnKind, 'replan');
     assert.deepEqual(r3.acceptedOutcome, { kind: 'finite', outcome: cobble });
     assert.equal(r3.outcomeStatus?.status, 'unsatisfied');
-    assert.deepEqual(r3.counters, { plannerTurns: 3, knowledgeRounds: 1, repairs: 0, retries: 0, clarifications: 0, replans: 1, windows: 1, tasksAdmitted: 1, preparationTurns: 0, lookaheads: 0 });
+    assert.deepEqual(r3.counters, { plannerTurns: 3, knowledgeRounds: 1, repairs: 0, retries: 0, questionRefusals: 0, replans: 1, windows: 1, tasksAdmitted: 1, preparationTurns: 0, lookaheads: 0 });
     assert.equal(h.engine.status().goal?.state, 'planning', 'a finished window is not goal completion');
     h.outcomes.satisfied = true;
     h.planner.respond(plan([task('mine more stone')]));
     await until(() => h.engine.status().goal?.state === 'completed');
     const g = h.engine.status().goal!;
     assert.equal(g.terminal?.reason, 'outcome_verified');
-    assert.deepEqual(g.counters, { plannerTurns: 3, knowledgeRounds: 1, repairs: 0, retries: 0, clarifications: 0, replans: 1, windows: 2, tasksAdmitted: 2, preparationTurns: 0, lookaheads: 0 });
+    assert.deepEqual(g.counters, { plannerTurns: 3, knowledgeRounds: 1, repairs: 0, retries: 0, questionRefusals: 0, replans: 1, windows: 2, tasksAdmitted: 2, preparationTurns: 0, lookaheads: 0 });
     assert.equal(h.outcomes.boundWith.length, 1, 'bound once');
     assert.equal(h.log.filter((l) => l === 'baseline').length, 1);
   });

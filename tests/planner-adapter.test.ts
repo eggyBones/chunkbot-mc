@@ -37,7 +37,7 @@ function planner(turns: FaultTurn[]) {
   return { p, store, journal, dir };
 }
 
-const request = (over: Partial<PlannerRequest> = {}): PlannerRequest => ({ requestId: 'req-0001', subject: { kind: 'goal', goalId: 'goal-0001', goalEpoch: 1 }, instruction: 'get me two cobblestone', turn: 1, maxTurns: 20, catalog, observation: null, clarifications: [], knowledge: [], ...over });
+const request = (over: Partial<PlannerRequest> = {}): PlannerRequest => ({ requestId: 'req-0001', subject: { kind: 'goal', goalId: 'goal-0001', goalEpoch: 1 }, instruction: 'get me two cobblestone', turn: 1, maxTurns: 20, catalog, observation: null, knowledge: [], ...over });
 const wireInfo = { disposition: 'needs_information', interpretation: 'need rules', outcome: null, tasks: [], morePlanningNeeded: false, queries: [{ kind: 'harvest', key: 'stone' }], question: null, missing: null, missingCapabilities: [], verifiedProgress: null };
 
 describe('CodexPlanner adapter (fake CLI)', () => {

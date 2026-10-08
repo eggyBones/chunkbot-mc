@@ -17,11 +17,10 @@ function goalLine(goal: GoalRecord | undefined): string {
   const instruction = goal.instruction.length > 80 ? `${goal.instruction.slice(0, 79)}…` : goal.instruction;
   let line = `goal: ${goal.id}${goal.kind === 'operator_task_diagnostic' ? ' [operator task diagnostic]' : ''} ${goal.state} "${instruction}"`;
   if (goal.terminal) line += ` — ${goal.terminal.reason}: ${goal.terminal.detail}`;
-  if (goal.pendingClarification) line += ` — waiting for answer ${goal.pendingClarification.ref}: ${goal.pendingClarification.question}`;
   if (goal.interpretation) line += ` — interpreted: ${goal.interpretation.length > 160 ? `${goal.interpretation.slice(0, 159)}…` : goal.interpretation}`;
   if (goal.counters) {
     const c = goal.counters;
-    line += ` — planner turns ${c.plannerTurns} (knowledge ${c.knowledgeRounds}, repairs ${c.repairs}, retries ${c.retries}, clarifications ${c.clarifications}, replans ${c.replans}${c.preparationTurns ? `, preparation ${c.preparationTurns}` : ''}${c.lookaheads ? `, lookahead ${c.lookaheads}` : ''}), windows ${c.windows}, tasks ${c.tasksAdmitted}`;
+    line += ` — planner turns ${c.plannerTurns} (knowledge ${c.knowledgeRounds}, repairs ${c.repairs}, retries ${c.retries}${c.questionRefusals ? `, question refusals ${c.questionRefusals}` : ''}, replans ${c.replans}${c.preparationTurns ? `, preparation ${c.preparationTurns}` : ''}${c.lookaheads ? `, lookahead ${c.lookaheads}` : ''}), windows ${c.windows}, tasks ${c.tasksAdmitted}`;
   }
   return line;
 }
@@ -50,7 +49,6 @@ export function renderStatusLines(input: StatusInput): string[] {
     const p = e.pending;
     const instr = p.instruction.length > 80 ? `${p.instruction.slice(0, 79)}…` : p.instruction;
     let line = `pending instruction: ${p.intentId} ${p.state} "${instr}" (planner turns ${p.plannerTurns}; not admitted${p.activeGoalId ? `; ${p.activeGoalId} keeps control until handoff` : ''})`;
-    if (p.pendingClarification) line += ` — waiting for answer ${p.pendingClarification.ref}: ${p.pendingClarification.question}`;
     lines.push(line);
   }
   if (e.parked) lines.push('handoff: the current goal finished its admitted step and starts no new work until the pending instruction is ready');
@@ -73,11 +71,11 @@ export function renderStatusLines(input: StatusInput): string[] {
 export function renderStatusChat(input: StatusInput): string {
   const goal = input.engine.goal;
   const goalPart = goal
-    ? `${goal.state}${goal.terminal ? ` (${goal.terminal.reason})` : ''}${goal.pendingClarification ? ` awaiting ${goal.pendingClarification.ref}` : ''}`
+    ? `${goal.state}${goal.terminal ? ` (${goal.terminal.reason})` : ''}`
     : 'idle';
   const planner = input.engine.readiness.planner.ready ? 'planner ready' : 'planner not ready';
   const p = input.engine.pending;
-  const pendingPart = p ? `, new instruction ${p.state === 'awaiting_owner' && p.pendingClarification ? `awaiting ${p.pendingClarification.ref}` : p.state}` : '';
+  const pendingPart = p ? `, new instruction ${p.state}` : '';
   const paused = input.engine.latch?.paused ? ', automatic work paused' : '';
   return `Status: ${input.connection}, goal ${goalPart}${pendingPart}${paused}, ${planner}, ${input.engine.readiness.capabilityCount} capabilities`;
 }
@@ -91,9 +89,8 @@ export function pendingDirectiveFrom(engine: EngineStatus | undefined): Dashboar
   const p = engine?.pending;
   if (!p) return undefined;
   const state = p.state === 'handing_off' ? 'ready_to_switch' : p.state;
-  const detail = p.pendingClarification
-    ? `question ${p.pendingClarification.ref}: ${p.pendingClarification.question}`
-    : p.state === 'handing_off'
+  // MB-PLAN-006: there are no owner questions; legacy question fields are never rendered.
+  const detail = p.state === 'handing_off'
       ? 'plan ready; switching after the current work is released'
       : `${p.plannerTurns} planner turn(s) so far; ${p.activeGoalId ? `${p.activeGoalId} keeps control until handoff` : 'nothing else is running'}`;
   return { instruction: p.instruction.slice(0, 1_000), state, sinceMs: p.receivedAtMs, detail: detail.slice(0, 1_000) };

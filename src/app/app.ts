@@ -46,7 +46,7 @@ export const TERMINAL_HELP = [
   '  stop                     stop the current goal and any pending instruction (or cancel joining); sets the pause latch',
   '  resume                   clear the pause latch (bare word; nothing is replayed)',
   '  status                   connection/goal/adapter status (no inference)',
-  '  answer [qN] <reply>      reply to the pending clarification question',
+  '  (Chunkbot never asks follow-up questions; `answer ...` is not applied — send a new instruction instead)',
   'Operator commands: /reconnect  /quit  /help',
   'Mechanic diagnostics (operator-chosen, no model): /diag catalog|observe|knowledge|candidates|run|do|inventory|bind|eval|anchor',
   'Task controller diagnostic (operator-written TaskSpec, REAL Jev choices, not goal planning):',
@@ -70,7 +70,7 @@ export interface AppDeps {
   exitOnConnectionEnd?: boolean;
   /** Skill-layer hooks (MB-V1-02): lifecycle revocation, non-goal control cancellation, diagnostics. */
   extensions?: AppExtensions;
-  /** Bounded planner journal (interpretations, proposals, questions/answers, final evidence). */
+  /** Bounded planner journal (interpretations, proposals, refusals, final evidence). */
   journal?: { record(event: EvidenceEvent): void };
   /** Extra status lines (e.g. planner usage); no inference. */
   statusExtras?: () => string[];
@@ -89,8 +89,6 @@ export interface AppExtensions {
   onLatchChanged?: GoalEngineDeps['onLatchChanged'];
   /** MB-FLOW-001: a pending owner instruction ended without admission. */
   onPreparationDiscarded?: GoalEngineDeps['onPreparationDiscarded'];
-  /** MB-LOC-001: owner coordinates newly parsed from a clarification answer. */
-  onOwnerCoordinates?: GoalEngineDeps['onOwnerCoordinates'];
   /** MB-LOC-001 planner-request views (read-only). */
   routeView?: GoalEngineDeps['routeView'];
   locatorHint?: GoalEngineDeps['locatorHint'];
@@ -206,7 +204,6 @@ export class ChunkbotApp implements CommandTarget {
       onGoalTerminal: (end) => this.deps.extensions?.onGoalTerminal?.(end),
       onLatchChanged: (latch, cause) => this.deps.extensions?.onLatchChanged?.(latch, cause),
       onPreparationDiscarded: (p) => this.deps.extensions?.onPreparationDiscarded?.(p),
-      onOwnerCoordinates: (e) => this.deps.extensions?.onOwnerCoordinates?.(e),
       ...(deps.extensions?.routeView ? { routeView: deps.extensions.routeView } : {}),
       ...(deps.extensions?.locatorHint ? { locatorHint: deps.extensions.locatorHint } : {}),
       ...(deps.extensions?.installed ? { installed: deps.extensions.installed } : {}),

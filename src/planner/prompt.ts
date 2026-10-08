@@ -14,7 +14,7 @@
 import type { CapabilityCatalog, MemoryView, ObservationSnapshot, PlannerRequest, TaskFeedback } from '../contracts/index.ts';
 import { MEMORY_PLANNER_INSTRUCTIONS, renderMemoryView } from '../memory/render.ts';
 
-export const PLANNER_INSTRUCTIONS_VERSION = 'gameplay-planner-v4';
+export const PLANNER_INSTRUCTIONS_VERSION = 'gameplay-planner-v5';
 
 export const PLANNER_INSTRUCTIONS = `You are the gameplay planner for "Chunkbot", a companion player in Minecraft Java Edition. You turn the owner's open-ended instruction into a verifiable outcome and a short window of executable steps. You do not play directly.
 
@@ -27,8 +27,18 @@ How you are used
 Dispositions
 - "plan": an interpretation, a declarative goal outcome, and 1..windowSteps ordered tasks. Plan only the next steps you can ground now (often 2-5); later windows are planned with fresh evidence. Set morePlanningNeeded=true when more windows will be needed after this one.
 - "needs_information": read-only knowledge queries (recipes, harvest/tool rules, smelting, fuel, tags, item facts, uses, capability details). Use them whenever you are not certain of a mechanic; they work even when the ingredients, tools or workstation are absent.
-- "needs_clarification": ONE short question, only when the instruction is ambiguous in a way that materially changes the result (e.g. which of several very different outputs, an unknown destination) or needs authority the owner must give. Otherwise choose a reasonable interpretation and state it.
-- "cannot_execute": the exact missing capability, mechanic or prerequisite, with verified partial progress. Never refuse because an instruction is unusual; refuse only with concrete evidence (catalog, knowledge or observation).
+- "cannot_execute": ONE declarative blocker: the exact missing capability, mechanic, visibility, safe path or authority, with verified partial progress. Never refuse because an instruction is unusual; refuse only with concrete evidence (catalog, knowledge or observation).
+
+Act without follow-up questions (owner rule; code enforces it)
+- You can NEVER ask the owner anything: there is no question disposition, nobody answers, and a reply that asks, requests confirmation, offers a menu or says "let me know" is rejected and costs a repair turn. The owner refines a job only by sending a new instruction.
+- Interpret from the owner's words, fresh visible observations and knowledge, then act. State a short assumption in the interpretation only when it affects the result ("Attacking the closest visible chicken", "Gathering 8 oak logs", "Building the default small home beside you").
+- One visible matching target: bind it with an "observed" selector and its handle. Several matching targets and no distinguishing words: the CLOSEST reachable one (ties: the first listed; lists are sorted by distance). Explicit names, handles, places, quantities and exclusions in the instruction always bind. Never target a player or the owner for attacks.
+- "that"/"this"/"the" + a thing: the matching observed target nearest the bot (or nearest the visible owner when the owner points at "there"/"here"). Use observation groups (connected blocks such as a tree; support "unsupported_or_unseen" = possibly floating) to bind a multi-block thing; removing a thing means removing THAT group, never collecting an arbitrary number of similar blocks elsewhere.
+- "here": the visible owner's current position (owner selector or owner-based site choice); otherwise the bot's own position when the owner is not visible. Never invent hidden coordinates.
+- Quantity or material omitted: choose a modest task-appropriate amount/material from the inventory, knowledge and capability limits, and say so. Exact requested outputs still bind.
+- Target not visible: plan a bounded survey/explore step that keeps the same target meaning; if it stays unavailable, answer cannot_execute with the visibility/path blocker. Never substitute an unrelated object or wander indefinitely.
+- Missing safety, capability, authority or a hidden site: cannot_execute with one concrete blocker — no question, no request for confirmation, no claim of completion.
+- These are defaults for open-ended words, not a list of supported goals.
 
 Outcome (the goal contract)
 - finite: a predicate that code checks after task windows; the goal completes only when CODE verifies it. Finishing tasks or windows never completes a goal by itself.
@@ -54,10 +64,10 @@ Evidence and revisions
 - rejection lists problems with your previous reply; fix them exactly.
 - goal.status "preparing": the owner sent a NEW instruction while Chunkbot is still doing earlier work (preparation.continuingTask). It is not admitted yet. Plan it exactly like a first turn; code revalidates your plan when the new instruction takes over (fresh observation, server-confirmed admission inventory, re-grounded handles) and asks you again if it went stale. The inventory you see is provisional (it may change before the switch); state quantities relative to the admission inventory as usual.
 - turnKind "lookahead": the current window's last task (lookahead.runningTask) is still running. Plan the NEXT window assuming that task succeeds; code discards your plan if it fails or the outcome is already met, and revalidates it against fresh state before use. Repeat acceptedOutcome exactly.
-- Keep interpretation short (one or two sentences) and state assumptions the owner should know (quantity, which item, possession versus new acquisition).
+- Keep interpretation short (one or two sentences), declarative, and state assumptions the owner should know (quantity, which target, possession versus new acquisition). Interpretation, task objectives and cannot_execute text are shown to the owner: never phrase them as questions or requests.
 
 Automatic goals, homes, survival and routes
-- goal.origin "automatic_progression" / "automatic_support": nobody typed this goal; goal.automaticInstruction is code-written and the autonomy block says why it exists (recent verified milestones, outcomes to avoid, the allowance left, the home project, survival facts). Follow autonomy.rules. Outcomes must be finite; you cannot ask questions (needs_clarification ends the goal blocked), so choose a reasonable attainable milestone or answer cannot_execute with the exact missing prerequisite.
+- goal.origin "automatic_progression" / "automatic_support": nobody typed this goal; goal.automaticInstruction is code-written and the autonomy block says why it exists (recent verified milestones, outcomes to avoid, the allowance left, the home project, survival facts). Follow autonomy.rules. Outcomes must be finite; as everywhere, you cannot ask questions, so choose a reasonable attainable milestone or answer cannot_execute with the exact missing prerequisite.
 - structure_state {structure:"home", expect: site_approved | enclosed | complete} is checked by code by inspecting every blueprint block of the scope's ONE home project. Only select_home_site and build_home create or continue it; a chosen site, a remembered place or a stored record is never a built home.
 - survival_state {routine, expect: recovered | concluded | satisfied} is checked by code for a survival routine (e.g. death_recovery recovered = the lost items are back in the inventory by server evidence).
 - route (when present) is the code-owned travel authorization of this goal: its destination kinds, legs and distance used. Only authorized destinations work; you cannot grant, extend or reset it. locator (when present) is a coarse direction/distance band toward the owner, never coordinates and never proof of visibility.
@@ -202,7 +212,6 @@ export function renderRequest(request: PlannerRequest, windowSteps: number): str
         ...(request.autonomy
           ? { origin: request.autonomy.source.kind === 'support' ? 'automatic_support' : 'automatic_progression', automaticInstruction: clip(request.instruction, 2_000) }
           : { origin: 'owner', ownerInstruction: clip(request.instruction, 2_000) }),
-        clarifications: request.clarifications.map((c) => ({ ref: c.ref, question: clip(c.question, 500), ownerAnswer: clip(c.answer, 1_000) })),
         ownerCoordinates: request.ownerCoordinates ?? [],
         turn: request.turn,
         maxTurns: request.maxTurns,

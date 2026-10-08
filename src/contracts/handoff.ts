@@ -47,11 +47,11 @@ export interface LookaheadContext {
   note: string;
 }
 
-/** Lifecycle of the single pending instruction. */
+/** Lifecycle of the single pending instruction. `awaiting_owner` is LEGACY (pre-MB-PLAN-006); the engine never enters it. */
 export const PENDING_INSTRUCTION_STATES = ['preparing', 'awaiting_owner', 'handing_off'] as const;
 export type PendingInstructionState = (typeof PENDING_INSTRUCTION_STATES)[number];
 
-/** A clarification asked while preparing (separate from the active goal; no goal owns it yet). */
+/** LEGACY (pre-MB-PLAN-006): a clarification asked while preparing. Never produced by the current engine. */
 export interface PendingClarification {
   intentId: IntentId;
   ref: string;

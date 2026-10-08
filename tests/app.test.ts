@@ -91,19 +91,25 @@ describe('owner admission in the app', () => {
   });
 });
 
-describe('stop and clarification across surfaces', () => {
-  it('stop from chat cancels a planning goal; a stale answer does not revive it', async () => {
+describe('stop and no-question policy across surfaces (MB-PLAN-006)', () => {
+  it('a legacy clarification never reaches chat or terminal; stop from chat cancels; a stray answer does not revive it', async () => {
     const planner = new ScriptedPlanner();
-    const { app, game } = await readyApp(planner);
+    const { app, game, lines } = await readyApp(planner);
     game.chat({ kind: 'player', text: '!chunkbot make armor', ...OWNER });
     await until(() => planner.waiting === 1);
     planner.respond(clarify('Leather or iron?'));
-    await until(() => app.engine.status().goal?.state === 'awaiting_owner');
+    await until(() => planner.requests.length === 2);
+    assert.equal(planner.requests[1]?.turnKind, 'repair');
+    assert.notEqual(app.engine.status().goal?.state, 'awaiting_owner');
+    assert.ok(!lines.some((l) => /Leather or iron|Question q\d/.test(l)), 'terminal shows no question');
+    assert.ok(!game.replies.some((r) => /Leather or iron|Question q\d/.test(r)), 'chat shows no question');
     game.chat({ kind: 'player', text: '!chunkbot stop', ...OWNER });
     await until(() => app.engine.status().goal?.state === 'cancelled');
     await app.handleTerminalLine('answer q1 iron');
+    game.chat({ kind: 'player', text: '!chunkbot answer yes', ...OWNER });
+    await until(() => game.replies.some((r) => /Reply not applied/.test(r)));
     assert.equal(app.engine.status().goal?.state, 'cancelled');
-    assert.equal(planner.requests.length, 1);
+    assert.equal(planner.requests.length, 2);
   });
 
   it('terminal stop while idle reports nothing to stop', async () => {

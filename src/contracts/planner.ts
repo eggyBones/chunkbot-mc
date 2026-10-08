@@ -6,7 +6,6 @@ import { KnowledgeQueryBatchSchema, type KnowledgeResult } from './knowledge.ts'
 import { GoalOutcomeContractSchema, type GoalOutcomeContract } from './predicate.ts';
 import { TaskSpecSchema } from './task.ts';
 import type { CapabilityCatalog } from './capability.ts';
-import type { ClarificationExchange } from './clarification.ts';
 import type { RequestId } from './ids.ts';
 import type { LookaheadContext, PlanningSubject, PreparationContext } from './handoff.ts';
 import type { MemoryView } from './memory.ts';
@@ -17,6 +16,13 @@ import type { TaskFeedback } from './task.ts';
 
 export const PLANNER_PROPOSAL_VERSION = 1 as const;
 
+/**
+ * MB-PLAN-006: the planner has NO owner-question disposition. Chunkbot never
+ * asks the owner follow-up questions; a legacy/malformed `needs_clarification`
+ * (or any owner-directed question in owner-facing text) is refused by code
+ * with a counted, bounded repair turn and never reaches chat, terminal or the
+ * dashboard (src/goals/declarative.ts). Internal knowledge queries stay.
+ */
 export const PlannerProposalSchema = z.discriminatedUnion('disposition', [
   z
     .object({
@@ -39,14 +45,6 @@ export const PlannerProposalSchema = z.discriminatedUnion('disposition', [
   z
     .object({
       version: z.literal(PLANNER_PROPOSAL_VERSION),
-      disposition: z.literal('needs_clarification'),
-      interpretation: textSchema(BOUNDS.text),
-      question: textSchema(BOUNDS.text),
-    })
-    .strict(),
-  z
-    .object({
-      version: z.literal(PLANNER_PROPOSAL_VERSION),
       disposition: z.literal('cannot_execute'),
       interpretation: textSchema(BOUNDS.text),
       /** The exact missing capability or prerequisite; never "not on the list". */
@@ -61,14 +59,15 @@ export type PlannerDisposition = PlannerProposal['disposition'];
 
 /** Code-owned counters for one goal. Every planner turn kind counts toward `plannerTurns`; none resets across windows. */
 export interface GoalCounters {
-  /** All planner turns: initial, knowledge continuations, schema/semantic repairs, transport retries, clarification continuations, replans. */
+  /** All planner turns: initial, knowledge continuations, schema/semantic/policy repairs, transport retries, replans, lookahead. */
   plannerTurns: number;
   knowledgeRounds: number;
-  /** Turns that answered a rejected (malformed, code-bearing, unknown-reference) proposal. */
+  /** Turns that answered a rejected (malformed, code-bearing, unknown-reference, owner-question) proposal. */
   repairs: number;
   /** Turns retried after a bounded transport failure (timeout/process error). */
   retries: number;
-  clarifications: number;
+  /** MB-PLAN-006: proposals refused because they asked the owner a question (each answered by a counted repair or ending the goal). */
+  questionRefusals: number;
   /** Turns requested after an executed task window (window exhausted, task blocked/failed, outcome unmet). */
   replans: number;
   windows: number;
@@ -79,14 +78,14 @@ export interface GoalCounters {
   lookaheads: number;
 }
 
-/** Coordinates the OWNER typed (parsed by code from the instruction or a correlated answer); the only admissible owner_destination values. */
+/** Coordinates the OWNER typed (parsed by code from the instruction); the only admissible owner_destination values. */
 export interface OwnerCoordinate {
   x: number;
   y: number;
   z: number;
   /** The exact owner text the numbers were parsed from (bounded). */
   text: string;
-  source: 'instruction' | 'answer';
+  source: 'instruction';
 }
 
 /** A verified prior skill result of this goal (e.g. a placed workstation), confirmed by the evidence ledger. */
@@ -97,7 +96,7 @@ export interface PriorResultRef {
   dimension: string;
 }
 
-export const PLANNER_TURN_KINDS = ['initial', 'knowledge', 'repair', 'retry', 'clarification', 'replan', 'lookahead'] as const;
+export const PLANNER_TURN_KINDS = ['initial', 'knowledge', 'repair', 'retry', 'replan', 'lookahead'] as const;
 export type PlannerTurnKind = (typeof PLANNER_TURN_KINDS)[number];
 
 /** Correlation id of a request's subject for evidence (goal id or intent id). */
@@ -124,11 +123,10 @@ export interface PlannerRequest {
   maxTurns: number;
   catalog: CapabilityCatalog;
   observation: ObservationSnapshot | null;
-  clarifications: readonly ClarificationExchange[];
   knowledge: readonly KnowledgeResult[];
   /** Verified results and structured recovery evidence from earlier task windows of this goal (bounded). */
   feedback?: readonly TaskFeedback[];
-  /** Why this turn happens (first turn, knowledge continuation, repair, retry, clarification answer, replan). */
+  /** Why this turn happens (first turn, knowledge continuation, repair, retry, replan, lookahead). */
   turnKind?: PlannerTurnKind;
   /** Preparation subject only: the old task continues; the draft is revalidated at admission. */
   preparation?: PreparationContext;

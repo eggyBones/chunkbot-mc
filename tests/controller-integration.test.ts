@@ -204,17 +204,21 @@ describe('plan-window seam (generic; the real planner arrives in MB-V1-04)', () 
 });
 
 describe('quiet states', () => {
-  it('idle and awaiting-owner states make no Jev calls', async () => {
+  it('idle and repeated legacy-question planning make no Jev calls and never wait for the owner', async () => {
     const planner = new ScriptedPlanner();
     const s = scene(planner);
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(provider.requests.length, 0, 'idle');
     await s.engine.submit('build something nice', OWNER);
     await until(() => planner.waiting === 1);
-    planner.respond(clarify('what should I build?'));
-    await until(() => s.engine.status().goal?.state === 'awaiting_owner');
-    await new Promise((r) => setTimeout(r, 300));
-    assert.equal(provider.requests.length, 0, 'awaiting the owner');
+    for (let i = 0; i < 3; i += 1) {
+      await until(() => planner.waiting === 1);
+      planner.respond(clarify('what should I build?'));
+    }
+    await until(() => s.engine.status().goal?.state === 'blocked');
+    assert.equal(s.engine.status().goal?.terminal?.reason, 'invalid_proposal');
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(provider.requests.length, 0, 'refused questions cause no action');
     await s.engine.stop('owner_stop');
   });
 

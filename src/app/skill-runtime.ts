@@ -340,11 +340,6 @@ export class SkillRuntime {
     }
   }
 
-  /** Owner coordinates from a correlated clarification answer (same goal epoch; never a regrant). */
-  onOwnerCoordinates(e: { goalEpoch: number; coordinates: Array<{ x: number; y: number; z: number; source: 'instruction' | 'answer' }> }): void {
-    this.routes?.noteOwnerCoordinates(e.goalEpoch, e.coordinates.map((c) => ({ x: c.x, y: c.y, z: c.z, source: c.source })));
-  }
-
   /** Goal terminal (MB-MEM-001): verified outcomes become milestones; refs are released. Never throws. */
   onGoalTerminal(end: { goalId: string; epoch?: number; kind: string; reason: string; detail: string; interpretation?: string; source?: GoalSource; state?: string }): void {
     if (this.routes) this.routes.revoke(`goal_${end.reason}`, end.epoch);

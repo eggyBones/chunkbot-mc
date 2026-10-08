@@ -320,7 +320,8 @@ export class PredicateEngine implements PredicateEvaluator {
           return result(visible ? 'satisfied' : 'unsatisfied', visible ? 'owner visible now' : 'owner not visible now', { visible });
         }
         if (p.target.kind !== 'observed') return result('unknown', `entity outcomes need an observed entity handle, not ${p.target.kind}`);
-        const rec = services.perception.resolve(p.target.snapshotId, p.target.handle);
+        // Identity survives snapshot eviction (same connection/dimension; cleared on lifecycle).
+        const rec = services.perception.identity(p.target.snapshotId, p.target.handle);
         if ('error' in rec || rec.target.kind !== 'entity') return result('unknown', `entity handle cannot be resolved (${'error' in rec ? rec.error : rec.target.kind})`);
         const id = rec.target.entityId;
         if (p.outcome === 'observed_present') {
@@ -372,7 +373,7 @@ export class PredicateEngine implements PredicateEvaluator {
         return { at: owner.position, label: 'owner' };
       }
       case 'observed': {
-        const rec = services.perception.resolve(sel.snapshotId, sel.handle);
+        const rec = services.perception.identity(sel.snapshotId, sel.handle);
         if ('error' in rec) return { unknown: `handle ${sel.handle} cannot be resolved (${rec.error})` };
         const t = rec.target;
         if (t.kind === 'block') return { at: { x: t.x + 0.5, y: t.y, z: t.z + 0.5 }, label: `${t.name} ${sel.handle}` };

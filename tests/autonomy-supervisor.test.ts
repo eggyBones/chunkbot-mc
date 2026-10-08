@@ -42,7 +42,7 @@ describe('A1 automatic progression starts through the single admission path', ()
     assert.equal(req.autonomy?.source.kind, 'progression');
     assert.match(req.instruction, /Automatic progression/);
     assert.doesNotMatch(req.instruction, /cobblestone|iron|stone pickaxe/i, 'no hardcoded milestone ladder');
-    assert.ok(req.autonomy?.rules.some((r) => /cannot ask the owner/.test(r)));
+    assert.ok(req.autonomy?.rules.some((r) => /never ask the owner questions/.test(r)));
     assert.equal(h.engine.status().goal?.source?.kind, 'progression');
     assert.equal(h.supervisor.status().session.completed, 1);
     assert.deepEqual(h.timers.delays(), [3_000], 'next assessment after a verified outcome');
@@ -229,7 +229,7 @@ describe('A7 bounded waiting', () => {
     assert.equal(h.timers.pending.size, 0);
   });
 
-  it('automatic goals never wait for an owner answer and refuse persistent outcomes', async () => {
+  it('automatic goals never wait for an owner answer (same MB-PLAN-006 counted refusal) and refuse persistent outcomes', async () => {
     let n = 0;
     const h = autonomyHarness(() => {
       n += 1;
@@ -238,8 +238,10 @@ describe('A7 bounded waiting', () => {
     await h.supervisor.assessNow();
     await until(() => h.engine.status().goal?.terminal !== undefined);
     const g = h.engine.status().goal!;
-    assert.equal(g.terminal?.reason, 'cannot_execute');
-    assert.match(g.terminal!.detail, /cannot wait for answers/);
+    assert.equal(g.terminal?.reason, 'invalid_proposal');
+    assert.match(g.terminal!.detail, /does not ask follow-up questions/);
+    assert.doesNotMatch(g.terminal!.detail, /which tree/);
+    assert.equal(g.counters?.questionRefusals, 2, 'both repair turns answered the same question (allowance exhausted)');
     assert.equal(h.planner.requests[1]!.turnKind, 'repair', 'the persistent outcome was rejected first');
   });
 });

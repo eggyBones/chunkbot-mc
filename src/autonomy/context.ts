@@ -11,7 +11,7 @@ export const AUTONOMY_RULES: string[] = [
   'Choose ONE bounded milestone that is attainable now with the implemented capabilities and has a FINITE code-verifiable outcome (persistent outcomes are refused for automatic goals).',
   'Prefer useful survival progress: supplies, better tools/equipment, food, and a small verified shelter (home). Use what is visible, remembered (memory view) and known (knowledge queries); do not invent targets.',
   'Do not repeat an outcome listed in autonomy.avoid unless the situation changed in a way that makes it attainable; if nothing useful is attainable now, answer cannot_execute with the exact missing prerequisite.',
-  'Automatic goals cannot ask the owner questions: needs_clarification ends the goal as blocked.',
+  'Automatic goals, like all goals, never ask the owner questions: choose an attainable milestone or state one declarative blocker.',
   'A home is built only through the home construction capabilities (select_home_site, then build_home) and is complete only when structure_state home complete is verified by code; a chosen site or a remembered coordinate is not a home.',
   'Never attack players, use or empty containers you did not place unless they are in the verified home, or break blocks of structures the bot did not build.',
 ];

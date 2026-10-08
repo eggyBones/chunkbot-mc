@@ -1,9 +1,9 @@
 // Coordinates the OWNER actually typed. A planner `owner_destination` (or a
 // movement destination parameter) is admissible only when its numbers match a
-// triple parsed here, by code, from the owner's instruction or a correlated
-// clarification answer. An echoed `ownerText` label is never evidence by
-// itself: the planner could invent both the label and the numbers.
-import type { ClarificationExchange, OwnerCoordinate } from '../contracts/index.ts';
+// triple parsed here, by code, from the owner's instruction (MB-PLAN-006: there
+// are no clarification answers). An echoed `ownerText` label is never evidence
+// by itself: the planner could invent both the label and the numbers.
+import type { OwnerCoordinate } from '../contracts/index.ts';
 
 const NUM = String.raw`(-?\d{1,8}(?:\.\d{1,3})?)`;
 /** "x 10 y 64 z -3", "x=10, y=64, z=-3" */
@@ -36,11 +36,9 @@ export function parseOwnerCoordinates(text: string, source: OwnerCoordinate['sou
   return out;
 }
 
-/** All owner-typed coordinates for a goal (instruction first, then correlated answers). */
-export function ownerCoordinates(instruction: string, clarifications: readonly ClarificationExchange[]): OwnerCoordinate[] {
-  const out = parseOwnerCoordinates(instruction, 'instruction');
-  for (const c of clarifications) for (const k of parseOwnerCoordinates(c.answer, 'answer')) if (out.length < MAX_COORDINATES * 2) out.push(k);
-  return out;
+/** All owner-typed coordinates for a goal (from the owner's instruction only). */
+export function ownerCoordinates(instruction: string): OwnerCoordinate[] {
+  return parseOwnerCoordinates(instruction, 'instruction');
 }
 
 /** Whether a proposed position matches an owner-typed coordinate (block centring tolerated). */

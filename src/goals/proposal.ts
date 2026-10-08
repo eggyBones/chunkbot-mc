@@ -15,7 +15,11 @@
 //      planner for THIS goal, remembered anchors that were shown, prior results
 //      the evidence ledger verified for this goal, and owner destinations whose
 //      coordinates the owner actually typed (an echoed label is not evidence);
-//   7. outcome semantics: a persistent outcome needs a task that maintains it.
+//   7. outcome semantics: a persistent outcome needs a task that maintains it;
+//   0. (MB-PLAN-006, before the schema) no owner question: the retired
+//      needs_clarification disposition, a `question` field or owner-facing text
+//      (interpretation, blocker, progress, task objectives) that asks the owner
+//      something is a `policy` rejection — counted repair, never relayed.
 // The accepted outcome's immutability across revisions is enforced by the
 // goal engine against the first admitted plan.
 import {
@@ -32,12 +36,13 @@ import {
   type TargetSelector,
   type TaskSpec,
 } from '../contracts/index.ts';
+import { ownerQuestionProblems } from './declarative.ts';
 import { scanForbidden } from './forbidden.ts';
 import { matchesOwnerCoordinate } from './owner-coordinates.ts';
 
 export type ProposalCheck =
   | { ok: true; proposal: PlannerProposal }
-  | { ok: false; kind: 'forbidden' | 'schema' | 'semantic' | 'reference'; problems: string[] }
+  | { ok: false; kind: 'forbidden' | 'schema' | 'semantic' | 'reference' | 'policy'; problems: string[] }
   | { ok: false; kind: 'unknown_capabilities'; problems: string[]; capabilities: string[] };
 
 export interface ShownSnapshot {
@@ -324,6 +329,8 @@ function canonical(v: unknown): string {
 export function checkProposal(raw: unknown, registry: CapabilityRegistry, limits: ProposalLimits, ctx: ProposalContext = {}): ProposalCheck {
   const forbidden = scanForbidden(raw);
   if (forbidden.length > 0) return { ok: false, kind: 'forbidden', problems: forbidden };
+  const questions = ownerQuestionProblems(raw);
+  if (questions.length > 0) return { ok: false, kind: 'policy', problems: questions };
   const parsed = PlannerProposalSchema.safeParse(raw);
   if (!parsed.success) {
     return {

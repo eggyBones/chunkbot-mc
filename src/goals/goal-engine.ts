@@ -1,22 +1,30 @@
 // Goal engine: one owner, one active goal. Every natural-language instruction
 // enters through `submit` — there is no intent table, keyword gate, or
 // resource-specific handler. The engine owns lifecycle, epochs,
-// replacement/stop ordering, correlated clarification, and the ROLLING
+// replacement/stop ordering, and the ROLLING
 // planner/task-window loop (MB-V1-04):
 //
 //   admission (epoch, travel anchor, server-confirmed ALL-item inventory
 //   baseline) -> planner turn (fresh bounded context) -> forbidden/schema/
 //   reference/semantic validation (rejected proposals cause no action; bounded
-//   repair turns) -> knowledge rounds / one correlated clarification / exact
-//   cannot-execute / plan -> the first accepted outcome is bound to the
+//   repair turns) -> knowledge rounds / exact declarative cannot-execute / plan
+//   -> the first accepted outcome is bound to the
 //   ADMISSION baseline and is immutable -> the window's tasks run in order
 //   through the generic task runtime -> code evaluates the accepted outcome ->
 //   satisfied: completed; otherwise a replan turn with verified feedback.
 //
 // Every planner turn kind (initial, knowledge continuation, repair, retry,
-// clarification continuation, replan, lookahead) counts toward the goal's turn
-// limit; counters, baselines and the outcome survive windows, knowledge rounds,
-// clarification and replans. A finished task or window never completes a goal.
+// replan, lookahead) counts toward the goal's turn limit; counters, baselines
+// and the outcome survive windows, knowledge rounds and replans. A finished
+// task or window never completes a goal.
+//
+// MB-PLAN-006 no-follow-up-question policy (application-owned): there is no
+// clarification state, question notice or answer wait for goals, preparations,
+// lookahead, automatic support or continuation. A legacy/malformed question
+// proposal, or owner-facing planner text that asks the owner something, is
+// refused BEFORE any notice/state change/action (src/goals/declarative.ts) and
+// gets a counted repair within the existing allowances; exhaustion is an
+// app-owned declarative blocker (the raw question is never relayed).
 //
 // MB-FLOW-002 smooth handoff. While an owner goal is executing a task, a new
 // valid owner instruction is NOT admitted at once: it becomes the single
@@ -49,7 +57,6 @@ import {
   type InventoryBaseline,
   type ObservationSnapshot,
   type OwnerCoordinate,
-  type PendingClarification,
   type PendingInstructionState,
   type PendingInstructionStatus,
   type PlannerFailure,
@@ -75,8 +82,6 @@ import {
   type TaskResult,
   type TaskSpec,
   type CapabilityRegistry,
-  type ClarificationExchange,
-  type ClarificationRequest,
   type Clock,
   type GoalRecord,
   type GoalState,
@@ -94,6 +99,7 @@ import {
   type TerminalGoalState,
   type TerminalReasonCode,
 } from '../contracts/index.ts';
+import { isOwnerQuestionProblem, questionBlockerText } from './declarative.ts';
 import { checkProposal, type ShownSnapshot } from './proposal.ts';
 import { ownerCoordinates } from './owner-coordinates.ts';
 import { PlannerSlot, type PlannerSlotKind } from './planner-slot.ts';
@@ -170,8 +176,6 @@ export interface GoalEngineDeps {
   locatorHint?: () => PlannerRequest['locator'] | undefined;
   /** Optional evaluators installed in this run (proposal validation of structure_state / survival_state). */
   installed?: { structures: boolean; survival: boolean };
-  /** MB-LOC-001: owner coordinates newly code-parsed from a correlated clarification answer (same goal epoch; no regrant). */
-  onOwnerCoordinates?: (e: { goalId: string; goalEpoch: number; coordinates: OwnerCoordinate[] }) => void;
   /**
    * MB-FLOW-001/003-C5 owned admission barrier: awaited (abortable, bounded by
    * the caller) AFTER admission and the baseline, BEFORE the first planner turn
@@ -204,7 +208,7 @@ export interface GoalEngineDeps {
   registry?: RegistryFacts;
   /** Verifies prior skill results (e.g. placed workstations) by action id against the evidence ledger. */
   priorResults?: (actionIds: readonly string[]) => PriorResultRef[];
-  /** Bounded planner journal: interpretations, proposals/revisions, questions/answers, final predicate evidence. */
+  /** Bounded planner journal: interpretations, proposals/revisions, refusals, final predicate evidence. */
   journal?: { record(event: EvidenceEvent): void };
   /** Exact mechanics version shown to the planner. */
   mechanicsVersion?: string;
@@ -330,7 +334,6 @@ interface ActiveGoal {
   caps: { plannerTurns: number; tasks: number; replans: number };
   abort: AbortController;
   cleanups: Set<Cleanup>;
-  clarifications: ClarificationExchange[];
   knowledge: KnowledgeResult[];
   admittedTasks: number;
   deadline: NodeJS.Timeout | undefined;
@@ -375,8 +378,7 @@ interface PendingIntent {
   receivedAtMs: number;
   updatedAtMs: number;
   activeGoalId: string | null;
-  counters: { plannerTurns: number; knowledgeRounds: number; repairs: number; retries: number; clarifications: number };
-  clarifications: ClarificationExchange[];
+  counters: { plannerTurns: number; knowledgeRounds: number; repairs: number; retries: number; questionRefusals: number };
   knowledge: KnowledgeResult[];
   shown: Map<string, ShownSnapshot>;
   anchors: Set<string>;
@@ -385,7 +387,6 @@ interface PendingIntent {
   consecutiveRepairs: number;
   consecutiveRetries: number;
   nextTurnKind: PlannerTurnKind;
-  pendingClarification?: PendingClarification;
   draft?: { proposal: PlannerProposal; requestId: string; turnKind: PlannerTurnKind };
   settled: PromiseWithResolvers<'handed_off' | 'discarded'>;
   /** Bounded cleanup of the discarded preparation's owned planner process (MB-FLOW-002-C3). */
@@ -515,7 +516,7 @@ function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-const emptyCounters = (): GoalCounters => ({ plannerTurns: 0, knowledgeRounds: 0, repairs: 0, retries: 0, clarifications: 0, replans: 0, windows: 0, tasksAdmitted: 0, preparationTurns: 0, lookaheads: 0 });
+const emptyCounters = (): GoalCounters => ({ plannerTurns: 0, knowledgeRounds: 0, repairs: 0, retries: 0, questionRefusals: 0, replans: 0, windows: 0, tasksAdmitted: 0, preparationTurns: 0, lookaheads: 0 });
 
 export class GoalEngine {
   private readonly deps: GoalEngineDeps;
@@ -530,7 +531,6 @@ export class GoalEngine {
   private intakeGeneration = 0;
   /** Resolves when all previously revoked goals have finished cleanup. */
   private cleanupBarrier: Promise<void> = Promise.resolve();
-  private clarificationCounter = 0;
   private closed = false;
   private currentTask: EngineStatus['task'];
   private lastTask: EngineStatus['lastTask'];
@@ -557,7 +557,7 @@ export class GoalEngine {
     return this.epoch;
   }
 
-  /** True while a goal owns control (planning, awaiting the owner, executing, stopping). */
+  /** True while a goal owns control (planning, executing, stopping). */
   get hasActiveGoal(): boolean {
     return this.active !== undefined;
   }
@@ -802,7 +802,7 @@ export class GoalEngine {
   /**
    * Smooth preparation applies while an owner goal is EXECUTING (its admitted
    * task keeps running) or while an earlier instruction is still pending.
-   * Planning/clarification/idle states have no task to continue: direct admission.
+   * Planning/idle states have no task to continue: direct admission.
    */
   private intakeRoute(): 'prepare' | 'direct' | 'allowance_exhausted' {
     if (this.flow.handoff !== 'smooth') return 'direct';
@@ -832,8 +832,7 @@ export class GoalEngine {
       receivedAtMs,
       updatedAtMs: now,
       activeGoalId: active?.record.id ?? null,
-      counters: { plannerTurns: 0, knowledgeRounds: 0, repairs: 0, retries: 0, clarifications: 0 },
-      clarifications: [],
+      counters: { plannerTurns: 0, knowledgeRounds: 0, repairs: 0, retries: 0, questionRefusals: 0 },
       knowledge: [],
       shown: new Map(),
       anchors: new Set(),
@@ -944,7 +943,6 @@ export class GoalEngine {
       maxTurns: limits.plannerTurnsPerGoal,
       catalog: capabilities.catalog(),
       observation: snapshot,
-      clarifications: [...p.clarifications],
       knowledge: [...p.knowledge],
       turnKind: p.nextTurnKind,
       preparation: {
@@ -952,19 +950,19 @@ export class GoalEngine {
         inventory: 'provisional_client_model',
         note: 'not admitted yet: earlier work may still change the world and inventory; code captures the server-confirmed admission inventory and revalidates this plan at the switch',
       },
-      counters: { ...emptyCounters(), plannerTurns: c.plannerTurns, knowledgeRounds: c.knowledgeRounds, repairs: c.repairs, retries: c.retries, clarifications: c.clarifications, preparationTurns: c.plannerTurns },
+      counters: { ...emptyCounters(), plannerTurns: c.plannerTurns, knowledgeRounds: c.knowledgeRounds, repairs: c.repairs, retries: c.retries, questionRefusals: c.questionRefusals, preparationTurns: c.plannerTurns },
       remaining: { plannerTurns: limits.plannerTurnsPerGoal - c.plannerTurns, tasks: limits.totalTaskCeiling, replans: maxReplans, deadlineMs: limits.goalDeadlineMs, windowSteps: limits.planWindowSteps },
-      ownerCoordinates: ownerCoordinates(p.instruction, p.clarifications),
+      ownerCoordinates: ownerCoordinates(p.instruction),
       priorResults: [],
       ...(p.rejection ? { rejection: { problems: p.rejection } } : {}),
       ...(this.deps.mechanicsVersion ? { mechanicsVersion: this.deps.mechanicsVersion } : {}),
       limits: { travelRadius: limits.travelRadius ?? 128, observationRadius: limits.observationRadius ?? 32, planWindowSteps: limits.planWindowSteps },
-      ...this.memoryField({ kind: 'preparation', intentId: p.intentId, generation: p.generation, connectionEpoch: p.connectionEpoch, activeGoalId: this.active?.record.id ?? null }, requestId, p.instruction, p.clarifications, snapshot),
+      ...this.memoryField({ kind: 'preparation', intentId: p.intentId, generation: p.generation, connectionEpoch: p.connectionEpoch, activeGoalId: this.active?.record.id ?? null }, requestId, p.instruction, snapshot),
     };
   }
 
-  private memoryField(subject: PlannerRequest['subject'], requestId: string, instruction: string, clarifications: readonly ClarificationExchange[], snapshot: ObservationSnapshot | null): { memory?: MemoryView } {
-    const view = this.memoryView(subject, requestId, instruction, clarifications, snapshot);
+  private memoryField(subject: PlannerRequest['subject'], requestId: string, instruction: string, snapshot: ObservationSnapshot | null): { memory?: MemoryView } {
+    const view = this.memoryView(subject, requestId, instruction, snapshot);
     return view ? { memory: view } : {};
   }
 
@@ -1061,19 +1059,6 @@ export class GoalEngine {
             p.nextTurnKind = 'knowledge';
             continue;
           }
-          case 'needs_clarification': {
-            this.clarificationCounter += 1;
-            c.clarifications += 1;
-            const question: PendingClarification = { intentId: p.intentId, ref: `q${this.clarificationCounter}`, question: truncate(proposal.question, BOUNDS.text), askedAtMs: this.deps.clock.now() };
-            p.pendingClarification = question;
-            p.state = 'awaiting_owner';
-            p.updatedAtMs = question.askedAtMs;
-            this.deps.store.record({ type: 'clarification_requested', intentId: p.intentId, ref: question.ref, question: question.question, preparation: true });
-            this.deps.journal?.record({ type: 'preparation_question', intentId: p.intentId, ref: question.ref, question: question.question, interpretation: proposal.interpretation });
-            const meanwhile = this.active && this.currentTask ? '; the current task continues meanwhile' : '';
-            this.deps.notify({ intentId: p.intentId, text: `Question ${question.ref}: ${truncate(question.question, 180)} (reply: answer ${question.ref} <reply>) — about your new instruction${meanwhile}` });
-            return; // waiting: no repeated inference
-          }
           case 'cannot_execute':
             this.discardPending(p, 'cannot_execute', `${proposal.missing}${proposal.missingCapabilities.length ? ` (missing capabilities: ${proposal.missingCapabilities.join(', ')})` : ''}`);
             return;
@@ -1096,6 +1081,11 @@ export class GoalEngine {
   }
 
   private repairPending(p: PendingIntent, requestId: string, kind: string, problems: string[], maxRepairs: number): boolean {
+    const question = isOwnerQuestionProblem(problems);
+    if (question) {
+      p.counters.questionRefusals += 1;
+      this.deps.store.record({ type: 'planner_question_refused', intentId: p.intentId, requestId, preparation: true, refusals: p.counters.questionRefusals });
+    }
     this.deps.store.record({ type: 'planner_proposal_rejected', intentId: p.intentId, requestId, kind, problems: problems.slice(0, 12), preparation: true });
     this.deps.journal?.record({ type: 'preparation_proposal_rejected', intentId: p.intentId, requestId, kind, problems: problems.slice(0, 12) });
     if (p.consecutiveRepairs < maxRepairs) {
@@ -1105,7 +1095,8 @@ export class GoalEngine {
       p.nextTurnKind = 'repair';
       return true;
     }
-    this.discardPending(p, kind === 'unknown_capabilities' ? 'cannot_execute' : 'invalid_proposal', `${problems.slice(0, 2).join('; ')} (after ${maxRepairs} repair turn${maxRepairs === 1 ? '' : 's'})`);
+    // A question is never relayed: the blocker text is app-owned.
+    this.discardPending(p, kind === 'unknown_capabilities' ? 'cannot_execute' : 'invalid_proposal', question ? questionBlockerText(maxRepairs) : `${problems.slice(0, 2).join('; ')} (after ${maxRepairs} repair turn${maxRepairs === 1 ? '' : 's'})`);
     return false;
   }
 
@@ -1138,7 +1129,7 @@ export class GoalEngine {
   }
 
   /** Bounded memory view for one planner request (MB-MEM-001); undefined when memory is not installed. */
-  private memoryView(subject: PlannerRequest['subject'], requestId: string, instruction: string, clarifications: readonly ClarificationExchange[], snapshot: ObservationSnapshot | null): MemoryView | undefined {
+  private memoryView(subject: PlannerRequest['subject'], requestId: string, instruction: string, snapshot: ObservationSnapshot | null): MemoryView | undefined {
     const memory = this.deps.memory;
     if (!memory) return undefined;
     try {
@@ -1146,7 +1137,7 @@ export class GoalEngine {
         subject,
         requestId,
         instruction,
-        answers: clarifications.map((c) => c.answer),
+        answers: [],
         observation: snapshot ? { dimension: snapshot.dimension, self: { at: snapshot.self.at }, connectionEpoch: snapshot.connectionEpoch } : null,
       });
     } catch (error) {
@@ -1269,7 +1260,6 @@ export class GoalEngine {
       caps,
       abort: new AbortController(),
       cleanups: new Set(),
-      clarifications: [],
       knowledge: [],
       admittedTasks: 0,
       deadline: undefined,
@@ -1289,9 +1279,8 @@ export class GoalEngine {
       if (prepared.deadline) clearTimeout(prepared.deadline);
       this.pending = undefined;
       const pc = prepared.counters;
-      Object.assign(active.counters, { plannerTurns: pc.plannerTurns, knowledgeRounds: pc.knowledgeRounds, repairs: pc.repairs, retries: pc.retries, clarifications: pc.clarifications, preparationTurns: pc.plannerTurns });
+      Object.assign(active.counters, { plannerTurns: pc.plannerTurns, knowledgeRounds: pc.knowledgeRounds, repairs: pc.repairs, retries: pc.retries, questionRefusals: pc.questionRefusals, preparationTurns: pc.plannerTurns });
       record.plannerTurns = pc.plannerTurns;
-      active.clarifications = [...prepared.clarifications];
       active.knowledge = [...prepared.knowledge];
       active.handoff = { intentId: prepared.intentId, generation: prepared.generation, timeline: { ...prepared.timeline, admittedAtMs: now }, recorded: false };
       this.totals.handedOff += 1;
@@ -1309,7 +1298,7 @@ export class GoalEngine {
     this.currentTask = undefined;
     this.lastTask = undefined;
     try {
-      this.deps.onGoalAdmitted?.({ goalId: record.id, epoch: record.epoch, admittedAtMs: now, instruction: text, kind, ...(extras.source ? { source: extras.source } : {}), deadlineAtMs, ownerCoordinates: extras.source?.kind === 'owner' ? ownerCoordinates(text, active.clarifications) : [] });
+      this.deps.onGoalAdmitted?.({ goalId: record.id, epoch: record.epoch, admittedAtMs: now, instruction: text, kind, ...(extras.source ? { source: extras.source } : {}), deadlineAtMs, ownerCoordinates: extras.source?.kind === 'owner' ? ownerCoordinates(text) : [] });
     } catch (error) {
       this.deps.store.record({ type: 'goal_admission_hook_error', goalId: record.id, message: error instanceof Error ? error.message : String(error) });
     }
@@ -1434,61 +1423,18 @@ export class GoalEngine {
     await Promise.all([this.active ? this.revokeActive(reason, detail) : undefined, this.preparationCleanupsDone()]);
   }
 
-  /** Correlated clarification answer. Never revives a cancelled or terminal goal. */
+  /**
+   * MB-PLAN-006: Chunkbot never asks follow-up questions, so no question is
+   * ever pending. An `answer ...` command (e.g. a reply to a question shown by
+   * an older release) is retired declaratively: it is never applied as an
+   * answer, never treated as permission for any task, and never revives,
+   * replaces or changes active or pending work.
+   */
   answer(reply: string, ref: string | undefined, surface: string): AnswerResult {
-    const text = reply.trim();
-    const rejectAnswer = (reason: Extract<AnswerResult, { status: 'rejected' }>['reason'], detail: string): AnswerResult => {
-      this.deps.store.record({ type: 'answer_rejected', reason, surface, ref });
-      this.deps.notify({ text: `Answer not applied: ${detail}` });
-      return { status: 'rejected', reason, detail };
-    };
-    // A question about a pending (not admitted) instruction is separate from the active goal.
-    const p = this.closed ? undefined : this.pending;
-    const pq = p?.pendingClarification;
-    if (p && pq) {
-      if (ref && ref !== pq.ref) return rejectAnswer('stale_reference', `question ${ref} is no longer pending (current question is ${pq.ref})`);
-      if (text.length === 0) return rejectAnswer('empty', `answer is empty; reply with "answer ${pq.ref} <reply>"`);
-      if (text.length > this.deps.limits.maxInstructionChars) return rejectAnswer('too_long', 'answer is too long');
-      p.clarifications.push({ ref: pq.ref, question: pq.question, answer: text });
-      delete p.pendingClarification;
-      p.state = 'preparing';
-      p.updatedAtMs = this.deps.clock.now();
-      p.nextTurnKind = 'clarification';
-      this.deps.journal?.record({ type: 'preparation_answer', intentId: p.intentId, ref: pq.ref, question: pq.question, answer: truncate(text, BOUNDS.text) });
-      this.deps.store.record({ type: 'answer_accepted', intentId: p.intentId, ref: pq.ref, surface, answer: truncate(text, BOUNDS.text) });
-      this.deps.notify({ intentId: p.intentId, text: `Answer to ${pq.ref} recorded. Preparing your new instruction…` });
-      this.track(this.prepare(p));
-      return { status: 'accepted', intentId: p.intentId, ref: pq.ref };
-    }
-    const active = this.closed ? undefined : this.active;
-    const pending = active?.record.state === 'awaiting_owner' ? active.record.pendingClarification : undefined;
-    if (!active || !pending) return rejectAnswer('no_pending_clarification', 'there is no pending question');
-    if (ref && ref !== pending.ref) {
-      return rejectAnswer('stale_reference', `question ${ref} is no longer pending (current question is ${pending.ref})`);
-    }
-    if (text.length === 0) return rejectAnswer('empty', `answer is empty; reply with "answer ${pending.ref} <reply>"`);
-    if (text.length > this.deps.limits.maxInstructionChars) return rejectAnswer('too_long', 'answer is too long');
-
-    const before = ownerCoordinates(active.record.instruction, active.clarifications).length;
-    active.clarifications.push({ ref: pending.ref, question: pending.question, answer: text });
-    delete active.record.pendingClarification;
-    if (active.source?.kind === 'owner') {
-      const coords = ownerCoordinates(active.record.instruction, active.clarifications).slice(before);
-      if (coords.length > 0) {
-        try {
-          this.deps.onOwnerCoordinates?.({ goalId: active.record.id, goalEpoch: active.epoch, coordinates: coords });
-        } catch (error) {
-          this.deps.store.record({ type: 'owner_coordinates_hook_error', goalId: active.record.id, message: error instanceof Error ? error.message : String(error) });
-        }
-      }
-    }
-    active.nextTurnKind = 'clarification';
-    this.deps.journal?.record({ type: 'goal_answer', goalId: active.record.id, ref: pending.ref, question: pending.question, answer: truncate(text, BOUNDS.text) });
-    this.setState(active, 'planning');
-    this.deps.store.record({ type: 'answer_accepted', goalId: active.record.id, ref: pending.ref, surface, answer: truncate(text, BOUNDS.text) });
-    this.deps.notify({ goalId: active.record.id, text: `Answer to ${pending.ref} recorded. Planning…` });
-    this.track(this.plan(active));
-    return { status: 'accepted', goalId: active.record.id, ref: pending.ref };
+    const detail = 'no question is pending: Chunkbot does not ask follow-up questions, so this reply was not applied and nothing changed';
+    this.deps.store.record({ type: 'answer_retired', surface, ref: ref ?? null, chars: reply.trim().length, activeGoalId: this.active?.record.id ?? null, pendingIntentId: this.pending?.intentId ?? null });
+    this.deps.notify({ text: `Reply not applied: ${detail}. Send a new instruction to change what Chunkbot is doing.` });
+    return { status: 'rejected', reason: 'no_pending_clarification', detail };
   }
 
   status(): FullEngineStatus {
@@ -1518,7 +1464,6 @@ export class GoalEngine {
               updatedAtMs: p.updatedAtMs,
               activeGoalId: this.active?.record.id ?? null,
               plannerTurns: p.counters.plannerTurns,
-              ...(p.pendingClarification ? { pendingClarification: { ...p.pendingClarification } } : {}),
             },
           }
         : {}),
@@ -1597,7 +1542,6 @@ export class GoalEngine {
     this.active = undefined;
     this.epoch += 1;
     if (active.deadline) clearTimeout(active.deadline);
-    delete active.record.pendingClarification;
     if (viaStopping) this.setState(active, 'stopping');
     active.abort.abort(new Error(reason));
     if (active.lookahead) {
@@ -1675,12 +1619,12 @@ export class GoalEngine {
   }
 
   private ownerCoords(active: ActiveGoal): OwnerCoordinate[] {
-    return ownerCoordinates(active.record.instruction, active.clarifications);
+    return ownerCoordinates(active.record.instruction);
   }
 
   private progressSummary(active: ActiveGoal): string {
     const c = active.counters;
-    return `planner turns ${c.plannerTurns} (knowledge ${c.knowledgeRounds}, repairs ${c.repairs}, retries ${c.retries}, clarifications ${c.clarifications}, replans ${c.replans}${c.preparationTurns ? `, preparation ${c.preparationTurns}` : ''}${c.lookaheads ? `, lookahead ${c.lookaheads}` : ''}), windows ${c.windows}, tasks ${c.tasksAdmitted}${active.outcomeStatus ? `; outcome ${active.outcomeStatus.status}: ${truncate(active.outcomeStatus.detail, 160)}` : ''}`;
+    return `planner turns ${c.plannerTurns} (knowledge ${c.knowledgeRounds}, repairs ${c.repairs}, retries ${c.retries}${c.questionRefusals ? `, question refusals ${c.questionRefusals}` : ''}, replans ${c.replans}${c.preparationTurns ? `, preparation ${c.preparationTurns}` : ''}${c.lookaheads ? `, lookahead ${c.lookaheads}` : ''}), windows ${c.windows}, tasks ${c.tasksAdmitted}${active.outcomeStatus ? `; outcome ${active.outcomeStatus.status}: ${truncate(active.outcomeStatus.detail, 160)}` : ''}`;
   }
 
   private routeFields(goalEpoch: number): Pick<PlannerRequest, 'route' | 'locator'> {
@@ -1766,7 +1710,6 @@ export class GoalEngine {
       maxTurns: active.caps.plannerTurns,
       catalog: capabilities.catalog(),
       observation: snapshot,
-      clarifications: [...active.clarifications],
       knowledge: [...active.knowledge],
       ...(active.feedback.length > 0 ? { feedback: [...active.feedback] } : {}),
       turnKind,
@@ -1786,7 +1729,7 @@ export class GoalEngine {
       ...(active.rejection ? { rejection: { problems: active.rejection } } : {}),
       ...(this.deps.mechanicsVersion ? { mechanicsVersion: this.deps.mechanicsVersion } : {}),
       limits: { travelRadius: limits.travelRadius ?? 128, observationRadius: limits.observationRadius ?? 32, planWindowSteps: limits.planWindowSteps },
-      ...this.memoryField({ kind: 'goal', goalId: active.record.id, goalEpoch: active.epoch }, requestId, active.record.instruction, active.clarifications, snapshot),
+      ...this.memoryField({ kind: 'goal', goalId: active.record.id, goalEpoch: active.epoch }, requestId, active.record.instruction, snapshot),
       ...(active.autonomy ? { autonomy: active.autonomy } : {}),
       ...this.routeFields(active.epoch),
       ...extra,
@@ -1925,7 +1868,7 @@ export class GoalEngine {
     this.rememberShown(active, snapshot);
   }
 
-  /** Bounded planner turns for the active goal until a terminal state or a clarification wait. */
+  /** Bounded planner turns for the active goal until a terminal state (there is never an owner-answer wait). */
   private async plan(active: ActiveGoal, carriedIn?: CarriedPlan): Promise<void> {
     const { planner, knowledge, observation, capabilities, executor, limits } = this.deps;
     const maxReplans = active.caps.replans;
@@ -2082,32 +2025,6 @@ export class GoalEngine {
             this.deps.store.record({ type: 'knowledge_answered', goalId: active.record.id, queries: proposal.queries, statuses: results.map((r) => r.status) });
             continue;
           }
-          case 'needs_clarification': {
-            if (isAutomaticSource(active.source)) {
-              // Nobody asked for an automatic goal: it never waits on the owner (no repeated inference, no hidden wait).
-              await this.finishIfCurrent(active, 'cannot_execute', `the automatic goal needed an owner decision (${truncate(proposal.question, 200)}); not asked — automatic goals cannot wait for answers; ${this.progressSummary(active)}`);
-              return;
-            }
-            this.clarificationCounter += 1;
-            c.clarifications += 1;
-            const request: ClarificationRequest = {
-              id: this.deps.ids.next('clar'),
-              goalId: active.record.id,
-              goalEpoch: active.epoch,
-              ref: `q${this.clarificationCounter}`,
-              question: truncate(proposal.question, BOUNDS.text),
-              askedAtMs: this.deps.clock.now(),
-            };
-            active.record.pendingClarification = request;
-            this.setState(active, 'awaiting_owner');
-            this.deps.store.record({ type: 'clarification_requested', goalId: active.record.id, ref: request.ref, question: request.question });
-            this.deps.journal?.record({ type: 'goal_question', goalId: active.record.id, ref: request.ref, question: request.question, interpretation: proposal.interpretation });
-            this.deps.notify({
-              goalId: active.record.id,
-              text: `Question ${request.ref}: ${truncate(request.question, 180)} (reply: answer ${request.ref} <reply>)`,
-            });
-            return; // Pending clarification causes no game actions and no repeated inference.
-          }
           case 'cannot_execute': {
             const detail = `${proposal.missing}${proposal.missingCapabilities.length ? ` (missing capabilities: ${proposal.missingCapabilities.join(', ')})` : ''}${proposal.verifiedProgress ? `; planner-reported progress: ${proposal.verifiedProgress}` : ''}; ${this.progressSummary(active)}`;
             await this.finishIfCurrent(active, 'cannot_execute', detail);
@@ -2198,6 +2115,11 @@ export class GoalEngine {
    * bounded number of consecutive repair turns (each counted); then the goal blocks.
    */
   private async rejectAndMaybeRepair(active: ActiveGoal, requestId: string, kind: string, problems: string[], maxRepairs: number): Promise<boolean> {
+    const question = isOwnerQuestionProblem(problems);
+    if (question) {
+      active.counters.questionRefusals += 1;
+      this.deps.store.record({ type: 'planner_question_refused', goalId: active.record.id, requestId, refusals: active.counters.questionRefusals });
+    }
     this.deps.store.record({ type: 'planner_proposal_rejected', goalId: active.record.id, requestId, kind, problems: problems.slice(0, 12) });
     this.deps.journal?.record({ type: 'goal_proposal_rejected', goalId: active.record.id, requestId, kind, problems: problems.slice(0, 12) });
     if (active.consecutiveRepairs < maxRepairs) {
@@ -2207,7 +2129,8 @@ export class GoalEngine {
       active.nextTurnKind = 'repair';
       return true;
     }
-    const detail = `${problems.slice(0, 3).join('; ')} (after ${maxRepairs} repair turn${maxRepairs === 1 ? '' : 's'}). No game actions were taken.`;
+    // A question is never relayed: the blocker text is app-owned (MB-PLAN-006).
+    const detail = question ? `${questionBlockerText(maxRepairs)}; ${this.progressSummary(active)}` : `${problems.slice(0, 3).join('; ')} (after ${maxRepairs} repair turn${maxRepairs === 1 ? '' : 's'}). No game actions were taken.`;
     await this.finishIfCurrent(active, kind === 'unknown_capabilities' ? 'capability_not_ready' : 'invalid_proposal', truncate(detail, BOUNDS.text));
     return false;
   }

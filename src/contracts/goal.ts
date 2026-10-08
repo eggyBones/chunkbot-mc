@@ -56,7 +56,8 @@ export const GoalRecordSchema = z
         knowledgeRounds: z.number().int().nonnegative(),
         repairs: z.number().int().nonnegative(),
         retries: z.number().int().nonnegative(),
-        clarifications: z.number().int().nonnegative(),
+        /** MB-PLAN-006: proposals refused because they asked the owner a question. */
+        questionRefusals: z.number().int().nonnegative(),
         replans: z.number().int().nonnegative(),
         windows: z.number().int().nonnegative(),
         tasksAdmitted: z.number().int().nonnegative(),
@@ -68,6 +69,10 @@ export const GoalRecordSchema = z
     interpretation: z.string().max(BOUNDS.text).optional(),
     /** Bounded rendering of the accepted goal outcome contract (code evaluates it). */
     outcome: z.string().max(BOUNDS.text).optional(),
+    /**
+     * LEGACY (pre-MB-PLAN-006 records only). The goal engine never sets it: Chunkbot
+     * asks no follow-up questions. Kept optional so old evidence still parses.
+     */
     pendingClarification: ClarificationRequestSchema.optional(),
     terminal: z
       .object({

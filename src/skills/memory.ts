@@ -91,7 +91,8 @@ function groundLocation(ctx: ExecuteContext, memory: MemoryService, target: Move
     case 'destination': {
       if (target.dimension !== dimension) return precondition('dimension_mismatch', `coordinates are for ${target.dimension}, not ${dimension}`);
       const texts = memory.ownerTexts(goalIdOf(ctx)) ?? [];
-      const typed = texts.flatMap((t, i) => parseOwnerCoordinates(t, i === 0 ? 'instruction' : 'answer'));
+      // MB-PLAN-006: only the owner's instruction (there are no clarification answers).
+      const typed = texts.slice(0, 1).flatMap((t) => parseOwnerCoordinates(t, 'instruction'));
       const at = { x: target.x, y: target.y, z: target.z };
       if (!matchesOwnerCoordinate(at, typed)) return precondition('coordinates_not_owner_typed', `coordinates ${at.x} ${at.y} ${at.z} were not typed by the owner`);
       return { location: { dimension, at }, basis: `coordinates the owner typed (${at.x} ${at.y} ${at.z}); not observed` };

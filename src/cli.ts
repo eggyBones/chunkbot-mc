@@ -377,7 +377,6 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
       },
       onLatchChanged: (latch, cause) => supervisor?.onLatchChanged(latch, cause),
       onPreparationDiscarded: (p) => supervisor?.onPreparationDiscarded(p),
-      onOwnerCoordinates: (e) => runtime.onOwnerCoordinates(e),
       ...(runtime.routes ? { routeView: (goalEpoch: number) => runtime.routeView(goalEpoch) } : {}),
       ...(runtime.locator ? { locatorHint: () => runtime.locator?.ownerHint() } : {}),
       installed: { structures: Boolean(runtime.home), survival: Boolean(runtime.survival) },

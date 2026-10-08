@@ -145,6 +145,9 @@ export function eyeOf(bot: Bot): Vec {
 const round1 = (n: number) => Math.round(n * 10) / 10;
 const vec = (p: { x: number; y: number; z: number }) => ({ x: round1(p.x), y: round1(p.y), z: round1(p.z) });
 
+/** Bound on retired handle identities kept for re-grounding (MB-PLAN-006 N-G1). */
+const RETIRED_HANDLES = 4_096;
+
 /** Block interaction reach (survival `block_interaction_range` default 4.5). */
 export const BLOCK_REACH = 4.5;
 /** Entity interaction reach (survival `entity_interaction_range` default 3.0). */
@@ -153,6 +156,15 @@ export const ENTITY_REACH = 3;
 export class PerceptionService implements ObservationPort {
   private readonly options: PerceptionOptions;
   private readonly snapshots: SnapshotRecord[] = [];
+  /**
+   * MB-PLAN-006 N-G1: TARGET IDENTITY (entity id, block position, frontier
+   * waypoint) of handles whose snapshot was evicted from the bounded snapshot
+   * window. Used ONLY to re-ground a named target to the SAME target produced
+   * again in a newer snapshot (translateHandle) and for code predicate
+   * identity; an expired handle is never executable (resolve still refuses it).
+   * Same connection/dimension only; cleared by every lifecycle invalidation.
+   */
+  private readonly retired = new Map<string, HandleRecord>();
   private readonly anchors: Array<{ anchorId: string; label: string; dimension: string; at: Vec; observedAtMs: number; source: 'observed' | 'owner_supplied' | 'skill_result'; connectionEpoch: number }> = [];
   private readonly visited: Array<{ dimension: string; at: Vec; atMs: number; connectionEpoch: number }> = [];
   /**
@@ -191,6 +203,7 @@ export class PerceptionService implements ObservationPort {
    */
   invalidate(reason: string): void {
     this.snapshots.splice(0);
+    this.retired.clear();
     this.anchors.splice(0);
     this.travelAnchor = undefined;
     this.invalidations.push({ atMs: this.options.clock.now(), reason });
@@ -376,6 +389,23 @@ export class PerceptionService implements ObservationPort {
   }
 
   /**
+   * Target identity of a handle: from its live snapshot, or (after the snapshot
+   * was evicted) from the bounded retired-identity record. Current connection
+   * and dimension only. Never executable by itself: callers re-ground it in a
+   * fresh snapshot or evaluate code predicates from it.
+   */
+  identity(snapshotId: string, handle: string): HandleRecord | { error: string } {
+    const live = this.resolve(snapshotId, handle);
+    if (!('error' in live) || live.error !== 'snapshot_expired') return live;
+    const s = this.options.session();
+    const r = this.retired.get(handle);
+    if (!s || !r || r.snapshotId !== snapshotId) return live;
+    if (r.connectionEpoch !== s.connectionEpoch) return { error: 'stale_connection' };
+    if (r.dimension !== String(s.bot.game.dimension)) return { error: 'dimension_changed' };
+    return r;
+  }
+
+  /**
    * Re-grounds a handle from an earlier snapshot in another snapshot of the same
    * connection and dimension: same block position still seen, the same
    * entity/drop id still listed, or the same frontier waypoint still produced
@@ -384,7 +414,7 @@ export class PerceptionService implements ObservationPort {
    */
   translateHandle(fromSnapshotId: string, handle: string, toSnapshotId: string): string | undefined {
     if (fromSnapshotId === toSnapshotId) return handle;
-    const from = this.resolve(fromSnapshotId, handle);
+    const from = this.identity(fromSnapshotId, handle);
     const to = this.record(toSnapshotId);
     if ('error' in from || !to || to.connectionEpoch !== from.connectionEpoch || to.dimension !== from.dimension) return undefined;
     const t = from.target;
@@ -521,9 +551,12 @@ export class PerceptionService implements ObservationPort {
       .map(({ name, list }) => ({ key: `minecraft:${name}`, count: list.length, nearest: round1(list[0]?.d ?? 0) }));
 
     // Entities and drops: radius + line of sight; never global player positions.
-    const entities: ObservationSnapshot['entities'] = [];
-    const drops: ObservationSnapshot['drops'] = [];
-    let owner: ObservationSnapshot['owner'] = { visible: false };
+    // MB-PLAN-006 N-G1: every visible candidate is collected and ordered by
+    // distance (ties: registry key, then position) BEFORE the bounded cap, so a
+    // nearby target can never be crowded out by farther entities that happened
+    // to come first in the client's entity table. Handles follow that order.
+    const visibleEntities: Array<{ entity: Entity; d: number; name: string }> = [];
+    const visibleDrops: Array<{ entity: Entity; d: number; item: { name: string; count: number } }> = [];
     for (const entity of Object.values(bot.entities)) {
       if (!entity || entity === bot.entity || !entity.position) continue;
       const d = entity.position.distanceTo(self);
@@ -533,17 +566,34 @@ export class PerceptionService implements ObservationPort {
       const name = entity.name ?? 'unknown';
       if (name === 'item') {
         const item = (entity as { getDroppedItem?: () => { name: string; count: number } | null }).getDroppedItem?.();
-        if (!item || drops.length >= 32) continue;
-        const handle = this.nextHandle('drp');
-        rec.handles.set(handle, { snapshotId: id, connectionEpoch: s.connectionEpoch, dimension, observedAtMs: now, target: { kind: 'drop', entityId: entity.id, item: `minecraft:${item.name}`, count: item.count } });
-        drops.push({ handle, key: `minecraft:${item.name}`, at: vec(entity.position), distance: round1(d), label: `x${item.count}` });
+        if (item) visibleDrops.push({ entity, d, item });
         continue;
       }
-      if (entities.length >= 32) {
+      visibleEntities.push({ entity, d, name });
+    }
+    const order = (a: { d: number; entity: Entity }, b: { d: number; entity: Entity }, ka: string, kb: string) =>
+      a.d - b.d || (ka < kb ? -1 : ka > kb ? 1 : 0) || a.entity.position.x - b.entity.position.x || a.entity.position.z - b.entity.position.z || a.entity.position.y - b.entity.position.y || a.entity.id - b.entity.id;
+    visibleEntities.sort((a, b) => order(a, b, a.name, b.name));
+    visibleDrops.sort((a, b) => order(a, b, a.item.name, b.item.name));
+    const entities: ObservationSnapshot['entities'] = [];
+    const drops: ObservationSnapshot['drops'] = [];
+    let owner: ObservationSnapshot['owner'] = { visible: false };
+    for (const { entity, d, item } of visibleDrops) {
+      if (drops.length >= 32) {
+        truncated = true;
+        break;
+      }
+      const handle = this.nextHandle('drp');
+      rec.handles.set(handle, { snapshotId: id, connectionEpoch: s.connectionEpoch, dimension, observedAtMs: now, target: { kind: 'drop', entityId: entity.id, item: `minecraft:${item.name}`, count: item.count } });
+      drops.push({ handle, key: `minecraft:${item.name}`, at: vec(entity.position), distance: round1(d), label: `x${item.count}` });
+    }
+    for (const { entity, d, name } of visibleEntities) {
+      const isOwner = this.isOwnerEntity(bot, entity);
+      // The owner is always reported when visible, even beyond the entity cap.
+      if (entities.length >= 32 && !isOwner) {
         truncated = true;
         continue;
       }
-      const isOwner = this.isOwnerEntity(bot, entity);
       const username = (entity as { username?: string }).username;
       const handle = this.nextHandle('ent');
       rec.handles.set(handle, {
@@ -554,14 +604,13 @@ export class PerceptionService implements ObservationPort {
         target: { kind: 'entity', entityId: entity.id, name, isOwner, ...(username ? { username } : {}) },
       });
       const label = isOwner ? 'owner' : (entity as { type?: string }).type === 'player' ? 'player' : undefined;
-      entities.push({ handle, key: `minecraft:${name}`, at: vec(entity.position), distance: round1(d), inReach: d <= ENTITY_REACH, ...(label ? { label } : {}) });
+      if (entities.length < 32) entities.push({ handle, key: `minecraft:${name}`, at: vec(entity.position), distance: round1(d), inReach: d <= ENTITY_REACH, ...(label ? { label } : {}) });
+      else entities[31] = { handle, key: `minecraft:${name}`, at: vec(entity.position), distance: round1(d), inReach: d <= ENTITY_REACH, ...(label ? { label } : {}) };
       if (isOwner) {
         owner = { visible: true, at: vec(entity.position), distance: round1(d) };
         this.remember('owner last seen', entity.position, 'observed');
       }
     }
-    entities.sort((a, b) => a.distance - b.distance);
-    drops.sort((a, b) => a.distance - b.distance);
 
     // Frontiers from safe local geometry inside travel bounds.
     const bounds = this.travelBounds();
@@ -625,7 +674,13 @@ export class PerceptionService implements ObservationPort {
     };
     rec.snapshot = snapshot;
     this.snapshots.push(rec);
-    if (this.snapshots.length > 8) this.snapshots.splice(0, this.snapshots.length - 8);
+    if (this.snapshots.length > 8) {
+      for (const old of this.snapshots.splice(0, this.snapshots.length - 8)) {
+        // Keep only the identity of handles the snapshot actually listed (bounded).
+        for (const [h, r] of old.handles) this.retired.set(h, r);
+      }
+      while (this.retired.size > RETIRED_HANDLES) this.retired.delete(this.retired.keys().next().value as string);
+    }
     return snapshot;
   }
 
