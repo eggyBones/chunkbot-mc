@@ -125,6 +125,8 @@ export class SurvivalTracker {
   private readonly nonItemEntities = new Set<number>();
   /** Kind of entities this bot collected recently (outlives entity_destroy; bounded). */
   private readonly collectedKinds = new Map<number, 'item' | 'non_item' | 'unknown'>();
+  /** Packet-time stacks for recent own collects. Settlement history, never live drop authority. */
+  private readonly collectedStacks = new Map<number, DropStackFacts>();
 
   /** Subscribes to tracker events (synchronous, in packet order). */
   subscribe(listener: (e: TrackerEvent) => void): () => void {
@@ -172,6 +174,7 @@ export class SurvivalTracker {
     this.firstSeen.clear();
     this.nonItemEntities.clear();
     this.collectedKinds.clear();
+    this.collectedStacks.clear();
     if (opts.seed) {
       for (const s of opts.seed.stacks) this.slots.set(s.slot, { ...s, meta: { ...s.meta } });
       this.invSource = 'ready_seed';
@@ -186,6 +189,13 @@ export class SurvivalTracker {
       this.listeners.push([name, fn]);
     };
     on('spawn_entity', (p: { entityId: number; type: number; x?: number; y?: number; z?: number }) => {
+      // Entity ids may be reused. Neither the old live stack nor its collect history belongs to a new entity.
+      this.itemEntities.delete(p.entityId);
+      this.nonItemEntities.delete(p.entityId);
+      this.drops.delete(p.entityId);
+      this.firstSeen.delete(p.entityId);
+      this.collectedKinds.delete(p.entityId);
+      this.collectedStacks.delete(p.entityId);
       const itemType = this.opts?.registry.itemEntityTypeId;
       if (itemType !== undefined && p.type !== itemType) {
         this.nonItemEntities.add(p.entityId);
@@ -203,8 +213,16 @@ export class SurvivalTracker {
       const self = this.self();
       if (!this.opts || self === undefined || p.collectorEntityId !== self) return;
       const kind = this.itemEntities.has(p.collectedEntityId) ? 'item' : this.nonItemEntities.has(p.collectedEntityId) ? 'non_item' : 'unknown';
+      const facts = kind === 'item' ? this.drops.get(p.collectedEntityId) : undefined;
+      if (facts) this.collectedStacks.set(p.collectedEntityId, { ...facts, meta: { ...facts.meta } });
+      else this.collectedStacks.delete(p.collectedEntityId);
+      this.collectedKinds.delete(p.collectedEntityId);
       this.collectedKinds.set(p.collectedEntityId, kind);
-      if (this.collectedKinds.size > 256) this.collectedKinds.delete(this.collectedKinds.keys().next().value as number);
+      if (this.collectedKinds.size > 256) {
+        const oldest = this.collectedKinds.keys().next().value as number;
+        this.collectedKinds.delete(oldest);
+        this.collectedStacks.delete(oldest);
+      }
       if (kind === 'non_item') return;
       const count = Number(p.pickupItemCount);
       if (!Number.isInteger(count) || count <= 0) return;
@@ -212,7 +230,6 @@ export class SurvivalTracker {
         this.emit({ type: 'own_unknown_collect', connectionEpoch: this.opts.connectionEpoch, entityId: p.collectedEntityId, count, facts: undefined, firstSeenAt: undefined, atMs: this.now() });
         return;
       }
-      const facts = this.drops.get(p.collectedEntityId);
       const at = this.firstSeen.get(p.collectedEntityId);
       this.emit({ type: 'own_item_collect', connectionEpoch: this.opts.connectionEpoch, entityId: p.collectedEntityId, count, facts: facts ? { ...facts, meta: { ...facts.meta } } : undefined, firstSeenAt: at ? { ...at } : undefined, atMs: this.now() });
     });
@@ -240,6 +257,7 @@ export class SurvivalTracker {
       this.firstSeen.clear();
       this.nonItemEntities.clear();
       this.collectedKinds.clear();
+      this.collectedStacks.clear();
       if (typeof p.entityId === 'number') this.selfId = p.entityId;
       if (p.worldState?.death) this.loginDeath = p.worldState.death;
     });
@@ -451,6 +469,12 @@ export class SurvivalTracker {
     return d ? { ...d, meta: { ...d.meta } } : undefined;
   }
 
+  /** Stack stated at an own collect packet; survives entity_destroy for bounded action settlement only. */
+  collectedStack(entityId: number): DropStackFacts | undefined {
+    const d = this.collectedStacks.get(entityId);
+    return d ? { ...d, meta: { ...d.meta } } : undefined;
+  }
+
   /** What a collect by this bot took: a server-announced item, a server-announced non-item (orb), or never announced. */
   collectedKind(entityId: number): 'item' | 'non_item' | 'unknown' {
     return this.collectedKinds.get(entityId) ?? (this.itemEntities.has(entityId) ? 'item' : this.nonItemEntities.has(entityId) ? 'non_item' : 'unknown');
@@ -478,6 +502,7 @@ export class SurvivalTracker {
     this.firstSeen.clear();
     this.nonItemEntities.clear();
     this.collectedKinds.clear();
+    this.collectedStacks.clear();
     if (this.state === 'alive' && !this.latestDeath) {
       // A respawn without a death (dimension travel) is not a death; inventory continues.
       return;

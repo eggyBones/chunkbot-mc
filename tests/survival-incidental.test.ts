@@ -15,6 +15,7 @@
 //     before foreign loot comes within pickup range, and reports any unplanned
 //     collect as incidental (partial), never as regained.
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { after, describe, it } from 'node:test';
 import type { ObservationSnapshot } from '../src/contracts/observation.ts';
 import type { SurvivalProposal } from '../src/contracts/survival.ts';
@@ -133,6 +134,8 @@ interface Loot {
 async function walk(h: Harness, loot: Loot[], opts: { unannouncedCollect?: { entityId: number; count: number; atX: number }; orbCollect?: { entityId: number; atX: number } } = {}) {
   const client = h.packets.client as unknown as FakeClient;
   const fake = fakeMineflayerBot(client, { dimension: SESSION_OW, at: { x: 18.5, y: 0, z: 10.5 } });
+  const events = new EventEmitter();
+  Object.assign(fake.bot, { on: events.on.bind(events), off: events.off.bind(events), prependListener: events.prependListener.bind(events) });
   fake.fill(0, -1, 0, 40, -1, 20, 'grass_block');
   const bot = fake.bot as unknown as { entity: { position: ReturnType<typeof vec3> }; entities: Record<number, unknown>; game: { dimension: string } };
   bot.game.dimension = SESSION_OW;
@@ -152,6 +155,7 @@ async function walk(h: Harness, loot: Loot[], opts: { unannouncedCollect?: { ent
     bot: fake.bot,
     session,
     fence: () => undefined,
+    confirmWindow: async () => undefined,
     setPathGoal: (g: { x: number; y: number; z: number }) => {
       goal = { x: g.x, y: g.y, z: g.z };
       moving = true;
@@ -188,6 +192,7 @@ async function walk(h: Harness, loot: Loot[], opts: { unannouncedCollect?: { ent
       if (u && !collected.has(u.entityId) && q.x >= u.atX) {
         collected.add(u.entityId);
         h.packets.client.emit('collect', { collectedEntityId: u.entityId, collectorEntityId: 42, pickupItemCount: u.count });
+        h.packets.destroy(u.entityId);
       }
     },
   };
@@ -225,6 +230,17 @@ async function boundWalker(pid: number): Promise<Harness> {
 }
 
 describe('passive pickup while walking to the death site (C10)', () => {
+  it('S-C12-R4: a stated foreign bread64 collect followed by destroy retains its key but earns no recovery/effect credit', async () => {
+    const h = await boundWalker(8206);
+    const r = await walk(h, [{ entityId: 68, stack: slot('bread', 64), at: { x: 35, y: 0, z: 18 }, announce: false }], { unannouncedCollect: { entityId: 68, count: 64, atX: 22 } });
+    assert.equal(r.outcome.status, 'partial');
+    assert.deepEqual(r.outcome.evidence?.['incidentalCollected'], ['minecraft:bread x64']);
+    assert.deepEqual(incident(h)?.incidental?.map((x) => [x.key, x.count]), [['minecraft:bread', 64]]);
+    assert.deepEqual(r.ledger, [], 'foreign pickups never earn resource effect credit');
+    assert.deepEqual(h.service.incidentReturns(h.service.frozenInventory(1)!.incidentId)?.regained, {});
+    assert.equal(h.service.dropFacts(1, 68), undefined, 'settlement history never resurrects a live target');
+    await h.service.close();
+  });
   it('an own planned drop collected on the way counts as regained (server collect packet)', async () => {
     const h = await boundWalker(8201);
     const r = await walk(h, [{ entityId: 900, stack: slot('cobblestone', 20), at: { x: 24.5, y: 0, z: 10.5 } }]);
