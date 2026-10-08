@@ -265,8 +265,6 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
   const svc = service;
   function pickupPlan(fence: { goalEpoch: number; connectionEpoch: number; dimension: string }, remaining: Map<string, number>) {
     const plan = new Map<number, DropStackFacts>();
-    /** Server facts of entities seen near the bot (an unplanned collect is reported with its key when known). */
-    const seen = new Map<number, DropStackFacts>();
     const freeze = (id: number, facts: DropStackFacts): void => {
       plan.set(id, facts);
       remaining.set(facts.key, (remaining.get(facts.key) ?? 0) - facts.count);
@@ -280,7 +278,6 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
       /** undefined when the entity is (now) planned and unchanged; else why the action must stop. */
       admit(id: number): string | undefined {
         const now = svc.dropFacts(fence.connectionEpoch, id);
-        if (now) seen.set(id, now);
         if (plan.has(id)) {
           const was = plan.get(id) as DropStackFacts;
           if (now && (now.count !== was.count || now.key !== was.key || now.meta.digest !== was.meta.digest)) return 'target_changed';
@@ -304,9 +301,8 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
             continue;
           }
           if (!f) {
-            const key = seen.get(c.collectedEntityId)?.key ?? svc.dropFacts(owner.connectionEpoch, c.collectedEntityId)?.key;
+            const key = svc.collectedFacts(owner.connectionEpoch, c.collectedEntityId)?.key;
             incidental.push(`${key ?? `entity ${c.collectedEntityId} (stack never stated)`} x${c.count}`);
-            if (key) ctx.services.ledger.add({ kind: 'picked_up', item: key, count: c.count, atMs: c.atMs });
             svc.recordIncidental(owner, { ...(key ? { key } : {}), count: c.count, detail: `server collect packet of an item entity outside the frozen recovery plan${key ? '' : ' (its stack was never stated)'}` });
             continue;
           }
