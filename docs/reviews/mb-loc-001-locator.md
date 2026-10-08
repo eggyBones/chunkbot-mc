@@ -1,5 +1,46 @@
 # MB-LOC-001 — Locator-assisted following: worker handoff evidence
 
+## Native L continuation — L-H11 approved P metadata consumption (2026-10-08 UTC)
+
+Status: **approved dependency imported, exact convention consumed in the actual ordinary harness, and owned offline checks settled. ROOT combined runtime acceptance remains pending.** This section supersedes the earlier metadata dependency statement below. Same original `chunkbot/gameplay-follow` checkout/session, incoming clean HEAD `7273bac1500f611f5fda522294e0a8a06df8c94e`. Native personal DSH route/model/effort/access remain `codex:codex-default`, `gpt-6.1-sol/xhigh`, `danger-full-access`, approval `never`; the supplied18:21:37.746 gate is preserved with the new receipts. No settings/account change or worker/subagent launch occurred.
+
+| Focused commit | Scope |
+| --- | --- |
+| `f7d3eedff71ba7a0a7782872df414b324f518745` | Local import of exactly ROOT-approved P `28796a19708e988b14ba9aabd4acd4884aa08ebe`: four shared metadata paths and three owned P test paths, +206/−6. |
+| `a55022fab98073424d57be681a22708ec828512a` | L-only convention consumer and faithful controls: ordinary script, existing oracle, ordinary guard and visibility test; +91/−15. |
+
+Approved P role `214007d92eefb5919cbc77ce258bc90594743717` was read and retained. The exact committed delta applied cleanly, with no conflict or parent-source overwrite. Its seven-path numstat equals the approved commit; all seven files remain unchanged after the import. Current continuation contracts/goals/accounting, S service, locator product consumer, app composition and navigation are byte-identical to incoming7273. Scope hashes and [approved import patch](../../var/locator-ordinary-worker-review/lh11-metadata/approved-P-metadata.patch) are retained. No parent R12 source, older contract or unrelated P draft is imported. Existing L-H11 source `8d1627327d0b41e33f9796d5634c5f4cd76e11f1`, handoff7273 and all earlier reports remain intact.
+
+Review APIs: `git show f7d3eed` for the dependency delta; `git diff f7d3eed..a55022f` for the L consumer alone; `git diff 7273bac..HEAD` for this continuation including handoff; `git diff a07126c..HEAD` for the full L-H11 chain. ROOT can consume the original approved P commit and then L's consumer; the local import is provenance, not a second shared implementation.
+
+### Exact journal/body correlation and remaining cause limits
+
+New `modelObservationBinding` in [the existing oracle](../../scripts/lib/locator-ordinary-oracles.ts) binds the actual captured model observation to the proper journal on the current run, snapshot ID and connection. Snapshot time must equal `snapshotTakenAtMs` exactly and precede journal/request timestamps. `task_round.snapshotGoalEpoch` supplies observation scope; its existing `goalEpoch` remains task ownership and is never used as fallback. For `planner_turn_started`, `goalEpoch` is snapshot scope, `subjectGoalEpoch` remains admitted-subject scope ornullpreparation, and `subject` must remain a string. The exact request ID and complete matching journal row are retained in the visibility proof. Missing metadata, wrong run/ID/connection/time, ownership substitution or a newest contradictory row yields no binding; an older valid row cannot conceal it.
+
+[The actual ordinary script](../../scripts/locator-ordinary-live-check.ts) uses that binding before independent owner/bot bracket verification. The sampler and diagnostic capture remain read-only app-disjoint truth, with unchanged0.18/32.2/1,500ms constraints, scope checks and settlement. Every visible request still undergoes the entire strict hidden-current coordinate oracle. Original history/forged-label/nested-number/admission-anchor/target-context controls, all fourteen cases, original movement/arrival/goal/route limits, exact H10 origin/restoration and cleanup remain unchanged. No speculative route counter or freshness implementation is added.
+
+Twenty-seven new convention controls exercise actual P `snapshotSummary`/`renderObservation` into separately declared synthetic raw brackets. They discriminate observation epochs from task/subject ownership, exact creation times from request/journal times, current connections/runs, missing/forged values, preparation-null/string subjects, and newest contradictory bindings. The faithful asynchronous control now executes actual `TaskRuntime` and actual bounded/redacted `FileRunStore`, correlates its serialized journal against the actual decision context, and confirms zero stale actions. These are production source/journal controls with controlled ports, not recorded world success. Synthetic brackets never backfill trial41.
+
+The full original trial41 report remains direct1, SHA256 `c2cbcc87f47c7cd6b309303f0e9007b4d81a3b33c631cb38f9359f7b2bb0c131`; all24 original input hashes were rechecked unchanged. Actual post-step diagnostic disagreement is proved; the old Jev creation chronology and packet arrival mechanism remain unproven. New metadata cannot be invented for that retained wire. A missing eligible bracket means unproven consistency and gate failure, not proof of a hidden-position leak. Newly recorded actual both-release evidence must establish bracket availability, observation timing and sampler overhead. P metadata supplies provenance; it does not itself repair or prove gameplay behavior. The prior unapplied metadata proposal is historical and superseded by the exact approved convention above. The separate freshness review option remains unapplied and is not treated as the trial's established cause.
+
+### Direct settled checks and source/build
+
+[New direct receipts and complete logs](../../var/locator-ordinary-worker-review/lh11-metadata/receipts.json), Node24.21.0 Cellar PATH first, own checkout only:
+
+| Command | Direct exit | Result |
+| --- | --- | --- |
+| `npm run typecheck` | 0 | Final dependency and owned consumer/tests. |
+| `npm run build` | 0 | Approved metadata emitted in this checkout's own application dist. |
+| `node --test --test-reporter=spec 'tests/locator*.test.ts'` | 0 | **341/341**. |
+| Metadata + actual task runtime/planner adapter/transport/Jev adapter tests | 0 | **82/82** on this preserved baseline; P's separately reported84 is not claimed as this worker's count. |
+| `npm test` | **1** | **1331/1332**, sole preserved stale-P `oversized_partial` at `survival-route.test.ts:77`. |
+| Read-only doctors, fixture.json and fixture-26.2.json | 0 / 0 | No join/inference/setup; readiness warnings retained. |
+| `git diff --check` | 0 | Source diff. |
+
+The oversized-pile negative control is unchanged and is not retried away, skipped or patched. ROOT's newer canonical whole-pile/full-suite proof remains separate from this older independent checkout. [Scope provenance](../../var/locator-ordinary-worker-review/lh11-metadata/scope-provenance.json) confirms the seven approved files and seven protected shared/locator files; [source/build manifest](../../var/locator-ordinary-worker-review/lh11-metadata/source-build-manifest.json) records complete src/dist and all four emitted metadata modules. Algorithm: sorted repository-relative UTF-8 path, NUL, raw SHA256(file) bytes. CLI entry and built locator hashes remain unchanged; metadata module hashes change as expected. Ordinary harness/helpers still execute as Node TypeScript source and are not emitted by tsconfig.build. No gameplay process loaded this development build. Earlier receipts are preserved in their original directory.
+
+Remaining acceptance: ROOT complete consumer/source/role review and combined checks with current canonical P/S composition; new frozen full ordinary locator CLI trials on both exact releases, all behavior/privacy/bracket/budget/arrival/cleanup gates and independent original-state/zero-player audits; then ROOT provider/mechanics/UI acceptance. N1-H13 and S-C12-R7 are independent recorded runtime failures and were not inferred, patched or relabeled. No world/RCON/fixture/server operation, provider inference, key/vault access, live control, ROOT checkout mutation, push/PR/deploy or route-counter edit occurred. Accepted live `d348d58` remains logged out; far-water acceptance stays W/ROOT-owned.
+
 ## Native L continuation — L-H11 identified-frame visibility proof (2026-10-08 UTC)
 
 Status: **owned ordinary harness/oracle correction and faithful offline controls committed; P metadata/freshness review and ROOT runtime acceptance remain outstanding.** Incoming clean HEAD was `a07126c6821b4fe93fcd9e4d3c99e410cd8e9101`, original branch `chunkbot/gameplay-follow`, checkout `/Users/jakewilcox/code/worktrees/chunkbot-mc/gameplay-follow`. Source commit **`8d1627327d0b41e33f9796d5634c5f4cd76e11f1`** changes six dedicated harness/helper/test paths, 1,926 additions/18 deletions; 1,547 added lines are the retained JSON evidence projection. This role handoff is committed separately. Full source diff: `git diff a07126c6821b4fe93fcd9e4d3c99e410cd8e9101..8d1627327d0b41e33f9796d5634c5f4cd76e11f1`; complete handoff diff: `git diff a07126c..HEAD`. No product source or canonical ROOT file is imported or edited.
