@@ -44,7 +44,8 @@ describe('MB-LOC-002 ordinary harness guard', () => {
     for (const l of topLevel) assert.ok(!/readFileSync\(|rconCommand\(|mkdirSync\(|createBot\(|createServer\(|spawn|import\(/.test(l), `top-level side effect: ${l}`);
     const runBody = source.slice(source.indexOf('async function run('), source.indexOf('async function main('));
     assert.ok(runBody.indexOf("await import('../src/app/fixture-layout.ts')") < runBody.indexOf('readFileSync(fx.properties'));
-    assert.ok(/finally \{[\s\S]*restores\.reverse\(\)/.test(runBody), 'restorations run in finally');
+    assert.ok(/finally \{[\s\S]*zero final players/.test(runBody), 'restorations and zero-player verification run in finally');
+    assert.ok(runBody.indexOf('base.bot.trustedOfflineFixture === true') < runBody.indexOf('readFileSync(fx.properties'), 'exact loopback/offline profile checked before credential reads');
   });
 
   for (const args of [[], ['--fixture', '26.2'], ['--fixture-lease'], ['--fixture-lease', '../x;rm'], ['--only', 'O1']]) {
@@ -57,6 +58,14 @@ describe('MB-LOC-002 ordinary harness guard', () => {
       assert.deepEqual(listLive(), prior, 'no output directory created');
     });
   }
+  it('rejects an unsupported fixture profile before password/output/join even with a syntactically valid lease', () => {
+    const prior = listLive();
+    const r = spawnSync(process.execPath, [SCRIPT, '--fixture-lease', 'guard-profile-only', '--fixture', '26.3'], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30_000 });
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /unknown fixture profile/);
+    assert.equal(r.stdout, '');
+    assert.deepEqual(listLive(), prior);
+  });
 });
 
 describe('MB-LOC-002 ordinary harness footprint', () => {
@@ -100,14 +109,39 @@ describe('MB-LOC-002 ordinary harness scripted planner turns and privacy helper'
     }
   });
 
-  it('leaksCoordinate finds a hidden owner x/z (floor/round +/-1) and ignores other numbers', () => {
-    const owner = { x: 2301.5, z: 2043.5 };
-    assert.equal(harness.leaksCoordinate('{"self":{"x":2001.2,"z":2010}}', owner), undefined);
-    assert.ok(harness.leaksCoordinate('{"target":{"x":2301,"z":7}}', owner));
-    assert.ok(harness.leaksCoordinate('owner at 2302.0', owner));
-    assert.ok(harness.leaksCoordinate('z=2044', owner));
-    assert.equal(harness.leaksCoordinate('id 123012301 and 92301', owner), undefined, 'digits inside a longer number are not a coordinate');
-    assert.equal(harness.leaksCoordinate('x 2301', { x: Number.NaN, z: 2043.5 }), undefined, 'a coordinate excluded by the caller is not checked');
+  it('wires complete action intervals and strict parsed privacy provenance into the actual ordinary scenarios', () => {
+    assert.match(code, /reacquisitionProof\(events\(\), observations,/);
+    assert.match(code, /turnsAfter === turnsBefore/);
+    assert.match(code, /verifiedHistory\(observations\)/);
+    assert.match(code, /privacyOracle\(input,/);
+    assert.match(code, /parsePlannerInput\(text\)/);
+    assert.ok(!/leaksCoordinate|Number\.NaN|const probe =|const near =/.test(code), 'no blanket coordinate/axis exemption');
+    assert.match(code, /appendFileSync\(join\(outDir, 'jev-requests.jsonl'\)/);
+    assert.match(code, /cli\.send\('\/diag observe'\)/);
+    assert.ok(!/cli\.send\('\/diag (?:run|do)/.test(code), 'observations do not control gameplay');
+  });
+  it('preserves first-option Jev, the finite completion bound, and genuine reconnect plus ready no-op control', () => {
+    assert.match(code, /const pick = keys\[0\]/);
+    assert.match(code, /within: 3/);
+    assert.match(code, /replacement finite goal did not become terminal within the unchanged 240s bound/);
+    assert.match(code, /already ready/);
+    assert.match(code, /rcon\(`kick \$\{BOT\} locator-ordinary-owned-disconnect`\)/);
+    assert.match(code, /reconnectProblems\(events\(\),/);
+    assert.match(code, /noCue\.directive\.autonomy\.locator\.actionable === false/);
+    assert.match(code, /assert\(freshCue,/);
+  });
+  it('records online cleanup before logout and asserts truthful CLI exits without a forced kill', () => {
+    assert.ok(!/\.kill\(|SIGKILL/.test(code));
+    assert.match(code, /shutdownProblems\(exited,/);
+    assert.match(code, /assert\(problems\.length === 0,/);
+    const quit = code.indexOf('await quitPlayer(o())');
+    assert.ok(code.lastIndexOf('await cleanupPlayer(OWNER, o())', quit) >= 0);
+    assert.match(code, /online Inventory\/head not verified empty/);
+    assert.match(code, /server sneak state not verified clear/);
+    assert.match(code, /all actuator leases revoked/);
+    assert.match(code, /zero players not verified/);
+    assert.match(code, /forcedKill: false/);
+    assert.ok(!code.includes('cliExitSaved: true'));
   });
 });
 

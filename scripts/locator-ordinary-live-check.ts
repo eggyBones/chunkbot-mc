@@ -38,29 +38,32 @@
 //   O6  owner dimension change while seeking: withdrawn, the bot stops
 //   O7  route exhaustion (small operator route budget, separate CLI config):
 //       expanded authority withdrawn, no further movement, truthful counters
-//   O8  operator /reconnect while seeking: old guidance discarded; a fresh
-//       broadcast is required; no movement without a new goal
+//   O8  ready /reconnect no-op, then an owned kick and disconnected-to-reconnect:
+//       old guidance discarded; fresh broadcast required; no unrequested work
 //   O9  visible follow inside the admission radius (ordinary regression)
 //
 // Safety: importing this module runs nothing. main() refuses (exit 2) before
 // any fixture password read, RCON command, join, child process or output
-// directory unless --fixture-lease <granted id> is given. Every RCON command is
-// recorded. Teleports go ONLY through a checked helper inside
-// ORDINARY_FOOTPRINT. Finally: owner/guest effects and controls cleared, fake
-// players disconnected, Chunkbot teleported back to its recorded starting
-// position, CLI stopped; any failed restoration fails the report.
+// directory unless --fixture-lease <granted id> is given. Setup/cleanup RCON
+// commands are durably recorded before dispatch and after reply. Teleports go
+// ONLY through a checked helper inside ORDINARY_FOOTPRINT. Finally: owner/guest effects and controls cleared, fake
+// players cleaned while online and disconnected, Chunkbot returned to its
+// recorded origin, CLI shutdown/exit 0 verified; failures fail the report.
+// Future coordinator lease must cover the owned kick and online inventory/
+// effect cleanup; no settings, blocks, clock or foreign-entity writes occur.
 //
 //   npm run build   (source/build frozen for the run)
 //   node scripts/locator-ordinary-live-check.ts --fixture-lease <id> [--fixture 26.2] [--only O1,O2]
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { insideBox, isEntryPoint, type Box } from './locator-live-check.ts';
 import type { FaultTurn } from './lib/fault-codex.ts';
+import { actionIntervals, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, type ObserverSample } from './lib/locator-ordinary-oracles.ts';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type P = { x: number; y: number; z: number };
@@ -136,25 +139,6 @@ export const blockedTurn = (missing: string) => proposal({ disposition: 'cannot_
 // ---------------------------------------------------------------- privacy scan
 
 /**
- * Whether a model-visible text contains a hidden owner coordinate: the owner's
- * server-truth integer x or z (floor/round, +/-1) as a standalone number.
- * Callers pass only texts rendered while the owner was far out of sight and
- * coordinates the bot's own position could not produce at that time.
- */
-export function leaksCoordinate(text: string, owner: { x: number; z: number }): string | undefined {
-  const values = new Set<number>();
-  for (const v of [owner.x, owner.z]) {
-    if (!Number.isFinite(v)) continue;
-    for (const base of [Math.floor(v), Math.round(v)]) for (const d of [-1, 0, 1]) values.add(base + d);
-  }
-  for (const n of values) {
-    const re = new RegExp(`(?<![0-9.])${String(n).replace('-', '\\-')}(?:\\.[0-9]+)?(?![0-9])`);
-    if (re.test(text)) return String(n);
-  }
-  return undefined;
-}
-
-/**
  * Writes the prompt-capturing planner stand-in into `dir`: for `exec` it saves
  * the full prompt the application rendered into `promptDir`, then runs the
  * shared fault fixture with the same arguments and stdin; every other command
@@ -215,6 +199,9 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   type Bot = ReturnType<typeof mineflayer.createBot>;
 
   const PINS = fixturePins(fixtureProfileFromArgv(argv));
+  // Fail closed before password reads, output, child processes or network work.
+  const base = JSON.parse(readFileSync(join(PROJECT_ROOT, PINS.config), 'utf8')) as Json;
+  assert(base.minecraft.host === PINS.host && base.minecraft.port === PINS.port && base.minecraft.version === PINS.minecraftVersion && base.bot.auth === 'offline' && base.bot.trustedOfflineFixture === true && base.bot.username === 'Chunkbot' && base.owner.name === 'FixtureOwner', 'ordinary locator profile must be the exact trusted loopback fixture and owned dummy identities');
   const SUFFIX = PINS.profile === DEFAULT_FIXTURE_PROFILE ? '' : `-${PINS.profile}`;
   const VERSION_RE = PINS.minecraftVersion.replace(/\./g, '\\.');
   const onlyArg = argOf(argv, '--only');
@@ -251,10 +238,15 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   let scenario = 'preflight';
   let rconQueue: Promise<unknown> = Promise.resolve();
   const rcon = async (command: string, record = true): Promise<string> => {
+    if (record) appendFileSync(join(outDir, 'commands.jsonl'), `${JSON.stringify({ atMs: Date.now(), scenario, phase: 'intent', command })}\n`);
     const job = rconQueue.then(() => rconCommand(PINS.host, PINS.rconPort, password, command));
     rconQueue = job.catch(() => undefined);
     const reply = await job;
-    if (record) setupLog.push({ atMs: Date.now(), scenario, command, reply: reply.slice(0, 200) });
+    if (record) {
+      const row = { atMs: Date.now(), scenario, command, reply };
+      setupLog.push(row);
+      appendFileSync(join(outDir, 'commands.jsonl'), `${JSON.stringify({ ...row, phase: 'reply' })}\n`);
+    }
     return reply;
   };
   const serverPos = async (name: string) => {
@@ -300,6 +292,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         const pick = keys[0] ?? 'none';
         const offered = keys.map((k) => String(criteria[k] ?? '').split(':')[0] ?? '?');
         jevLog.push({ atMs: Date.now(), scenario, offered, chosen: offered[0] ?? '?', body });
+        appendFileSync(join(outDir, 'jev-requests.jsonl'), `${JSON.stringify(jevLog.at(-1))}\n`);
         const bytes = Buffer.byteLength(body);
         res.writeHead(200, { 'content-type': 'application/json' }).end(
           JSON.stringify({
@@ -329,10 +322,9 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       .map((f) => ({ atMs: Number(/-(\d+)\.txt$/.exec(f)?.[1] ?? 0), text: readFileSync(join(promptDir, f), 'utf8') }));
 
   // ------------------------------------------------------------ configs
-  const base = JSON.parse(readFileSync(join(PROJECT_ROOT, PINS.config), 'utf8')) as Json;
   const keyEnv = String(base.models?.decision?.apiKeyEnv ?? 'OPENROUTER_API_KEY');
   const env: NodeJS.ProcessEnv = { ...process.env, [keyEnv]: 'loopback-fixture-placeholder-key' };
-  const decision = { ...base.models.decision, endpoint: await startJev() };
+  const decision = { ...base.models.decision, endpoint: '' };
   const makeConfig = (name: string, locator: Json | undefined): string => {
     const cfg: Json = {
       ...base,
@@ -345,14 +337,16 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`);
     return path;
   };
-  const normalConfig = makeConfig('ordinary', undefined);
+  let normalConfig = '';
   // O7: a deliberately small operator route budget (code-owned config; the planner cannot change it).
-  const exhaustConfig = makeConfig('exhaust', { routes: { maxTotalDistance: 192, maxLegs: 3 } });
+  let exhaustConfig = '';
 
   // ------------------------------------------------------------ CLI helpers
   let cli!: InstanceType<typeof CliProcess>;
   let cliStarted = false;
   let eventsPath = '';
+  let dashboardPath = '';
+  const cliExits: Json[] = [];
   const readJsonl = (path: string): Json[] => {
     try {
       return readFileSync(path, 'utf8')
@@ -372,17 +366,30 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     await p.waitFor(/\[chunkbot\] planner: /, 30_000);
     const runLine = await p.waitFor(/\[chunkbot\] run \S+; evidence: /, 10_000);
     eventsPath = /evidence: (\S+)$/.exec(runLine)?.[1] ?? '';
+    dashboardPath = join(dirname(dirname(dirname(eventsPath))), 'dashboard', 'status.json');
     await p.waitFor(new RegExp(`\\[chunkbot\\] ready: version=${VERSION_RE}`), 40_000);
     return p;
   };
   const stopCli = async () => {
-    cli.send('/quit');
-    const exited = await Promise.race([cli.exited, sleep(15_000).then(() => undefined)]);
-    if (!exited) cli.child.kill('SIGKILL');
-    cli.save(outDir);
+    const p = cli;
+    const path = eventsPath;
+    ownerScript.push({ atMs: Date.now(), scenario, action: `terminal /quit (${p.name})` });
+    p.send('/quit');
+    p.child.stdin?.end();
+    const exited = await Promise.race([p.exited, sleep(15_000).then(() => undefined)]);
+    // exit precedes the stdio close event: allow buffered terminal lines to drain.
+    if (exited && p.child.stdout && !p.child.stdout.destroyed) await sleep(100);
+    p.save(outDir);
+    const summaryPath = join(dirname(path), 'summary.json');
+    const summary = existsSync(summaryPath) ? JSON.parse(readFileSync(summaryPath, 'utf8')) as Json : undefined;
+    const problems = shutdownProblems(exited, p.lines.map((l) => l.text), readJsonl(path), summary);
+    cliExits.push({ name: p.name, pid: p.pid, eventsPath: path, exit: exited ?? null, summaryPath, problems, forcedKill: false });
+    if (exited) cliStarted = false;
+    assert(problems.length === 0, problems.join('; '));
   };
   const fixturePlayer = async (username: string): Promise<Bot> => {
     const bot = mineflayer.createBot({ host: PINS.host, port: PINS.port, username, auth: 'offline', version: PINS.minecraftVersion, hideErrors: true });
+    ownedPlayers.push(bot); // own the handle even if spawn fails
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`${username} did not spawn`)), 20_000);
       bot.once('spawn', () => {
@@ -425,16 +432,32 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   };
   /** Samples the server positions until `until` holds or the timeout; aborts if Chunkbot leaves the envelope. */
   const samples: Array<{ scenario: string; atMs: number; dtMs: number; bot: P; owner: P | null; distance: number | null }> = [];
+  const observations: ObserverSample[] = [];
+  // Read-only application observation: never /diag run/do, no actuator lease.
+  // Captures real LOS/identity and historical anchors; RCON truth stays in this harness.
+  const observe = async (bot: P, ownerAt: P | null, serverAtMs: number) => {
+    const from = cli.length;
+    cli.send('/diag observe');
+    const line = await lineSince(/^\[diag-json\] \{"kind":"observe"/, from, 10_000);
+    const snapshot = (JSON.parse(line.text.slice('[diag-json] '.length)) as Json).snapshot as Json;
+    const dashboard = existsSync(dashboardPath) ? JSON.parse(readFileSync(dashboardPath, 'utf8')) as Json : {};
+    const row = { runId: basename(dirname(eventsPath)), atMs: snapshot.takenAtMs, serverAtMs, bot, owner: ownerAt, snapshot, dashboard, scenario };
+    observations.push(row);
+    appendFileSync(join(outDir, 'observations.jsonl'), `${JSON.stringify(row)}\n`);
+    return snapshot;
+  };
   const sampleUntil = async (t0: number, until: (b: P, o: P | null) => boolean, timeoutMs: number, ownerOnline = true): Promise<{ bot: P; owner: P | null; ok: boolean }> => {
     const deadline = Date.now() + timeoutMs;
     let last: { bot: P; owner: P | null } | undefined;
     while (Date.now() < deadline) {
       const b = await serverPos(BOT);
       const o = ownerOnline ? await serverPos(OWNER).catch(() => null) : null;
+      const serverAtMs = Date.now();
       const d = o ? Math.hypot(b.x - o.x, b.y - o.y, b.z - o.z) : null;
       samples.push({ scenario, atMs: Date.now(), dtMs: Date.now() - t0, bot: b, owner: o, distance: d === null ? null : Math.round(d * 10) / 10 });
       if (!insideBox(ORDINARY_FOOTPRINT.botEnvelope, b)) throw new Error(`Chunkbot left the declared envelope at ${b.x.toFixed(0)}, ${b.z.toFixed(0)}`);
       last = { bot: b, owner: o };
+      if (o && (d! <= 32 || scenario === 'O1c')) await observe(b, o, serverAtMs);
       if (until(b, o)) return { ...last, ok: true };
       await sleep(1_000);
     }
@@ -444,37 +467,41 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   const routeEvents = (sinceMs: number) => events().filter((e) => String(e.type).startsWith('route_') && tOf(e) >= sinceMs);
   const actionsSince = (sinceMs: number) => events().filter((e) => e.type === 'skill_outcome' && tOf(e) >= sinceMs).map((e) => ({ capability: (e.outcome ?? e).capability, status: (e.outcome ?? e).status, reason: (e.outcome ?? e).reason ?? null }));
 
-  /**
-   * Privacy: model-visible texts (planner prompts, Jev requests) rendered while
-   * the owner was out of sight (server distance > 40 in the sampled window) must
-   * not carry the owner's server-truth x or z. A coordinate is checked only when
-   * Chunkbot's OWN sampled positions in that window could not produce it.
-   */
-  const privacyFindings: Array<{ scenario: string; source: string; value: string }> = [];
-  const privacyScans: Array<{ scenario: string; fromMs: number; toMs: number; prompts: number; jev: number; checked: string[] }> = [];
-  const scanPrivacy = (fromMs: number, owner: { x: number; z: number }, untilMs = Date.now()) => {
+  // Field-level privacy scan, retaining both matches and their provenance.
+  const privacyFindings: Json[] = [];
+  const privacyScans: Json[] = [];
+  const scanPrivacy = (fromMs: number, owner: P, untilMs = Date.now()) => {
     const window = samples.filter((x) => x.atMs >= fromMs && x.atMs <= untilMs);
-    const sight = window.find((x) => x.distance !== null && x.distance <= 40);
-    const toMs = sight ? sight.atMs - 2_000 : untilMs;
-    const inWindow = window.filter((x) => x.atMs <= toMs);
-    const xs = inWindow.map((x) => Number(x.bot.x));
-    const zs = inWindow.map((x) => Number(x.bot.z));
-    const near = (v: number, list: number[]) => list.length === 0 || (v >= Math.min(...list) - 3 && v <= Math.max(...list) + 3);
-    const probe = { x: near(owner.x, xs) ? Number.NaN : owner.x, z: near(owner.z, zs) ? Number.NaN : owner.z };
-    const checked = [Number.isNaN(probe.x) ? null : `x ${Math.floor(owner.x)}`, Number.isNaN(probe.z) ? null : `z ${Math.floor(owner.z)}`].filter((v): v is string => v !== null);
+    const toMs = untilMs;
     const ps = prompts().filter((x) => x.atMs >= fromMs && x.atMs <= toMs);
     const js = jevLog.filter((x) => x.atMs >= fromMs && x.atMs <= toMs);
-    privacyScans.push({ scenario, fromMs, toMs, prompts: ps.length, jev: js.length, checked });
-    if (checked.length === 0) return;
-    const leak = (text: string) => leaksCoordinate(text, { x: Number.isNaN(probe.x) ? Number.NaN : probe.x, z: Number.isNaN(probe.z) ? Number.NaN : probe.z });
-    for (const p of ps) {
-      const hit = leak(p.text);
-      if (hit) privacyFindings.push({ scenario, source: 'planner_prompt', value: hit });
-    }
-    for (const j of js) {
-      const hit = leak(j.body);
-      if (hit) privacyFindings.push({ scenario, source: 'jev_request', value: hit });
-    }
+    const history = verifiedHistory(observations);
+    const allowed: Json[] = [];
+    let hiddenRequests = 0;
+    const scan = (text: string, atMs: number, source: string) => {
+      const input = source === 'planner_prompt' ? parsePlannerInput(text) : JSON.parse(text) as Json;
+      const sample = window.filter((x) => x.atMs <= atMs + 1_500).sort((a, b) => Math.abs(a.atMs - atMs) - Math.abs(b.atMs - atMs))[0];
+      const own = input.observation?.self?.at ?? input.state?.observation?.self?.at;
+      // Every scanned request needs server truth; use its own bounded current
+      // point only after independently matching it to a nearby server sample.
+      assert(sample && Math.abs(sample.atMs - atMs) <= 2_000, `privacy scan lacks contemporaneous server sample: ${source} ${atMs}`);
+      const ready = events().filter((e) => e.type === 'connection_ready' && tOf(e) <= atMs).at(-1);
+      assert(ready && own, 'privacy scan lacks current connection/self');
+      const obs = input.observation ?? input.state?.observation;
+      if (obs.owner?.visible === true) {
+        const shown = obs.owner.at;
+        assert(sample.owner && shown && Math.hypot(shown.x - sample.owner.x, shown.y - sample.owner.y, shown.z - sample.owner.z) <= 0.18 && dist(sample.bot, sample.owner) <= 32.2, 'model-visible owner claim disagrees with server visibility distance/position');
+        allowed.push({ source, atMs, path: 'observation.owner.at', reason: 'current visible owner independently confirmed by server sample', serverAtMs: sample.atMs, at: shown });
+        return;
+      }
+      hiddenRequests += 1;
+      const result = privacyOracle(input, { runId: basename(dirname(eventsPath)), atMs, owner: sample.owner ?? owner, bot: sample.bot, connectionEpoch: ready.connectionEpoch, dimension: obs.dimension, history });
+      for (const hit of result.findings) privacyFindings.push({ scenario, source, atMs, ...hit });
+      for (const hit of result.allowed) allowed.push({ source, atMs, ...hit });
+    };
+    for (const p of ps) scan(p.text, p.atMs, 'planner_prompt');
+    for (const j of js) scan(j.body, j.atMs, 'jev_request');
+    privacyScans.push({ scenario, fromMs, toMs, prompts: ps.length, jev: js.length, hiddenOwner: owner, allowed, historyProofs: history.length, hiddenRequests });
   };
 
   const results: Result[] = [];
@@ -516,28 +543,54 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   };
 
   const restoreFailures: string[] = [];
-  const restores: Array<{ label: string; fn: () => Promise<unknown> }> = [];
+  const cleanup: Json[] = [];
+  const ownedPlayers: Bot[] = [];
+  const finalPositions: Json[] = [];
+  const cleanupPlayer = async (name: string, player?: Bot) => {
+    player?.clearControlStates();
+    player?.setControlState('sneak', false);
+    ownerScript.push({ atMs: Date.now(), scenario, action: `${name}: controls/sneak off` });
+    assert(/Test passed/i.test(await rcon(`execute if entity @a[name=${name}]`)), `${name} must be online for cleanup`);
+    await rcon(`clear ${name}`);
+    await rcon(`effect clear ${name}`);
+    const inventory = await rcon(`data get entity ${name} Inventory`);
+    const effects = await rcon(`data get entity ${name} active_effects`);
+    assert(/\[\]$/.test(inventory.trim()), `${name} online Inventory/head not verified empty: ${inventory}`);
+    assert(/\[\]$|Found no elements matching/i.test(effects), `${name} online effects not verified empty: ${effects}`);
+    if (player) assert(player.controlState.sneak === false && Object.values(player.controlState).every((v) => v === false), `${name} dummy controls/sneak remain active`);
+    if (player) {
+      // Read-only server entity predicate; absence or a command error is not standing.
+      await sleep(250);
+      const sneak = await rcon(`execute as @a[name=${name}] if predicate {condition:"minecraft:entity_properties",entity:"this",predicate:{flags:{is_sneaking:false}}}`);
+      assert(/Test passed/i.test(sneak), `${name} server sneak state not verified clear: ${sneak}`);
+    }
+    cleanup.push({ atMs: Date.now(), step: `${name} online inventory/head/effects/controls`, ok: true, inventory, effects });
+  };
+  const quitPlayer = async (player: Bot) => {
+    if (!player._client.ended) {
+      const ended = new Promise<boolean>((r) => player.once('end', () => r(true)));
+      ownerScript.push({ atMs: Date.now(), scenario, action: `${player.username}: quit` });
+      player.quit();
+      assert(await Promise.race([ended, sleep(10_000).then(() => false)]), `${player.username} disconnect did not settle`);
+    }
+  };
   let owner: Bot | undefined;
   let guest: Bot | undefined;
   let botStart: { x: number; y: number; z: number; dimension: string } | undefined;
   process.stdout.write(`locator ordinary live check (${PINS.profile}, lease ${lease}; PLANNER FAULT FIXTURE + loopback first-option Jev; harness validation) -> ${outDir}\n`);
   try {
+    assert(/^There are 0 of /i.test(await rcon('list')), 'exclusive fixture must have zero players before joining');
+    decision.endpoint = await startJev();
+    normalConfig = makeConfig('ordinary', undefined);
+    exhaustConfig = makeConfig('exhaust', { routes: { maxTotalDistance: 192, maxLegs: 3 } });
     turnsFor([]);
     await startCli('run-locator-ordinary', normalConfig);
     {
       const p = await serverPos(BOT);
       const dim = /"([a-z_:]+)"/.exec(await rcon(`data get entity ${BOT} Dimension`, false))?.[1] ?? 'minecraft:overworld';
       botStart = { ...p, dimension: dim };
-      restores.push({
-        label: `Chunkbot returned to its starting position (${dim})`,
-        fn: async () => {
-          if (!botStart) return;
-          await rcon(`execute in ${botStart.dimension} run tp ${BOT} ${botStart.x} ${botStart.y} ${botStart.z}`);
-        },
-      });
     }
     owner = await fixturePlayer(OWNER);
-    restores.push({ label: 'owner sneak/effects cleared', fn: async () => { owner?.setControlState('sneak', false); await rcon(`effect clear ${OWNER}`); } });
     const o = () => owner as Bot;
 
     await check('O0', 'CLI ready with the locator and routes composed; the owner cue is tracked on this connection', async (ev) => {
@@ -626,6 +679,9 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         await sleep(1_000);
         const b = await serverPos(BOT);
         const ow = await serverPos(OWNER);
+        const atMs = Date.now();
+        samples.push({ scenario, atMs, dtMs: atMs - t0, bot: b, owner: ow, distance: dist(b, ow) });
+        await observe(b, ow, atMs);
         dists.push(Math.round(dist(b, ow) * 10) / 10);
       }
       const settled = await sampleUntil(t0, (b, ow) => !!ow && dist(b, ow) <= 5, 30_000);
@@ -639,6 +695,8 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     await check('O1c', 'sight lost twice while following (cue still current): the SAME goal reacquires through the cue, no planner turn', async (ev, data) => {
       const goalId = o1Goal();
       assert(goalId && !terminalOf(goalId), 'the O1 follow goal is active');
+      const admission = events().find((e) => e.type === 'goal_admitted' && e.goalId === goalId)!;
+      const ready = events().filter((e) => e.type === 'connection_ready').at(-1)!;
       const turnsBefore = events().filter((e) => e.type === 'planner_turn_started').length;
       const trips: Json[] = [];
       for (const [dx, dz] of [[70, 20], [-20, 75]] as const) {
@@ -648,14 +706,17 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         const away = await serverPos(OWNER);
         const again = await sampleUntil(t0, (b, o2) => !!o2 && dist(b, o2) <= 4.5, 120_000);
         scanPrivacy(t0, away);
-        trips.push({ ok: again.ok, seconds: Math.round((Date.now() - t0) / 1000), actions: actionsSince(t0).map((a) => a.capability).slice(0, 12) });
+        const toMs = Date.now();
+        const proof = reacquisitionProof(events(), observations, { fromMs: t0, toMs, goalId, goalEpoch: admission.epoch, connectionEpoch: ready.connectionEpoch });
+        trips.push({ ok: again.ok, fromMs: t0, toMs, seconds: Math.round((toMs - t0) / 1000), proof, intervals: actionIntervals(events()).filter((a) => proof.actionIds.includes(a.actionId)), completedActions: actionsSince(t0).map((a) => a.capability).slice(0, 12) });
         if (!again.ok) break;
       }
       const turnsAfter = events().filter((e) => e.type === 'planner_turn_started').length;
       ev.push(`trips ${JSON.stringify(trips)}; planner turns during reacquisition ${turnsAfter - turnsBefore}`);
       data.trips = trips;
       assert(trips.length === 2 && trips.every((t) => t.ok), 'reacquired both times');
-      assert(trips.every((t) => (t.actions as string[]).includes('seek_owner')), 'reacquisition went through the locator cue (seek_owner)');
+      assert(trips.every((t) => t.proof.pass), `cue-owned reacquisition proof: ${trips.flatMap((t) => t.proof.errors).join('; ')}`);
+      assert(turnsAfter === turnsBefore, 'no extra planner turn during both reacquisitions');
       assert(!terminalOf(goalId), 'the same persistent goal is still active');
     });
 
@@ -692,8 +753,8 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
 
     await check('O2', 'stop while seeking: controls cleared within the local target, route revoked, no further movement', async (ev, data) => {
       await settle(o());
-      const { g } = await farSeek(ev, data, 'ownerFarWest', 0, 'come here', comeHere());
-      await waitEvent((e) => e.type === 'route_leg_started' || (e.type === 'skill_started' && e.goalId === g.goalId), 30_000).catch(() => undefined);
+      const { g, t0, ownerAt } = await farSeek(ev, data, 'ownerFarWest', 0, 'come here', comeHere());
+      assert(actionIntervals(events()).some((a) => a.goalId === g.goalId && a.capability === 'seek_owner' && a.endMs === null), 'stop stages an actual active owned seek');
       const s = say(o(), 'stop');
       const stopAt = Date.now();
       const p0 = await serverPos(BOT);
@@ -710,6 +771,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       assert(late.every((t) => t.moved - (trace[1]?.moved ?? 0) <= 1.0), 'no movement after the stop settled');
       assert(term.state === 'cancelled', 'goal cancelled by stop');
       assert(revoked, 'route revoked');
+      scanPrivacy(t0, ownerAt);
       say(o(), 'resume');
       await sleep(1_000);
     });
@@ -717,7 +779,8 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     await check('O3', 'finite "come here" beyond 128: completes only at verified owner proximity', async (ev, data) => {
       const { g, t0, ownerAt, s } = await farSeek(ev, data, 'ownerFarSouthWest', 180, 'come here', comeHere());
       await sampleUntil(t0, (b, ow) => !!ow && dist(b, ow) <= 4.5, 240_000);
-      const term = await goalTerminal(g.goalId, s.from, 60_000);
+      await sampleUntil(t0, () => !!terminalOf(g.goalId), 60_000);
+      const term = await goalTerminal(g.goalId, s.from, 200);
       const b = await serverPos(BOT);
       const ow = await serverPos(OWNER);
       ev.push(`goal ${term.state} (${term.reason}); server distance ${dist(b, ow).toFixed(1)}; legs ${routeEvents(t0).filter((e) => e.type === 'route_leg_started').length}`);
@@ -729,29 +792,34 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
 
     await check('O4', 'replacement while seeking: old goal replaced, its route revoked, the new goal has its own authorization', async (ev, data) => {
       await settle(o());
-      const { g } = await farSeek(ev, data, 'ownerFarNorth', -90, 'follow me', followMe());
+      const { g, t0, ownerAt } = await farSeek(ev, data, 'ownerFarNorth', -90, 'follow me', followMe());
       turnsFor([{ kind: 'proposal', proposal: comeHere() }, { kind: 'proposal', proposal: blockedTurn('fixture') }]);
       const s = say(o(), 'come here instead');
       const g2 = await goalAccepted(s.from, 30_000);
       const old = await goalTerminal(g.goalId, s.from, 30_000);
-      const revoked = events().filter((e) => e.type === 'route_revoked' && tOf(e) >= s.at - 500);
+      const oldRoute = events().find((e) => e.type === 'route_authorized' && e.goalId === g.goalId)!;
+      const revoked = events().filter((e) => e.type === 'route_revoked' && e.routeId === oldRoute.routeId && e.goalEpoch === oldRoute.goalEpoch && tOf(e) >= s.at - 500);
       const authorized = events().filter((e) => e.type === 'route_authorized' && e.goalId === g2.goalId);
       ev.push(`old ${g.goalId} ${old.state} (${old.reason}); new ${g2.goalId}; revoked ${revoked.map((e) => e.reason).join(',')}; new authorizations ${authorized.length}`);
       data.replacement = { old, revoked: revoked.length, authorized: authorized.length };
       assert(old.reason === 'replaced', 'old goal replaced');
       assert(revoked.length >= 1 && authorized.length === 1, 'old route revoked; one new authorization for the new goal');
-      const term = await goalTerminal(g2.goalId, s.from, 240_000);
+      const terminal = await sampleUntil(s.at, () => !!terminalOf(g2.goalId), 240_000);
+      scanPrivacy(t0, ownerAt);
+      assert(terminal.ok, 'replacement finite goal did not become terminal within the unchanged 240s bound');
+      const term = await goalTerminal(g2.goalId, s.from, 200);
       ev.push(`new goal ${term.state} (${term.reason})`);
+      assert(term.state === 'completed', 'replacement finite goal completes by its unchanged within-3 outcome');
     });
 
     await check('O5', "owner logout while seeking (a guest stays on the opposite side): the bot stops; the guest's waypoint never steers it", async (ev, data) => {
       await settle(o());
       guest = await fixturePlayer(GUEST);
-      restores.push({ label: 'guest disconnected', fn: async () => guest?.quit() });
       await tp(GUEST, 'guestFarWest');
       const { g, t0 } = await farSeek(ev, data, 'ownerFarEast', 90, 'follow me', followMe());
       const ownerLast = await serverPos(OWNER);
-      o().quit();
+      await cleanupPlayer(OWNER, o());
+      await quitPlayer(o());
       ownerScript.push({ atMs: Date.now(), scenario, action: 'owner logout' });
       const tq = Date.now();
       await sleep(3_000);
@@ -767,7 +835,10 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       owner = await fixturePlayer(OWNER);
       await tp(OWNER, 'ownerBeside');
       ev.push(`goal after logout: ${terminalOf(g.goalId)?.text ?? 'active'}`);
-      guest?.quit();
+      await cleanupPlayer(GUEST, guest);
+      await tp(GUEST, 'base');
+      finalPositions.push({ player: GUEST, at: await serverPos(GUEST), phase: 'O5 logout' });
+      await quitPlayer(guest);
       guest = undefined;
     });
 
@@ -790,21 +861,56 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       await tp(OWNER, 'ownerBeside');
     });
 
-    await check('O8', 'operator /reconnect while seeking: the goal ends, guidance is discarded, nothing moves without a new goal', async (ev, data) => {
+    await check('O8', 'ready /reconnect is a no-op; owned disconnect/rejoin revokes old goal/route/cue with no unrequested work', async (ev, data) => {
       await settle(o());
-      const { g } = await farSeek(ev, data, 'ownerFarEast', 90, 'follow me', followMe());
-      const from = cli.length;
+      const { g, t0, ownerAt } = await farSeek(ev, data, 'ownerFarEast', 90, 'follow me', followMe());
+      const admission = events().find((e) => e.type === 'goal_admitted' && e.goalId === g.goalId)!;
+      const oldReady = events().filter((e) => e.type === 'connection_ready').at(-1)!;
+      const route = events().find((e) => e.type === 'route_authorized' && e.goalId === g.goalId)!;
+      const noopAtMs = Date.now(), noopFrom = cli.length;
       cli.send('/reconnect');
+      await cli.waitSince(/^\[chunkbot\] already ready$/, noopFrom, 5_000);
+      await sleep(300);
+      const noop = events().filter((e) => tOf(e) >= noopAtMs && ['connection_joining', 'connection_ended', 'locator_detached', 'goal_admitted', 'route_revoked'].includes(e.type));
+      assert(noop.length === 0 && !terminalOf(g.goalId), 'ready reconnect keeps the current connection and goal');
+      ev.push(`ready /reconnect: already ready, zero lifecycle/admission/revocation events`);
+      scanPrivacy(t0, ownerAt);
+
+      // Only this harness-owned dummy is disconnected; no server/client restart.
+      const from = cli.length, disconnectedAtMs = Date.now();
+      await rcon(`kick ${BOT} locator-ordinary-owned-disconnect`);
       const term = await goalTerminal(g.goalId, from, 20_000);
-      await cli.waitSince(new RegExp(`\\[chunkbot\\] ready: version=${VERSION_RE}`), from, 40_000);
-      const tr = Date.now();
+      await cli.waitSince(/disconnected; idle\. Use \/reconnect/, from, 10_000);
+      await waitEvent((e) => e.type === 'locator_detached' && e.connectionEpoch === oldReady.connectionEpoch && tOf(e) >= disconnectedAtMs, 5_000);
+      // Join while the owner is hidden: proves the old cue cannot be recycled.
+      o().setControlState('sneak', true);
+      ownerScript.push({ atMs: Date.now(), scenario, action: 'owner sneak on for fresh-connection no-cue control' });
+      await sleep(500);
+      const reconnectFrom = cli.length;
+      cli.send('/reconnect');
+      await cli.waitSince(new RegExp(`\\[chunkbot\\] ready: version=${VERSION_RE}`), reconnectFrom, 40_000);
+      const freshReady = events().filter((e) => e.type === 'connection_ready').at(-1)!;
+      const dashboard = () => JSON.parse(readFileSync(dashboardPath, 'utf8')) as Json;
+      await sleep(1_000);
+      const noCue = dashboard();
+      assert(noCue.connection.epoch === freshReady.connectionEpoch && noCue.directive.autonomy.locator.actionable === false, 'fresh ready connection has no actionable old/hidden owner cue');
+      const freshAtMs = Date.now();
+      o().setControlState('sneak', false);
+      ownerScript.push({ atMs: freshAtMs, scenario, action: 'owner sneak off: require fresh server broadcast' });
+      let freshCue: Json | undefined;
+      for (const deadline = Date.now() + 10_000; Date.now() < deadline; await sleep(100)) {
+        const d = dashboard();
+        const hint = d.directive.autonomy.locator;
+        if (d.connection.epoch === freshReady.connectionEpoch && hint.actionable === true && hint.ageMs <= Date.now() - freshAtMs + 1_500) { freshCue = d; break; }
+      }
+      assert(freshCue, 'fresh connection receives a fresh owner cue after hiding is cleared');
       const p0 = await serverPos(BOT);
       await sleep(15_000);
       const p1 = await serverPos(BOT);
-      const attach = events().filter((e) => e.type === 'locator_attached' && tOf(e) >= tr - 45_000).map((e) => `epoch ${e.connectionEpoch} late=${e.late}`);
-      ev.push(`goal ${term.state} (${term.reason}); after reconnect moved ${dist(p0, p1).toFixed(1)} blocks in 15s; attachments ${attach.join(', ')}`);
-      data.reconnect = { term, moved: dist(p0, p1) };
-      assert(term.state !== 'completed', 'the goal did not complete by reconnecting');
+      const problems = reconnectProblems(events(), { goalId: g.goalId, goalEpoch: admission.epoch, oldEpoch: oldReady.connectionEpoch, newEpoch: freshReady.connectionEpoch, routeId: route.routeId, disconnectedAtMs, readyAtMs: tOf(freshReady), untilMs: Date.now() });
+      data.reconnect = { term, readyNoopEvents: noop, oldEpoch: oldReady.connectionEpoch, newEpoch: freshReady.connectionEpoch, noCue, freshCue, moved: dist(p0, p1), problems };
+      ev.push(`old goal ${term.state} (${term.reason}); epochs ${oldReady.connectionEpoch}->${freshReady.connectionEpoch}; hidden cue unavailable, fresh cue age ${freshCue.directive.autonomy.locator.ageMs}ms; moved ${dist(p0, p1).toFixed(1)}; ${problems.join('; ') || 'ownership evidence complete'}`);
+      assert(problems.length === 0, problems.join('; '));
       assert(dist(p0, p1) <= 1, 'no movement after reconnect without a new goal');
     });
 
@@ -833,49 +939,102 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
 
     await check('O7', 'route exhaustion (operator budget 192 blocks / 3 legs): expanded authority withdrawn, the bot stops, truthful counters', async (ev, data) => {
       await settle(o());
+      await cleanupPlayer(BOT);
       await stopCli();
       await startCli('run-locator-ordinary-exhaust', exhaustConfig);
       const { g, t0, s } = await farSeek(ev, data, 'ownerFarEast', 90, 'follow me', followMe());
-      const exhausted = await waitEvent((e) => (e.type === 'route_exhausted' || e.type === 'route_leg_refused') && tOf(e) >= t0, 240_000);
+      const exhaustedEvent = () => events().find((e) => (e.type === 'route_exhausted' || e.type === 'route_leg_refused') && tOf(e) >= t0);
+      const reached = await sampleUntil(t0, () => !!exhaustedEvent(), 240_000);
+      assert(reached.ok, 'route exhaustion did not occur within the unchanged 240s bound');
+      const exhausted = exhaustedEvent()!;
       const p0 = await serverPos(BOT);
       await sleep(15_000);
       const p1 = await serverPos(BOT);
       const term = terminalOf(g.goalId);
       ev.push(`route ${exhausted.type} (${exhausted.blocker ?? '-'}; used ${exhausted.distanceUsed ?? '-'}); after: moved ${dist(p0, p1).toFixed(1)} blocks in 15s; bot ${dist(p1, ORD_BASE).toFixed(0)} from the admission anchor; goal ${term?.text ?? 'active'}`);
       data.exhaustion = { type: exhausted.type, blocker: exhausted.blocker ?? null, moved: dist(p0, p1), fromAnchor: dist(p1, ORD_BASE) };
+      scanPrivacy(t0, await serverPos(OWNER));
       assert(dist(p0, p1) <= 2, 'no movement after the route budget is spent');
       void s;
     });
+  } catch (error) {
+    results.push({ id: 'FATAL', title: 'ordinary harness run settled', pass: false, evidence: [error instanceof Error ? error.stack ?? error.message : String(error)], data: {} });
   } finally {
     scenario = 'restore';
-    try {
-      if (cliStarted) {
-        for (const r of restores.reverse()) {
-          try {
-            await r.fn();
-            setupLog.push({ atMs: Date.now(), scenario, command: `RESTORE: ${r.label}`, reply: 'ok' });
-          } catch (error) {
-            const why = error instanceof Error ? error.message.slice(0, 200) : String(error);
-            restoreFailures.push(`${r.label}: ${why}`);
-            setupLog.push({ atMs: Date.now(), scenario, command: `RESTORE FAILED: ${r.label}`, reply: why });
-          }
-        }
-        if (botStart) {
-          await sleep(1_000);
-          const p = await serverPos(BOT).catch(() => undefined);
-          if (!p || dist(p, botStart) > 1.5) restoreFailures.push(`Chunkbot not verified back at its starting position (${p ? `${p.x.toFixed(1)}, ${p.z.toFixed(1)}` : 'unreadable'})`);
-        }
-        await stopCli();
+    const step = async (label: string, fn: () => Promise<unknown>) => {
+      appendFileSync(join(outDir, 'commands.jsonl'), `${JSON.stringify({ atMs: Date.now(), scenario, phase: 'cleanup_intent', label })}\n`);
+      try {
+        const detail = await fn();
+        const row = { atMs: Date.now(), step: label, ok: true, detail: detail ?? null };
+        cleanup.push(row);
+        appendFileSync(join(outDir, 'commands.jsonl'), `${JSON.stringify(row)}\n`);
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        restoreFailures.push(`${label}: ${why}`);
+        const row = { atMs: Date.now(), step: label, ok: false, detail: why };
+        cleanup.push(row);
+        appendFileSync(join(outDir, 'commands.jsonl'), `${JSON.stringify(row)}\n`);
       }
-    } finally {
-      owner?.quit();
-      guest?.quit();
-      jevServer?.close();
+    };
+    if (cliStarted) {
+      await step('stop goal/route/controls before online cleanup', async () => {
+        const atMs = Date.now();
+        ownerScript.push({ atMs, scenario, action: 'terminal stop for final cleanup' });
+        cli.send('stop');
+        await waitEvent((e) => e.type === 'stop_requested' && tOf(e) >= atMs, 5_000);
+        for (const deadline = Date.now() + 10_000; Date.now() < deadline; await sleep(100)) {
+          const ev = events();
+          if (ev.filter((e) => e.type === 'lease_acquired').every((l) => ev.some((e) => e.type === 'lease_revoked' && e.leaseId === l.leaseId))) return 'all actuator leases revoked';
+        }
+        throw new Error('actuator lease still active after stop');
+      });
     }
+    for (const player of ownedPlayers) {
+      if (player._client.ended) continue; // logout paths already prove online cleanup before quit
+      await step(`${player.username} online cleanup and declared base position`, async () => {
+        await cleanupPlayer(player.username, player);
+        await tp(player.username, 'base');
+        await sleep(250);
+        const at = await serverPos(player.username);
+        assert(Math.hypot(at.x - ORD_BASE.x, at.y - ORD_BASE.y, at.z - ORD_BASE.z) <= 1.5, `${player.username} final base position not verified`);
+        finalPositions.push({ player: player.username, at, phase: 'final cleanup' });
+        return at;
+      });
+    }
+    if (cliStarted) {
+      await step('Chunkbot online inventory/head/effects and original position', async () => {
+        await cleanupPlayer(BOT);
+        assert(botStart, 'original bot position was not recorded');
+        // Exact recorded origin is the existing restoration exception, never a new destination.
+        await rcon(`execute in ${botStart.dimension} run tp ${BOT} ${botStart.x} ${botStart.y} ${botStart.z}`);
+        await sleep(1_000);
+        const at = await serverPos(BOT);
+        const dimension = await rcon(`data get entity ${BOT} Dimension`);
+        assert(Math.hypot(at.x - botStart.x, at.y - botStart.y, at.z - botStart.z) <= 1.5 && dimension.includes(`"${botStart.dimension}"`), 'Chunkbot original final position/dimension not verified');
+        finalPositions.push({ player: BOT, at, dimension: botStart.dimension, phase: 'final cleanup' });
+        return at;
+      });
+      await step('ordinary CLI complete graceful shutdown/exit 0', stopCli);
+    }
+    for (const player of ownedPlayers) await step(`${player.username} owned connection ended`, () => quitPlayer(player));
+    await step('loopback Jev callbacks/connections closed', async () => {
+      if (!jevServer) return;
+      jevServer.closeAllConnections();
+      await new Promise<void>((r, j) => jevServer!.close((error) => error ? j(error) : r()));
+    });
+    await step('zero final players', async () => {
+      let list = '';
+      for (let i = 0; i < 40; i++) {
+        list = await rcon('list');
+        if (/^There are 0 of /i.test(list)) return list;
+        await sleep(100);
+      }
+      throw new Error(`zero players not verified: ${list}`);
+    });
   }
 
   const pass = results.length > 0 && results.every((r) => r.pass) && restoreFailures.length === 0 && privacyFindings.length === 0;
-  if (privacyFindings.length > 0) results.push({ id: 'PRIVACY', title: 'no hidden owner coordinates in model-visible texts', pass: false, evidence: privacyFindings.map((p) => `${p.scenario} ${p.source}: ${p.value}`), data: {} });
+  if (privacyFindings.length > 0) results.push({ id: 'PRIVACY', title: 'no hidden owner coordinates in model-visible texts', pass: false, evidence: privacyFindings.map((p) => `${p.scenario} ${p.source} ${p.path}: ${p.value} (${p.reason})`), data: {} });
   if (restoreFailures.length > 0) results.push({ id: 'RESTORE', title: 'every fixture change restored and verified', pass: false, evidence: restoreFailures, data: {} });
   writeFileSync(
     join(outDir, 'report.json'),
@@ -890,6 +1049,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         viewDistance,
         pass,
         privacyFindings,
+        retainedFailure: { report: 'acceptance-native/var/live-check/2026-10-08T06-09-31-852Z-locator-ordinary/report.json', sha256: 'a2d00c656945a63eb083e170668f536f44cae08b29dcf94ecebb81f1fb255e6c', result: 'exit 1; 10/14; original evidence unchanged' },
         privacyScans,
         restoreFailures,
         results,
@@ -898,7 +1058,10 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         samples,
         jev: jevLog.map((j) => ({ dtMs: j.atMs - (jevLog[0]?.atMs ?? j.atMs), scenario: j.scenario, offered: j.offered, chosen: j.chosen })),
         plannerPrompts: prompts().map((p) => ({ atMs: p.atMs, chars: p.text.length })),
-        cliExitSaved: true,
+        cliExits,
+        cleanup,
+        finalPositions,
+        observations,
       },
       null,
       2,
