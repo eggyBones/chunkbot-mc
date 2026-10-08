@@ -9,8 +9,10 @@ Worker: P (shared planner/application writer). Branch `chunkbot/gameplay-planner
 | `36628a1` | N1: executable owner-question paths removed (contract, wire schema, GoalEngine goal/preparation/lookahead/automatic paths, `answer` retired); prompt v5 grounded defaults; perception entity ordering before cap; retired handle identities. |
 | `f506acc` | Review corrections (no generic quote exemption; app-owned public text boundary; historical counter compatibility) and generic grounding: observation block groups, `blocks_removed` outcome, group-scoped work, `select_home_site near=owner`. |
 | `49f14a1` | Harness scenarios updated to the no-question policy (planner P4, handoff L6); P-side immediate-safety seams (GoalEngine authority basis + hooks, TaskRuntime hold gate). |
+| `cfbd609` | This review record. |
+| `78bb0fe` | Combined ordinary-goal live harness `scripts/ordinary-goal-live-check.ts` (O1–O6), lease guard test. |
 
-Checks at `49f14a1` (Node 24.21.0 first in PATH, own `npm ci`): `npm run typecheck` exit 0; `npm run build` exit 0; `npm test` exit 0, 818/818. No installed live diagnostic was run (no lease; planner diagnostics would use inference).
+Checks at `78bb0fe` (Node 24.21.0 first in PATH, own `npm ci`): `npm run typecheck` exit 0; `npm test` exit 0, 822/822; `npm run build` exit 0 at `49f14a1` (later commits touch scripts/tests only). No installed live diagnostic was run (no lease; planner diagnostics would use inference).
 
 ## N1 — no follow-up questions (implemented, unit evidence)
 
@@ -77,11 +79,17 @@ Admission `GoalEngine.continueHeld(checkpointId, cause: 'recovery_concluded' | '
 
 Ownership split: P implements checkpoint capture in `finalize`, `continueHeld`, the evaluator rebind, the supervisor trigger (after S reports necessary support concluded and safety is clear) and status/dashboard projection. S owns the durable record: `InterruptedDirectiveSchema.continuation` gains `{ kind: 'continuable', checkpointId, version: 1 } | 'requires_owner_decision'` plus compatibility/unsupported list; restart keeps only this NON-executable record (never continues after restart in v1). S never admits continuation itself. Unsupported cases stay explicit held blockers without questions (S's current status wording "needs your decision" should become declarative, e.g. "held: send a new instruction to replace it").
 
+## Combined ordinary-goal harness (not run; needs a lease and coordinator-run real planner)
+
+`node scripts/ordinary-goal-live-check.ts --fixture-lease <id> [--fixture 26.2] [--jev real|fault] [--only O1,…] [--house-materials provided|gather]`. Real subscription planner always (coordinator only); `--jev fault` is harness validation only. Generated config from `config/examples/fixture[-26.2]-autonomy.json` with an independent data dir and fresh scope (home construction registered); the pause latch is set right after ready, so only ordinary owner goals act. Scenarios O1–O6 (one chicken; closest chicken among chicken/cow; floating birch beside grounded oaks; house "here" near the visible owner; absent target; stop during work), each asserting the no-question boundary and RCON truth. Footprint: the standard scene area (x 196..224, z 190..224, y -63..-50; entity box y -64..-24); forceload recorded before change and only additions removed; cleanup re-applies the standard reset and verifies sample positions; unreconciled cleanup fails the report. Follow/water scenarios are deliberately excluded until W's mechanics gate passes.
+
 ## Coordinator decisions requested
 
 1. Approve or amend the C12 v1 checkpoint/compatibility/carried-credit semantics above before implementation.
 2. `select_home_site` with an existing project elsewhere: keep the declarative `home_project_exists` blocker, or implement explicit replacement (retire previous project identity with history, no demolition)?
 3. `src/skills/memory.ts` and `src/dashboard/outcome-text.ts` received minimal necessary edits for my contract changes (owner-coordinate source and the new predicate/handle kind); please confirm.
+4. Home construction capabilities are registered only when autonomy runs with a durable scope. Jake's live profile has no scope, so "set up your house here" there can only end in a declarative blocker (no `select_home_site/build_home` in the catalog). Should owner goals get home construction with an explicit configured scope independent of automatic progression, or stay scope-gated (current)?
+5. S's status wording for interrupted directives ("needs your decision") reads as an owner request; propose declarative "held — a new instruction replaces it; nothing is replayed" (S-owned file).
 
 ## Remaining assigned work
 
