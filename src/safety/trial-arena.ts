@@ -10,6 +10,16 @@ export const SAFETY_TRIAL_BOX: TrialBox = [240, -61, 190, 270, -48, 220];
  * It is not an entity exception: ANY intersecting foreign body still refuses. */
 export const SAFETY_MUTATION_BOX: TrialBox = [240, -61, 196, 268, -48, 220];
 export const MOB_TRIAL_ORIGIN = { x: 255.5, y: -56, z: 205.5 };
+export interface TrialLayout { mutation: TrialBox; feetY: number }
+export const SAFETY_BASE_LAYOUT: TrialLayout = { mutation: SAFETY_MUTATION_BOX, feetY: -56 };
+/** Opt-in proposal for coordinator review before world use. Translate the
+ * four-deep pool/bank/mob floor up four blocks, leaving the original bottom
+ * four layers untouched. Opaque support excludes bodies below by geometry,
+ * never by species, UUID or a policy/entity filter. */
+export const SAFETY_RAISED_LAYOUT: TrialLayout = { mutation: [240, -57, 196, 268, -48, 220], feetY: -52 };
+export function mobTrialOrigin(layout: TrialLayout = SAFETY_BASE_LAYOUT): { x: number; y: number; z: number } {
+  return { ...MOB_TRIAL_ORIGIN, y: layout.feetY };
+}
 export interface ArenaFill { box: TrialBox; block: string }
 export interface ArenaCheck { source: TrialBox; target: [number, number, number]; block?: string }
 
@@ -21,8 +31,8 @@ function inside(box: TrialBox, boundary: TrialBox): boolean {
   return box.every(Number.isInteger) && [0, 1, 2].every((i) => box[i]! >= boundary[i]! && box[i + 3]! <= boundary[i + 3]! && box[i]! <= box[i + 3]!);
 }
 
-export function insideMutationBox(box: TrialBox): boolean {
-  return inside(box, SAFETY_MUTATION_BOX);
+export function insideMutationBox(box: TrialBox, layout: TrialLayout = SAFETY_BASE_LAYOUT): boolean {
+  return insideTrialBox(layout.mutation) && inside(box, layout.mutation);
 }
 
 /** Both official releases' EntitySelectorParser.createAabb use delta+1 for
@@ -37,9 +47,9 @@ export function trialEntitySelector(box: TrialBox): string {
 /** The same leased-harness guard is exercised with a voxel/entity server in
  * tests. Queries are sequential; unknown/concatenated replies refuse before
  * the caller may fill, heal or remove anything. Partial evidence is retained. */
-export async function guardMutationVolume(read: (command: string) => Promise<string>, runTag: string, bot: string, record: (kind: 'entities' | 'players', command: string, reply: string) => void): Promise<void> {
+export async function guardMutationVolume(read: (command: string) => Promise<string>, runTag: string, bot: string, record: (kind: 'entities' | 'players', command: string, reply: string) => void, layout: TrialLayout = SAFETY_BASE_LAYOUT): Promise<void> {
   if (!/^[A-Za-z0-9_]+$/.test(runTag) || !/^[A-Za-z0-9_]+$/.test(bot)) throw new Error('invalid staging identity');
-  const area = trialEntitySelector(SAFETY_MUTATION_BOX);
+  const area = trialEntitySelector(layout.mutation);
   for (const [kind, command] of [
     ['entities', `execute if entity @e[tag=!${runTag},type=!player,type=!item,type=!experience_orb,${area}]`],
     ['players', `execute if entity @a[name=!${bot},${area}]`],
@@ -50,57 +60,68 @@ export async function guardMutationVolume(read: (command: string) => Promise<str
   }
 }
 
+/** Execute inside the harness's single per-world command queue. Recheck the
+ * complete stage before EACH fill, summon, removal or bot intervention; a
+ * body arriving after an earlier check stops the next mutation. */
+export async function guardedStageMutation(read: (command: string) => Promise<string>, write: (command: string) => Promise<string>, command: string, runTag: string, bot: string, record: (kind: 'entities' | 'players', command: string, reply: string) => void, layout: TrialLayout = SAFETY_BASE_LAYOUT): Promise<string> {
+  await guardMutationVolume(read, runTag, bot, record, layout);
+  return write(command);
+}
+
 /** Opaque walls exclude external mobs from player-visible policy input. The
  * luminous roof seals ingress/visibility; luminous floor prevents spawning.
  * Interior 27x23, eight blocks tall. The existing six-block retreat leg fits
  * from MOB_TRIAL_ORIGIN in every bearing; the 12-block grant is unchanged,
  * and targets near walls must still pass the ordinary geometry checks.
  * All blocks are inside the ORIGINAL clone, with no clock/gamerule changes. */
-export function arenaShellPlan(): ArenaFill[] {
-  const [x1, , z1, x2, , z2] = SAFETY_MUTATION_BOX;
+export function arenaShellPlan(layout: TrialLayout = SAFETY_BASE_LAYOUT): ArenaFill[] {
+  const [x1, , z1, x2, roof, z2] = layout.mutation;
+  const y = layout.feetY;
   return [
-    { box: [x1, -56, z1, x1, -49, z2], block: 'stone' },
-    { box: [x2, -56, z1, x2, -49, z2], block: 'stone' },
-    { box: [x1 + 1, -56, z1, x2 - 1, -49, z1], block: 'stone' },
-    { box: [x1 + 1, -56, z2, x2 - 1, -49, z2], block: 'stone' },
-    { box: [x1, -48, z1, x2, -48, z2], block: 'sea_lantern' },
+    { box: [x1, y, z1, x1, roof - 1, z2], block: 'stone' },
+    { box: [x2, y, z1, x2, roof - 1, z2], block: 'stone' },
+    { box: [x1 + 1, y, z1, x2 - 1, roof - 1, z1], block: 'stone' },
+    { box: [x1 + 1, y, z2, x2 - 1, roof - 1, z2], block: 'stone' },
+    { box: [x1, roof, z1, x2, roof, z2], block: 'sea_lantern' },
   ];
 }
 
-export function mobArenaPlan(): ArenaFill[] {
-  const [x1, y1, z1, x2, , z2] = SAFETY_MUTATION_BOX;
+export function mobArenaPlan(layout: TrialLayout = SAFETY_BASE_LAYOUT): ArenaFill[] {
+  const [x1, y1, z1, x2, roof, z2] = layout.mutation;
+  const y = layout.feetY;
   return [
-    { box: [x1, y1, z1, x2, -58, z2], block: 'dirt' },
-    { box: [x1, -57, z1, x2, -57, z2], block: 'sea_lantern' },
-    ...arenaShellPlan(),
-    { box: [x1 + 1, -56, z1 + 1, x2 - 1, -49, z2 - 1], block: 'air' },
+    { box: [x1, y1, z1, x2, y - 2, z2], block: 'dirt' },
+    { box: [x1, y - 1, z1, x2, y - 1, z2], block: 'sea_lantern' },
+    ...arenaShellPlan(layout),
+    { box: [x1 + 1, y, z1 + 1, x2 - 1, roof - 1, z2 - 1], block: 'air' },
   ];
 }
 
 /** Same four-deep pool and dirt bank as the proven trial, now all inside the
  * smaller staging boundary. Non-overlapping final regions allow the server
  * verifier to check the actual pool/floor/ceiling as well as the shell. */
-export function waterArenaPlan(lid = false): ArenaFill[] {
-  const [x1, y1, z1, x2, , z2] = SAFETY_MUTATION_BOX;
+export function waterArenaPlan(lid = false, layout: TrialLayout = SAFETY_BASE_LAYOUT): ArenaFill[] {
+  const [x1, y1, z1, x2, roof, z2] = layout.mutation;
+  const y = layout.feetY;
   return [
     { box: [x1, y1, z1, x2, y1, z2], block: 'dirt' },
-    { box: [x1, -60, z1, 251, -57, z2], block: 'dirt' },
-    { box: [259, -60, z1, x2, -57, z2], block: 'dirt' },
-    { box: [252, -60, z1, 258, -57, 201], block: 'dirt' },
-    { box: [252, -60, 209, 258, -57, z2], block: 'dirt' },
-    { box: [252, -60, 202, 258, lid ? -58 : -57, 208], block: 'water' },
-    ...(lid ? [{ box: [252, -57, 202, 258, -57, 208] as TrialBox, block: 'stone' }] : []),
-    ...arenaShellPlan(),
-    { box: [x1 + 1, -56, z1 + 1, x2 - 1, -49, z2 - 1], block: 'air' },
+    { box: [x1, y - 4, z1, 251, y - 1, z2], block: 'dirt' },
+    { box: [259, y - 4, z1, x2, y - 1, z2], block: 'dirt' },
+    { box: [252, y - 4, z1, 258, y - 1, 201], block: 'dirt' },
+    { box: [252, y - 4, 209, 258, y - 1, z2], block: 'dirt' },
+    { box: [252, y - 4, 202, 258, lid ? y - 2 : y - 1, 208], block: 'water' },
+    ...(lid ? [{ box: [252, y - 1, 202, 258, y - 1, 208] as TrialBox, block: 'stone' }] : []),
+    ...arenaShellPlan(layout),
+    { box: [x1 + 1, y, z1 + 1, x2 - 1, roof - 1, z2 - 1], block: 'air' },
   ];
 }
 
 /** A corner test plus overlapping comparisons along EVERY non-unit axis
  * proves a whole rectangular region is uniform, without writing a prototype
  * into the original backup. One missing/blasted voxel fails a comparison. */
-export function arenaChecks(fill: ArenaFill): ArenaCheck[] {
+export function arenaChecks(fill: ArenaFill, layout: TrialLayout = SAFETY_BASE_LAYOUT): ArenaCheck[] {
   if (!insideTrialBox(fill.box)) throw new Error('arena region outside original clone');
-  if (!insideMutationBox(fill.box)) throw new Error('arena region outside staging mutation boundary');
+  if (!insideMutationBox(fill.box, layout)) throw new Error('arena region outside staging mutation boundary');
   const [x, y, z] = fill.box;
   const out: ArenaCheck[] = [{ source: [x, y, z, x, y, z], target: [x, y, z], block: fill.block }];
   for (let i = 0; i < 3; i += 1) {
@@ -116,9 +137,9 @@ export function arenaChecks(fill: ArenaFill): ArenaCheck[] {
 
 /** Real harness read seam, also exercised against a credential-free voxel
  * server in tests. Unknown/error replies never certify intact staging. */
-export async function verifyArena(read: (command: string) => Promise<string>, fills: readonly ArenaFill[] = mobArenaPlan()): Promise<number> {
+export async function verifyArena(read: (command: string) => Promise<string>, fills: readonly ArenaFill[] = mobArenaPlan(), layout: TrialLayout = SAFETY_BASE_LAYOUT): Promise<number> {
   let comparisons = 0;
-  for (const fill of fills) for (const c of arenaChecks(fill)) {
+  for (const fill of fills) for (const c of arenaChecks(fill, layout)) {
     const command = c.block ? `execute if block ${c.target.join(' ')} minecraft:${c.block}` : `execute if blocks ${c.source.join(' ')} ${c.target.join(' ')} all`;
     const reply = await read(command);
     if (parseEntityTest(reply) !== true) throw new Error(`staging_unready: arena ${fill.block} ${fill.box.join(' ')} failed exact server comparison: ${reply.slice(0, 120)}`);

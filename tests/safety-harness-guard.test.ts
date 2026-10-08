@@ -106,8 +106,8 @@ describe('safety gate harness guard', () => {
     const scene = code.slice(code.indexOf('async scene('), code.indexOf('async tp('));
     assert.ok(scene.indexOf('noForeignOccupants()') < scene.indexOf('kill @e['), 'refusal precedes entity removal and scene mutation');
     assert.match(scene, /verifyMobArena\(\)/);
-    assert.match(scene, /waterArenaPlan\(opts\.lid\)/, 'water and its shell use the bounded verified plan');
-    assert.match(scene, /insideMutationBox\(f\.box\)/, 'every staging fill must pass the smaller mutation boundary');
+    assert.match(scene, /waterArenaPlan\(opts\.lid, LAYOUT\)/, 'water and its shell use the selected bounded verified plan');
+    assert.match(scene, /insideMutationBox\(f\.box, LAYOUT\)/, 'every staging fill must pass the selected mutation boundary');
     assert.match(code, /guardMutationVolume\(\(command\) => this\.rcon\(command, false\)/, 'actual shared guard uses the serialized per-world RCON queue');
     const setup = code.slice(code.indexOf('backupTaken = true;'), code.indexOf("g.gate('W1',"));
     assert.ok(setup.indexOf('await g.scene()') < setup.indexOf("g.rcon('difficulty easy')"), 'enclose before enabling natural hostile spawning');

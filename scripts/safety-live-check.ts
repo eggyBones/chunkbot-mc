@@ -80,7 +80,7 @@ import { safetySkills } from '../src/skills/safety.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { trialRcon } from '../src/safety/trial-rcon.ts';
 import { serverWaterSupport, type TrialWaterBlock } from '../src/safety/trial-water.ts';
-import { guardMutationVolume, insideMutationBox, mobArenaPlan, MOB_TRIAL_ORIGIN, parseTrialUuid, SAFETY_MUTATION_BOX, serverUnprovokedWolf, trialEntitySelector, verifyArena, waterArenaPlan, type MobTrialGate, type TrialSummon } from '../src/safety/trial-arena.ts';
+import { guardMutationVolume, guardedStageMutation, insideMutationBox, mobArenaPlan, mobTrialOrigin, parseTrialUuid, SAFETY_BASE_LAYOUT, SAFETY_RAISED_LAYOUT, serverUnprovokedWolf, trialEntitySelector, verifyArena, waterArenaPlan, type MobTrialGate, type TrialSummon } from '../src/safety/trial-arena.ts';
 import { readMobStage, trialSummonEffects, verifyEffectFreeCreeper } from '../src/safety/trial-mobs.ts';
 import { planSafety } from '../src/safety/policy.ts';
 import { eyeOf, sessionWorld } from '../src/perception/perception.ts';
@@ -105,12 +105,17 @@ const BACKUP_BOX = `${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y
 const ENTITY_AREA = trialEntitySelector([AREA.x1, SCENE_Y.y1, AREA.z1, AREA.x2, SCENE_Y.y2, AREA.z2]);
 /** Unique per-run tag for every summoned mob. */
 const MOB_TAG = `cbsafe_${Date.now().toString(36)}_${process.pid.toString(36)}`;
-/** Raised dirt platform (feet level -56) with a 7x7, 4-deep pool. */
+/** Raised proposal is opt-in, for coordinator source/layout review before a
+ * named frozen trial. Default retains the previous exact world coordinates. */
+const LAYOUT = process.argv.includes('--raised-stage') ? SAFETY_RAISED_LAYOUT : SAFETY_BASE_LAYOUT;
+const SAFETY_MUTATION_BOX = LAYOUT.mutation;
+const MOB_TRIAL_ORIGIN = mobTrialOrigin(LAYOUT);
+/** Same 7x7, four-deep pool and bank; optional vertical translation only. */
 const POOL = { x1: 252, z1: 202, x2: 258, z2: 208 };
-const POOL_FLOOR = { x: 255.5, y: -60, z: 205.5 };
-const POOL_SURFACE = { x: 255.5, y: -57.6, z: 205.5 };
+const POOL_FLOOR = { x: 255.5, y: LAYOUT.feetY - 4, z: 205.5 };
+const POOL_SURFACE = { x: 255.5, y: LAYOUT.feetY - 1.6, z: 205.5 };
 const ARENA = { x: 264.5, y: -56, z: 195.5 }; // original restoration teleport
-const WATER_RESCUE = { x: 264.5, y: -56, z: 199.5 }; // dry bank inside staging
+const WATER_RESCUE = { x: 264.5, y: LAYOUT.feetY, z: 199.5 }; // dry bank inside staging
 const DIFF_REPLY = /difficulty is (\w+)/i;
 
 /** True when the shared SkillOutcome contract accepts a `safety` owner (P's executor variant integrated). */
@@ -335,12 +340,22 @@ class Gate {
     const run = this.rconQueue.then(async () => {
       if (this.halted && !restoring) throw new Error(`halted (${this.halted}): no further gate command`);
       if (restoring && this.restoreDeadline !== undefined && Date.now() >= this.restoreDeadline) throw new Error('bounded restoration deadline exceeded');
-      const entry = !readOnly ? this.journal?.before(command, phase) : undefined;
-      if (!readOnly && entry === undefined) throw new Error('refusing mutation without durable trial journal');
-      const remaining = restoring && this.restoreDeadline !== undefined ? this.restoreDeadline - Date.now() : 2_000;
-      const reply = await trialRcon(PINS.host, PINS.rconPort, this.password, command, Math.min(2_000, remaining));
-      if (entry !== undefined) this.journal!.after(entry, reply);
-      return reply;
+      const send = async (next: string) => trialRcon(PINS.host, PINS.rconPort, this.password, next, 2_000);
+      const mutate = async (next: string) => {
+        if (this.halted && !restoring) throw new Error(`halted (${this.halted}): no mutation after guard reads`);
+        const entry = !readOnly ? this.journal?.before(next, phase) : undefined;
+        if (!readOnly && entry === undefined) throw new Error('refusing mutation without durable trial journal');
+        const remaining = restoring && this.restoreDeadline !== undefined ? this.restoreDeadline - Date.now() : 2_000;
+        const reply = await trialRcon(PINS.host, PINS.rconPort, this.password, next, Math.min(2_000, remaining));
+        if (entry !== undefined) this.journal!.after(entry, reply);
+        return reply;
+      };
+      if (!restoring && !readOnly && /^(?:fill|clear|effect|item replace|summon|damage|tp|kill|difficulty)\b/.test(command)) {
+        return guardedStageMutation(send, mutate, command, MOB_TAG, BOT, (kind, query, reply) => {
+          this.staging.push({ gate: phase, atMs: Date.now(), kind, command: query, beforeMutation: command.split(' ')[0], mutation: SAFETY_MUTATION_BOX, reply, occupied: parseEntityTest(reply) ?? 'unknown' });
+        }, LAYOUT);
+      }
+      return mutate(command);
     });
     this.rconQueue = run.catch(() => undefined);
     const reply = await run;
@@ -475,12 +490,12 @@ class Gate {
   async noForeignOccupants(): Promise<void> {
     await guardMutationVolume((command) => this.rcon(command, false), MOB_TAG, BOT, (kind, command, reply) => {
       this.staging.push({ gate: this.phase, atMs: Date.now(), kind, command, mutation: SAFETY_MUTATION_BOX, reply, occupied: parseEntityTest(reply) ?? 'unknown' });
-    });
+    }, LAYOUT);
   }
 
   async verifyMobArena(): Promise<void> {
-    const comparisons = await verifyArena((command) => this.rcon(command, false));
-    this.staging.push({ gate: this.phase, atMs: Date.now(), arenaVerified: true, comparisons, plan: mobArenaPlan() });
+    const comparisons = await verifyArena((command) => this.rcon(command, false), mobArenaPlan(LAYOUT), LAYOUT);
+    this.staging.push({ gate: this.phase, atMs: Date.now(), arenaVerified: true, comparisons, plan: mobArenaPlan(LAYOUT) });
   }
 
   /** Staging inside the smaller mutation box: water unchanged; mob gates replace
@@ -489,13 +504,13 @@ class Gate {
   async scene(opts: { lid?: boolean; mobs?: boolean } = {}): Promise<void> {
     check(this.basis === 'none' && !this.leases.current, 'scene staging requires stopped ownership/controls');
     await this.noForeignOccupants(); // BEFORE removal, fill or heal
-    const plan = opts.mobs ? mobArenaPlan() : waterArenaPlan(opts.lid);
+    const plan = opts.mobs ? mobArenaPlan(LAYOUT) : waterArenaPlan(opts.lid, LAYOUT);
     for (const c of [
       `kill @e[tag=${MOB_TAG},${ENTITY_AREA}]`,
       `kill @e[type=item,${ENTITY_AREA}]`,
       `kill @e[type=experience_orb,${ENTITY_AREA}]`,
       ...plan.map((f) => {
-        check(insideMutationBox(f.box), 'fill outside smaller staging mutation boundary');
+        check(insideMutationBox(f.box, LAYOUT), 'fill outside smaller staging mutation boundary');
         return `fill ${f.box.join(' ')} minecraft:${f.block}`;
       }),
       `clear ${BOT}`,
@@ -506,7 +521,7 @@ class Gate {
       await this.rcon(c);
     this.summons.clear();
     if (opts.mobs) await this.verifyMobArena();
-    else this.staging.push({ gate: this.phase, atMs: Date.now(), waterArenaVerified: true, comparisons: await verifyArena((c) => this.rcon(c, false), plan), plan });
+    else this.staging.push({ gate: this.phase, atMs: Date.now(), waterArenaVerified: true, comparisons: await verifyArena((c) => this.rcon(c, false), plan, LAYOUT), plan });
     await this.noForeignOccupants();
     await sleep(800);
   }
@@ -831,7 +846,7 @@ async function run(outDir: string): Promise<Json> {
 
     await g.gate('W2', 'unsupported water entry during ordinary goal work: preempted (safety_preempt) or the deep path refused', async (ev) => {
       await g.scene();
-      await g.tp({ x: POOL.x1 - 2.5, y: -56, z: 205.5 });
+      await g.tp({ x: POOL.x1 - 2.5, y: LAYOUT.feetY, z: 205.5 });
       g.admit(30);
       const s = g.game.session();
       check(s, 'session');
@@ -839,7 +854,7 @@ async function run(outDir: string): Promise<Json> {
       const cand: ActionCandidate = {
         id: randomIds.next('act') as string,
         capability: 'move_near',
-        parameters: { target: { kind: 'destination', dimension: String(s.bot.game.dimension), x: POOL.x2 + 3, y: -56, z: 205 }, within: 1 },
+        parameters: { target: { kind: 'destination', dimension: String(s.bot.game.dimension), x: POOL.x2 + 3, y: LAYOUT.feetY, z: 205 }, within: 1 },
         snapshotId: randomIds.next('snap') as string,
         connectionEpoch: s.connectionEpoch,
         goalEpoch: g.epoch,
@@ -1051,7 +1066,7 @@ function buildReport(g: Gate, st: ReportState, extra: Json = {}): Json {
     damagePackets: g.damagePackets,
     fixture: PINS.profile,
     source,
-    footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, stagingMutation: SAFETY_MUTATION_BOX.join(' '), occupantSelector: trialEntitySelector(SAFETY_MUTATION_BOX), mobTag: MOB_TAG, addedForceload, difficulty },
+    footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, stagingMutation: SAFETY_MUTATION_BOX.join(' '), layout: LAYOUT === SAFETY_RAISED_LAYOUT ? 'raised_proposal' : 'original', feetY: LAYOUT.feetY, occupantSelector: trialEntitySelector(SAFETY_MUTATION_BOX), mobTag: MOB_TAG, addedForceload, difficulty },
     restoration: restoreChecks,
     pass: counted.length > 0 && counted.every((r) => r.status === 'pass'),
     results,
