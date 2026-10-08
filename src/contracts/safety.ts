@@ -75,7 +75,9 @@ export const SAFETY_BOUNDS = {
   /** Absolute ceiling on melee attacks in ONE EPISODE (cumulative across all defense steps of its grant). */
   attacksCeiling: 10,
   /** Recent episode history kept for status/repeated-hazard accounting. */
-  history: 16,
+  // Must retain at least maxPerWindow (32); dropping older episodes sooner
+  // would let local preemptions bypass the configured repeated-hazard ceiling.
+  history: 32,
 } as const;
 
 // ---------------------------------------------------------------- config
