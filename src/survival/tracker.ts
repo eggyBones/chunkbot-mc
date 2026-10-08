@@ -74,6 +74,8 @@ export type TrackerEvent =
    * is the position where the server first announced the entity to this client.
    */
   | { type: 'own_item_collect'; connectionEpoch: number; entityId: number; count: number; facts: DropStackFacts | undefined; firstSeenAt: { x: number; y: number; z: number } | undefined; atMs: number }
+  /** Own collect of an entity never announced on this connection. Its kind, stack and position are unknown. */
+  | { type: 'own_unknown_collect'; connectionEpoch: number; entityId: number; count: number; facts: undefined; firstSeenAt: undefined; atMs: number }
   | { type: 'vitals_changed'; vitals: Vitals };
 
 interface RawGlobalPos {
@@ -196,11 +198,16 @@ export class SurvivalTracker {
     on('collect', (p: { collectedEntityId: number; collectorEntityId: number; pickupItemCount?: number }) => {
       const self = this.self();
       if (!this.opts || self === undefined || p.collectorEntityId !== self) return;
-      this.collectedKinds.set(p.collectedEntityId, this.itemEntities.has(p.collectedEntityId) ? 'item' : this.nonItemEntities.has(p.collectedEntityId) ? 'non_item' : 'unknown');
+      const kind = this.itemEntities.has(p.collectedEntityId) ? 'item' : this.nonItemEntities.has(p.collectedEntityId) ? 'non_item' : 'unknown';
+      this.collectedKinds.set(p.collectedEntityId, kind);
       if (this.collectedKinds.size > 256) this.collectedKinds.delete(this.collectedKinds.keys().next().value as number);
-      if (!this.itemEntities.has(p.collectedEntityId)) return;
+      if (kind === 'non_item') return;
       const count = Number(p.pickupItemCount);
       if (!Number.isInteger(count) || count <= 0) return;
+      if (kind === 'unknown') {
+        this.emit({ type: 'own_unknown_collect', connectionEpoch: this.opts.connectionEpoch, entityId: p.collectedEntityId, count, facts: undefined, firstSeenAt: undefined, atMs: this.now() });
+        return;
+      }
       const facts = this.drops.get(p.collectedEntityId);
       const at = this.firstSeen.get(p.collectedEntityId);
       this.emit({ type: 'own_item_collect', connectionEpoch: this.opts.connectionEpoch, entityId: p.collectedEntityId, count, facts: facts ? { ...facts, meta: { ...facts.meta } } : undefined, firstSeenAt: at ? { ...at } : undefined, atMs: this.now() });

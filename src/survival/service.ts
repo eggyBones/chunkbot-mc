@@ -382,7 +382,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if (!this.cfg) return;
     const now = this.options.now();
     if (e.type === 'death_captured') return this.onDeath(e.death, now);
-    if (e.type === 'own_item_collect') return this.onOwnItemCollect(e);
+    if (e.type === 'own_item_collect' || e.type === 'own_unknown_collect') return this.onOwnCollect(e);
     if (e.type === 'death_location_refined') {
       this.incidents.refineSite(e.captureId, e.site);
       const c = this.captures.get(e.captureId);
@@ -1049,12 +1049,13 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
 
   // ------------------------------------------------------------ C12 ContinuationSurvivalPort (approved, P 4409ba1)
 
-  /** Own item collected OUTSIDE the recovery plan: a return only with exact server evidence, else the incident becomes unknown. */
-  private onOwnItemCollect(e: Extract<TrackerEvent, { type: 'own_item_collect' }>): void {
+  /** Exact own item returns outside recovery; unplaceable own collects taint lineage through every collector path. */
+  private onOwnCollect(e: Extract<TrackerEvent, { type: 'own_item_collect' | 'own_unknown_collect' }>): void {
     const cfg = this.cfg;
     if (!cfg) return;
-    // While the bound recovery goal runs, its frozen C3 plan counts planned pickups (recordRegain) and reports the rest as incidental.
-    if (this.active?.routine === 'death_recovery' && this.active.connectionEpoch === e.connectionEpoch) return;
+    // The frozen C3 plan credits stated recovery pickups once via recordRegain. An unknown collect cannot be in
+    // that plan: keep its ambiguity even while recovery runs, independently of incidental effect reporting.
+    if (e.facts && this.active?.routine === 'death_recovery' && this.active.connectionEpoch === e.connectionEpoch) return;
     const r = this.incidents.ownCollect({ connectionEpoch: e.connectionEpoch, count: e.count, facts: e.facts, firstSeenAt: e.firstSeenAt }, this.dimensionValue, cfg.recovery.searchRadius);
     if (r.attributed) this.record({ type: 'survival_incident_return', incidentId: r.attributed.incidentId, key: r.attributed.key, count: r.attributed.count, collector: 'outside_recovery' });
     if (r.ambiguous?.length) this.record({ type: 'survival_incident_attribution_unknown', incidents: r.ambiguous, entityId: e.entityId, key: e.facts?.key ?? null, count: e.count });

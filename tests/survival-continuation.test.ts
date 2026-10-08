@@ -16,6 +16,7 @@ import { after, describe, it } from 'node:test';
 import type { ContinuationCheckpoint } from '../src/contracts/continuation.ts';
 import type { SurvivalProposal } from '../src/contracts/survival.ts';
 import { survivalScopeDirectory } from '../src/survival/store.ts';
+import { continuationPort } from '../src/survival/wiring.ts';
 import { NETHER, OW, SESSION_OW, assessInput, cleanupRoots, dieWithItems, harness, settle, slot, snapshot, type Harness, type Slot } from './survival-helpers.ts';
 
 after(cleanupRoots);
@@ -126,6 +127,48 @@ describe('ContinuationSurvivalPort: incidentReturns', () => {
     unstated.packets.collect(721, 3);
     assert.equal(returns(unstated, idU)?.attribution, 'unknown');
     assert.deepEqual(returns(unstated, idU)?.regained, {});
+  });
+
+  it('S-C12-R3: actual own collect packets preserve exact returns, hold unknown entities, and ignore known non-items, with or without memory', async () => {
+    for (const scoped of [false, true]) {
+      for (const mode of ['own_item', 'unknown_entity', 'unstated_item', 'non_item'] as const) {
+        const h = harness({ scoped });
+        const id = dieAndRespawn(h, { 36: slot('bread', 4) });
+        const port = continuationPort(h.service)!;
+        const empty = { incidentId: id, connectionEpoch: 1, regained: {}, retained: {}, attribution: 'server_attributed' };
+        assert.deepEqual(port.incidentReturns(id), empty);
+        if (mode === 'own_item') h.packets.spawnItem(740, slot('bread', 4), NEAR);
+        if (mode === 'unstated_item') h.packets.spawnItemWithoutStack(740, NEAR);
+        if (mode === 'non_item') h.packets.spawnOther(740, NEAR);
+        h.packets.collect(740, 4);
+        h.packets.destroy(740);
+        // A later full inventory sync is current possession, never proof of where a collect came from.
+        h.packets.inventory({ 36: slot('bread', 4) });
+        const unknown = mode === 'unknown_entity' || mode === 'unstated_item';
+        assert.deepEqual(port.incidentReturns(id), {
+          ...empty,
+          regained: mode === 'own_item' ? { 'minecraft:bread': 4 } : {},
+          attribution: unknown ? 'unknown' : 'server_attributed',
+        }, `${mode}, scoped=${scoped}`);
+        assert.deepEqual(port.frozenInventory(1)?.counts, { 'minecraft:bread': 4 }, 'original loss evidence is unchanged');
+        assert.equal(h.events.filter((e) => e['type'] === 'survival_incident_attribution_unknown').length, unknown ? 1 : 0);
+        assert.equal(h.events.filter((e) => e['type'] === 'survival_incident_return').length, mode === 'own_item' ? 1 : 0);
+        await h.service.close();
+      }
+    }
+  });
+
+  it('S-C12-R3: an unknown own collect preserves verified partial returns; another collector cannot taint the incident', async () => {
+    const h = harness({ scoped: false });
+    const id = dieAndRespawn(h, { 36: slot('bread', 4) });
+    h.packets.collect(750, 3, 99);
+    assert.equal(returns(h, id)?.attribution, 'server_attributed');
+    h.packets.spawnItem(751, slot('bread', 1), NEAR);
+    h.packets.collect(751, 1);
+    assert.deepEqual(returns(h, id)?.regained, { 'minecraft:bread': 1 });
+    h.packets.collect(752, 3);
+    assert.deepEqual(returns(h, id), { incidentId: id, connectionEpoch: 1, regained: { 'minecraft:bread': 1 }, retained: {}, attribution: 'unknown' });
+    await h.service.close();
   });
 
   it('never a return: C10 incidental gains (respawn-point pickups), items outside the site radius, other connections, other collectors, orbs', () => {

@@ -170,4 +170,26 @@ describe('survival tracker', () => {
     assert.equal(classifyDeathMessage({ text: '' }).kind, 'unknown');
     assert.equal(classifyDeathMessage({ translate: 'evil key; drop table' }).kind, 'unknown');
   });
+
+  it('S-C12-R3: emits distinct stated-item and unknown own collects; known non-items and other collectors stay excluded', () => {
+    const { p, t, events } = attached();
+    p.login(42);
+    p.spawnItem(800, slot('bread', 4), { x: 10, y: 64, z: 11 });
+    p.collect(800, 4);
+    p.collect(801, 3); // no server announcement of any kind
+    p.spawnOther(802);
+    p.collect(802, 1);
+    p.collect(803, 4, 99);
+    const collects = events.filter((e) => e.type === 'own_item_collect' || e.type === 'own_unknown_collect');
+    assert.equal(collects.length, 2);
+    assert.equal(collects[0]?.type, 'own_item_collect');
+    assert.equal(collects[0]?.facts?.key, 'minecraft:bread');
+    assert.equal(collects[0]?.facts?.count, 4);
+    assert.deepEqual(collects[0]?.firstSeenAt, { x: 10, y: 64, z: 11 });
+    assert.deepEqual(collects[1], { type: 'own_unknown_collect', connectionEpoch: 1, entityId: 801, count: 3, facts: undefined, firstSeenAt: undefined, atMs: 1_000 });
+    assert.equal(t.collectedKind(801), 'unknown');
+    assert.equal(t.collectedKind(802), 'non_item');
+    p.destroy(800, 801, 802);
+    assert.equal(t.collectedKind(802), 'non_item', 'settlement still knows the server-announced kind after destroy');
+  });
 });
