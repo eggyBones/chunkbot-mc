@@ -59,7 +59,9 @@ export function mob(key: string, distance: number, over: Partial<SafetyEntityFac
     height: 1.95,
     approaching: null,
     aggressive: null,
-    baby: null,
+    // Test builder's ordinary zombie-family control is a known adult. Unknown
+    // age cases must override with null; spiders have no baby property.
+    baby: ['zombie', 'husk', 'zombie_villager', 'drowned'].includes(key) ? false : null,
     fuse: key === 'creeper' ? { swelling: false, ignited: false } : null,
     heldItem: null,
     damagedSelfAtMs: null,
