@@ -56,6 +56,11 @@ function walkPredicate(p: OutcomePredicate, hints: TaskHints): void {
     case 'entity_outcome':
       addSelector(p.target, hints);
       return;
+    case 'blocks_removed':
+      // The bound target scopes the work; the selector names what must go (and what drops may be wanted).
+      hints.keys.push(p.selector);
+      addSelector(p.target, hints);
+      return;
   }
 }
 

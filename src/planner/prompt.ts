@@ -47,7 +47,8 @@ Outcome (the goal contract)
 - Quantities: inventory_amount mode "collect_additional" = N more than the owner-visible admission inventory (new acquisition); mode "possess" = currently holds at least N (counts what Chunkbot already had). Choose the one the owner meant and say so in the interpretation.
 - inventory_delta (tasks) = items acquired since that TASK started; set mayBeConsumedLater=true for ingredients that later steps will consume (the milestone stays credited after crafting uses them). Final outputs belong in the outcome, not only in ingredient tasks.
 - Item identity matters. Breaking a block may drop a different item, or nothing without the right tool; crafting and smelting change items. Check harvest/recipe/smelting knowledge instead of assuming.
-- crafting_result / smelting_result count only skill-confirmed crafts / furnace collections since binding. equipped checks a slot. near_target / visited_location need a resolvable target. block_state / container_state check observed blocks / server-synced container reads. entity_outcome works only for an observed entity handle (or owner presence).
+- crafting_result / smelting_result count only skill-confirmed crafts / furnace collections since binding. equipped checks a slot. near_target / visited_location need a resolvable target. block_state / container_state check observed blocks / server-synced container reads. entity_outcome works only for an observed entity handle (or owner presence); observed_defeated needs the server death status.
+- blocks_removed {target: observed grp-/blk- handle, selector: key or tag such as #minecraft:logs} = THAT observed group/block no longer holds matching blocks (code binds the positions; newly seen members of the same group join). Use it to remove a specific thing (a tree, a remnant): put the group handle in the mining task's targetSelectors so only that group's blocks are eligible; unrelated similar blocks stay intact.
 
 Tasks
 - Each task: objective, decisionInstruction (for Jev, about this step only), allowedCapabilities (only catalog ids), targetSelectors, parameters, completion (a predicate code can evaluate for this step).
@@ -112,6 +113,7 @@ export function renderObservation(s: ObservationSnapshot | null, maxBlocks = 96)
     blocksOmitted: Math.max(0, s.blocks.length - maxBlocks),
     blockSummary: s.blockSummary,
     frontiers: s.frontiers.map((f) => ({ handle: f.handle, at: pos(f.at), distance: f.distance, direction: f.direction, visited: f.visited })),
+    groups: (s.groups ?? []).map((g) => ({ handle: g.handle, class: g.class, members: g.members, keys: g.keys, nearest: pos(g.at), distance: g.distance, min: g.min, max: g.max, support: g.support, ...(g.truncated ? { truncated: true } : {}) })),
     remembered: s.remembered.map((a) => ({ anchorId: a.anchorId, label: a.label, at: pos(a.at), dimension: a.dimension, ageSeconds: Math.max(0, Math.round((s.takenAtMs - a.observedAtMs) / 1000)), source: a.source })),
     perception: s.perception
       ? { radius: s.perception.radius, truncated: s.perception.truncated, policy: s.perception.policy, ...(s.perception.travel ? { travel: { anchor: pos(s.perception.travel.anchor), radius: s.perception.travel.radius, distanceFromAnchor: s.perception.travel.distanceFromAnchor } } : {}) }

@@ -41,15 +41,32 @@ const PATTERNS: Array<{ re: RegExp; why: string }> = [
   { re: /\b(which|what)\s+(one|tree|chicken|target|item|block|material|kind|type|site|place|location)\s+(do|did|should|would)\s+you\b/i, why: 'asks which target' },
 ];
 
-/** Quoted owner words are data (e.g. an interpretation quoting the instruction), not Chunkbot asking. */
-function withoutQuotes(text: string): string {
-  return text.replace(/"[^"]{0,240}"|“[^”]{0,240}”/g, '""');
+const norm = (t: string) => t.toLowerCase().replace(/\s+/g, ' ').trim();
+
+/**
+ * Only an EXACT echo of the owner's actual words (code-supplied `ownerText`,
+ * e.g. the instruction) is treated as data inside quotes. A quote the planner
+ * invented — e.g. "Would you like stone or cobblestone?" — is still checked:
+ * quoting cannot launder a question (MB-PLAN-006 review).
+ */
+function withoutOwnerEchoes(text: string, ownerText: string | undefined): string {
+  if (!ownerText) return text;
+  const owner = norm(ownerText);
+  if (!owner) return text;
+  return text.replace(/"([^"]{1,500})"|\u201c([^\u201d]{1,500})\u201d/g, (whole, a: string | undefined, b: string | undefined) => {
+    const inner = norm(a ?? b ?? '');
+    return inner.length > 0 && owner.includes(inner) ? '""' : whole;
+  });
 }
 
-/** Why `text` asks the owner something (first matching rule), or undefined when declarative. */
-export function ownerQuestionIn(text: string | null | undefined): string | undefined {
+/**
+ * Why `text` asks the owner something (first matching rule), or undefined when
+ * declarative. `ownerText` is the code-known owner wording that may be echoed
+ * verbatim in quotes; nothing else is exempt.
+ */
+export function ownerQuestionIn(text: string | null | undefined, ownerText?: string): string | undefined {
   if (!text) return undefined;
-  const t = withoutQuotes(text);
+  const t = withoutOwnerEchoes(text, ownerText);
   for (const p of PATTERNS) if (p.re.test(t)) return p.why;
   return undefined;
 }
@@ -79,7 +96,7 @@ export function ownerFacingFields(raw: unknown): Array<{ where: string; text: st
  * `question` field, or owner-facing text that asks the owner something. Each
  * problem starts with OWNER_QUESTION_PROBLEM. Empty: declarative.
  */
-export function ownerQuestionProblems(raw: unknown): string[] {
+export function ownerQuestionProblems(raw: unknown, ownerText?: string): string[] {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
   const o = raw as Record<string, unknown>;
   const problems: string[] = [];
@@ -87,7 +104,7 @@ export function ownerQuestionProblems(raw: unknown): string[] {
   else if (typeof o['question'] === 'string' && o['question'].trim().length > 0) problems.push(`${OWNER_QUESTION_PROBLEM}: a proposal cannot carry an owner question; ${SHORT_GUIDANCE}`);
   for (const f of ownerFacingFields(raw)) {
     if (f.where === 'question') continue;
-    const why = ownerQuestionIn(f.text);
+    const why = ownerQuestionIn(f.text, ownerText);
     if (why && problems.length < 6) problems.push(`${OWNER_QUESTION_PROBLEM}: ${f.where} ${why}; write it as a declarative assumption, action or blocker`);
   }
   return problems;

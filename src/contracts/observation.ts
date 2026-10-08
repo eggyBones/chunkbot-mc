@@ -48,6 +48,33 @@ export const FrontierSchema = z
   .strict();
 export type Frontier = z.infer<typeof FrontierSchema>;
 
+/**
+ * MB-PLAN-006 N-G3: a bounded group of CONNECTED VISIBLE blocks of one
+ * code-owned structure class (e.g. `tree`: logs/stems/wood plus leaves), so a
+ * multi-block thing ("that floating tree") can be bound as ONE target. Built
+ * only from voxels seen in this snapshot (26-connectivity); hidden members
+ * are not reported. `support` comes from loaded collision data directly
+ * beneath the visible trunk members only: `grounded` (some member rests on a
+ * solid non-member block), `floating` (none does), `unknown` (not loaded).
+ */
+export const BlockGroupSchema = z
+  .object({
+    handle: ObservationHandleSchema,
+    class: z.string().regex(/^[a-z_]{1,24}$/),
+    /** Visible member counts by registry key (bounded). */
+    keys: z.array(z.object({ key: RegistryKeySchema, count: z.number().int().positive() }).strict()).max(8),
+    members: z.number().int().positive(),
+    /** Nearest visible member. */
+    at: Vec3Schema,
+    distance: z.number().nonnegative(),
+    min: Vec3Schema,
+    max: Vec3Schema,
+    support: z.enum(['grounded', 'floating', 'unknown']),
+    truncated: z.boolean(),
+  })
+  .strict();
+export type BlockGroup = z.infer<typeof BlockGroupSchema>;
+
 export const ObservationSnapshotSchema = z
   .object({
     id: SnapshotIdSchema,
@@ -81,6 +108,8 @@ export const ObservationSnapshotSchema = z
       .max(BOUNDS.listMedium)
       .default([]),
     frontiers: z.array(FrontierSchema).max(BOUNDS.listSmall).default([]),
+    /** MB-PLAN-006: connected visible block groups (bounded; nearest first). Absent on older producers. */
+    groups: z.array(BlockGroupSchema).max(BOUNDS.listSmall).optional(),
     /** The perception policy and honest limits that produced this snapshot. */
     perception: z
       .object({

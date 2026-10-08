@@ -67,6 +67,16 @@ export const AtomicPredicateSchema = z.discriminatedUnion('predicate', [
       outcome: z.enum(['observed_defeated', 'observed_present']),
     })
     .strict(),
+  /**
+   * MB-PLAN-006 N-G3: removal of an OBSERVED target — a block group handle
+   * (`grp-`) or a single block handle (`blk-`). Code binds the member positions
+   * matching `selector` (e.g. #minecraft:logs) at binding time, may add newly
+   * seen connected members of the same group (bounded, near the bound area),
+   * and is satisfied only when the server states every bound position no
+   * longer holds a matching block. Never satisfied by collecting similar
+   * blocks elsewhere.
+   */
+  z.object({ predicate: z.literal('blocks_removed'), target: TargetSelectorSchema, selector: RegistryKeySchema }).strict(),
   /** MB-MEM-001: a durable LOCAL memory write (not a world effect), evaluated by the memory store. */
   MemoryStatePredicateSchema,
   /**

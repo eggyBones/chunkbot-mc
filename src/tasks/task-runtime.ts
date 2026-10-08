@@ -50,6 +50,7 @@ import type {
 import { buildState, describePredicate, requestBytes } from '../decision/context.ts';
 import { LIMIT_KINDS, NOT_READY_KINDS, isDecisionError } from '../decision/errors.ts';
 import { MAX_REQUEST_BYTES } from '../decision/pricing.ts';
+import { publicTaskLabel } from '../goals/public-text.ts';
 
 /** Skill-owned continuation policy (see SkillDefinition.sustained). */
 export interface SustainPolicy {
@@ -57,7 +58,11 @@ export interface SustainPolicy {
   windowElapsed(outcome: SkillOutcome): boolean;
 }
 
-type ResolvedTarget = { kind: 'block'; x: number; y: number; z: number } | { kind: 'entity' | 'drop'; entityId: number } | { kind: 'frontier'; at: { x: number; y: number; z: number } };
+type ResolvedTarget =
+  | { kind: 'block'; x: number; y: number; z: number }
+  | { kind: 'entity' | 'drop'; entityId: number }
+  | { kind: 'frontier'; at: { x: number; y: number; z: number } }
+  | { kind: 'group'; class: string; members: ReadonlyArray<{ x: number; y: number; z: number }> };
 
 export interface TaskRuntimeDeps {
   perception: {
@@ -179,7 +184,14 @@ export class TaskRuntime implements TaskExecutionPort {
       if ('error' in r) return `stale:${o['handle']}`;
       const t = r.target;
       const rest = Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'snapshotId' && k !== 'handle').map(([k, v]) => [k, this.identity(v)]));
-      const id = t.kind === 'block' ? `block:${t.x},${t.y},${t.z}` : t.kind === 'frontier' ? `frontier:${Math.round(t.at.x)},${Math.round(t.at.y)},${Math.round(t.at.z)}` : `entity:${t.entityId}`;
+      const id =
+        t.kind === 'block'
+          ? `block:${t.x},${t.y},${t.z}`
+          : t.kind === 'frontier'
+            ? `frontier:${Math.round(t.at.x)},${Math.round(t.at.y)},${Math.round(t.at.z)}`
+            : t.kind === 'group'
+              ? `group:${t.class}:${t.members.map((m) => `${m.x},${m.y},${m.z}`).sort()[0] ?? ''}`
+              : `entity:${t.entityId}`;
       return { ...rest, target: id };
     }
     return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, this.identity(v)]));
@@ -253,7 +265,8 @@ export class TaskRuntime implements TaskExecutionPort {
       return result;
     };
 
-    emit('task_started', { mode: task.mode, objective: clip(task.spec.objective, 300), allowedCapabilities: task.spec.allowedCapabilities, completion: describePredicate(task.spec.completion) });
+    // Terminal-visible: app-owned step label, never the planner's prose objective (MB-PLAN-006).
+    emit('task_started', { mode: task.mode, step: publicTaskLabel(task.spec), allowedCapabilities: task.spec.allowedCapabilities, completion: describePredicate(task.spec.completion) });
     try {
       assertCurrent();
       // Task-admission baselines (acquisition deltas are measured from here).

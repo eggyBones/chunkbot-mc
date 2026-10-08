@@ -190,7 +190,8 @@ describe('no follow-up questions (MB-PLAN-006)', () => {
     await until(() => engine.status().goal?.state === 'blocked');
     const goal = engine.status().goal!;
     assert.equal(goal.terminal?.reason, 'cannot_execute');
-    assert.match(goal.terminal!.detail, /no floating tree is visible/);
+    assert.match(goal.terminal!.detail, /the planner found no supported way to continue/);
+    assert.doesNotMatch(goal.terminal!.detail, /floating/, 'planner prose is never relayed')
     assert.equal(goal.counters?.questionRefusals, 2);
     assert.ok(!notices.some((n) => /confirm which tree|Let me know/i.test(n.text)), 'raw planner questions never reach a notice');
   });
@@ -410,6 +411,8 @@ describe('proposal validation and limits', () => {
     planner.respond({ version: 1, disposition: 'cannot_execute', interpretation: 'travel to the moon', missing: 'Minecraft has no moon dimension to travel to', missingCapabilities: [], verifiedProgress: '' });
     await until(() => engine.status().goal?.state === 'blocked');
     assert.equal(engine.status().goal?.terminal?.reason, 'cannot_execute');
-    assert.match(engine.status().goal?.terminal?.detail ?? '', /no moon dimension/);
+    // MB-PLAN-006: the planner's prose stays internal; the owner sees an app-owned blocker.
+    assert.match(engine.status().goal?.terminal?.detail ?? '', /the planner found no supported way to continue/);
+    assert.doesNotMatch(engine.status().goal?.terminal?.detail ?? '', /moon/);
   });
 });

@@ -69,6 +69,7 @@ function groundLocation(ctx: ExecuteContext, memory: MemoryService, target: Move
         return { location: { dimension, at: { x: t.x, y: t.y, z: t.z } }, basis: `visible block minecraft:${t.name} at ${t.x},${t.y},${t.z} (line of sight now)`, key: `minecraft:${t.name}` };
       }
       if (t.kind === 'frontier') return { location: { dimension, at: pos3(t.at) }, basis: `observed frontier waypoint ${target.handle}` };
+      if (t.kind === 'group') return precondition('wrong_target_kind', `${target.handle} is a block group; name one of its blocks`);
       if (!services.perception.entityVisibleNow(t.entityId)) return precondition('target_not_visible', `${target.handle} is not visible now; its position is not used`);
       const e = bot.entities[t.entityId];
       if (!e?.position) return precondition('target_gone', `${target.handle} is no longer present`);

@@ -84,7 +84,7 @@ describe('H1/H2 smooth handoff while following', () => {
     assert.equal(oldRun.task.signal.aborted, false, 'the admitted follow task keeps running during preparation');
     assert.equal(mid.goal?.instruction, 'follow me');
     assert.equal(mid.goal?.state, 'executing');
-    assert.equal(mid.task?.objective, 'stay near the owner');
+    assert.equal(mid.task?.objective, 'follow_entity until the bot is within 3 blocks of you', 'owner-visible step label is app-owned');
     assert.equal(mid.pending?.state, 'preparing');
     assert.equal(mid.pending?.plannerTurns, 1);
     assert.equal(h.tasks.runs.length, 1, 'nothing runs under pending ownership');
@@ -344,7 +344,8 @@ describe('H6 honest failures before admission keep the current task', () => {
 
   it('cannot_execute: the exact reason is reported and the old task continues', async () => {
     const h = await failing(() => ({ kind: 'reply', proposal: { version: 1, disposition: 'cannot_execute', interpretation: 'fly', missing: 'there is no flying capability', missingCapabilities: [], verifiedProgress: '' } }));
-    assert.match(h.notices.at(-1)!.text, /not started \(cannot_execute\): there is no flying capability/);
+    assert.match(h.notices.at(-1)!.text, /not started \(cannot_execute\): the planner found no supported way to continue/);
+    assert.doesNotMatch(h.notices.at(-1)!.text, /flying/, 'planner prose stays internal (MB-PLAN-006)');
     await h.engine.stop('owner_stop');
   });
 });

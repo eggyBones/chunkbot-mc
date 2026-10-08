@@ -46,6 +46,8 @@ export const PREDICATE_FIELDS = {
   crafting_result: ['output', 'atLeast'],
   smelting_result: ['output', 'atLeast'],
   entity_outcome: ['target', 'outcome'],
+  /** MB-PLAN-006: removal of one observed block group / block. */
+  blocks_removed: ['target', 'selector'],
   /** MB-MEM-001 (offered only when memory capabilities are installed). */
   memory_state: ['label', 'expect'],
   /** MB-FLOW-001 (offered only when home construction capabilities are installed). */
@@ -149,6 +151,7 @@ export function plannerOutputSchema(catalog: CapabilityCatalog): Record<string, 
       obj({ predicate: one('container_state'), target: targetRef, selector: key, atLeast: count }),
       obj({ predicate: { type: 'string', enum: ['crafting_result', 'smelting_result'] }, output: key, atLeast: count }),
       obj({ predicate: one('entity_outcome'), target: targetRef, outcome: { type: 'string', enum: ['observed_defeated', 'observed_present'] } }),
+      obj({ predicate: one('blocks_removed'), target: targetRef, selector: key }),
       ...(memory ? [obj({ predicate: one('memory_state'), label: str, expect: { type: 'string', enum: ['recorded', 'noted', 'forgotten'] } })] : []),
       ...(construction ? [obj({ predicate: one('structure_state'), structure: one('home'), expect: { type: 'string', enum: ['site_approved', 'enclosed', 'complete'] } })] : []),
       ...(survival ? [obj({ predicate: one('survival_state'), routine: { type: 'string', enum: [...SURVIVAL_ROUTINES] }, expect: { type: 'string', enum: ['recovered', 'concluded', 'satisfied'] } })] : []),

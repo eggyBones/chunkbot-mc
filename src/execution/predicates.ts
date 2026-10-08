@@ -27,6 +27,7 @@ import type {
 import type { GameSession } from '../game/connection.ts';
 import type { SkillServices } from '../skills/definition.ts';
 import { countMatching } from '../skills/common.ts';
+import { UNCONFIRMED_BLOCK } from '../perception/visibility.ts';
 import { correlatedResync } from './actuator.ts';
 import { inventoryFromConfirmed, type InventoryView } from './ledger.ts';
 import type { ActuatorLeases } from './lease.ts';
@@ -36,6 +37,12 @@ const itemLoader = createRequire(import.meta.url)('prismarine-item') as (registr
 
 interface Bound extends BoundPredicate {
   latched: Set<string>;
+  /**
+   * MB-PLAN-006 blocks_removed: member positions bound per predicate path
+   * ("x,y,z" -> key at binding), the bound area (for bounded growth) and why a
+   * binding failed. Never exposed to models.
+   */
+  removal?: Map<string, { members: Map<string, string>; group?: { class: string; min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } }; issue?: string }>;
   /** Lifecycle interruptions recorded by the ledger when the baselines were bound. */
   lifecycleMark?: number;
   connectionEpoch?: number;
@@ -139,9 +146,11 @@ export class PredicateEngine implements PredicateEvaluator {
     // A goal outcome bound later measures acquisition from the ADMISSION counts.
     const inv = admission ? undefined : await this.inventory(signal);
     const fromAdmission = admission?.counts ? new Map(Object.entries(admission.counts)) : undefined;
-    const visit = (p: OutcomePredicate) => {
-      if (p.predicate === 'all' || p.predicate === 'any') p.of.forEach(visit);
-      else if (p.predicate === 'not') visit(p.of);
+    const removal: NonNullable<Bound['removal']> = new Map();
+    const visit = (p: OutcomePredicate, path = 'root') => {
+      if (p.predicate === 'all' || p.predicate === 'any') p.of.forEach((c, i) => visit(c, `${path}.${i}`));
+      else if (p.predicate === 'not') visit(p.of, `${path}.0`);
+      else if (p.predicate === 'blocks_removed') removal.set(path, this.bindRemoval(p));
       else if (p.predicate === 'inventory_delta' || (p.predicate === 'inventory_amount' && p.mode === 'collect_additional')) {
         const counts = admission ? fromAdmission : inv?.counts;
         baselines[`inv:${p.selector}`] = counts ? countMatching(counts, p.selector, this.deps.services) : Number.NaN;
@@ -157,6 +166,7 @@ export class PredicateEngine implements PredicateEvaluator {
       boundAtMs: admission ? admission.capturedAtMs : this.deps.services.clock.now(),
       baselines,
       latched: new Set(),
+      ...(removal.size > 0 ? { removal } : {}),
       lifecycleMark: admission?.lifecycleMark ?? this.deps.services.ledger.invalidations.length,
       ...(admission ? (admission.connectionEpoch !== undefined ? { connectionEpoch: admission.connectionEpoch } : {}) : s ? { connectionEpoch: s.connectionEpoch } : {}),
       ...(owner ? { owner: { goalId: owner.goalId, goalEpoch: owner.goalEpoch } } : {}),
@@ -333,6 +343,8 @@ export class PredicateEngine implements PredicateEvaluator {
         const gone = !s.bot.entities[id];
         return result(gone ? 'unknown' : 'unsatisfied', gone ? 'entity is gone but no death status was observed; not counted as defeated' : 'entity still present', { entityId: id, gone });
       }
+      case 'blocks_removed':
+        return this.evalRemoval(p, bound, path, s);
       case 'structure_state': {
         const structures = this.deps.structures;
         if (!structures) return result('unknown', 'home construction is not installed in this run (autonomy home disabled or no durable scope)');
@@ -354,6 +366,75 @@ export class PredicateEngine implements PredicateEvaluator {
         return { status: m.status, predicate: 'memory_state', detail: m.detail, evidence: { ...m.evidence, memoryBaseline: baseline, confirmation: 'local_memory_store' } };
       }
     }
+  }
+
+  /** MB-PLAN-006: bind the observed target's member positions matching the selector (code-only; no model data). */
+  private bindRemoval(p: Extract<OutcomePredicate, { predicate: 'blocks_removed' }>): NonNullable<Bound['removal']> extends Map<string, infer V> ? V : never {
+    const { services } = this.deps;
+    const members = new Map<string, string>();
+    if (p.target.kind !== 'observed') return { members, issue: `blocks_removed needs an observed group or block handle, not ${p.target.kind}` };
+    const rec = services.perception.identity(p.target.snapshotId, p.target.handle);
+    if ('error' in rec) return { members, issue: `target ${p.target.handle} cannot be resolved at binding (${rec.error})` };
+    const matches = (name: string) => this.keyMatches(p.selector, `minecraft:${name}`);
+    const t = rec.target;
+    if (t.kind === 'block') {
+      if (matches(t.name)) members.set(`${t.x},${t.y},${t.z}`, `minecraft:${t.name}`);
+      return members.size ? { members } : { members, issue: `${p.target.handle} is ${t.name}, not ${p.selector}` };
+    }
+    if (t.kind !== 'group') return { members, issue: `${p.target.handle} is a ${t.kind}, not a block group or block` };
+    for (const m of t.members) if (matches(m.name)) members.set(`${m.x},${m.y},${m.z}`, `minecraft:${m.name}`);
+    const xs = t.members.map((m) => m.x);
+    const ys = t.members.map((m) => m.y);
+    const zs = t.members.map((m) => m.z);
+    const group = { class: t.class, min: { x: Math.min(...xs), y: Math.min(...ys), z: Math.min(...zs) }, max: { x: Math.max(...xs), y: Math.max(...ys), z: Math.max(...zs) } };
+    return members.size ? { members, group } : { members, group, issue: `group ${p.target.handle} has no visible ${p.selector} member` };
+  }
+
+  private keyMatches(selector: string, key: string): boolean {
+    return selector.startsWith('#') ? Boolean(this.deps.services.knowledge.recipes?.matches(selector, key)) : key === selector;
+  }
+
+  /** Bound removal evaluation: every bound position must be server-stated free of a matching block. */
+  private evalRemoval(p: Extract<OutcomePredicate, { predicate: 'blocks_removed' }>, bound: Bound, path: string, s: GameSession | undefined): PredicateEvaluation {
+    const result = (status: PredicateEvaluation['status'], detail: string, evidence: Ev = {}): PredicateEvaluation => ({ status, predicate: 'blocks_removed', detail, evidence });
+    const b = bound.removal?.get(path);
+    if (!b) return result('unknown', 'no removal binding for this predicate');
+    if (b.issue) return result('unknown', b.issue);
+    if (!s) return result('unknown', 'not connected');
+    const { services } = this.deps;
+    const interrupted = (bound.lifecycleMark !== undefined && services.ledger.invalidations.length !== bound.lifecycleMark) || (bound.connectionEpoch !== undefined && s.connectionEpoch !== bound.connectionEpoch);
+    if (interrupted) return result('unknown', 'a lifecycle interruption happened since binding; the bound positions must be re-observed', { lifecycleInterrupted: true });
+    // Bounded growth: newly SEEN members of the same group (connected, of the bound class, near the bound area).
+    if (b.group && b.members.size < 256) {
+      const snap = services.perception.latest();
+      for (const g of snap?.groups ?? []) {
+        if (g.class !== b.group.class) continue;
+        const members = services.perception.groupMembers(snap!.id, g.handle) ?? [];
+        if (!members.some((m) => b.members.has(`${m.x},${m.y},${m.z}`))) continue;
+        for (const m of members) {
+          const k = `${m.x},${m.y},${m.z}`;
+          const near = m.x >= b.group.min.x - 2 && m.x <= b.group.max.x + 2 && m.y >= b.group.min.y - 2 && m.y <= b.group.max.y + 2 && m.z >= b.group.min.z - 2 && m.z <= b.group.max.z + 2;
+          if (near && !b.members.has(k) && this.keyMatches(p.selector, `minecraft:${m.name}`) && b.members.size < 256) b.members.set(k, `minecraft:${m.name}`);
+        }
+      }
+    }
+    const ev = s.evidence as Partial<Pick<GameSession['evidence'], 'predictionPending'>>;
+    const world = services.perception.world();
+    let remaining = 0;
+    let removed = 0;
+    let unknown = 0;
+    for (const k of b.members.keys()) {
+      const [x, y, z] = k.split(',').map(Number) as [number, number, number];
+      const pending = typeof ev.predictionPending === 'function' ? ev.predictionPending(x, y, z) : true;
+      const cur = pending ? undefined : world?.blockAt(x, y, z);
+      if (!cur || cur.name === UNCONFIRMED_BLOCK) unknown += 1;
+      else if (this.keyMatches(p.selector, `minecraft:${cur.name}`)) remaining += 1;
+      else removed += 1;
+    }
+    const evidence: Ev = { bound: b.members.size, removed, remaining, unknown, selector: p.selector, source: 'server_world_state_no_pending_prediction' };
+    if (remaining > 0) return result('unsatisfied', `${removed}/${b.members.size} bound ${p.selector} positions removed; ${remaining} remain${unknown ? `, ${unknown} unknown` : ''}`, evidence);
+    if (unknown > 0) return result('unknown', `${removed}/${b.members.size} bound positions removed; ${unknown} cannot be confirmed now (unloaded or awaiting a server statement)`, evidence);
+    return result('satisfied', `all ${b.members.size} bound ${p.selector} positions of the target are removed (server world state)`, evidence);
   }
 
   private position(sel: TargetSelector, s: GameSession, bound?: Bound): { at: { x: number; y: number; z: number }; label: string; remembered?: boolean } | { unknown: string } {
@@ -378,6 +459,12 @@ export class PredicateEngine implements PredicateEvaluator {
         const t = rec.target;
         if (t.kind === 'block') return { at: { x: t.x + 0.5, y: t.y, z: t.z + 0.5 }, label: `${t.name} ${sel.handle}` };
         if (t.kind === 'frontier') return { at: t.at, label: `frontier ${sel.handle}` };
+        if (t.kind === 'group') {
+          const me = s.bot.entity.position;
+          const m = [...t.members].sort((a, b) => Math.hypot(a.x + 0.5 - me.x, a.y - me.y, a.z + 0.5 - me.z) - Math.hypot(b.x + 0.5 - me.x, b.y - me.y, b.z + 0.5 - me.z))[0];
+          if (!m) return { unknown: `group ${sel.handle} has no members` };
+          return { at: { x: m.x + 0.5, y: m.y, z: m.z + 0.5 }, label: `${t.class} group ${sel.handle} (nearest observed member)` };
+        }
         // Entity positions only from current line of sight (never hidden protocol positions).
         if (!services.perception.entityVisibleNow(t.entityId)) return { unknown: `${sel.handle} is not visible now; its position is not reported` };
         const e = s.bot.entities[t.entityId];
@@ -404,7 +491,7 @@ export class PredicateEngine implements PredicateEvaluator {
           .sort((a, b) => a.distance - b.distance)[0];
         if (!match) return { unknown: `no visible ${sel.key} in the latest observation` };
         const rec = snap ? services.perception.resolve(snap.id, match.handle) : undefined;
-        if (rec && !('error' in rec) && rec.target.kind !== 'block' && rec.target.kind !== 'frontier') {
+        if (rec && !('error' in rec) && (rec.target.kind === 'entity' || rec.target.kind === 'drop')) {
           if (!services.perception.entityVisibleNow(rec.target.entityId)) return { unknown: `${match.key} ${match.handle} is not visible now` };
           const e = s.bot.entities[rec.target.entityId];
           if (e) return { at: e.position, label: `${match.key} ${match.handle}` };

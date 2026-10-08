@@ -69,7 +69,7 @@ describe('smooth handoff through the application', () => {
     h.game.chat({ kind: 'player', text: '!chunkbot status', ...OWNER });
     await until(() => h.game.replies.some((r) => r.startsWith('Status:')));
     assert.ok(h.lines.some((l) => /\[status\] goal: goal-0001 executing "follow me"/.test(l)));
-    assert.ok(h.lines.some((l) => /\[status\] task: task-0001 \(maintain\) "stay near the owner"/.test(l)));
+    assert.ok(h.lines.some((l) => /\[status\] task: task-0001 \(maintain\) "follow_entity until the bot is within 3 blocks of you"/.test(l)));
     assert.ok(h.lines.some((l) => /\[status\] pending instruction: intent-0001 preparing "get two cobblestone" \(planner turns 1; not admitted; goal-0001 keeps control until handoff\)/.test(l)), h.lines.join('\n'));
     assert.match(h.game.replies.find((r) => r.startsWith('Status:'))!, /goal executing, new instruction preparing/);
     await until(() => h.app.engine.status().goal?.instruction === 'get two cobblestone' && h.tasks.runs.length === 2, 3_000);
@@ -160,7 +160,7 @@ describe('dashboard integration seams (MB-UI-001 <- MB-FLOW-002)', () => {
     assert.equal(pending?.instruction, 'get two cobblestone');
     const section = projectDirective(status, pending, undefined);
     assert.equal(section.mode, 'owner_directive');
-    assert.equal(section.task.current?.objective, 'stay near the owner', 'the old task is still the active one');
+    assert.equal(section.task.current?.objective, 'follow_entity until the bot is within 3 blocks of you', 'the old task is still the active one (app-owned label)');
     assert.equal(section.pending?.state, 'preparing');
     assert.equal(pendingDirectiveFrom(h.app.engine.status())?.instruction, 'get two cobblestone');
     await h.app.shutdown('operator_quit');

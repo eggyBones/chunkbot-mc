@@ -83,6 +83,8 @@ export interface ProposalContext {
   route?: RouteProposalContext;
   /** Preparation drafts: no goal epoch/route authorization exists yet; route checks run after the real admission. */
   routeDeferred?: boolean;
+  /** MB-PLAN-006: the code-known owner/automatic instruction; only exact quoted echoes of it are exempt from the question check. */
+  ownerText?: string;
 }
 
 const MAX_PROBLEMS = 12;
@@ -209,6 +211,12 @@ class Checker {
         if (r && r.isItem(p.output) && !r.cookingOutput(p.output)) this.add(`${where}.output: no furnace-type recipe produces ${p.output} in ${r.version}`);
         return;
       }
+      case 'blocks_removed':
+        // MB-PLAN-006: removal of ONE observed target (a grp- block group or a blk- block) shown to the planner.
+        if (p.target.kind !== 'observed') this.add(`${where}.target: blocks_removed needs an observed block group (grp-) or block (blk-) handle`);
+        else if (!/^(grp|blk)-/.test(p.target.handle)) this.add(`${where}.target: ${p.target.handle} is not a block group or block handle`);
+        this.selector(p.target, `${where}.target`);
+        return this.anyKey(p.selector, `${where}.selector`);
       case 'entity_outcome':
         if (p.target.kind !== 'observed' && p.target.kind !== 'owner') this.add(`${where}.target: entity outcomes are evaluated only for an observed entity handle or the owner`);
         else if (p.target.kind === 'owner' && p.outcome === 'observed_defeated') this.add(`${where}: owner defeat is not an evaluated outcome`);
@@ -329,7 +337,7 @@ function canonical(v: unknown): string {
 export function checkProposal(raw: unknown, registry: CapabilityRegistry, limits: ProposalLimits, ctx: ProposalContext = {}): ProposalCheck {
   const forbidden = scanForbidden(raw);
   if (forbidden.length > 0) return { ok: false, kind: 'forbidden', problems: forbidden };
-  const questions = ownerQuestionProblems(raw);
+  const questions = ownerQuestionProblems(raw, ctx.ownerText);
   if (questions.length > 0) return { ok: false, kind: 'policy', problems: questions };
   const parsed = PlannerProposalSchema.safeParse(raw);
   if (!parsed.success) {

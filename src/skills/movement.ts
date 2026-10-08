@@ -30,6 +30,13 @@ function resolveMoveTarget(ctx: ExecuteContext, target: MoveTarget): ResolvedPla
       const t = rec.target;
       if (t.kind === 'block') return { at: { x: t.x + 0.5, y: t.y, z: t.z + 0.5 }, label: `minecraft:${t.name} at ${t.x},${t.y},${t.z}`, block: { x: t.x, y: t.y, z: t.z } };
       if (t.kind === 'frontier') return { at: t.at, label: `frontier ${target.handle}` };
+      if (t.kind === 'group') {
+        // MB-PLAN-006: approach the bound group's nearest OBSERVED member (beside it, never on it).
+        const me = bot.entity.position;
+        const m = [...t.members].sort((a, b) => Math.hypot(a.x + 0.5 - me.x, a.y - me.y, a.z + 0.5 - me.z) - Math.hypot(b.x + 0.5 - me.x, b.y - me.y, b.z + 0.5 - me.z))[0];
+        if (!m) return precondition('target_gone', `group ${target.handle} has no observed members`);
+        return { at: { x: m.x + 0.5, y: m.y, z: m.z + 0.5 }, label: `${t.class} group ${target.handle} (minecraft:${m.name} at ${m.x},${m.y},${m.z})`, block: { x: m.x, y: m.y, z: m.z } };
+      }
       const live = liveEntity(services, session, target.snapshotId, target.handle);
       if ('error' in live) return precondition(live.error, live.detail);
       return { at: live.position, label: `minecraft:${live.name} (${target.handle})`, entityId: live.entityId };
@@ -126,13 +133,15 @@ export const moveNear: SkillDefinition<{ target: MoveTarget; within: number }> =
     for (const handle of scope.current) {
       const thing = [...snapshot.blocks, ...snapshot.entities, ...snapshot.drops].find((t) => t.handle === handle);
       const frontier = snapshot.frontiers.find((f) => f.handle === handle);
-      const at = thing?.at ?? frontier?.at;
+      const group = snapshot.groups?.find((g) => g.handle === handle);
+      const at = thing?.at ?? frontier?.at ?? group?.at;
       if (at && !services.perception.withinTravel(at)) {
         unavailable.push({ reason: 'outside_travel_bounds', detail: `named target ${handle} is outside the travel radius` });
         continue;
       }
       if (thing) add({ kind: 'handle', snapshotId: snapshot.id, handle }, `approach ${thing.key} ${handle}`, thing.distance);
       if (frontier) add({ kind: 'handle', snapshotId: snapshot.id, handle }, `approach frontier ${handle}`, frontier.distance);
+      if (group) add({ kind: 'handle', snapshotId: snapshot.id, handle }, `approach the ${group.class} group ${handle} (${group.members} visible blocks)`, group.distance);
     }
     if (scope.named && scope.current.size === 0) unavailable.push(namedTargetUnavailable(scope, 'destination'));
     if (hints.wantsOwner) {

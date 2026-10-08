@@ -56,8 +56,18 @@ export const GoalRecordSchema = z
         knowledgeRounds: z.number().int().nonnegative(),
         repairs: z.number().int().nonnegative(),
         retries: z.number().int().nonnegative(),
-        /** MB-PLAN-006: proposals refused because they asked the owner a question. */
-        questionRefusals: z.number().int().nonnegative(),
+        /**
+         * MB-PLAN-006: proposals refused because they asked the owner a question.
+         * Absent in records written before MB-PLAN-006: parsed as 0 (no refusal
+         * mechanism existed), never relabeled from `clarifications`.
+         */
+        questionRefusals: z.number().int().nonnegative().default(0),
+        /**
+         * LEGACY, history-only: owner clarification turns counted by releases
+         * before MB-PLAN-006 (they were part of plannerTurns). Preserved as written
+         * in old evidence; the current engine never writes it.
+         */
+        clarifications: z.number().int().nonnegative().optional(),
         replans: z.number().int().nonnegative(),
         windows: z.number().int().nonnegative(),
         tasksAdmitted: z.number().int().nonnegative(),

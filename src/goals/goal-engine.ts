@@ -101,6 +101,7 @@ import {
 } from '../contracts/index.ts';
 import { isOwnerQuestionProblem, questionBlockerText } from './declarative.ts';
 import { checkProposal, type ShownSnapshot } from './proposal.ts';
+import { publicBlocker, publicOutcome, publicTaskLabel } from './public-text.ts';
 import { ownerCoordinates } from './owner-coordinates.ts';
 import { PlannerSlot, type PlannerSlotKind } from './planner-slot.ts';
 import { regroundProposal } from './reground.ts';
@@ -533,6 +534,8 @@ export class GoalEngine {
   private cleanupBarrier: Promise<void> = Promise.resolve();
   private closed = false;
   private currentTask: EngineStatus['task'];
+  /** INTERNAL planner-facing objective of the current task (preparation context); never owner-visible (MB-PLAN-006). */
+  private currentTaskObjective: string | undefined;
   private lastTask: EngineStatus['lastTask'];
   private readonly inFlight = new Set<Promise<void>>();
   /** The single owned planner process. */
@@ -946,7 +949,7 @@ export class GoalEngine {
       knowledge: [...p.knowledge],
       turnKind: p.nextTurnKind,
       preparation: {
-        continuingTask: task ? task.objective : null,
+        continuingTask: task ? (this.currentTaskObjective ?? task.objective) : null,
         inventory: 'provisional_client_model',
         note: 'not admitted yet: earlier work may still change the world and inventory; code captures the server-confirmed admission inventory and revalidates this plan at the switch',
       },
@@ -1036,6 +1039,7 @@ export class GoalEngine {
             ...(p.dimension ? { dimension: p.dimension } : {}),
             ownerCoordinates: request.ownerCoordinates ?? [],
             priorResults: new Set(),
+            ownerText: p.instruction,
             ...(this.deps.memory ? { memory: { refs: this.deps.memory.shownPreparedRefs({ intentId: p.intentId, generation: p.generation }), kind: 'prepared' as const } } : {}),
             ...this.proposalExtras(undefined),
           },
@@ -1060,7 +1064,8 @@ export class GoalEngine {
             continue;
           }
           case 'cannot_execute':
-            this.discardPending(p, 'cannot_execute', `${proposal.missing}${proposal.missingCapabilities.length ? ` (missing capabilities: ${proposal.missingCapabilities.join(', ')})` : ''}`);
+            // MB-PLAN-006: the planner's wording stays internal (journal); the owner sees an app-owned blocker.
+            this.discardPending(p, 'cannot_execute', publicBlocker({ missingCapabilities: proposal.missingCapabilities, feedback: [] }));
             return;
           case 'plan': {
             const now = this.deps.clock.now();
@@ -1202,6 +1207,7 @@ export class GoalEngine {
     if (!snapshot) return;
     const handles = new Set<string>([...snapshot.blocks, ...snapshot.entities, ...snapshot.drops].map((t) => t.handle));
     for (const f of snapshot.frontiers) handles.add(f.handle);
+    for (const g of snapshot.groups ?? []) handles.add(g.handle);
     target.shown.set(snapshot.id, { handles, dimension: snapshot.dimension });
     while (target.shown.size > 4) target.shown.delete(target.shown.keys().next().value as string);
     for (const a of snapshot.remembered) target.anchors.add(a.anchorId);
@@ -1329,7 +1335,9 @@ export class GoalEngine {
     const taskId = this.deps.ids.next('task');
     if (active.record.state !== 'executing') this.setState(active, 'executing');
     const startedAtMs = this.deps.clock.now();
-    this.currentTask = { taskId, objective: truncate(spec.objective, 200), mode, startedAtMs, capabilities: [...spec.allowedCapabilities] };
+    // Owner-visible step label is app-owned (MB-PLAN-006); the planner's objective stays in internal evidence.
+    this.currentTask = { taskId, objective: publicTaskLabel(spec), mode, startedAtMs, capabilities: [...spec.allowedCapabilities] };
+    this.currentTaskObjective = truncate(spec.objective, 300);
     this.deps.store.record({ type: 'task_admitted', goalId: active.record.id, epoch: active.epoch, taskId, mode, objective: truncate(spec.objective, BOUNDS.text), allowedCapabilities: spec.allowedCapabilities });
     this.recordTimings(active, startedAtMs);
     const running = tasks.run({ taskId, goalId: active.record.id, goalEpoch: active.epoch, spec, mode, signal: active.abort.signal, isCurrent: () => this.active === active && this.epoch === active.epoch && !active.abort.signal.aborted });
@@ -1989,6 +1997,7 @@ export class GoalEngine {
             ...(active.dimension ? { dimension: active.dimension } : {}),
             ownerCoordinates: ownerCoordinateList,
             priorResults: new Set(active.priorResults.keys()),
+            ownerText: active.record.instruction,
             ...(this.deps.memory ? { memory: { refs: this.deps.memory.shownRefs({ goalId: active.record.id, goalEpoch: active.epoch }), kind: 'executable' as const } } : {}),
             ...this.proposalExtras(active.epoch),
           },
@@ -2010,7 +2019,6 @@ export class GoalEngine {
         }
         active.consecutiveRepairs = 0;
         delete active.rejection;
-        active.record.interpretation = truncate(proposal.interpretation, BOUNDS.text);
         this.deps.store.record({ type: 'planner_proposal', goalId: active.record.id, requestId, turn: c.plannerTurns, disposition: proposal.disposition, interpretation: proposal.interpretation });
         this.deps.journal?.record({ type: 'goal_proposal_accepted', goalId: active.record.id, requestId, turn: c.plannerTurns, turnKind, disposition: proposal.disposition, proposal: proposal as unknown as Record<string, unknown> });
 
@@ -2026,7 +2034,8 @@ export class GoalEngine {
             continue;
           }
           case 'cannot_execute': {
-            const detail = `${proposal.missing}${proposal.missingCapabilities.length ? ` (missing capabilities: ${proposal.missingCapabilities.join(', ')})` : ''}${proposal.verifiedProgress ? `; planner-reported progress: ${proposal.verifiedProgress}` : ''}; ${this.progressSummary(active)}`;
+            // MB-PLAN-006: planner prose (missing / verifiedProgress) stays internal; the owner-visible blocker is app-owned.
+            const detail = `${publicBlocker({ missingCapabilities: proposal.missingCapabilities, feedback: active.feedback })}; ${this.progressSummary(active)}`;
             await this.finishIfCurrent(active, 'cannot_execute', detail);
             return;
           }
@@ -2053,15 +2062,17 @@ export class GoalEngine {
               this.assertCurrent(active);
               active.outcome = { contract: proposal.outcome, canonical: canonicalJson(proposal.outcome), bound, interpretation: proposal.interpretation };
               active.record.outcome = truncate(`${proposal.outcome.kind}: ${JSON.stringify(outcomeRoot)}`, BOUNDS.text);
+              // Owner-visible interpretation is APP-OWNED, rendered from the accepted contract (MB-PLAN-006).
+              active.record.interpretation = truncate(publicOutcome(proposal.outcome), BOUNDS.text);
               this.deps.store.record({ type: 'goal_outcome_bound', goalId: active.record.id, kind: proposal.outcome.kind, baselines: bound.baselines, boundAtMs: bound.boundAtMs, fromAdmission: Boolean(active.baseline), ...(active.handoff ? { intentId: active.handoff.intentId } : {}) });
               this.deps.journal?.record({ type: 'goal_interpretation', goalId: active.record.id, interpretation: proposal.interpretation, outcome: proposal.outcome as unknown as Record<string, unknown>, baselines: bound.baselines });
-              this.deps.notify({ goalId: active.record.id, text: `Goal ${active.record.id}: ${truncate(proposal.interpretation, 200)}` });
+              this.deps.notify({ goalId: active.record.id, text: `Goal ${active.record.id}: ${active.record.interpretation}` });
             }
             c.windows += 1;
             c.tasksAdmitted += proposal.tasks.length;
             active.admittedTasks += proposal.tasks.length;
             this.deps.store.record({ type: 'goal_window', goalId: active.record.id, window: c.windows, source: turnKind === 'lookahead' ? 'lookahead' : 'planner_turn', tasks: proposal.tasks.map((t) => ({ objective: truncate(t.objective, 160), allowedCapabilities: t.allowedCapabilities })), morePlanningNeeded: proposal.morePlanningNeeded, counters: { ...c } });
-            this.deps.notify({ goalId: active.record.id, audience: 'operator', text: `Goal ${active.record.id} window ${c.windows}: ${proposal.tasks.length} task(s): ${proposal.tasks.map((t) => truncate(t.objective, 60)).join(' | ')}` });
+            this.deps.notify({ goalId: active.record.id, audience: 'operator', text: `Goal ${active.record.id} window ${c.windows}: ${proposal.tasks.length} task(s): ${proposal.tasks.map((t) => truncate(publicTaskLabel(t), 80)).join(' | ')}` });
             // Execute the window in order. A task completing is NOT goal completion.
             const maintainKey = proposal.outcome.kind === 'persistent' ? canonicalJson(proposal.outcome.maintain) : undefined;
             let last: TaskResult | undefined;

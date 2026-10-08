@@ -172,6 +172,8 @@ const FACINGS = ['north', 'south', 'east', 'west'] as const;
 const SiteParams = z
   .object({
     interior: z.union([z.literal(2), z.literal(3)]).optional(),
+    /** MB-PLAN-006 "here": search around the FRESH visible owner (default: the bot's own position). */
+    near: z.enum(['self', 'owner']).optional(),
     origin: z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).strict().optional(),
     facing: z.enum(FACINGS).optional(),
   })
@@ -192,7 +194,10 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
       id: 'select_home_site',
       family: 'construction',
       purpose: 'Approve one small vacant site near the bot for the home shelter (flat natural ground in sight, empty volume, no nearby structures); recorded durably for this world profile. A site is not a home.',
-      parameters: [{ name: 'interior', type: 'integer', description: 'interior side length (2 or 3; default from config)', required: false, minimum: 2, maximum: 3 }],
+      parameters: [
+        { name: 'interior', type: 'integer', description: 'interior side length (2 or 3; default from config)', required: false, minimum: 2, maximum: 3 },
+        { name: 'near', type: 'string', enum: ['self', 'owner'], description: 'search around the bot (self, default) or the currently VISIBLE owner (owner: "here"); never a hidden position', required: false },
+      ],
       targets: ['none'],
       preconditions: ['no home project exists yet in this world profile', 'writable durable scope', 'flat natural ground visible nearby inside the travel radius'],
       effects: ['an approved home project (footprint + blueprint) stored in the scope; no world change'],
@@ -209,13 +214,17 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
       if (existing) return { drafts: [], unavailable: [{ reason: 'home_project_exists', detail: `home project ${existing.id} (${existing.state}) already exists; use build_home to inspect and continue it`, evidence: { state: existing.state } }] };
       if (!home.writable()) return { drafts: [], unavailable: [{ reason: 'scope_not_writable', detail: 'home projects need a writable durable world/bot scope' }] };
       const want = ((ctx.hints.parameters as Record<string, unknown>)['interior'] === 2 || (ctx.hints.parameters as Record<string, unknown>)['interior'] === 3 ? (ctx.hints.parameters as Record<string, unknown>)['interior'] : options.interior) as 2 | 3;
+      const near = (ctx.hints.parameters as Record<string, unknown>)['near'] === 'owner' ? 'owner' : 'self';
+      // "Here" = the FRESH visible owner position in this snapshot (never a remembered or hidden one).
+      if (near === 'owner' && (!snapshot.owner.visible || !snapshot.owner.at)) return { drafts: [], unavailable: [{ reason: 'owner_not_visible', detail: 'the owner is not visible now, so "here" cannot be grounded; no hidden position is used' }] };
+      const center = near === 'owner' ? snapshot.owner.at! : snapshot.self.at;
       const probe = siteProbe(session, services);
-      const sites = findSites(probe, snapshot.self.at, want, options.maxSiteDistance, (p) => services.perception.withinTravel(p), 4);
-      if (sites.length === 0) return { drafts: [], unavailable: [{ reason: 'no_vacant_site', detail: `no flat, visible, vacant ${want + 2}x${want + 2} footprint within ${options.maxSiteDistance} blocks; move to open flat ground and look again (survey_surroundings)` }] };
+      const sites = findSites(probe, center, want, options.maxSiteDistance, (p) => services.perception.withinTravel(p), 4);
+      if (sites.length === 0) return { drafts: [], unavailable: [{ reason: 'no_vacant_site', detail: `no flat, visible, vacant ${want + 2}x${want + 2} footprint within ${options.maxSiteDistance} blocks of ${near === 'owner' ? 'the visible owner' : 'the bot'}; move to open flat ground and look again (survey_surroundings)` }] };
       return {
         drafts: sites.map((s, i) => ({
-          parameters: { interior: s.interior, origin: pj(s.origin), facing: s.facing },
-          description: `approve a ${s.interior + 2}x${s.interior + 2} home site at ${at3(s.origin)}, entrance facing ${s.facing}, ${s.distance} blocks away`,
+          parameters: { interior: s.interior, ...(near === 'owner' ? { near } : {}), origin: pj(s.origin), facing: s.facing },
+          description: `approve a ${s.interior + 2}x${s.interior + 2} home site at ${at3(s.origin)}, entrance facing ${s.facing}, ${s.distance} blocks from ${near === 'owner' ? 'the visible owner' : 'the bot'}`,
           criteria: s.checks,
           score: 10 - i,
         })),

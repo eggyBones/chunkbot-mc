@@ -161,6 +161,12 @@ export interface TargetScope {
   named: boolean;
   /** Named handles re-grounded in the current snapshot. */
   current: ReadonlySet<string>;
+  /**
+   * MB-PLAN-006: positions ("x,y,z") of the visible members of named block
+   * GROUPS re-grounded in this snapshot (e.g. one bound tree). A block handle at
+   * one of these positions is in scope; nothing outside the bound group is.
+   */
+  groupMembers: ReadonlySet<string>;
   allows(handle: string): boolean;
 }
 
@@ -169,11 +175,24 @@ export interface TargetScope {
  * only those — re-grounded in THIS snapshot by the candidate generator — are
  * eligible; a named target that is stale, removed, or from another snapshot,
  * connection or dimension admits NOTHING (never a fallback to every handle).
+ * A named group handle admits exactly the block handles of its visible
+ * members in this snapshot (resolved through perception when available).
  */
-export function targetScope(ctx: Pick<ResolveContext, 'hints' | 'snapshot'>): TargetScope {
+export function targetScope(ctx: Pick<ResolveContext, 'hints' | 'snapshot'> & Partial<Pick<ResolveContext, 'services'>>): TargetScope {
   const named = ctx.hints.handles.length > 0;
   const current = new Set(ctx.hints.handles.filter((h) => h.snapshotId === ctx.snapshot.id).map((h) => h.handle));
-  return { named, current, allows: (handle) => !named || current.has(handle) };
+  const groupMembers = new Set<string>();
+  const perception = ctx.services?.perception;
+  if (perception && typeof perception.groupMembers === 'function') {
+    for (const h of current) for (const m of perception.groupMembers(ctx.snapshot.id, h) ?? []) groupMembers.add(`${m.x},${m.y},${m.z}`);
+  }
+  const allows = (handle: string): boolean => {
+    if (!named || current.has(handle)) return true;
+    if (groupMembers.size === 0 || !perception) return false;
+    const r = perception.resolve(ctx.snapshot.id, handle);
+    return !('error' in r) && r.target.kind === 'block' && groupMembers.has(`${r.target.x},${r.target.y},${r.target.z}`);
+  };
+  return { named, current, groupMembers, allows };
 }
 
 /** Compatibility wrapper used by older call sites: same authority rule as targetScope. */

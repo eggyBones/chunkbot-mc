@@ -8,6 +8,8 @@ import { sequentialIds, type CapabilityCatalog } from '../src/contracts/index.ts
 import { ownerQuestionIn, ownerQuestionProblems, isOwnerQuestionProblem, OWNER_QUESTION_PROBLEM } from '../src/goals/declarative.ts';
 import { StaticCapabilityRegistry } from '../src/goals/not-ready.ts';
 import { checkProposal } from '../src/goals/proposal.ts';
+import { publicBlocker, publicOutcome, publicTaskLabel } from '../src/goals/public-text.ts';
+import { GoalRecordSchema } from '../src/contracts/goal.ts';
 import type { GameSession } from '../src/game/connection.ts';
 import { offlinePlayerUuid } from '../src/game/identity.ts';
 import { PerceptionService } from '../src/perception/perception.ts';
@@ -38,13 +40,28 @@ describe('MB-PLAN-006 question detector (code-owned, not prompt wording)', () =>
     'Attacking the closest visible chicken (ent-12).',
     'Removing the floating birch tree grp-3; the nearby oak stays intact.',
     'Building the default small home beside you at the visible site.',
-    'Interpreting "can you get me some logs?" as collecting 8 oak logs and returning to you.',
     'No floating tree is visible from here; a bounded survey found none.',
     'Gathering 8 oak logs; choosing the nearest visible tree.',
     'Following you until stopped.',
     'logs => planks => sticks; then walk back',
   ];
   for (const d of declarative) it(`accepts: ${d}`, () => assert.equal(ownerQuestionIn(d), undefined, d));
+
+  it('quotes never launder a question: only an exact echo of the actual owner words is data', () => {
+    // Review bypass cases: planner-invented quotes are still questions.
+    assert.ok(ownerQuestionIn('"Would you like stone or cobblestone?"'));
+    assert.ok(ownerQuestionIn('"Please provide a location"'));
+    assert.ok(ownerQuestionIn('\u201cWhich tree do you mean\u201d', 'cut down that tree'));
+    assert.ok(ownerQuestionIn('"Would you like stone or cobblestone?"', 'get me some stone'), 'not an echo of the owner text');
+    const owner = 'can you get me some logs?';
+    assert.equal(ownerQuestionIn('Interpreting "can you get me some logs?" as collecting 8 oak logs and returning to you.', owner), undefined, 'exact owner echo');
+    assert.ok(ownerQuestionIn('Interpreting "can you get me some logs?" as collecting 8 oak logs and returning to you.'), 'without code-known owner text nothing is exempt');
+    assert.ok(ownerQuestionIn('Interpreting "can you get me some logs?" — which kind do you want?', owner), 'text outside the echo still checked');
+    const problems = ownerQuestionProblems({ version: 1, disposition: 'cannot_execute', interpretation: 'x', missing: '"Would you like stone or cobblestone?"', missingCapabilities: [], verifiedProgress: '' }, 'get stone');
+    assert.ok(isOwnerQuestionProblem(problems));
+    const objective = ownerQuestionProblems({ version: 1, disposition: 'plan', interpretation: 'Going.', tasks: [{ objective: '"Please provide a location"' }] }, 'build a house');
+    assert.ok(isOwnerQuestionProblem(objective));
+  });
 
   it('flags the retired disposition and a question field; problems are marked for counting', () => {
     const legacy = ownerQuestionProblems({ version: 1, disposition: 'needs_clarification', interpretation: 'needs a detail', question: 'Oak or birch?' });
@@ -68,6 +85,38 @@ describe('MB-PLAN-006 question detector (code-owned, not prompt wording)', () =>
     assert.equal(!blocker.ok && blocker.kind, 'policy');
     const ok = checkProposal({ version: 1, disposition: 'cannot_execute', interpretation: 'No tree is visible.', missing: 'no tree is visible within 32 blocks', missingCapabilities: [], verifiedProgress: '' }, registry, limits);
     assert.equal(ok.ok, true);
+  });
+});
+
+describe('MB-PLAN-006 app-owned public text and historical evidence', () => {
+  it('public outcome/step/blocker text is rendered from structured data only', () => {
+    const outcome = publicOutcome({ kind: 'finite', outcome: { predicate: 'entity_outcome', target: { kind: 'observed', snapshotId: 'snap-0001', handle: 'ent-3' }, outcome: 'observed_defeated' } });
+    assert.match(outcome, /^Done when the bot sees a target it observed defeated\.$/);
+    assert.match(publicTaskLabel({ allowedCapabilities: ['move_near', 'attack_entity'], completion: { predicate: 'blocks_removed', target: { kind: 'observed', snapshotId: 'snap-0001', handle: 'grp-2' }, selector: '#minecraft:logs' } }), /^move_near, attack_entity until the bot confirms a target it observed no longer has any any logs$/);
+    const blocker = publicBlocker({ missingCapabilities: ['fly_to', 'which_tree_do_you_want', 'Elytra flight'], feedback: [{ taskId: 'task-1', objective: 'Please tell me which tree?', status: 'blocked', reason: 'no_candidates', detail: 'x', unavailable: [{ capability: 'mine_block', reason: 'no_visible_target', detail: 'd', evidence: {} }], recentOutcomes: [], exhaustedTargets: [], completion: null }] });
+    assert.equal(blocker, 'the planner found no supported way to continue; missing capabilities: fly_to; last step blocked (no grounded action was available); no matching target is visible');
+    assert.equal(ownerQuestionIn(blocker), undefined);
+  });
+
+  it('pre-MB-PLAN-006 goal records still parse: legacy clarifications kept as history, questionRefusals defaults to 0', () => {
+    const old = {
+      id: 'goal-0001',
+      epoch: 1,
+      instruction: 'make armor',
+      origin: { surface: 'chat', principal: 'owner' },
+      state: 'completed',
+      admittedAtMs: 1,
+      updatedAtMs: 2,
+      plannerTurns: 3,
+      counters: { plannerTurns: 3, knowledgeRounds: 0, repairs: 0, retries: 0, clarifications: 2, replans: 0, windows: 1, tasksAdmitted: 1, preparationTurns: 0, lookaheads: 0 },
+      pendingClarification: { id: 'clar-0001', goalId: 'goal-0001', goalEpoch: 1, ref: 'q1', question: 'Leather or iron?', askedAtMs: 1 },
+      progress: '',
+    };
+    const parsed = GoalRecordSchema.safeParse(old);
+    assert.ok(parsed.success, JSON.stringify(!parsed.success && parsed.error.issues));
+    assert.equal(parsed.data!.counters?.clarifications, 2, 'history preserved, not relabeled');
+    assert.equal(parsed.data!.counters?.questionRefusals, 0);
+    assert.equal(parsed.data!.counters?.plannerTurns, 3, 'counts unchanged');
   });
 });
 
