@@ -229,6 +229,11 @@ export interface RouteAuthorization {
   admissionAnchor: Vec3;
   admissionRadius: number;
   ceilings: Readonly<RouteCeilings>;
+  /**
+   * MB-FLOW-003-C12 lineage: present only on a CONTINUATION grant (same routeId
+   * and logical goal id, fresh goal epoch). Never a fresh allowance.
+   */
+  continuation?: Readonly<{ originalGoalEpoch: number; fromGoalEpoch: number; count: number }>;
 }
 
 /**
@@ -355,9 +360,90 @@ export const RouteStatusSchema = z
       .strict()
       .nullable(),
     blocker: z.object({ reason: z.enum(ROUTE_BLOCKERS), detail: textSchema(BOUNDS.shortText) }).strict().nullable(),
+    /** C12 lineage: continuations admitted for this route (absent/null on an original grant). */
+    continuation: z.object({ count: z.number().int().positive(), originalGoalEpoch: EpochSchema }).strict().nullable().optional(),
   })
   .strict();
 export type RouteStatus = z.infer<typeof RouteStatusSchema>;
+
+// ---------------------------------------------------------------- continuation lineage (MB-FLOW-003-C12)
+
+export const ROUTE_CARRY_VERSION = 1 as const;
+
+/**
+ * The route allowance lineage of ONE logical goal, exported by the route
+ * controller BEFORE the interrupted goal epoch's route is revoked, and admitted
+ * once into the continuation epoch of the SAME logical goal id. Plain data: no
+ * handles, actions, tasks, leases or executable leg. Canonical definition of the
+ * shared checkpoint's `route` field (src/contracts/continuation.ts imports it).
+ *
+ * Invariants enforced by RouteController.admitContinuation:
+ *   - same routeId and logical goalId; a FRESH goal epoch (> every admitted epoch);
+ *   - exact original admission anchor/radius, connection epoch and dimension;
+ *   - ORIGINAL frozen ceilings, including the ABSOLUTE route deadline;
+ *   - every consumed leg, the cumulative distance with its sources (client
+ *     physics, server corrections and their count), stalled-leg history and any
+ *     blocker carried; new legs are numbered after `legsUsed`;
+ *   - an active leg at export is finalized as interrupted (counted, never
+ *     executable again);
+ *   - exhausted, blocked or expired lineages get NO authority again;
+ *   - only the LATEST export of a route is admissible, and only once.
+ */
+export interface RouteCarry {
+  version: typeof ROUTE_CARRY_VERSION;
+  routeId: RouteId;
+  /** The logical goal id shared by every epoch of this owner job. */
+  goalId: string;
+  /** Goal epoch of the ORIGINAL grant. */
+  originalGoalEpoch: number;
+  /** Goal epoch whose route was exported (the interrupted epoch). */
+  fromGoalEpoch: number;
+  connectionEpoch: number;
+  dimension: string;
+  source: RouteGoalSource;
+  /** Original grant time (never refreshed). */
+  grantedAtMs: number;
+  exportedAtMs: number;
+  destinations: readonly RouteDestinationKind[];
+  admissionAnchor: Vec3;
+  admissionRadius: number;
+  /** ORIGINAL frozen ceilings; `routeDeadlineMs` is absolute. */
+  ceilings: Readonly<RouteCeilings>;
+  /** Legs consumed by every epoch so far (an interrupted active leg included). */
+  legsUsed: number;
+  lastLeg: { index: number; outcome: string; netProgress: number; displacement: number } | null;
+  stalledLegs: number;
+  /** Cumulative own movement with its sources; never reduced. */
+  distance: RouteDistanceAccount;
+  /** `authorized` (resumable) or a terminal state that stays terminal. */
+  state: 'authorized' | 'exhausted' | 'blocked';
+  blocker: { reason: RouteBlocker; detail: string } | null;
+  /** Owner-typed coordinates recorded for this goal (owner_destination provenance). */
+  ownerCoordinates: readonly RouteOwnerCoordinate[];
+  /** The frozen own-incident identity, if bound (C3); a continuation never rebinds another. */
+  boundOwnDeath: FrozenOwnIncident | null;
+  /** Continuations already admitted in this lineage (the next one is count + 1). */
+  continuations: number;
+}
+
+export const ROUTE_CONTINUATION_REFUSALS = [
+  'unknown_or_stale_carry', // not this controller's latest export of that route, already admitted, or malformed
+  'goal_mismatch', // a different logical goal id
+  'stale_epoch', // not a fresh goal epoch
+  'connection_mismatch',
+  'dimension_mismatch',
+  'anchor_mismatch', // not the exact original admission anchor/radius
+  'source_mismatch',
+] as const;
+export type RouteContinuationRefusal = (typeof ROUTE_CONTINUATION_REFUSALS)[number];
+
+export type RouteContinuationResult =
+  /** Resumable lineage: a continuation authorization with the original ceilings and consumed history. */
+  | { ok: true; authorization: RouteAuthorization; status: RouteStatus }
+  /** Terminal lineage (exhausted/blocked/expired): recorded for truthful status, NO travel authority. */
+  | { ok: false; kind: 'terminal'; blocker: RouteBlocker; detail: string; status: RouteStatus }
+  /** Refused: nothing installed for this epoch; the admission bound alone applies. */
+  | { ok: false; kind: 'refused'; reason: RouteContinuationRefusal; detail: string; status: null };
 
 /**
  * Planner/proposal-check view of the goal's route context (proposed
@@ -400,6 +486,19 @@ export interface RoutePort {
   status(goalEpoch?: number): RouteStatus | null;
   /** Goal end / replacement / lifecycle: the route can never steer again (never regranted). */
   revoke(reason: string, goalEpoch?: number): void;
+  /**
+   * C12: the lineage of the CURRENT (not yet revoked) route of a goal epoch, an
+   * active leg finalized as interrupted. Pure: changes nothing. Undefined after
+   * revocation, for another epoch, or without a route.
+   */
+  exportCarry(goalEpoch: number): RouteCarry | undefined;
+  /** C12: exportCarry then revoke, atomically (the ordering the continuation contract requires). */
+  revokeWithCarry(reason: string, goalEpoch: number): RouteCarry | undefined;
+  /**
+   * C12: the continuation admission of the SAME logical goal at a fresh epoch
+   * (instead of `admit`). Synchronous, once per export.
+   */
+  admitContinuation(carry: RouteCarry, admission: RouteAdmission): RouteContinuationResult;
 }
 
 /**
