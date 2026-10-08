@@ -80,6 +80,6 @@ describe('harness catalog expectations follow the registered profile (C9)', () =
     const guard = src.indexOf("if (!results.find((r) => r.id === 'S0')?.pass)");
     const p1 = src.indexOf("await check('P1'");
     assert.ok(s0 > 0 && guard > s0 && p1 > guard, 'the S0 abort guard sits between S0 and every dependent scenario');
-    assert.ok(src.includes("process.exitCode = passed === results.length && !aborted ? 0 : 1;"), 'an aborted run exits non-zero');
+    assert.match(src, /process\.exitCode = passed === results\.length && !aborted && !interrupted && cleanup\.every\(\(s\) => s\.ok\) && cliRuns\.every/, 'abort, interruption or incomplete cleanup cannot pass');
   });
 });

@@ -8,11 +8,12 @@
 // every setup command is recorded in the report. Server-side truth (position,
 // inventory, blocks) is cross-checked over RCON, independently of the bot.
 //
-//   npm run build && npm run fixture -- start && npm run skills-live-check
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+//   npm run skills-live-check -- --fixture-lease <new coordinator-granted lease>
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import mineflayer from 'mineflayer';
 import { DEFAULT_FIXTURE_PROFILE, PROJECT_ROOT, fixturePaths, fixturePins, fixtureProfileFromArgv } from '../src/app/fixture-layout.ts';
 
@@ -34,9 +35,8 @@ type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-ex
 const fx = fixturePaths(PROJECT_ROOT, FIXTURE_PINS);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${FIXTURE_SUFFIX}-skills`);
-mkdirSync(outDir, { recursive: true });
 // Mechanic checks run the INFERENCE-FREE profile (planner disabled by explicit configuration).
-const CONFIG = join(PROJECT_ROOT, FIXTURE_PINS.inferenceFreeConfig);
+let CONFIG = join(PROJECT_ROOT, FIXTURE_PINS.inferenceFreeConfig);
 
 interface Result {
   id: string;
@@ -46,6 +46,9 @@ interface Result {
 }
 const results: Result[] = [];
 const setupLog: Array<{ atMs: number; command: string; reply: string }> = [];
+let interrupted: string | undefined;
+let restoring = false;
+let leaseId = '';
 const STOP_TARGET_MS = 250;
 /** MB-FLOW-001-C9: set when initial setup (S0) fails; dependent scenarios are then not run. */
 let aborted: string | null = null;
@@ -55,7 +58,7 @@ function rconPassword(): string {
   if (!line) throw new Error('fixture RCON password missing');
   return line.slice('rcon.password='.length).trim();
 }
-const password = rconPassword();
+let password = '';
 /**
  * Setup/verification command over loopback RCON; recorded (never the password).
  * Commands are SERIALIZED through one queue (one command, one reply, in order),
@@ -63,14 +66,24 @@ const password = rconPassword();
  */
 let rconQueue: Promise<unknown> = Promise.resolve();
 async function rcon(command: string, record = true): Promise<string> {
+  if (interrupted && !restoring) throw new Error(interrupted);
   const run = rconQueue.then(() => rconCommand(FIXTURE_PINS.host, FIXTURE_PINS.rconPort, password, command));
   rconQueue = run.catch(() => undefined);
-  const reply = await run;
+  let reply: string;
+  try { reply = await run; }
+  catch (error) { if (record) setupLog.push({ atMs: Date.now(), command, reply: `ERROR: ${String(error)}` }); throw error; }
   if (record) setupLog.push({ atMs: Date.now(), command, reply: reply.slice(0, 300) });
+  if (command.startsWith('fill ')) assert(validFillReply(reply), `fill not proven: ${command}: ${reply}`);
+  if (/^(Unknown|Incorrect|Incomplete|Unrecognized|Cannot|No player was found|That player does not exist)/i.test(reply.trim())) throw new Error(`RCON command failed: ${command}: ${reply}`);
   return reply;
 }
 
+export function validFillReply(reply: string): boolean {
+  return /^(Successfully filled \d+ block\(s\)|No blocks were filled)\.?$/.test(reply.trim());
+}
+
 async function check(id: string, title: string, fn: (ev: string[]) => Promise<void>): Promise<void> {
+  if (interrupted) throw new Error(interrupted);
   const evidence: string[] = [];
   const started = Date.now();
   try {
@@ -111,16 +124,83 @@ async function serverInventory(name = 'Chunkbot'): Promise<Record<string, number
   return out;
 }
 
-async function blockIs(x: number, y: number, z: number, block: string): Promise<boolean> {
-  const r = await rcon(`execute if block ${x} ${y} ${z} ${block}`, false);
-  return /passed/i.test(r);
+async function blockIs(x: number, y: number, z: number, block: string, record = false): Promise<boolean> {
+  const r = await rcon(`execute if block ${x} ${y} ${z} ${block}`, record);
+  return entityTest(r);
 }
+
+export function entityTest(reply: string): boolean {
+  if (/^Test passed(?:\. Count: [1-9]\d*)?\.?$/.test(reply.trim())) return true;
+  if (/^Test failed\.?$/.test(reply.trim())) return false;
+  throw new Error(`unreadable server test: ${reply.slice(0, 160)}`);
+}
+
+export const CHEST_STAGE_CELLS = [[201, -60, 207], [201, -59, 207], [202, -60, 207], [202, -59, 207]] as const;
+export function safePlacement(description: string): boolean {
+  const match = /-> (-?\d+),(-?\d+),(-?\d+)\)/.exec(description);
+  if (!match) return false;
+  const p = match.slice(1).map(Number);
+  return !CHEST_STAGE_CELLS.some((c) => c.every((n, i) => n === p[i]));
+}
+/** Never edits a workstation or guesses a floor from a failed/partial test. */
+export async function proveChestStage(query: (command: string) => Promise<string>): Promise<string> {
+  for (const [x,y,z] of CHEST_STAGE_CELLS) assert(entityTest(await query(`execute if block ${x} ${y} ${z} air`)), `chest staging cell ${x},${y},${z} is occupied; refusing to clear it`);
+  for (const material of ['grass_block','dirt','stone','cobblestone','stone_bricks']) {
+    if (entityTest(await query(`execute if block 201 -61 207 ${material}`))) return material;
+  }
+  throw new Error('chest staging has no positively proven full solid floor');
+}
+
+const SCENE_BOX = `x=${SCENE.area.x1},y=-64,z=${SCENE.area.z1},dx=${SCENE.area.x2-SCENE.area.x1},dy=40,dz=${SCENE.area.z2-SCENE.area.z1}`;
+export const SKILLS_SCENE_SELECTORS = ['tag=chunkbot_hidden','tag=chunkbot_front','tag=chunkbot_animal','type=item','type=experience_orb'].map((s) => `@e[type=!player,${s},${SCENE_BOX}]`);
+export const skillsSceneClearCommands = () => SKILLS_SCENE_SELECTORS.map((s) => `kill ${s}`);
 
 const dist = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.hypot(a.x - b.x, a.z - b.z);
 
 // ---------------------------------------------------------------- CLI helpers
 
 let chunkbot: CliProcess;
+const cliRuns: CliProcess[] = [];
+const cleanup: Array<{ id: string; ok: boolean; detail: string }> = [];
+let originalForceload: Set<string> | undefined;
+let originalSettings: Record<string, string> | undefined;
+const SETTINGS_QUERIES = ['difficulty', 'gamerule keep_inventory', 'gamerule natural_health_regeneration', 'gamerule locator_bar'];
+
+export function parseSkillsForceload(reply: string): Set<string> {
+  const pairs = [...reply.matchAll(/\[(-?\d+), (-?\d+)\]/g)].map((m) => `${m[1]},${m[2]}`);
+  if (pairs.length) return new Set(pairs);
+  if (/^No\b.*force ?load/i.test(reply.trim())) return new Set();
+  throw new Error(`unreadable original forceload: ${reply}`);
+}
+
+export async function requireCleanCliExit(p: Pick<CliProcess, 'send' | 'exited' | 'child'>, wait: (ms: number) => Promise<unknown> = sleep): Promise<void> {
+  p.send('/quit');
+  let exited = await Promise.race([p.exited, wait(15_000).then(() => undefined)]);
+  const forced = exited === undefined;
+  if (!exited) {
+    p.child.kill('SIGKILL');
+    exited = await Promise.race([p.exited, wait(10_000).then(() => undefined)]);
+  }
+  assert(!forced && exited?.code === 0 && exited.signal === null, `owned CLI did not settle with direct exit 0: ${JSON.stringify({ forced, exited })}`);
+}
+
+async function cleanupStep(id: string, fn: () => Promise<void>): Promise<void> {
+  try { await fn(); cleanup.push({ id, ok: true, detail: 'verified' }); }
+  catch (error) { cleanup.push({ id, ok: false, detail: String(error) }); }
+}
+async function clearOnline(name: string): Promise<void> {
+  assert(entityTest(await rcon(`execute if entity @a[name=${name}]`)), `${name} must be online for cleanup`);
+  await rcon(`clear ${name}`); await rcon(`effect clear ${name}`);
+  const inv = await rcon(`data get entity ${name} Inventory`);
+  assert(inv.startsWith(`${name} has the following entity data:`) && /\[\]$/.test(inv.trim()), `unproven empty ${name} inventory: ${inv}`);
+  const effects = await rcon(`data get entity ${name} active_effects`);
+  assert((effects.startsWith(`${name} has the following entity data:`) && /\[\]$/.test(effects.trim())) || /^Found no elements matching active_effects\.?$/.test(effects.trim()), `unproven empty ${name} effects: ${effects}`);
+}
+async function quiesceCli(): Promise<void> {
+  const from = chunkbot.length;
+  chunkbot.send('stop');
+  await chunkbot.waitSince(/^\[chunkbot\] (Stopped|Nothing (to stop|was running)|Goal goal-\S+ cancelled)|^\[diag-json\] \{"kind":"stop"/, from, 15_000);
+}
 
 async function observe(): Promise<Json> {
   chunkbot.send('/diag observe');
@@ -134,7 +214,10 @@ async function act(capability: string, params: unknown, timeoutMs = 120_000): Pr
 
 async function candidates(task: unknown): Promise<Json> {
   chunkbot.send(`/diag candidates ${JSON.stringify(task)}`);
-  return (await chunkbot.json<Json>('candidates')).set as Json;
+  const set = (await chunkbot.json<Json>('candidates')).set as Json;
+  // Harness-owned reservations, never a product resolver change or fabricated option.
+  set.candidates = (set.candidates as Json[]).filter((c) => c.capability !== 'place_block' || safePlacement(String(c.description)));
+  return set;
 }
 
 function handleOf(snap: Json, key: string, at?: { x: number; y: number; z: number }, list: 'blocks' | 'entities' | 'drops' = 'blocks'): { snapshotId: string; handle: string } {
@@ -150,16 +233,12 @@ function handleOf(snap: Json, key: string, at?: { x: number; y: number; z: numbe
  * the scene chest, then assert from an actual snapshot that the chest is
  * visible and in reach. Perception, reach and handle rules are unchanged.
  */
-const CHEST_VIEW = { x: 203.5, y: -60, z: 205.5 }; // 1.5 blocks north of the chest at 203,-60,207, facing it (+z)
+const CHEST_VIEW = { x: 201.5, y: -60, z: 207.5 }; // west of chest, disjoint from placed workstations
 async function stageVisibleChest(ev: string[], scenario: string): Promise<{ snap: Json; chest: { snapshotId: string; handle: string } }> {
   const c = SCENE.chest;
   assert(await blockIs(c.x, c.y, c.z, 'chest'), `${scenario}: RCON: the scene chest exists at ${c.x},${c.y},${c.z}`);
-  // standing cell (feet/head) and the cell between Chunkbot and the chest must be clear; clear them (recorded) only if not
-  for (const [x, y, z] of [[203, -60, 205], [203, -59, 205], [203, -60, 206], [203, -59, 206]] as const) {
-    if (!(await blockIs(x, y, z, 'air'))) await rcon(`setblock ${x} ${y} ${z} air`);
-  }
-  assert(await blockIs(203, -61, 205, 'grass_block'), `${scenario}: solid floor under the staging position`);
-  await rcon(`tp Chunkbot ${CHEST_VIEW.x} ${CHEST_VIEW.y} ${CHEST_VIEW.z} 0 30`);
+  ev.push(`${scenario}: positively verified ${await proveChestStage(rcon)} floor and empty reserved cells; no block cleared`);
+  await rcon(`tp Chunkbot ${CHEST_VIEW.x} ${CHEST_VIEW.y} ${CHEST_VIEW.z} -90 30`);
   await sleep(900);
   const snap = await observe();
   const thing = (snap['blocks'] as Json[]).find((b) => b.key === 'minecraft:chest' && b.at.x === c.x && b.at.y === c.y && b.at.z === c.z);
@@ -243,24 +322,36 @@ async function pickupAll(key: string, ev: string[]): Promise<void> {
 }
 
 async function setupScene(): Promise<void> {
-  for (const c of sceneClearCommands()) await rcon(c);
+  for (const c of sceneClearCommands().filter((c) => !c.startsWith('kill '))) await rcon(c);
+  assert(entityTest(await rcon(`execute unless entity @e[type=!player,type=!item,type=!experience_orb,tag=!chunkbot_hidden,tag=!chunkbot_front,tag=!chunkbot_animal,${SCENE_BOX}]`)), 'foreign scene entity precondition: refusing to cull it');
+  for (const c of skillsSceneClearCommands()) await rcon(c);
   await sleep(1_600);
-  for (const c of sceneCommands()) await rcon(c);
+  for (const c of sceneCommands().filter((c) => c !== 'clear FixtureOwner')) await rcon(c);
   await sleep(1_200);
   chunkbot.send('/diag anchor');
   await chunkbot.json('anchor');
 }
 
-async function fixtureBot(username: string): Promise<Bot> {
+async function fixtureBot(username: string, own: (bot: Bot) => void): Promise<Bot> {
   const bot = mineflayer.createBot({ host: FIXTURE_PINS.host, port: FIXTURE_PINS.port, username, auth: 'offline', version: FIXTURE_PINS.minecraftVersion, hideErrors: true });
-  await new Promise<void>((resolve, reject) => {
+  own(bot); // Own even an incomplete join before the first await.
+  let hasEnded = false;
+  try { await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${username} did not spawn`)), 20_000);
     bot.once('spawn', () => {
       clearTimeout(timer);
       resolve();
     });
-    bot.once('end', (reason: string) => reject(new Error(`${username} ended: ${reason}`)));
-  });
+    bot.once('end', (reason: string) => { hasEnded = true; clearTimeout(timer); reject(new Error(`${username} ended: ${reason}`)); });
+    bot.once('error', (error: Error) => { clearTimeout(timer); reject(error); });
+  }); } catch (error) {
+    if (!hasEnded) {
+      const ended = new Promise<void>((resolve) => bot.once('end', () => resolve()));
+      bot.quit();
+      assert(await Promise.race([ended.then(() => true), sleep(10_000).then(() => false)]), 'failed observer connection did not settle');
+    }
+    throw error;
+  }
   return bot;
 }
 
@@ -273,11 +364,24 @@ function offline(name: string, args: string[]): { code: number | null; stdout: s
 // ---------------------------------------------------------------- main
 
 async function main(): Promise<void> {
+  mkdirSync(outDir, { recursive: true });
+  password = rconPassword();
   process.stdout.write(`skills-live-check: fixture ${FIXTURE_PINS.host}:${FIXTURE_PINS.port}; report dir ${outDir}\n`);
   const list = await rcon('list').catch((error: unknown) => {
     throw new Error(`fixture not reachable over RCON (${String(error)}); run npm run fixture -- start`);
   });
   process.stdout.write(`fixture: ${list}\n`);
+  assert(/^There are 0 of /.test(list), 'exclusive fixture requires zero players before joining');
+  originalForceload = parseSkillsForceload(await rcon('forceload query'));
+  originalSettings = {};
+  for (const command of SETTINGS_QUERIES) {
+    const reply = await rcon(command);
+    assert(command === 'difficulty' ? /^The difficulty is |^Difficulty is /i.test(reply) : /^Gamerule \S+ is currently set to: (true|false)/.test(reply), `unreadable original setting: ${command}: ${reply}`);
+    originalSettings[command] = reply;
+  }
+  const baseProfile = JSON.parse(readFileSync(CONFIG, 'utf8')) as Json;
+  CONFIG = join(outDir, 'skills-profile.json');
+  writeFileSync(CONFIG, JSON.stringify({ ...baseProfile, storage: { ...baseProfile.storage, dataDir: join(outDir, 'data') } }, null, 2));
   const fixturePid = Number(readFileSync(fx.pidFile, 'utf8').trim());
 
   // ---------------------------------------------------------------- K1 offline knowledge (built CLI)
@@ -315,7 +419,11 @@ async function main(): Promise<void> {
   });
 
   chunkbot = new CliProcess('run-skills', ['run', '--no-autonomy', '--config', CONFIG]);
+  cliRuns.push(chunkbot);
   let owner: Bot | undefined;
+  const onInterrupt = (signal: string) => { interrupted = `interrupted by ${signal}`; chunkbot.send('stop'); owner?.clearControlStates(); };
+  const sigint = () => onInterrupt('SIGINT'); const sigterm = () => onInterrupt('SIGTERM');
+  process.once('SIGINT', sigint); process.once('SIGTERM', sigterm);
   try {
     await check('S0', 'run joins the fixture with the skill layer installed; status shows skills ready, planner not ready', async (ev) => {
       ev.push(await chunkbot.waitFor(new RegExp(`\\[chunkbot\\] ready: version=${FIXTURE_VERSION_RE}`), 30_000));
@@ -631,6 +739,7 @@ async function main(): Promise<void> {
         completion: { predicate: 'block_state', target: { kind: 'registry', key: 'minecraft:furnace' }, expect: 'minecraft:furnace' },
       });
       const furnacePick = ((set.candidates as Json[]).find((c) => /face of grass_block/.test(c.description)) ?? (set.candidates as Json[])[0]) as Json;
+      assert(furnacePick, 'a generated furnace placement disjoint from reserved chest staging is required');
       ev.push(`chosen candidate: ${furnacePick.description}`);
       chunkbot.send(`/diag run ${furnacePick.id}`);
       const placed = (await chunkbot.json<Json>('outcome')).outcome as Json;
@@ -658,7 +767,7 @@ async function main(): Promise<void> {
     });
 
     // ---------------------------------------------------------------- containers / transfer / drop
-    owner = await fixtureBot('FixtureOwner');
+    owner = await fixtureBot('FixtureOwner', (bot) => { owner = bot; });
     await rcon('clear FixtureOwner'); // setup: the owner's saved inventory from earlier runs (recorded)
     await check('T1', 'chest: deposit, inspect, withdraw through the visible container (server-confirmed); container_state predicate', async (ev) => {
       let snap = await observe();
@@ -1175,14 +1284,16 @@ async function main(): Promise<void> {
 
     // ---------------------------------------------------------------- MB-SKL-007 travel bounds (second built session, radius 8)
     // A separate CLI run whose only config difference is limits.travelRadius = 8 (recorded in the report directory).
-    chunkbot.send('/quit');
-    await Promise.race([chunkbot.exited, sleep(8_000)]);
+    await quiesceCli();
+    await clearOnline('Chunkbot');
+    await requireCleanCliExit(chunkbot);
     chunkbot.save(outDir);
     const base = JSON.parse(readFileSync(CONFIG, 'utf8')) as Json;
-    const travelConfig = { ...base, storage: { ...base.storage, dataDir: join(PROJECT_ROOT, 'var') }, limits: { ...base.limits, travelRadius: 8 } };
+    const travelConfig = { ...base, limits: { ...base.limits, travelRadius: 8 } };
     const travelConfigPath = join(outDir, 'travel-radius-8.json');
     writeFileSync(travelConfigPath, `${JSON.stringify(travelConfig, null, 2)}\n`);
     chunkbot = new CliProcess('run-travel-radius-8', ['run', '--no-autonomy', '--config', travelConfigPath]);
+    cliRuns.push(chunkbot);
     const ANCHOR = { x: 205.5, y: -60, z: 198.5 };
     await check('B0', 'second session joins with travelRadius 8; anchor set at a recorded position', async (ev) => {
       ev.push(await chunkbot.waitFor(new RegExp(`\\[chunkbot\\] ready: version=${FIXTURE_VERSION_RE}`), 30_000));
@@ -1236,7 +1347,7 @@ async function main(): Promise<void> {
     });
 
     await check('B3', 'moving owner: following stops when the visible owner walks out of the radius; Chunkbot stays inside', async (ev) => {
-      owner ??= await fixtureBot('FixtureOwner');
+      owner ??= await fixtureBot('FixtureOwner', (bot) => { owner = bot; });
       await rcon(`tp Chunkbot ${ANCHOR.x} ${ANCHOR.y} ${ANCHOR.z} 270 0`);
       await rcon(`tp FixtureOwner ${ANCHOR.x + 2} ${ANCHOR.y} ${ANCHOR.z} -90 0`);
       await sleep(1_000);
@@ -1297,7 +1408,7 @@ async function main(): Promise<void> {
       assert(a3 && Math.abs(a3.x - 205.5) < 0.6, 'the replacement got its own admission anchor');
       const runId = /\[chunkbot\] run (\S+);/.exec(chunkbot.lines.find((l) => /\[chunkbot\] run /.test(l.text))?.text ?? '')?.[1];
       assert(runId, 'run id from the CLI transcript');
-      const events = readFileSync(join(PROJECT_ROOT, 'var', 'runs', runId, 'events.jsonl'), 'utf8')
+      const events = readFileSync(join(outDir, 'data', 'runs', runId, 'events.jsonl'), 'utf8')
         .split('\n')
         .filter((l) => l.includes('"goal_travel_anchor"'))
         .map((l) => JSON.parse(l) as Json);
@@ -1305,37 +1416,86 @@ async function main(): Promise<void> {
       assert(events.length >= 2, 'admission anchors recorded in run evidence');
     });
   } finally {
-    try {
-      owner?.quit();
-    } catch {
-      // ignore
-    }
-    chunkbot.send('/quit');
-    const exited = await Promise.race([chunkbot.exited, sleep(8_000).then(() => undefined)]);
-    if (!exited) chunkbot.child.kill('SIGKILL');
-    chunkbot.save(outDir);
+    restoring = true;
+    await cleanupStep('stop-owned-cli', quiesceCli);
+    if (owner) owner.clearControlStates();
+    // Both owned players remain ONLINE until inventory/effects and scene settle.
+    await cleanupStep('online-bot-clear', () => clearOnline('Chunkbot'));
+    if (owner) await cleanupStep('online-owner-clear', () => clearOnline('FixtureOwner'));
+    await cleanupStep('standard-scene-restore', async () => {
+      const a = SCENE.area;
+      // Only declared scene tags/drops/orbs in the standard disposable box.
+      for (const c of skillsSceneClearCommands()) await rcon(c); await sleep(1_600);
+      for (const c of skillsSceneClearCommands()) await rcon(c);
+      for (const c of [`fill ${a.x1} -60 ${a.z1} ${a.x2} -50 ${a.z2} air`, `fill ${a.x1} -61 ${a.z1} ${a.x2} -61 ${a.z2} grass_block`, `fill ${a.x1} -63 ${a.z1} ${a.x2} -62 ${a.z2} dirt`, ...SCENE.logs.map((p) => `setblock ${p.x} ${p.y} ${p.z} oak_log`)]) await rcon(c);
+      for (const p of SCENE.logs) assert(await blockIs(p.x,p.y,p.z,'oak_log',true), 'standard trunk restored');
+      assert(await blockIs(SCENE.chest.x,SCENE.chest.y,SCENE.chest.z,'air',true), 'placed chest removed');
+      for (const s of SKILLS_SCENE_SELECTORS) assert(entityTest(await rcon(`execute unless entity ${s}`)), `positive proof of no remaining declared scene entity: ${s}`);
+    });
+    // Collecting a delayed scene drop during restoration must not survive logout.
+    await cleanupStep('final-online-bot-clear', () => clearOnline('Chunkbot'));
+    if (owner) await cleanupStep('final-online-owner-clear', () => clearOnline('FixtureOwner'));
+    await cleanupStep('exact-forceload-settings', async () => {
+      assert(originalForceload && originalSettings, 'original preflight required');
+      const a = SCENE.area;
+      for (let x=Math.floor(a.x1/16);x<=Math.floor(a.x2/16);x++) for (let z=Math.floor(a.z1/16);z<=Math.floor(a.z2/16);z++) if (!originalForceload.has(`${x},${z}`)) await rcon(`forceload remove ${x*16} ${z*16}`);
+      const after = parseSkillsForceload(await rcon('forceload query'));
+      assert(after.size === originalForceload.size && [...after].every((c) => originalForceload!.has(c)), 'exact original forceload set restored');
+      for (const command of SETTINGS_QUERIES) assert(await rcon(command) === originalSettings[command], `original setting unchanged: ${command}`);
+    });
+    await cleanupStep('cli-direct-exit', () => requireCleanCliExit(chunkbot));
+    if (owner) await cleanupStep('owner-logout', async () => {
+      const ended = new Promise<void>((resolve) => owner!.once('end', () => resolve()));
+      owner!.quit();
+      assert(await Promise.race([ended.then(() => true), sleep(10_000).then(() => false)]), 'owned observer logout must settle');
+    });
+    await cleanupStep('zero-players', async () => {
+      let list = '';
+      for (let i=0;i<40;i++) { list = await rcon('list'); if (/^There are 0 of /.test(list)) break; await sleep(100); }
+      assert(/^There are 0 of /.test(list), `zero players unproven: ${list}`);
+    });
+    for (const p of cliRuns) p.save(outDir);
     const passed = results.filter((r) => r.pass).length;
     const report = {
       kind: 'mb-v1-02-skills-live-check',
+      lease: leaseId,
       startedAt: stamp,
       fixture: { host: FIXTURE_PINS.host, port: FIXTURE_PINS.port, version: FIXTURE_PINS.minecraftVersion, pid: fixturePid },
       cliPid: chunkbot.pid,
-      cliRuns: ['run-skills (config/examples/fixture-inference-free.json)', 'run-travel-radius-8 (travel-radius-8.json: fixture-inference-free.json with limits.travelRadius=8, absolute dataDir)'],
-      cliExit: exited ?? 'killed',
+      cliRuns: cliRuns.map((p) => ({ name:p.name, pid:p.pid, code:p.child.exitCode, signal:p.child.signalCode })),
+      cleanup: { reconciled: cleanup.every((s) => s.ok), steps: cleanup, originalForceload: [...originalForceload ?? []], originalSettings },
       stopTargetMs: STOP_TARGET_MS,
       passed,
       total: results.length,
       aborted,
+      interrupted: interrupted ?? null,
       results,
       setupCommands: setupLog,
     };
     writeFileSync(join(outDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
     process.stdout.write(`\n${passed}/${results.length} skill scenarios passed${aborted ? ` (ABORTED: ${aborted})` : ''}; report ${join(outDir, 'report.json')}\n`);
-    process.exitCode = passed === results.length && !aborted ? 0 : 1;
+    process.exitCode = passed === results.length && !aborted && !interrupted && cleanup.every((s) => s.ok) && cliRuns.every((p) => p.child.exitCode === 0 && p.child.signalCode === null) ? 0 : 1;
+    process.off('SIGINT',sigint); process.off('SIGTERM',sigterm);
   }
 }
 
-main().catch((error: unknown) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const leaseIndex = process.argv.indexOf('--fixture-lease');
+  const lease = leaseIndex < 0 ? undefined : process.argv[leaseIndex + 1];
+  if (!lease || !/^[A-Za-z0-9][A-Za-z0-9_-]{2,80}$/.test(lease)) {
+    process.stderr.write('skills-live-check refusing to run: pass --fixture-lease <new named exclusive lease> before any operation\n');
+    process.exitCode = 2;
+  } else {
+    leaseId = lease;
+    main().catch((error: unknown) => {
   process.stderr.write(`skills-live-check error: ${error instanceof Error ? error.stack : String(error)}\n`);
+  if (existsSync(outDir)) {
+    const path = join(outDir,'report.json');
+    const report = existsSync(path) ? JSON.parse(readFileSync(path,'utf8')) as Json : { kind:'mb-v1-02-skills-live-check', lease:leaseId, results, setupCommands:setupLog, cleanup:{reconciled:cleanup.every((s)=>s.ok),steps:cleanup} };
+    report.fatalError=String(error); report.pass=false;
+    writeFileSync(path,JSON.stringify(report,null,2));
+  }
   process.exitCode = 1;
-});
+  });
+  }
+}

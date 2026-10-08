@@ -166,6 +166,8 @@ function progressFacts(e: PredicateEvaluation | null, out: number[] = []): numbe
     const v = e.evidence[k];
     out.push(typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN);
   }
+  const distance = e.evidence['distance'];
+  out.push(typeof distance === 'number' && Number.isFinite(distance) ? -distance : Number.NaN);
   for (const c of e.children ?? []) progressFacts(c, out);
   return out;
 }
@@ -654,7 +656,9 @@ export class TaskRuntime implements TaskExecutionPort {
       progressed();
     }
     if (windowElapsed) {
-      progressed(); // healthy intentional wait is not a stall
+      // Elapsed time is not progress on an unmet predicate. The loop records
+      // actual improvements and protects a satisfied maintained condition;
+      // stagnant finite or violated persistent work still has a stall bound.
       return { candidate: c, jevActionId };
     }
     return undefined;

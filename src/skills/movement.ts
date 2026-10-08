@@ -1,7 +1,7 @@
 // Movement family: grounded approach, following an observed entity, bounded
 // exploration toward visible frontiers, and look-around surveys.
 import { z } from 'zod';
-import type { JsonValue } from '../contracts/index.ts';
+import type { JsonValue, OutcomePredicate } from '../contracts/index.ts';
 import type { Vec } from '../perception/visibility.ts';
 import { ENTITY_REACH } from '../perception/perception.ts';
 import { admittedParameters, json, liveEntity, namedTargetUnavailable, pos3, targetScope } from './common.ts';
@@ -10,6 +10,32 @@ import { GoalBesideBlock, assertPolicy, conservativeMovements, distanceTo, goals
 import { HandleRefSchema, MoveTargetSchema, type MoveTarget } from './refs.ts';
 
 const SUPPORTED_MOVE_PREDICATES = ['near_target', 'visited_location'];
+
+/** Positive distance requirements for THIS grounded destination. Task parameters
+ * remain exact; a wider explicit radius is a conflict, never silently rewritten. */
+function movementRadius(ctx: Parameters<SkillDefinition['resolve']>[0], target: MoveTarget, fallback: number): number | undefined {
+  const matches = (p: Extract<OutcomePredicate, { predicate: 'near_target' | 'visited_location' }>) => {
+    const t = p.target;
+    if (t.kind === 'owner') return target.kind === 'owner';
+    if (t.kind === 'observed' && target.kind === 'handle') return ctx.services.perception.translateHandle(t.snapshotId, t.handle, ctx.snapshot.id) === target.handle;
+    if (t.kind === 'remembered_anchor') return target.kind === 'anchor' && target.anchorId === t.anchorId;
+    if (t.kind === 'owner_destination') return target.kind === 'destination' && target.dimension === t.dimension && target.x === t.at.x && target.y === t.at.y && target.z === t.at.z;
+    return false;
+  };
+  const bound = (p: OutcomePredicate): number | undefined => {
+    if (p.predicate === 'all') {
+      const radii = p.of.map(bound).filter((n): n is number => n !== undefined);
+      return radii.length ? Math.min(...radii) : undefined;
+    }
+    // Alternative/negated conditions do not impose an unconditional distance.
+    if ((p.predicate === 'near_target' || p.predicate === 'visited_location') && matches(p)) return p.within;
+    return undefined;
+  };
+  const required = bound(ctx.task.completion);
+  const explicit = ctx.hints.parameters['within'];
+  if (typeof explicit === 'number') return required !== undefined && explicit > required ? undefined : explicit;
+  return required === undefined ? fallback : Math.min(fallback, required);
+}
 
 interface ResolvedPlace {
   at: Vec;
@@ -121,12 +147,17 @@ export const moveNear: SkillDefinition<{ target: MoveTarget; within: number }> =
     const unavailable: Unavailable[] = [];
     const { snapshot, hints, services } = ctx;
     const scope = targetScope(ctx);
-    const within = (admittedParameters(ctx, moveNear.params).values['within'] as number | undefined) ?? 2;
+    const defaultWithin = (admittedParameters(ctx, moveNear.params).values['within'] as number | undefined) ?? 2;
     const book = services.knowledge.recipes;
     const keyMatches = (key: string) => hints.keys.some((h) => (h.startsWith('#') ? book?.matches(h, key) : h === key));
     // A wanted item also matches visible blocks that drop it (installed drop data), e.g. cobblestone -> stone.
     const matches = (key: string) => keyMatches(key) || services.knowledge.blockDrops(key).some(keyMatches);
     const add = (target: MoveTarget, description: string, distance: number) => {
+      const within = movementRadius(ctx, target, defaultWithin);
+      if (within === undefined || within < 1) {
+        unavailable.push({ reason: 'distance_parameter_conflict', detail: 'the movement radius cannot satisfy the exact task distance without changing its parameters' });
+        return;
+      }
       if (distance <= within) return;
       drafts.push({ parameters: { target: json(target), within }, description, score: -distance, criteria: [`${Math.round(distance)} blocks away`] });
     };
@@ -200,7 +231,7 @@ export const moveNear: SkillDefinition<{ target: MoveTarget; within: number }> =
             abortIf: () => (tracker.lostForMs() > ctx.services.limits.ownerLossMs ? 'target_lost' : tracker.sample() === undefined || ctx.services.perception.withinTravel(tracker.last.at) ? undefined : 'target_outside_travel_bounds'),
           }
         : {}),
-      arrived: () => distanceTo(bot, at()) <= params.within + 0.25 && !(block && standingOn(bot, block.x, block.y, block.z)),
+      arrived: () => distanceTo(bot, at()) <= params.within && !(block && standingOn(bot, block.x, block.y, block.z)),
       distance: () => distanceTo(bot, at()),
       timeoutMs: ctx.candidate.timeoutMs,
       searchRadius: Math.min(ctx.services.limits.travelRadius, Math.ceil(distanceTo(bot, place.at)) + 24),
@@ -254,15 +285,20 @@ export const followEntity: SkillDefinition<{ target: MoveTarget; within: number;
     const drafts: CandidateDraft[] = [];
     const scope = targetScope(ctx);
     const admitted = admittedParameters(ctx, followEntity.params).values as { within?: number; durationMs?: number };
-    const within = admitted.within ?? 3;
+    const defaultWithin = admitted.within ?? 3;
     const durationMs = admitted.durationMs ?? 30_000;
     const outsideOwnerBound = ctx.snapshot.owner.visible && ctx.snapshot.owner.at && !ctx.services.perception.withinTravel(ctx.snapshot.owner.at);
-    if (ctx.hints.wantsOwner && ctx.snapshot.owner.visible && !outsideOwnerBound) drafts.push({ parameters: { target: { kind: 'owner' }, within, durationMs }, description: `follow the visible owner for ${Math.round(durationMs / 1000)}s` });
+    const unavailable: Unavailable[] = [];
+    const add = (target: MoveTarget, description: string) => {
+      const within = movementRadius(ctx, target, defaultWithin);
+      if (within === undefined || within < 1) unavailable.push({ reason: 'distance_parameter_conflict', detail: 'the follow radius cannot satisfy the exact task distance without changing its parameters' });
+      else drafts.push({ parameters: { target: json(target), within, durationMs }, description });
+    };
+    if (ctx.hints.wantsOwner && ctx.snapshot.owner.visible && !outsideOwnerBound) add({ kind: 'owner' }, `follow the visible owner for ${Math.round(durationMs / 1000)}s`);
     for (const handle of scope.current) {
       const e = ctx.snapshot.entities.find((t) => t.handle === handle);
-      if (e) drafts.push({ parameters: { target: { kind: 'handle', snapshotId: ctx.snapshot.id, handle }, within, durationMs }, description: `follow ${e.key} ${e.handle}` });
+      if (e) add({ kind: 'handle', snapshotId: ctx.snapshot.id, handle }, `follow ${e.key} ${e.handle}`);
     }
-    const unavailable: Unavailable[] = [];
     if (ctx.hints.wantsOwner && outsideOwnerBound) unavailable.push({ reason: 'owner_outside_travel_bounds', detail: 'the visible owner requires a counted seek_owner route leg before ordinary following' });
     if (scope.named && drafts.length === 0) unavailable.push(namedTargetUnavailable(scope, 'entity to follow'));
     else if (drafts.length === 0) unavailable.push({ reason: 'no_visible_entity', detail: 'no visible entity to follow' });
@@ -305,7 +341,7 @@ export const followEntity: SkillDefinition<{ target: MoveTarget; within: number;
         if (seen) {
           if (!perception.withinTravel(seen)) return stopWith('failed', 'target_outside_travel_bounds', `${place.label} left the travel radius; following stopped`);
           const d = Math.hypot(seen.x - bot.entity.position.x, seen.y - bot.entity.position.y, seen.z - bot.entity.position.z);
-          if (d > params.within + 0.75) {
+          if (d > params.within) {
             const moved = goalAt ? Math.hypot(seen.x - goalAt.x, seen.z - goalAt.z) : Infinity;
             if (moved > 1.0 || !pf.isMoving?.()) {
               goalAt = { ...seen };
@@ -328,8 +364,8 @@ export const followEntity: SkillDefinition<{ target: MoveTarget; within: number;
         const after = tracker.sample();
         if (after) {
           visibleSamples += 1;
-          lastVisibleDistance = Math.round(Math.hypot(after.x - bot.entity.position.x, after.y - bot.entity.position.y, after.z - bot.entity.position.z) * 10) / 10;
-          if (lastVisibleDistance <= params.within + 1) near += 1;
+          lastVisibleDistance = Math.hypot(after.x - bot.entity.position.x, after.y - bot.entity.position.y, after.z - bot.entity.position.z);
+          if (lastVisibleDistance <= params.within) near += 1;
         }
         ctx.progress({ followSamples: samples, visibleSamples, nearSamples: near });
       }
@@ -340,15 +376,15 @@ export const followEntity: SkillDefinition<{ target: MoveTarget; within: number;
     const fraction = visibleSamples ? Math.round((near / visibleSamples) * 100) / 100 : 0;
     // A distance is reported only if the target is visible at the end.
     const finalSeen = tracker.sample();
-    const finalDistance = finalSeen ? Math.round(Math.hypot(finalSeen.x - bot.entity.position.x, finalSeen.y - bot.entity.position.y, finalSeen.z - bot.entity.position.z) * 10) / 10 : null;
+    const finalDistance = finalSeen ? Math.hypot(finalSeen.x - bot.entity.position.x, finalSeen.y - bot.entity.position.y, finalSeen.z - bot.entity.position.z) : null;
     const evidence: Record<string, JsonValue> = { samples, visibleSamples, nearFraction: fraction, finalDistance, lastVisibleDistance, lastObservedTarget: pos3(tracker.last.at), lastObservedAgeMs: tracker.lostForMs() };
     if (finalDistance === null) {
       return { status: 'partial', reason: 'target_not_visible_at_end', effect: `followed ${place.label}; it is not visible now (last seen ${tracker.lostForMs()}ms ago)`, confirmation: 'client_only', evidence };
     }
     return {
-      status: finalDistance <= params.within + 1 ? 'succeeded' : 'partial',
-      ...(finalDistance <= params.within + 1 ? {} : { reason: 'trailing_target' }),
-      effect: `followed ${place.label} for ${Math.round(params.durationMs / 1000)}s; within ${params.within + 1} blocks in ${Math.round(fraction * 100)}% of visible samples; final distance ${finalDistance}`,
+      status: finalDistance <= params.within ? 'succeeded' : 'partial',
+      ...(finalDistance <= params.within ? {} : { reason: 'trailing_target' }),
+      effect: `followed ${place.label} for ${Math.round(params.durationMs / 1000)}s; within ${params.within} blocks in ${Math.round(fraction * 100)}% of visible samples; final distance ${finalDistance}`,
       confirmation: 'client_only',
       evidence,
     };
