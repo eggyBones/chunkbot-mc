@@ -8,6 +8,8 @@
 //     actuation: leaseActuation(leases, executor), clock, ids, record });
 //   registry: [...allSkills(), ..., ...safetySkills(safety.service)]
 //   leases ownerCurrent: owner.kind === 'safety' ? safety.service.grantCurrent(owner.grantId) : ...
+//   session: current READY GameSession with copied serverReported from its
+//     protocol-checked status ping (missing/ambiguous report keeps default age unknown)
 //   onBotCreated: safety.service.attachConnection(bot._client, { connectionEpoch, registry: () => bot.registry })
 //   onLifecycle (BEFORE lease/ledger invalidation): safety.service.onLifecycle(event)
 //   stop / resume / owner goal admitted / goal terminal: safety.service.onAuthorityChanged(cause)
@@ -17,9 +19,8 @@
 //     outcome reason `safety_preempt` = suspension (not a failure; wait, then re-observe).
 import type { ActionCandidate, Clock, IdSource, SkillOutcome } from '../contracts/index.ts';
 import type { SafetyActuationPort, SafetyAuthority, SafetyConfigInput, SafetyExecutionOwner } from '../contracts/safety.ts';
-import type { GameSession } from '../game/connection.ts';
 import type { PerceptionService } from '../perception/perception.ts';
-import { registryFactsOf, SessionSafetyReader } from './adapter.ts';
+import { registryFactsOf, SessionSafetyReader, type SafetySession } from './adapter.ts';
 import { SafetyService, type SafetyTimers } from './service.ts';
 import { SafetyTracker } from './tracker.ts';
 
@@ -56,7 +57,7 @@ export function leaseActuation(leases: LeaseView, executor: ExecutorView): Safet
 
 export interface SafetyRuntimeOptions {
   config: SafetyConfigInput | undefined;
-  session: () => GameSession | undefined;
+  session: () => SafetySession | undefined;
   perception: Pick<PerceptionService, 'isOwnerEntity'>;
   /** Exact-version item tag membership (VersionKnowledge recipes book `matches`). */
   inTag(tag: '#minecraft:swords' | '#minecraft:axes', key: string): boolean;

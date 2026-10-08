@@ -19,6 +19,14 @@ import type { SafetyItemRegistry, SafetyTracker } from './tracker.ts';
 
 type Bot = GameSession['bot'];
 
+/** Supplied ONLY by the connection's completed protocol-checked status ping,
+ * copied onto its current ready session. Not config or library labels. The
+ * optional shape lets the shared writer deliver the seam independently;
+ * absence cannot establish an omitted metadata default. */
+export type SafetySession = GameSession & {
+  readonly serverReported?: Readonly<{ version: string; protocol: number }>;
+};
+
 interface RawEntity {
   id: number;
   uuid?: string;
@@ -36,17 +44,21 @@ export function registryFacts(bot: Bot): SafetyRegistryFacts {
   return registryFactsOf(bot.registry);
 }
 
-/** Mineflayer's loader normalizes 26.1.2 to bot.version="26.1". The
- * protocol Client retains the exact requested/admitted release. An alias by
- * itself is insufficient; require that exact release and matching registry.
- * Exact bot.version remains the fallback for structural adapters without a
- * client version (never upgrades a protocol alias to an exact release). */
-export function exactSafetyVersion(bot: Bot): string | undefined {
-  const version = bot._client.version ?? bot.version;
+/** Both createClient and Mineflayer normalize 26.1.2 to "26.1". Only the
+ * current ready connection's status-ping report proves the exact release.
+ * Require matching library labels/protocol/registry as corroboration; none
+ * of those, alone or together, can replace a missing/ambiguous report. */
+export function exactSafetyVersion(bot: Bot, reported: SafetySession['serverReported']): string | undefined {
+  const version = reported?.version;
   const canonical = version === '26.1.2' ? '26.1' : version === '26.2' ? '26.2' : undefined;
+  const protocol = version === '26.1.2' ? 775 : 776;
   const registry = bot.registry as unknown as { version?: { minecraftVersion?: string; version?: number } };
-  if (!canonical || (bot.version !== version && bot.version !== canonical)) return undefined;
-  if (registry.version?.minecraftVersion !== canonical || registry.version.version !== (version === '26.1.2' ? 775 : 776)) return undefined;
+  // Installed loader assigns a number; its declaration incorrectly says string.
+  const botProtocol = (bot as unknown as { protocolVersion?: unknown }).protocolVersion;
+  if (!canonical || reported?.protocol !== protocol || botProtocol !== protocol) return undefined;
+  if (bot.version !== version && bot.version !== canonical) return undefined;
+  if (bot._client.version !== version && bot._client.version !== canonical) return undefined;
+  if (registry.version?.minecraftVersion !== canonical || registry.version.version !== protocol) return undefined;
   return version;
 }
 
@@ -106,9 +118,9 @@ export class SessionSafetyReader {
   private readonly history = new Map<number, Array<{ atMs: number; d: number }>>();
   private epoch = -1;
 
-  private readonly deps: { session: () => GameSession | undefined; perception: Pick<PerceptionService, 'isOwnerEntity'>; tracker: SafetyTracker; now: () => number };
+  private readonly deps: { session: () => SafetySession | undefined; perception: Pick<PerceptionService, 'isOwnerEntity'>; tracker: SafetyTracker; now: () => number };
 
-  constructor(deps: { session: () => GameSession | undefined; perception: Pick<PerceptionService, 'isOwnerEntity'>; tracker: SafetyTracker; now: () => number }) {
+  constructor(deps: { session: () => SafetySession | undefined; perception: Pick<PerceptionService, 'isOwnerEntity'>; tracker: SafetyTracker; now: () => number }) {
     this.deps = deps;
   }
 
@@ -223,7 +235,7 @@ export class SessionSafetyReader {
       };
       const mobFlags = flag('mob_flags');
       const baby = flag('baby');
-      const version = exactSafetyVersion(bot);
+      const version = exactSafetyVersion(bot, s.serverReported);
       const adultDefault = baby === undefined && version !== undefined && this.deps.tracker.adultDefault(raw.id, name, version, { connectionEpoch: s.connectionEpoch, uuid: raw.uuid });
       const swell = flag('swell_dir');
       const ignited = flag('is_ignited');
