@@ -33,7 +33,14 @@
 //   M4   stop during a retreat: lease and controls cleared; no further motion.
 //
 //   npm run fixture -- status                               (fixture lease required)
-//   node scripts/safety-live-check.ts --fixture-lease <granted id> [--fixture 26.2]
+//   node scripts/safety-live-check.ts --fixture-lease <granted id> [--fixture 26.2] [--require-real-executor]
+//
+// EXECUTOR SELECTION (never silent): when the shared contract accepts the
+// `safety` SkillOutcome owner (P's ExecutionOwner variant integrated), safety
+// owners ALWAYS run through the real SkillExecutorImpl and the stand-in is
+// never used; otherwise the labeled stand-in runs (mechanics/module evidence
+// only). `--require-real-executor` refuses (exit 2, before any fixture access)
+// when the real variant is absent. The report records `executor`.
 //
 // OWNED WRITE FOOTPRINT — every block/entity write stays inside these:
 //   scene   x 240..270, y -61..-48, z 190..220 (blocks; tagged mobs; item/xp drops)
@@ -57,7 +64,7 @@ import mineflayer from 'mineflayer';
 import { DEFAULT_FIXTURE_PROFILE, PROJECT_ROOT, fixturePaths, fixturePins, fixtureProfileFromArgv } from '../src/app/fixture-layout.ts';
 import { SkillRuntime } from '../src/app/skill-runtime.ts';
 import { loadConfigFile } from '../src/config/load.ts';
-import { randomIds, systemClock, type ActionCandidate, type ExecutionOwner, type GameLifecycleEvent, type SkillOutcome } from '../src/contracts/index.ts';
+import { SkillOutcomeSchema, randomIds, systemClock, type ActionCandidate, type ExecutionOwner, type GameLifecycleEvent, type SkillOutcome } from '../src/contracts/index.ts';
 import type { SafetyAuthority, SafetyExecutionOwner } from '../src/contracts/safety.ts';
 import { Actuator } from '../src/execution/actuator.ts';
 import { SkillExecutorImpl, clearSharedControls } from '../src/execution/executor.ts';
@@ -66,6 +73,7 @@ import { SkillRegistry } from '../src/execution/registry.ts';
 import { MineflayerConnection } from '../src/game/connection.ts';
 import { createSafetyRuntime } from '../src/safety/wiring.ts';
 import type { SafetyService } from '../src/safety/service.ts';
+import type { SessionSafetyReader } from '../src/safety/adapter.ts';
 import { allSkills } from '../src/skills/index.ts';
 import { safetySkills } from '../src/skills/safety.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
@@ -97,6 +105,11 @@ const POOL_SURFACE = { x: 255.5, y: -57.6, z: 205.5 };
 const ARENA = { x: 264.5, y: -56, z: 195.5 };
 const DIFF_REPLY = /difficulty is (\w+)/i;
 
+/** True when the shared SkillOutcome contract accepts a `safety` owner (P's executor variant integrated). */
+export function realSafetyExecutorAvailable(): boolean {
+  return SkillOutcomeSchema.safeParse({ actionId: 'act-0001', owner: 'safety', connectionEpoch: 0, goalEpoch: 0, status: 'succeeded', elapsedMs: 0, effect: 'probe' }).success;
+}
+
 interface Result {
   id: string;
   title: string;
@@ -127,6 +140,9 @@ class Gate {
   readonly leases: ActuatorLeases;
   readonly goalExecutor: SkillExecutorImpl;
   readonly safety: SafetyService;
+  readonly reader: SessionSafetyReader;
+  /** `real`: the shared SkillExecutorImpl runs safety owners; `stand_in`: labeled pre-integration stand-in. */
+  readonly executor: 'real' | 'stand_in' = realSafetyExecutorAvailable() ? 'real' : 'stand_in';
   readonly outcomes: SkillOutcome[] = [];
   /** Harness goal epoch (stands in for the GoalEngine). */
   epoch = 0;
@@ -201,13 +217,15 @@ class Gate {
           const r = this.leases.revoke(cur, reason);
           return { revoked: Boolean(r), holder: cur.owner.kind, clearMs: r?.clearMs ?? null };
         },
-        execute: (c, s, o) => this.safetyExecute(c, s, o),
+        // Real executor whenever the shared owner variant exists; the stand-in only otherwise.
+        execute: (c, s, o) => (this.executor === 'real' ? this.goalExecutor.execute(c, s, o as unknown as ExecutionOwner).then((out) => (this.outcomes.push(out), out)) : this.safetyExecute(c, s, o)),
       },
       clock: systemClock,
       ids: randomIds,
       record: (e) => this.store.record(e),
     });
     this.safety = rt.service;
+    this.reader = rt.reader;
     const registry = new SkillRegistry([...allSkills(), ...safetySkills(this.safety)]);
     this.registry = registry;
     this.goalExecutor = new SkillExecutorImpl({ registry, leases: this.leases, session: sessionFn, services: this.runtime.services, goalEpoch: () => this.epoch, store: this.store });
@@ -400,6 +418,24 @@ class Gate {
     await sleep(800);
   }
 
+  /**
+   * Staging for M2/M2b (no safety authority yet, so nothing acts): wait until a
+   * fresh VISIBLE read shows the tagged zombie already engaging in melee
+   * contact (server aggressive flag or server-attributed damage, <= 3.5).
+   * Returns the evidence line, or throws (retained staging failure).
+   */
+  async engaged(ms = 10_000): Promise<string> {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      const z = this.reader.entities({ scanRadius: 16, approachWindowMs: 1_500, provokedWindowMs: 6_000 }).find((e) => e.key === 'minecraft:zombie');
+      if (z && z.distance <= 3.5 && (z.aggressive === true || z.damagedSelfAtMs !== null)) {
+        return `staging: zombie already engaging in melee contact (distance ${z.distance}, aggressive ${z.aggressive}, attributed damage ${z.damagedSelfAtMs !== null})`;
+      }
+      await sleep(100);
+    }
+    throw new Error('staging_unready: the summoned zombie never showed server-stated engagement within melee contact; no defense is expected (retreat is the product default)');
+  }
+
   episodeAfter(startCount: number) {
     return this.safety.episodes().slice(startCount);
   }
@@ -535,6 +571,7 @@ async function run(): Promise<Json> {
 
     await g.gate('W3', 'solid ceiling without an open column: declarative blocker, no blind jump (water breathing given)', async (ev) => {
       await g.scene({ lid: true });
+      ev.push('INTERVENTION (no credit): water breathing keeps the trial harmless; it hides air loss, so W3 credits ONLY the blocker decision');
       await g.rcon(`effect give ${BOT} minecraft:water_breathing 60 0 true`);
       await g.tp(POOL_FLOOR);
       g.admit(24);
@@ -544,7 +581,8 @@ async function run(): Promise<Json> {
       check(st.blocker?.reason === 'no_reachable_surface', 'blocker names the missing surface');
       check(!g.leases.current, 'no lease held (no blind jump)');
       g.stop();
-      await g.rcon(`tp ${BOT} ${ARENA.x} ${ARENA.y} ${ARENA.z} 0 0`); // recorded intervention after the observation
+      ev.push('INTERVENTION (no credit): teleport rescue out of the lidded pool after the observation; never autonomous success');
+      await g.rcon(`tp ${BOT} ${ARENA.x} ${ARENA.y} ${ARENA.z} 0 0`);
     });
 
     // ---------------------------------------------------------------- mobs
@@ -565,7 +603,9 @@ async function run(): Promise<Json> {
       ev.push(`episode ${ep.response}:${ep.outcome}/${ep.reason}: ${ep.detail}`);
       ev.push(`server separation ${b0.pos && z0 ? dist2(b0.pos, z0).toFixed(1) : '?'} -> ${b1.pos && z1 ? dist2(b1.pos, z1).toFixed(1) : 'zombie not found'}; health ${b0.health} -> ${b1.health}`);
       check(g.written.slice(writes).every((w) => w.name !== 'attack'), 'no attack packet');
-      check(b0.pos && z0 && b1.pos && (!z1 || dist2(b1.pos, z1) > dist2(b0.pos, z0) + 2), 'server-measured separation increased');
+      check(b0.pos && z0 && b1.pos, 'server positions readable before/after (unreadable evidence fails the gate)');
+      check(z1, 'zombie position unreadable after the retreat (server evidence missing; not counted as separation)');
+      check(dist2(b1.pos, z1) > dist2(b0.pos, z0) + 2, 'server-measured separation increased');
     });
 
     await g.gate('M2', 'armed + single zombie: bounded defense; defeat only from the server death status', async (ev) => {
@@ -573,7 +613,7 @@ async function run(): Promise<Json> {
       await g.tp(ARENA);
       await g.arm();
       const z = await g.summon('zombie', { x: ARENA.x + 2.5, y: ARENA.y, z: ARENA.z }, ',IsBaby:0b');
-      await sleep(500);
+      ev.push(await g.engaged());
       const n = g.safety.episodes().length;
       const writes = g.written.length;
       g.admit(12);
@@ -583,9 +623,11 @@ async function run(): Promise<Json> {
       const after = await g.serverBot();
       const gone = !(await g.entityExists(z));
       ev.push(`episode ${ep.response}:${ep.outcome}/${ep.reason}: ${ep.detail}`);
+      check(ep.response === 'defend', `defense chosen for an already-engaging supported melee threat (got ${ep.response}: ${ep.reason})`);
       ev.push(`attacks sent ${g.written.slice(writes).filter((w) => w.name === 'attack').length}; counters ${JSON.stringify(st.counters)}; zombie gone (RCON) ${gone}; bot health ${after.health}`);
       check(st.counters.defeatsConfirmed >= 1, 'server death status confirmed');
-      check(gone, 'RCON confirms the zombie no longer exists');
+      check(gone, 'RCON confirms the zombie no longer exists (an unreadable reply counts as present)');
+      check(after.health !== null, 'server health readable after the fight');
       check(g.written.slice(writes).filter((w) => w.name === 'attack').length <= 10, 'bounded attacks');
     });
 
@@ -594,11 +636,12 @@ async function run(): Promise<Json> {
       await g.tp(ARENA);
       await g.arm();
       await g.summon('zombie', { x: ARENA.x + 2.5, y: ARENA.y, z: ARENA.z }, ',IsBaby:0b,Health:200f,attributes:[{id:"minecraft:max_health",base:200d}]');
-      await sleep(500);
+      ev.push(await g.engaged());
       const n = g.safety.episodes().length;
       const writes = g.written.length;
       g.admit(12);
       await g.waitFor('first attack', () => g.written.slice(writes).some((w) => w.name === 'attack'), 15_000);
+      ev.push('INTERVENTION (no credit): operator /damage 11 creates the readiness change; the gate credits only the autonomous downgrade');
       await g.rcon(`damage ${BOT} 11 minecraft:generic`);
       await g.waitFor('episode end', () => g.episodeAfter(n).length > 0, 25_000);
       const ep = g.episodeAfter(n)[0]!;
@@ -722,6 +765,7 @@ async function run(): Promise<Json> {
     check: 'MB-FLOW-003-C11/C13 immediate-safety mechanics gate (pre-integration module harness with a labeled safety-executor stand-in; no model calls; NOT integrated-application or real-provider acceptance)',
     credit: 'module mechanics only; operator interventions (positioning, damage, effects, equipment, summons) never earn autonomous pass credit',
     standIn: 'safety owners run through a labeled pre-integration stand-in executor until the shared ExecutionOwner `safety` variant exists',
+    executor: g.executor,
     interventions: g.interventions,
     fixture: PINS.profile,
     source,
@@ -745,10 +789,14 @@ async function main(): Promise<number> {
     process.stderr.write('refusing to run: pass --fixture-lease <granted lease id> (the shared loopback fixtures are leased by the coordinator)\n');
     return 2;
   }
+  if (process.argv.includes('--require-real-executor') && !realSafetyExecutorAvailable()) {
+    process.stderr.write('refusing to run: --require-real-executor given but the shared SkillOutcome/ExecutionOwner `safety` variant is not integrated\n');
+    return 2;
+  }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${SUFFIX}-safety`);
   mkdirSync(outDir, { recursive: true });
-  process.stdout.write(`safety gate (${PINS.profile}, lease ${lease}) -> ${outDir}\n`);
+  process.stdout.write(`safety gate (${PINS.profile}, lease ${lease}, safety executor ${realSafetyExecutorAvailable() ? 'REAL shared executor' : 'labeled STAND-IN'}) -> ${outDir}\n`);
   const report = await run();
   writeFileSync(join(outDir, 'report.json'), `${JSON.stringify({ ...report, lease }, null, 2)}\n`);
   process.stdout.write(`${report['pass'] ? 'PASS' : 'FAIL'} safety gate — ${outDir}\n`);

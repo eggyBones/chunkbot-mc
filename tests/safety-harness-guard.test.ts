@@ -53,6 +53,24 @@ describe('safety gate harness guard', () => {
     assert.match(code, /difficulty \$\{difficulty\.changed \? 'restored to' : 'unchanged at'\}/);
   });
 
+  it('executor selection is never silent: real shared executor whenever the owner variant exists; stand-in labeled otherwise', () => {
+    assert.match(code, /this\.executor === 'real' \? this\.goalExecutor\.execute/);
+    assert.match(code, /readonly executor: 'real' \| 'stand_in' = realSafetyExecutorAvailable\(\) \? 'real' : 'stand_in'/);
+    assert.match(code, /executor: g\.executor,/);
+    const mainBody = source.slice(source.indexOf('async function main()'));
+    assert.ok(mainBody.indexOf("'--require-real-executor'") < mainBody.indexOf('mkdirSync('), 'the real-executor requirement refuses before any output/fixture access');
+  });
+
+  it('W3 and M2b label their interventions; M2/M2b stage an already-engaging threat; unreadable evidence fails', () => {
+    const w3 = code.slice(code.indexOf("g.gate('W3',"), code.indexOf("g.gate('M1',"));
+    assert.match(w3, /INTERVENTION \(no credit\): water breathing/);
+    assert.match(w3, /INTERVENTION \(no credit\): teleport rescue/);
+    const m2 = code.slice(code.indexOf("g.gate('M2',"), code.indexOf("g.gate('M3',"));
+    assert.equal((m2.match(/ev\.push\(await g\.engaged\(\)\)/g) ?? []).length, 2, 'M2 and M2b both stage engagement before admission');
+    assert.match(m2, /INTERVENTION \(no credit\): operator \/damage/);
+    assert.ok(!/!z1 \|\|/.test(code), 'missing server position is never a pass');
+  });
+
   it('W1 forbids an RCON rescue: no teleport between admission and the W1 verdict', () => {
     const w1 = code.slice(code.indexOf("g.gate('W1',"), code.indexOf("g.gate('W1s',"));
     const admit = w1.indexOf('g.admit(');
