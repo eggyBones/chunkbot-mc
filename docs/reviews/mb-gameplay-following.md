@@ -14,6 +14,8 @@ Worker L: native Claude Opus 5.5 (local DSH), worktree `gameplay-follow`, branch
 | `1f27dc9` | This review/handoff |
 | `a9f3e00` | Coordinator corrections: conservative visible-owner progress (no ownerSeen latch); detour path allowance enforced during dispatch |
 | `8b24f28` | MB-FLOW-003-C12 route lineage: `RouteCarry`, `exportCarry`/`revokeWithCarry`/`admitContinuation` (focused commit for P) |
+| `a3d80e2` | D1: default owner-statement age limit 600 s; freshness regressions |
+| `9a55e49` (branch `chunkbot/gameplay-follow-module`) | Module/harness milestone = `a9f3e00` + D1, without C12 |
 | `283179a` | Two-sided bounded detour (switch once with a return-plus-search budget, ≤ 3 × 96 per episode), the observed obstacle reported when a window ends mid-detour, river/bridge dry-route tests, dynamic catalog verification in O0, model-visible catalog check in O1, P-L8 |
 
 Changed paths (ownership only): `src/locator/route-runner.ts`, `src/locator/terrain.ts`, `src/skills/locator.ts`, `scripts/locator-live-check.ts`, `scripts/locator-ordinary-live-check.ts` (new), `tests/locator-sim.ts` (new helper), `tests/locator-runner.test.ts`, `tests/locator-direction.test.ts` (new), `tests/locator-detour.test.ts` (new), `tests/locator-harness-guard.test.ts`, `tests/locator-ordinary-harness-guard.test.ts` (new), `tests/locator-composition.test.ts` (new), this file. No shared file, contract, config, vendor or `node_modules` edit.
@@ -181,6 +183,26 @@ Tests cover:
 `dist/cli.js` sha256 `de9409f3ddb24e918274db15435ad1a15d1c5a2896f93149e7799b58e0fa7553`.
 
 The ownerSeen/raw-moved correction (C1 above, `a9f3e00`) is complete: `ownerSeen` is now only an evidence field. No window continues on it; once the owner is lost, sideways or backward movement can only debit progress.
+
+## Coordinator decisions D1–D3 and milestone layout
+
+- **D1 (authorized, implemented `a3d80e2`).** The DEFAULT `hintMaxAgeMs` is now the schema's bounded maximum, 600 s, so an owner who stands still far away is still found.
+  - Withdrawal is unchanged and immediate at any age: untrack (hiding, range, locator bar off), logout (identity no longer listed), dimension change, respawn, new connection.
+  - An explicitly configured limit stays binding and is never extended. Reported age and remaining freshness are honest. No statement outlives these fences, and none is kept beyond 600 s.
+  - `tests/locator-freshness.test.ts` (6 tests) covers: the default and a binding explicit value; a stationary owner found after 5 min with age 300 s and 300 s remaining; expired after 600 s with no movement; immediate withdrawals; an explicit 60 s limit not extended; a new statement restarting the age.
+  - Mutation check: with the old 120 s default, three tests fail (exit 1); the source was restored byte-identical (`cmp` 0).
+  - Shared follow-up for P: any example, profile, prompt or status text that states a 120 s locator age (none found in `src`/`config`; this document's earlier D1 paragraph is historical).
+- **D2.** Persistent follow keeps the explicit operator limits (1024 total movement / 12 legs / 15 min). They are not refilled and Jake is not asked.
+- **D3.** The first-option loopback Jev counts only as labelled harness validation. Acceptance waits for shared P-L3; any pre-integration failure is retained.
+
+**Two milestones:**
+
+| Milestone | Ref / SHA | Content | Verified |
+| --- | --- | --- | --- |
+| Module/harness (for a frozen read-only G6 run) | branch `chunkbot/gameplay-follow-module` = `9a55e49` (parent `a9f3e00`) | locator module, D1, harnesses, every test except C12; NO route-lineage code | Separate throwaway copy (`git archive` + `npm ci`): typecheck 0, build 0, `npm test` 0 (833/833), doctor 0; `dist/cli.js` sha256 `de9409f3…7553`. Copy removed. |
+| Main line (module + C12) | branch `chunkbot/gameplay-follow` | the above plus C12 route lineage (`8b24f28`) and this document | `a3d80e2`: typecheck 0, build 0, `npm test` 0 (844/844), doctor 0 |
+
+`9a55e49` was built from `a9f3e00` plus exactly the D1 diff (temporary index, `git apply --cached`, `commit-tree`). It differs from the main line only in `src/contracts/locator.ts` (C12 types), `src/locator/routes.ts`, `tests/locator-continuation.test.ts` and this document. No other checkout or worktree was touched.
 
 ## Fixture footprint and restoration (for guard review; no lease requested before it)
 
