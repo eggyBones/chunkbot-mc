@@ -1,11 +1,11 @@
 // Helpers shared by skill executors and resolvers. Executors only act through
 // the fenced Actuator; resolvers only read.
 import { Vec3 } from 'vec3';
-import type { JsonValue } from '../contracts/index.ts';
+import type { JsonValue, RemovalCarry } from '../contracts/index.ts';
 import type { Actuator } from '../execution/actuator.ts';
 import { inventoryFromConfirmed, type Counts, type InventoryView } from '../execution/ledger.ts';
 import type { GameSession } from '../game/connection.ts';
-import { BLOCK_REACH, eyeOf, sessionWorld, type HandleRecord } from '../perception/perception.ts';
+import { BLOCK_REACH, eyeOf, groupLineageScore, sessionWorld, type HandleRecord } from '../perception/perception.ts';
 import { UNCONFIRMED_BLOCK, type Vec } from '../perception/visibility.ts';
 import type { ResolveContext, SkillServices, TaskHints, Unavailable } from './definition.ts';
 
@@ -186,13 +186,43 @@ export function targetScope(ctx: Pick<ResolveContext, 'hints' | 'snapshot'> & Pa
   if (perception && typeof perception.groupMembers === 'function') {
     for (const h of current) for (const m of perception.groupMembers(ctx.snapshot.id, h) ?? []) groupMembers.add(`${m.x},${m.y},${m.z}`);
   }
+  const removalScopes = (ctx.hints.removalHandles ?? []).map((h) => {
+    const handles = new Set(h.snapshotId === ctx.snapshot.id ? [h.handle] : []);
+    const members = new Set<string>();
+    if (perception) for (const target of handles) for (const m of perception.groupMembers(ctx.snapshot.id, target) ?? []) members.add(`${m.x},${m.y},${m.z}`);
+    return { handles, members };
+  });
   const allows = (handle: string): boolean => {
+    for (const s of removalScopes) {
+      if (s.handles.has(handle)) continue;
+      const r = perception?.resolve(ctx.snapshot.id, handle);
+      if (!r || 'error' in r || r.target.kind !== 'block' || !s.members.has(`${r.target.x},${r.target.y},${r.target.z}`)) return false;
+    }
     if (!named || current.has(handle)) return true;
     if (groupMembers.size === 0 || !perception) return false;
     const r = perception.resolve(ctx.snapshot.id, handle);
     return !('error' in r) && r.target.kind === 'block' && groupMembers.has(`${r.target.x},${r.target.y},${r.target.z}`);
   };
   return { named, current, groupMembers, allows };
+}
+
+/** Final destructive fence over the goal's ORIGINAL bound removal lineage. */
+export function removalScopeAllows(services: Pick<SkillServices, 'perception' | 'knowledge'>, target: unknown, scope: readonly RemovalCarry[], dimension: string): boolean {
+  if (!target || typeof target !== 'object') return false;
+  const ref = target as { snapshotId?: unknown; handle?: unknown };
+  if (typeof ref.snapshotId !== 'string' || typeof ref.handle !== 'string') return false;
+  const rec = services.perception.resolve(ref.snapshotId, ref.handle);
+  if ('error' in rec || rec.target.kind !== 'block') return false;
+  const t = rec.target;
+  const key = mk(t.name);
+  return scope.some((r) => {
+    if (r.dimension !== dimension || !(r.selector.startsWith('#') ? services.knowledge.recipes?.matches(r.selector, key) : r.selector === key)) return false;
+    if (r.members.some((m) => m.x === t.x && m.y === t.y && m.z === t.z && m.key === key)) return true;
+    const id = r.identity;
+    // Newly visible members must link to the ORIGINAL bounded component,
+    // excluding every originally observed unrelated trunk; no target union.
+    return Boolean(id && groupLineageScore({ ...id, anchors: new Set(id.anchors.map((p) => `${p.x},${p.y},${p.z}`)), others: new Set(id.others.map((p) => `${p.x},${p.y},${p.z}`)) }, { class: id.class, trunk: [t] }) > 0);
+  });
 }
 
 /** Compatibility wrapper used by older call sites: same authority rule as targetScope. */

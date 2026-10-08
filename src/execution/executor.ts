@@ -18,6 +18,7 @@ import {
 } from '../contracts/index.ts';
 import type { GameSession } from '../game/connection.ts';
 import type { SkillServices } from '../skills/definition.ts';
+import { removalScopeAllows } from '../skills/common.ts';
 import { Actuator, InterfaceBusyError, sleepAbortable } from './actuator.ts';
 import { interfaceGate } from './interface-gate.ts';
 import { LeaseBusyError, LeaseRevokedError, type ActuatorLeases } from './lease.ts';
@@ -159,6 +160,9 @@ export class SkillExecutorImpl implements SkillExecutor {
     // (SkillRuntime.onGoalAdmitted) and never set or moved by execution. A goal
     // action whose epoch does not own the current anchor is refused.
     if (owner.kind === 'goal') {
+      if (candidate.capability === 'mine_block' && owner.destructiveScope !== undefined && !removalScopeAllows(this.deps.services, candidate.parameters['target'], owner.destructiveScope, String(session.bot.game.dimension))) {
+        return finish({ status: 'precondition_failed', reason: 'destructive_target_conflict', effect: 'block is outside the original bound removal target; no command was issued' });
+      }
       const anchorEpoch = this.deps.services.perception.travelAnchorGoalEpoch();
       if (anchorEpoch !== owner.goalEpoch) {
         return finish({

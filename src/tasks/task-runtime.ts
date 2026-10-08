@@ -332,7 +332,7 @@ export class TaskRuntime implements TaskExecutionPort {
           emit('task_low_health_allowance', { round: rounds, health: snapshot.self.health, threshold: deps.limits.lowHealth, allowanceId: allowance.allowanceId, capabilities: [...allowance.capabilities], items: [...allowance.items], detail: allowance.detail });
         }
         // 4. Candidates from the registered resolvers of the allowed capabilities.
-        const generated = deps.candidates.generate(task.spec, snapshot);
+        const generated = deps.candidates.generate(task.spec, snapshot, task.destructiveScope);
         const set = allowance?.allowed ? { ...generated, candidates: generated.candidates.filter((c) => withinAllowance(c, allowance.capabilities, allowance.items)) } : generated;
         lastUnavailable = set.unavailable;
         const excludedFailing = (c: ActionCandidate) => (failures.get(this.key(c)) ?? 0) > deps.limits.perTargetRetries;
@@ -442,7 +442,7 @@ export class TaskRuntime implements TaskExecutionPort {
         // The allowance is re-checked (canonical recheck) against the FRESH snapshot after the Jev await, before dispatch.
         const gate = this.allowanceGate(task, chosen, fresh);
         if (!gate.ok) return finish('blocked', 'low_health', gate.detail);
-        const regen = deps.candidates.generate(task.spec, fresh);
+        const regen = deps.candidates.generate(task.spec, fresh, task.destructiveScope);
         const want = this.key(chosen);
         if (!regen.candidates.some((c) => this.key(c) === want)) {
           const why = regen.unavailable.filter((u) => u.capability === chosen.capability).slice(0, 3);
@@ -607,7 +607,7 @@ export class TaskRuntime implements TaskExecutionPort {
   }
 
   private async execute(task: AdmittedTask, c: ActionCandidate, via: TaskOutcomeSummary['via'], recent: TaskOutcomeSummary[], emit: (k: string, d: Record<string, unknown>) => void, requestId?: string): Promise<SkillOutcome> {
-    const owner = { kind: 'goal' as const, goalEpoch: task.goalEpoch, goalId: task.goalId, taskId: task.taskId };
+    const owner = { kind: 'goal' as const, goalEpoch: task.goalEpoch, goalId: task.goalId, taskId: task.taskId, ...(task.destructiveScope !== undefined ? { destructiveScope: task.destructiveScope } : {}) };
     const outcome = await this.deps.executor.execute(c, task.signal, owner);
     // Outcome identity: only the dispatched action, owned by this goal/task/epochs, can advance anything.
     const matches =

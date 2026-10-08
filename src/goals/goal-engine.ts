@@ -108,7 +108,7 @@ import {
   type RouteCarry,
   type Vec3,
 } from '../contracts/index.ts';
-import { countFor, groundOutcome, initialCountLineage } from './continuation.ts';
+import { countFor, groundOutcome, initialCountLineage, outcomeAtoms } from './continuation.ts';
 import { isOwnerQuestionProblem, questionBlockerText } from './declarative.ts';
 import { checkProposal, type ShownSnapshot } from './proposal.ts';
 import { publicBlocker, publicOutcome, publicTaskLabel } from './public-text.ts';
@@ -1480,7 +1480,9 @@ export class GoalEngine {
     this.currentTaskObjective = truncate(spec.objective, 300);
     this.deps.store.record({ type: 'task_admitted', goalId: active.record.id, epoch: active.epoch, taskId, mode, objective: truncate(spec.objective, BOUNDS.text), allowedCapabilities: spec.allowedCapabilities });
     this.recordTimings(active, startedAtMs);
-    const running = tasks.run({ taskId, goalId: active.record.id, goalEpoch: active.epoch, spec, mode, signal: active.abort.signal, isCurrent: () => this.active === active && this.epoch === active.epoch && !active.abort.signal.aborted });
+    const removal = active.outcome ? this.deps.outcomes?.captureContinuation?.(active.outcome.bound).removal : undefined;
+    const hasRemoval = active.outcome && outcomeAtoms(active.outcome.contract).some(({ atom }) => atom.predicate === 'blocks_removed');
+    const running = tasks.run({ taskId, goalId: active.record.id, goalEpoch: active.epoch, spec, mode, ...(hasRemoval ? { destructiveScope: removal ?? [] } : {}), signal: active.abort.signal, isCurrent: () => this.active === active && this.epoch === active.epoch && !active.abort.signal.aborted });
     const cleanup: Cleanup = () => running.then(() => undefined, () => undefined);
     active.cleanups.add(cleanup);
     try {

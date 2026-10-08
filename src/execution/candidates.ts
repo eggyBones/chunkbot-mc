@@ -13,10 +13,11 @@ import {
   type IdSource,
   type ObservationSnapshot,
   type OutcomePredicate,
+  type RemovalCarry,
   type TaskSpec,
 } from '../contracts/index.ts';
 import type { GameSession } from '../game/connection.ts';
-import { admittedParameters } from '../skills/common.ts';
+import { admittedParameters, removalScopeAllows } from '../skills/common.ts';
 import type { SkillServices, TaskHints } from '../skills/definition.ts';
 import { boundJson } from './executor.ts';
 import type { SkillRegistry } from './registry.ts';
@@ -60,6 +61,7 @@ function walkPredicate(p: OutcomePredicate, hints: TaskHints): void {
       // The bound target scopes the work; the selector names what must go (and what drops may be wanted).
       hints.keys.push(p.selector);
       addSelector(p.target, hints);
+      if (p.target.kind === 'observed') (hints.removalHandles ??= []).push({ snapshotId: p.target.snapshotId, handle: p.target.handle });
       return;
   }
 }
@@ -93,6 +95,7 @@ function addSelector(s: TaskSpec['targetSelectors'][number], hints: TaskHints): 
 export function taskHints(task: TaskSpec): TaskHints {
   const hints: TaskHints = { keys: [], handles: [], wantsOwner: false, anchors: [], destinations: [], priorResults: [], outputs: [], parameters: task.parameters ?? {}, memoryRefs: [] };
   for (const s of task.targetSelectors ?? []) addSelector(s, hints);
+  hints.targetKeys = task.targetSelectors.filter((s) => s.kind === 'registry').map((s) => s.key);
   walkPredicate(task.completion, hints);
   hints.keys = [...new Set(hints.keys)];
   return hints;
@@ -134,7 +137,7 @@ export class TaskCandidateGenerator implements CandidateGenerator {
     this.deps = deps;
   }
 
-  generate(task: TaskSpec, snapshot: ObservationSnapshot): CandidateSet {
+  generate(task: TaskSpec, snapshot: ObservationSnapshot, destructiveScope?: readonly RemovalCarry[]): CandidateSet {
     const session = this.deps.session();
     const hints = taskHints(task);
     const candidates: ActionCandidate[] = [];
@@ -153,6 +156,7 @@ export class TaskCandidateGenerator implements CandidateGenerator {
       return { snapshotId: snapshot.id, handle: translated };
     };
     hints.handles = hints.handles.map(ground);
+    if (hints.removalHandles) hints.removalHandles = hints.removalHandles.map(ground);
     const parameters: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(hints.parameters)) {
       if (isHandleRef(value)) {
@@ -199,6 +203,10 @@ export class TaskCandidateGenerator implements CandidateGenerator {
         const parsed = def.params.safeParse(d.parameters);
         if (!parsed.success) return false;
         const data = parsed.data as Record<string, unknown>;
+        if (capability === 'mine_block' && destructiveScope !== undefined && !removalScopeAllows(this.deps.services, data['target'], destructiveScope, snapshot.dimension)) {
+          conflicts += 1;
+          return false;
+        }
         for (const [key, value] of Object.entries(admitted.values)) {
           if (canonical(data[key]) !== canonical(value)) {
             conflicts += 1;

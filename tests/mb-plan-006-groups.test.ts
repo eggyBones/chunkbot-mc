@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { sequentialIds, systemClock, type OutcomePredicate, type TaskSpec } from '../src/contracts/index.ts';
 import { TaskCandidateGenerator } from '../src/execution/candidates.ts';
+import { SkillExecutorImpl } from '../src/execution/executor.ts';
+import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { EvidenceLedger } from '../src/execution/ledger.ts';
 import { ActuatorLeases } from '../src/execution/lease.ts';
 import { PredicateEngine } from '../src/execution/predicates.ts';
@@ -48,7 +50,7 @@ function treeScene() {
   const generator = new TaskCandidateGenerator({ registry, services, session: () => session, ids: sequentialIds() });
   const leases = new ActuatorLeases({ clock: systemClock, ownerCurrent: () => true, connectionEpoch: () => 1, clearShared: () => ({ steps: [], errors: [] }) });
   const predicates = new PredicateEngine({ services, session: () => session, leases });
-  return { scene, perception, generator, predicates, registry, knowledge, session };
+  return { scene, perception, generator, predicates, registry, knowledge, session, services, leases, client };
 }
 
 const signal = () => new AbortController().signal;
@@ -86,6 +88,30 @@ describe('MB-PLAN-006 N-G3 observation groups', () => {
 });
 
 describe('MB-PLAN-006 N-G3 scoped work and removal outcome', () => {
+  it('N1-R3: replan cannot union an unrelated oak target with the original birch completion or bypass explicit leaf keys', async () => {
+    const w = treeScene();
+    const original = w.perception.take(3)!;
+    const birch = original.groups!.find((g) => g.support === 'floating')!;
+    const root: OutcomePredicate = { predicate: 'blocks_removed', target: { kind: 'observed', snapshotId: original.id, handle: birch.handle }, selector: '#minecraft:logs' };
+    const bound = await w.predicates.bind(root, signal());
+    const scope = w.predicates.captureContinuation(bound).removal;
+    w.scene.fill(-3, 2, 0, -3, 4, 0, 'air');
+    const fresh = w.perception.take(3)!;
+    const oak = fresh.groups!.find((g) => g.keys.some((k) => k.key === 'minecraft:oak_log'))!;
+    const replan: TaskSpec = { objective: 'remove remaining leaves', decisionInstruction: 'only birch leaves', allowedCapabilities: ['mine_block'], targetSelectors: [{ kind: 'observed', snapshotId: fresh.id, handle: oak.handle }, { kind: 'registry', key: 'minecraft:birch_leaves' }], parameters: {}, completion: root };
+    assert.equal(w.generator.generate(replan, fresh, scope).candidates.length, 0, 'conflicting targets do not become a destructive union');
+    const malicious = { ...replan, targetSelectors: [{ kind: 'observed' as const, snapshotId: fresh.id, handle: oak.handle }], completion: { predicate: 'inventory_delta' as const, selector: '#minecraft:logs', atLeast: 3, mayBeConsumedLater: false } };
+    const unbound = w.generator.generate(malicious, fresh);
+    assert.ok(unbound.candidates.length > 0, 'discriminating oak options without the original goal fence');
+    assert.equal(w.generator.generate(malicious, fresh, scope).candidates.length, 0, 'the bound goal fence survives a changed task predicate');
+    w.perception.admitTravelAnchor(3);
+    const executor = new SkillExecutorImpl({ registry: w.registry, leases: w.leases, session: () => w.session, services: w.services, goalEpoch: () => 3, store: new MemoryRunStore() });
+    const writes = w.client.written.length;
+    const outcome = await executor.execute(unbound.candidates[0]!, signal(), { kind: 'goal', goalId: 'goal-0001', goalEpoch: 3, taskId: 'task-0001', destructiveScope: scope });
+    assert.equal(outcome.reason, 'destructive_target_conflict');
+    assert.equal(w.client.written.length, writes, 'execution refuses before any command');
+  });
+
   it('mining scoped to the bound group offers only that group\'s blocks; the unrelated tree stays out of scope', () => {
     const { perception, generator } = treeScene();
     const snap = perception.take(0)!;
