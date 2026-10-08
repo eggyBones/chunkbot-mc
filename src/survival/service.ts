@@ -718,7 +718,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       interruptedAtMs: end.endedAtMs,
       reason: end.reason,
       continuation: 'requires_owner_decision',
-      continuationDetail: 'continuing would need the preserved original outcome, baseline, counters, deadline and fenced references; ask the owner (no automatic replay or new baseline)',
+      continuationDetail: 'held: this work is not continued automatically in this release (no replay and no new baseline); a new instruction replaces it',
       state: 'awaiting_owner',
       stateAtMs: end.endedAtMs,
     };
@@ -1083,7 +1083,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     for (const i of s.incidents) {
       lines.push(`death ${i.episodeId}${i.incidentFactId ? `/${i.incidentFactId}` : ' (not linked to memory)'}: ${i.status} (${i.phase}), ${i.cause.translationKey ?? 'cause unknown'}, site ${i.site.at ? `${i.site.at.x},${i.site.at.y},${i.site.at.z} ${i.site.dimension}` : 'unknown'} [${i.site.source}]${i.site.distance !== undefined ? ` ${i.site.distance} blocks away` : ''}; attempts ${i.attempts.used}/${i.attempts.max}; missing ${i.missing.map((m) => `${m.count} ${m.key.replace('minecraft:', '')}${m.state !== 'missing' ? ` (${m.state})` : ''}`).join(', ') || 'none'}; regained ${i.regained.reduce((n, r) => n + r.count, 0)}${i.retained?.length ? `; retained ${i.retained.reduce((n, r) => n + r.count, 0)} (kept, not regained)` : ''}${i.incidental?.length ? `; incidental ${i.incidental.reduce((n, r) => n + r.count, 0)} (not this incident's)` : ''}${i.effectsUnknown ? '; some attempt effects unknown (process ended mid-attempt)' : ''}${i.blocker ? `; blocker ${i.blocker.reason}: ${clip(i.blocker.detail, 120)}` : ''}`);
     }
-    for (const d of s.interrupted.filter((x) => x.state === 'awaiting_owner')) lines.push(`interrupted owner goal ${d.goalId} (${d.reason}): "${d.instruction}" — needs your decision (a new instruction replaces it; nothing is replayed)`);
+    for (const d of s.interrupted.filter((x) => x.state === 'awaiting_owner')) lines.push(`held owner work ${d.goalId} (interrupted: ${d.reason}): "${d.instruction}" — not continued automatically; nothing is replayed; a new instruction replaces it`);
     for (const b of s.blocked) lines.push(`survival blocked ${b.routine}: ${b.reason} — ${clip(b.detail, 160)}`);
     return lines.slice(0, 12);
   }

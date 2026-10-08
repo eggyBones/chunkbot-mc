@@ -14,7 +14,8 @@ Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree
 | `08c9d89` | Coordinator schema review: state/count consistency invariants, v1 migration that reconstructs the original lost count from recorded regains, old-revision fallback tests |
 | `eb4456b` | Review doc commit id |
 | `d3b3e9f` | C12 proposal revision 2 after the joint review (declarations only) |
-| (this commit) | v1 `regained` label without a recorded regain → explicit `unknown` (no invented regains); no-recorded-regain regression. **Frozen C8/C9/C10 candidate for the 26.1.2 module lease.** |
+| `f55329a` | v1 `regained` label without a recorded regain → explicit `unknown` (no invented regains); no-recorded-regain regression |
+| (this commit) | Bed correction: G4/G4n removed from the leased run (always SKIPPED with the R8/respawn reason); no bed, respawn-point or clock write; guard tests. **Frozen C8/C9/C10 candidate for the 26.1.2 module lease.** |
 
 Owned paths changed:
 - `src/contracts/survival.ts`
@@ -134,8 +135,8 @@ Official sources: the 26.1.2 and 26.2 `server.jar` files, read from the coordina
 
 - Exported, import-safe parsers cover the official forms: clock, timeline, set, gamerule and difficulty.
 - Every original is read before any write. That includes two clock reads 1 s apart to measure the rate; a paused clock measures 0. A failed read changes nothing.
-- Time of day comes from `time query minecraft:day`, falling back to the absolute clock mod 24000.
-- The clock is restored with `time of <clock> set <original + measured elapsed>`. That target is verified twice: by the parsed `Set … tick(s)` reply, and by a re-read within ±100 ticks. Restoration neither rewinds nor skips the trial's time.
+- `time query minecraft:day` (the day-timeline position) is read and parsed as well.
+- **Since the bed review (see the lease section), the leased run never writes the clock.** The clock is only read, as C8 reply-form evidence, so it has no restoration step. The G4/G4n bed observations, the only clock writers, are always reported SKIPPED.
 - **C10 oracle and evidence:**
   - G2 records an RCON inventory baseline immediately before the recovery admission.
   - G2 and G2b require each server delta to equal survival's regained count plus its reported unplanned-collect incidental count, key by key.
@@ -150,7 +151,7 @@ Official sources: the 26.1.2 and 26.2 `server.jar` files, read from the coordina
 
 ## Checks (Node 24.21.0, this worktree's own `npm ci`)
 
-Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the frozen candidate (the commit that adds the no-recorded-regain regression):
+Exit codes are captured directly: each command's output is redirected to a file, `$?` is read immediately, and the log is read in a separate step (no pipes). Latest run, on the frozen candidate (the bed-correction commit):
 
 | Command | Exit | Log summary |
 | --- | --- | --- |
@@ -209,17 +210,19 @@ Survival adapts its durable/service bookkeeping after P's concrete shared API is
 - **Commands:**
   - `node scripts/survival-live-check.ts --fixture-lease <id> --with-settings`
   - then the same with `--fixture 26.2`
-- **Exact bounded footprint.** This is every RCON command the harness can issue. Coordinates are fixed constants and `${ITEM_AREA}` = `x=196,y=-61,z=190,dx=28,dy=11,dz=34`. The static guard test enforces that every entity kill carries `${ITEM_AREA}`, that there is no `spawnpoint` command, and that no selector goes beyond the y range.
+- **Exact bounded footprint.** This is every RCON command the harness can issue. Coordinates are fixed constants and `${ITEM_AREA}` = `x=196,y=-61,z=190,dx=28,dy=11,dz=34`. The static guard test enforces that every entity kill carries `${ITEM_AREA}`, that no selector goes beyond the y range, and that the leased default contains **no bed block, no `interact_block` use, no `spawnpoint`/`setworldspawn`, no `time set`/`time of`/`time add` and no `sleeping_pos` read**.
+
+  **Bed correction (coordinator review of `f55329a`):** my earlier statement that no `spawnpoint` command exists was wrong. Both official reports (`var/compatibility/reports-26.1.2/generated/reports/commands.json` and the 26.2 counterpart) include `spawnpoint <targets> <pos> <rotation>`, and using a bed changes the bot's respawn point without that command anyway. The G4/G4n bed observations are therefore removed from the leased run: every run reports them `SKIPPED` with the reason "bed interaction changes the fixture bot's respawn point and this harness cannot restore and verify the exact original respawn; R8 bed/respawn restoration is unassigned". There is no bed opt-in. `--with-settings` keeps only C8 parsing, G1k (`keep_inventory`) and G3 (food/health).
 
   | Kind | Commands | Where |
   | --- | --- | --- |
-  | Blocks (writes) | `clone 196 -61 190 224 -50 224 196 200 190` (backup); `fill 196 -60 190 224 -50 224 air`; `fill 196 -61 190 224 -61 224 grass_block`; `setblock 208 -60 208` / `208 -60 209 red_bed[…]` (G4/G4n); restore `clone 196 200 190 224 211 224 196 -61 190 replace force`; `fill 196 200 190 224 211 224 air` | scene x 196..224, y −61..−50, z 190..224; backup y 200..211 (verified empty first by a masked self-clone count) |
+  | Blocks (writes) | `clone 196 -61 190 224 -50 224 196 200 190` (backup); `fill 196 -60 190 224 -50 224 air`; `fill 196 -61 190 224 -61 224 grass_block`; restore `clone 196 200 190 224 211 224 196 -61 190 replace force`; `fill 196 200 190 224 211 224 air` | scene x 196..224, y −61..−50, z 190..224; backup y 200..211 (verified empty first by a masked self-clone count) |
   | Entities (writes) | `kill @e[type=item,${ITEM_AREA}]`, `kill @e[type=experience_orb,${ITEM_AREA}]`, `kill @e[type=item,tag=cbsurv_<run>,${ITEM_AREA}]`; `summon item` ×3 at (215.5,−60,208.5) bread 64, (209.5,−60,208.5) dirt 3, (212.5,−60,201.5) diamond sword sharpness 1, tagged `cbsurv_<run>` + `_bread`/`_dirt`/`_sword` | inside the scene only |
   | Forceload | `forceload query`; `forceload add` only for scene chunks reported "not marked"; `forceload remove` only for those | chunks (12..14, 11..14) |
-  | Fixture bot only (writes) | `clear Chunkbot`, `effect clear Chunkbot [minecraft:hunger]`, `give Chunkbot` iron_pickaxe[damage=200] 1 / bread 4 / cobblestone 20 / diamond_sword[sharpness 3] 1 / bread 12, `kill Chunkbot`, `damage Chunkbot 13` and `4 minecraft:generic`, `effect give Chunkbot minecraft:hunger 30 120` and `10 60`, `tp Chunkbot` to (205.5,−60,205.5), (212.5,−60,205.5), (208.5,−60,206.5) and finally (205.5,−49,205.5) | the bot's own state; G4/G4n may change its respawn point to the trial bed (before/after recorded; NOT restored, since there is no `spawnpoint` command; the bed itself is removed by the scene restore) |
-  | Settings (writes, `--with-settings` only) | `difficulty easy`; `gamerule keep_inventory true` (G1k only); `gamerule natural_health_regeneration true` / `false`; `time set 1000` (G4); `time set 13000` (G4n) | world settings, each restored in `finally` |
-  | Restoration (writes) | `difficulty <original>`; `gamerule keep_inventory <original>`; `gamerule natural_health_regeneration <original>`; `time of <clock> set <original + measured elapsed>`; plus the block/entity/forceload/bot cleanup above | every step verified; any failure fails the report |
-  | Reads only | `difficulty`; `gamerule keep_inventory` / `natural_health_regeneration`; `time query time` (twice, 1 s apart, for the clock rate); `time query minecraft:day`; `clear Chunkbot minecraft:<item> 0` (counts); `data get entity Chunkbot LastDeathLocation` / `Pos` / `respawn` / `sleeping_pos`; `execute as Chunkbot at @s if entity @e[type=item,distance=..6]` (count only, at the respawn point); `data get entity @e[type=item,tag=cbsurv_<run>_<pile>,limit=1,${ITEM_AREA}] Item`; `execute if entity @e[…]` counts; `execute if block`/`if blocks … all`; `list` | read-only anywhere listed; the respawn-point read changes nothing |
+  | Fixture bot only (writes) | `clear Chunkbot`, `effect clear Chunkbot [minecraft:hunger]`, `give Chunkbot` iron_pickaxe[damage=200] 1 / bread 4 / cobblestone 20 / diamond_sword[sharpness 3] 1 / bread 12, `kill Chunkbot`, `damage Chunkbot 13` and `4 minecraft:generic`, `effect give Chunkbot minecraft:hunger 30 120` and `10 60`, `tp Chunkbot` to (205.5,−60,205.5), (212.5,−60,205.5) and finally (205.5,−49,205.5) | the bot's own state; **no bed interaction and no respawn-point change** (the bot respawns at its existing respawn point, which is only read) |
+  | Settings (writes, `--with-settings` only) | `difficulty easy`; `gamerule keep_inventory true` (G1k only); `gamerule natural_health_regeneration true` / `false` | world settings, each restored in `finally`; no clock/time write |
+  | Restoration (writes) | `difficulty <original>`; `gamerule keep_inventory <original>`; `gamerule natural_health_regeneration <original>`; plus the block/entity/forceload/bot cleanup above | every step verified; any failure fails the report |
+  | Reads only | `difficulty`; `gamerule keep_inventory` / `natural_health_regeneration`; `time query time` (twice, 1 s apart, for the clock rate); `time query minecraft:day`; `clear Chunkbot minecraft:<item> 0` (counts); `data get entity Chunkbot LastDeathLocation` / `Pos`; `execute as Chunkbot at @s if entity @e[type=item,distance=..6]` (count only, at the respawn point); `data get entity @e[type=item,tag=cbsurv_<run>_<pile>,limit=1,${ITEM_AREA}] Item`; `execute if entity @e[…]` counts; `execute if block`/`if blocks … all`; `list` | read-only anywhere listed; the respawn-point read changes nothing |
 
 - **Settings snapshot before any write:** difficulty, both gamerules and the clock are read and parsed first. If any read fails, the trial changes nothing and fails `SETUP` with the recorded replies.
 - **Expected new evidence:**
@@ -227,7 +230,7 @@ Survival adapts its durable/service bookkeeping after P's concrete shared API is
   - the real respawn position and nearby loot;
   - the packet-stated pile stacks and identities;
   - incidental effects reported;
-  - settings gates G1k, G3 and G4/G4n reached with parsed clock replies.
+  - settings gates G1k and G3 reached after parsed original settings and clock reads; G4/G4n reported SKIPPED (R8 reason).
 - **Note:** respawn-point pickups depend on loose items outside the scene, which the harness never removes. A clean respawn area is not required, because those gains are now reported and the oracle is a delta. They are recorded either way.
 
 ## Known gaps and honest limits

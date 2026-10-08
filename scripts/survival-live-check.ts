@@ -34,11 +34,12 @@
 //       eat runs through the allowance (check, reserve-before-dispatch); with
 //       natural_health_regeneration verified TRUE rest must raise server health by >= 1;
 //       with it verified FALSE rest must end `no_regeneration` (bounded)
-//   G4  R8 OBSERVATION (no routine, no R8 claim): daytime set explicitly, bed
-//       use via interact_block; server respawn data recorded
-//   G4n R8 OBSERVATION: night set explicitly; server sleeping position, bed
-//       occupancy and daytime after 6 s recorded (sole-player only, never
-//       generalized to multiplayer)
+//   G4/G4n R8 bed observations: NOT RUN, always reported SKIPPED. Using a bed
+//       changes the fixture bot's respawn point (official 26.1.2/26.2 command
+//       reports include `spawnpoint`, but this harness has no verified way to
+//       restore the exact original respawn); R8/respawn restoration is
+//       unassigned. The leased default has NO bed interaction, NO respawn-point
+//       mutation and NO clock/time write.
 //
 //   npm run fixture -- status                     (fixture lease required)
 //   node scripts/survival-live-check.ts --fixture-lease <granted id> [--fixture 26.2] [--with-settings]
@@ -49,11 +50,13 @@
 //           verified EMPTY before use, else the trial refuses to start;
 //           restored/cleared and re-verified at the end)
 //   forceload: only chunks this trial added are removed again
-//   bot: inventory/effects/position/health/food of the fixture bot only; G4/G4n
-//        may set its respawn point to the trial bed (recorded before/after)
-//   settings [--with-settings]: difficulty, gamerules keep_inventory and
-//        natural_health_regeneration, time of day — read first, restored in `finally`
-//        and re-verified; ANY failed restoration or verification fails the report
+//   bot: inventory/effects/position/health/food of the fixture bot only; NO bed
+//        interaction and NO respawn-point change (the bot respawns wherever its
+//        existing respawn point is; that point is only read)
+//   settings [--with-settings]: difficulty and gamerules keep_inventory and
+//        natural_health_regeneration — read first, restored in `finally` and
+//        re-verified; ANY failed restoration or verification fails the report.
+//        The world clock is only READ (C8 reply-form evidence), never set.
 //
 // Report: var/live-check/<stamp>[-26.2]-survival/report.json
 import { execFileSync } from 'node:child_process';
@@ -149,16 +152,9 @@ export function parseRuleReply(reply: string, rule: string): string | undefined 
 export function parseDifficultyReply(reply: string): string | undefined {
   return /^The difficulty is (\w+)\s*$/.exec(reply.trim())?.[1]?.toLowerCase();
 }
-/**
- * Clock restoration target: the original absolute ticks advanced by the clock's
- * MEASURED rate over the elapsed wall time (a paused clock has rate 0), so a
- * restored world neither rewinds nor skips the time that passed in the trial.
- */
-export function clockRestoreTarget(original: { ticks: number; atMs: number; ticksPerMs: number }, nowMs: number): number {
-  return Math.max(0, Math.round(original.ticks + Math.max(0, original.ticksPerMs) * Math.max(0, nowMs - original.atMs)));
-}
 const FOREIGN_TAG = `cbsurv_${Date.now().toString(36)}_${process.pid.toString(36)}`;
-const BED = { foot: { x: 208, y: -60, z: 208 }, head: { x: 208, y: -60, z: 209 } };
+/** Why the R8 bed observations are never run under the module lease (coordinator review). */
+const BED_SKIP_REASON = 'not run under this lease: bed interaction changes the fixture bot\'s respawn point and this harness cannot restore and verify the exact original respawn; R8 bed/respawn restoration is unassigned (no bed interaction, respawn-point mutation or clock write in the leased default)';
 /** Items whose server counts the C10 oracle compares (kit + foreign piles). */
 const TRACKED_ITEMS = ['bread', 'cobblestone', 'iron_pickaxe', 'diamond_sword', 'dirt'] as const;
 const LOST_KIT: Record<string, number> = { bread: 4, cobblestone: 20, iron_pickaxe: 1, diamond_sword: 1 };
@@ -534,14 +530,6 @@ function sceneChunks(): Array<{ cx: number; cz: number }> {
   return out;
 }
 
-/** Time of day: the day timeline position when stated, else the absolute overworld clock modulo one day. */
-async function timeOfDay(g: Gate): Promise<number | undefined> {
-  const day = parseTimelineReply(await g.rcon(DAY_QUERY), DAY_TIMELINE);
-  if (day !== undefined) return day % DAY_TICKS;
-  const abs = parseClockReply(await g.rcon(TIME_QUERY));
-  return abs === undefined ? undefined : abs.ticks % DAY_TICKS;
-}
-
 /** Absolute clock read (recorded) with its local receive time. */
 async function readClock(g: Gate): Promise<{ clock?: string; ticks: number; atMs: number } | undefined> {
   const r = parseClockReply(await g.rcon(TIME_QUERY));
@@ -701,7 +689,7 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
     });
 
     if (!withSettings) {
-      for (const [id, title] of [['G1k', 'keep_inventory death'], ['G3', 'food/health on Easy'], ['G4', 'R8 day bed observation'], ['G4n', 'R8 night bed observation']] as const) g.skip(id, title, 'requires --with-settings (difficulty, gamerules, time of day)');
+      for (const [id, title] of [['G1k', 'keep_inventory death'], ['G3', 'food/health on Easy']] as const) g.skip(id, title, 'requires --with-settings (difficulty, gamerules)');
     } else {
       // C8: every original is read with the CURRENT official reply forms BEFORE any write; a failed read changes nothing.
       const difficulty = parseDifficultyReply(await g.rcon('difficulty'));
@@ -715,25 +703,13 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       // Measured clock rate (ticks per ms; 0 when the clock is paused or advance_time is off).
       const original = { ticks: clock0.ticks, atMs: clock0.atMs, ticksPerMs: clock1.atMs > clock0.atMs ? Math.max(0, (clock1.ticks - clock0.ticks) / (clock1.atMs - clock0.atMs)) : 0 };
       g.notes.push(`original settings: difficulty=${difficulty} ${RULE_KEEP}=${keep} ${RULE_REGEN}=${regen} clock ${clockId}=${clock0.ticks} (rate ${(original.ticksPerMs * 1000).toFixed(2)} ticks/s measured over ${clock1.atMs - clock0.atMs} ms)`);
-      let clockTarget = clock0.ticks;
+      // C8 evidence only: the day-timeline position is read too; no gate writes the clock, so nothing is restored for it.
+      const day = parseTimelineReply(await g.rcon(DAY_QUERY), DAY_TIMELINE);
+      g.notes.push(`day timeline ${DAY_TIMELINE}: ${day ?? 'unparsed'} (read only; the clock is never set by this harness)`);
       restore.push(
         { what: 'difficulty', command: `difficulty ${difficulty}`, verify: async () => parseDifficultyReply(await g.rcon('difficulty')) === difficulty },
         { what: RULE_KEEP, command: `gamerule ${RULE_KEEP} ${keep}`, verify: async () => parseRuleReply(await g.rcon(`gamerule ${RULE_KEEP}`), RULE_KEEP) === keep },
         { what: RULE_REGEN, command: `gamerule ${RULE_REGEN} ${regen}`, verify: async () => parseRuleReply(await g.rcon(`gamerule ${RULE_REGEN}`), RULE_REGEN) === regen },
-        {
-          what: `clock ${clockId}`,
-          command: () => {
-            clockTarget = clockRestoreTarget(original, Date.now());
-            return `time of ${clockId} set ${clockTarget}`;
-          },
-          verify: async () => {
-            const set = parseClockSetReply(g.setup.at(-1)?.reply ?? '');
-            const now = await readClock(g);
-            const drift = now ? Math.abs(now.ticks - clockTarget) : Number.POSITIVE_INFINITY;
-            g.notes.push(`clock restore: target ${clockTarget} (original ${original.ticks} + measured elapsed), server set reply ${set ? `${set.clock ?? ''} ${set.ticks}` : 'unparsed'}, re-read ${now?.ticks ?? 'unreadable'} (drift ${drift})`);
-            return set !== undefined && set.ticks === clockTarget && drift <= 100;
-          },
-        },
       );
 
       await g.gate('G1k', 'keep_inventory death retains inventory (no trip)', async (ev) => {
@@ -839,50 +815,9 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         check(restOff?.status === 'failed' && restOff.reason === 'no_regeneration' && h3 <= h2 && Date.now() - t0 < 20_000, 'no regeneration ends honestly within the bounded window');
       });
 
-      await g.gate('G4', 'R8 OBSERVATION: daytime bed use; server respawn data recorded (no routine, no R8 claim)', async (ev) => {
-        await g.scene();
-        await g.rcon(`difficulty ${difficulty}`);
-        await g.rcon('time set 1000');
-        const t = await timeOfDay(g);
-        check(t !== undefined && t >= 0 && t < 12_000, `day established at trial start (time of day ${t})`);
-        await g.rcon(`setblock ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[facing=south,part=foot]`);
-        await g.rcon(`setblock ${BED.head.x} ${BED.head.y} ${BED.head.z} red_bed[facing=south,part=head]`);
-        await g.rcon(`tp ${BOT} 208.5 -60 206.5 0 40`);
-        await sleep(1_500);
-        ev.push(`respawn before: ${(await g.rcon(`data get entity ${BOT} respawn`, false)).slice(0, 200)}`);
-        g.admit(randomIds.next('goal'));
-        const used = await g.act('interact_block', ['minecraft:red_bed'], 15_000);
-        ev.push(`interact_block bed (day): ${used?.status} ${used?.reason ?? ''} ${used?.effect.slice(0, 200)}`);
-        await sleep(1_000);
-        const after = await g.rcon(`data get entity ${BOT} respawn`, false);
-        ev.push(`respawn after: ${after.slice(0, 200)}`);
-        const spawnSetToBed = new RegExp(`${BED.foot.x}, ${BED.foot.y}, ${BED.foot.z}|${BED.head.x}, ${BED.head.y}, ${BED.head.z}`).test(after);
-        ev.push(`OBSERVED: respawn point at the bed = ${spawnSetToBed} (observation only; R8 remains gated)`);
-        check(used, 'a bed candidate existed (bed visible and in reach)');
-      });
-
-      await g.gate('G4n', 'R8 OBSERVATION: night sleep, sole player (recorded, not generalized)', async (ev) => {
-        await g.scene();
-        await g.rcon(`setblock ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[facing=south,part=foot]`);
-        await g.rcon(`setblock ${BED.head.x} ${BED.head.y} ${BED.head.z} red_bed[facing=south,part=head]`);
-        await g.rcon('time set 13000');
-        const t = await timeOfDay(g);
-        check(t !== undefined && t >= 12_542 && t < 23_460, `night established at trial start (time of day ${t})`);
-        await g.rcon(`tp ${BOT} 208.5 -60 206.5 0 40`);
-        await sleep(1_500);
-        g.admit(randomIds.next('goal'));
-        const used = await g.act('interact_block', ['minecraft:red_bed'], 15_000);
-        ev.push(`interact_block bed (night): ${used?.status} ${used?.reason ?? ''} ${used?.effect.slice(0, 200)}`);
-        await sleep(1_000);
-        const sleeping = await g.rcon(`data get entity ${BOT} sleeping_pos`, false);
-        const occupied = /passed/i.test(await g.rcon(`execute if block ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[occupied=true]`, false));
-        ev.push(`OBSERVED: server sleeping_pos: ${sleeping.slice(0, 160)}; bed occupied=${occupied}`);
-        await sleep(6_000);
-        ev.push(`OBSERVED: time after ~7 s: ${(await g.rcon(TIME_QUERY, false)).slice(0, 80)}; players online: ${(await g.rcon('list', false)).slice(0, 120)}`);
-        ev.push('R8 sleep/spawn remains gated: these are sole-player observations, not a supported routine');
-        check(used, 'a bed candidate existed at night');
-      });
     }
+    // R8 bed observations are never part of the leased module run (with or without --with-settings).
+    for (const [id, title] of [['G4', 'R8 day bed observation'], ['G4n', 'R8 night bed observation']] as const) g.skip(id, title, BED_SKIP_REASON);
   } catch (error) {
     g.results.push({ id: 'SETUP', title: 'trial setup/preconditions', status: 'fail', evidence: [error instanceof Error ? error.message : String(error)] });
   } finally {

@@ -8,7 +8,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { PROJECT_ROOT } from '../src/app/fixture-layout.ts';
-import { clockRestoreTarget, deltaMismatches, parseClockReply, parseClockSetReply, parseDifficultyReply, parseRuleReply, parseTimelineReply } from '../scripts/survival-live-check.ts';
+import { deltaMismatches, parseClockReply, parseClockSetReply, parseDifficultyReply, parseRuleReply, parseTimelineReply } from '../scripts/survival-live-check.ts';
 
 const SCRIPT = join(PROJECT_ROOT, 'scripts', 'survival-live-check.ts');
 const source = readFileSync(SCRIPT, 'utf8');
@@ -72,8 +72,6 @@ describe('survival gate harness guard', () => {
     for (const cmd of [...code.matchAll(/gamerule \$\{(\w+)\}/g)].map((m) => m[1])) assert.ok(cmd === 'RULE_KEEP' || cmd === 'RULE_REGEN', `unexpected gamerule ${cmd}`);
     assert.ok(!/TIME_REPLY|The time is \(\\d\+\)\/;/.test(code), 'the legacy-only TIME_REPLY parser is gone');
     assert.match(code, /parseClockReply\(await g\.rcon\(TIME_QUERY\)\)/, 'clock reads are recorded rcon calls parsed with the official forms');
-    assert.match(code, /time of \$\{clockId\} set \$\{clockTarget\}/, 'the clock is restored through the absolute per-clock setter');
-    assert.match(code, /% DAY_TICKS/, 'day/night checks use the time of day, not the absolute clock');
     assert.match(code, /check\(difficulty && keep && regen && clock0 && clock1 && clockId/, 'every original is read before any setting write');
     assert.match(code, /sameDimension\(dim, d\.site\.dimension\)/, 'G1 compares RCON and capture dimensions canonically (C7)');
   });
@@ -104,11 +102,16 @@ describe('survival gate harness guard', () => {
     assert.equal(parseDifficultyReply('The difficulty is Peaceful'), 'peaceful');
   });
 
-  it('C8: clock restoration advances the original by the MEASURED rate (no rewind, no skip); a paused clock is restored exactly', () => {
-    const original = { ticks: 3466899, atMs: 1_000_000, ticksPerMs: 0.02 };
-    assert.equal(clockRestoreTarget(original, 1_000_000 + 45_000), 3466899 + 900);
-    assert.equal(clockRestoreTarget({ ...original, ticksPerMs: 0 }, 1_000_000 + 45_000), 3466899);
-    assert.equal(clockRestoreTarget(original, 999_000), 3466899, 'never earlier than the original');
+  it('leased default: NO bed interaction, NO respawn-point mutation, NO clock write; G4/G4n always SKIPPED with the R8 reason', () => {
+    const code = source.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    // Official 26.1.2/26.2 command reports DO contain `spawnpoint`; bed use changes the respawn point without it.
+    for (const banned of [/spawnpoint/, /setworldspawn/, /_bed\b/, /'interact_block'/, /setblock /, /time set /, /time of /, /time add /, /sleeping_pos/]) assert.ok(!banned.test(code), `forbidden in the leased default: ${banned}`);
+    assert.match(code, /for \(const \[id, title\] of \[\['G4', 'R8 day bed observation'\], \['G4n', 'R8 night bed observation'\]\] as const\) g\.skip\(id, title, BED_SKIP_REASON\);/, 'G4/G4n are reported SKIPPED in every run');
+    assert.match(code, /const BED_SKIP_REASON = 'not run under this lease: bed interaction changes the fixture bot\\'s respawn point/, 'the concrete unassigned R8/respawn-restoration reason');
+    // Settings restoration covers exactly what --with-settings writes.
+    const writes = [...code.matchAll(/g\.rcon\(`(difficulty|gamerule) ([^`]*)`\)/g)].map((m) => `${m[1]} ${m[2]}`);
+    for (const w of writes) assert.ok(/^difficulty (easy|\$\{difficulty\})$|^gamerule \$\{RULE_(KEEP|REGEN)\}( (true|false|\$\{(keep|regen)\}))?$/.test(w), `unexpected settings command ${w}`);
+    for (const what of ["what: 'difficulty'", 'what: RULE_KEEP', 'what: RULE_REGEN']) assert.ok(code.includes(what), `restoration entry ${what}`);
   });
 
   it('C10: the delta oracle reproduces the batch002-2472442 report as a mismatch and accepts truthful accounting', () => {
