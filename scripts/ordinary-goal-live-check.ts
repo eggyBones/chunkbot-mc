@@ -586,8 +586,8 @@ export class Harness {
     check(/^Teleported /i.test(reply), `staging_unready: teleport failed: ${reply}`);
   }
   async requireSuppressedAmbientSpawns(): Promise<void> {
-    const reply = await this.read('gamerule do_mob_spawning');
-    check(/^Gamerule do_mob_spawning is currently set to: false\.?$/i.test(reply.trim()), `staging_unready: coordinator must record/suppress/restore ambient spawning before this driver; harness never changes it: ${reply}`);
+    const reply = await this.read('gamerule spawn_mobs');
+    check(/^Gamerule spawn_mobs is currently set to: false\.?$/i.test(reply.trim()), `staging_unready: coordinator must record/suppress/restore ambient spawning before this driver; harness never changes it: ${reply}`);
   }
   async requireNonPeaceful(): Promise<void> {
     const reply = await this.read('difficulty');
