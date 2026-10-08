@@ -32,6 +32,8 @@ export interface CreateSurvivalOptions {
   memory?: SurvivalMemoryPort;
   latestSnapshot?: () => ObservationSnapshot | undefined;
   farRoute?: () => string | undefined;
+  /** C12: this application session's id (stored checkpoint records from other sessions display as `restart_held`). */
+  sessionId?: string;
 }
 
 /** Builds and opens the service (synchronous load). Returns undefined when disabled or the version has no item data. */
@@ -52,6 +54,7 @@ export function createSurvivalService(o: CreateSurvivalOptions): SurvivalService
     ...(o.memory ? { memory: o.memory } : {}),
     ...(o.latestSnapshot ? { latestSnapshot: o.latestSnapshot } : {}),
     ...(o.farRoute ? { farRoute: o.farRoute } : {}),
+    ...(o.sessionId ? { sessionId: o.sessionId } : {}),
   });
   service.open();
   return service;

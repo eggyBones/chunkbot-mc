@@ -48,6 +48,18 @@ describe('survival wiring', () => {
     void scoped?.close();
   });
 
+  it('C12: createSurvivalService passes the application sessionId through (own-session checkpoint records keep their state)', async () => {
+    const base = { minecraftVersion: '26.1.2', limits: { lowHealth: 8, travelRadius: 128 }, now: () => 1_000 };
+    const dataDir = tempRoot();
+    const scope = { worldProfile: 'w', worldRevision: 1, botProfile: 'b' };
+    const s = createSurvivalService({ ...base, survival: {}, scope, dataDir, sessionId: 'run-s1' });
+    assert.ok(s);
+    const counters = { plannerTurns: 1, knowledgeRounds: 0, repairs: 0, retries: 0, clarifications: 0, replans: 0, windows: 1, tasksAdmitted: 1, preparationTurns: 0, lookaheads: 0 };
+    s.persistCheckpoint({ version: 1, goalId: 'goal-wire1', sessionId: 'run-s1', connectionEpoch: 1, dimension: 'overworld', instruction: 'x', publicOutcome: 'x', outcome: { kind: 'persistent', maintain: { predicate: 'near_target', target: { kind: 'owner' }, within: 4 } }, outcomeCanonical: 'x', admissionBaseline: { capturedAtMs: 1, counts: null, detail: 'x' }, anchor: null, counters: counters as never, caps: { plannerTurns: 20, tasks: 64, replans: 8 }, admittedTasks: 1, deadlineAtMs: 5_000, grounding: [], counts: [], removal: [], route: null, verifiedEffects: [], continuations: { used: 0, max: 2 }, interruptions: [{ reason: 'death', atMs: 1, epoch: 1 }], state: 'held', stateReason: 'waiting:recovery_open', stateAtMs: 1 });
+    assert.equal(s.status(2).checkpoints?.[0]?.state, 'held');
+    await s.close();
+  });
+
   it('library seed is labeled with unknown metadata', () => {
     const seed = librarySeed({ inventory: { slots: [null, { name: 'bread', count: 2 }] }, quickBarSlot: 1, health: 20, food: 18 });
     assert.deepEqual(seed.stacks, [{ slot: 1, key: 'minecraft:bread', count: 2, meta: { metadata: 'unknown' } }]);

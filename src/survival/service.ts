@@ -956,6 +956,11 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     return this.tracker.dropStack(entityId);
   }
 
+  /** C10/T2: what a collect by this bot took (non-item entities such as experience orbs are never loot). */
+  collectedKind(connectionEpoch: number, entityId: number): 'item' | 'non_item' | 'unknown' {
+    return this.tracker.connectionEpoch === connectionEpoch ? this.tracker.collectedKind(entityId) : 'unknown';
+  }
+
   /** Own entity id on this connection (collect-packet attribution). */
   selfEntityId(connectionEpoch: number): number | undefined {
     return this.tracker.connectionEpoch === connectionEpoch ? this.tracker.selfEntityId() : undefined;

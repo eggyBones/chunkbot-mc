@@ -130,7 +130,7 @@ interface Loot {
 }
 
 /** go_to_death_site over a scripted bot walking from x=18 toward the site along z=10.5. */
-async function walk(h: Harness, loot: Loot[], opts: { unannouncedCollect?: { entityId: number; count: number; atX: number } } = {}) {
+async function walk(h: Harness, loot: Loot[], opts: { unannouncedCollect?: { entityId: number; count: number; atX: number }; orbCollect?: { entityId: number; atX: number } } = {}) {
   const client = h.packets.client as unknown as FakeClient;
   const fake = fakeMineflayerBot(client, { dimension: SESSION_OW, at: { x: 18.5, y: 0, z: 10.5 } });
   fake.fill(0, -1, 0, 40, -1, 20, 'grass_block');
@@ -176,6 +176,13 @@ async function walk(h: Harness, loot: Loot[], opts: { unannouncedCollect?: { ent
           h.packets.destroy(l.entityId);
           delete bot.entities[l.entityId];
         }
+      }
+      const orb = opts.orbCollect;
+      if (orb && !collected.has(orb.entityId) && q.x >= orb.atX) {
+        collected.add(orb.entityId);
+        h.packets.spawnOther(orb.entityId, { x: q.x, y: q.y, z: q.z }); // server announces an experience orb
+        h.packets.collect(orb.entityId, 1);
+        h.packets.destroy(orb.entityId);
       }
       const u = opts.unannouncedCollect;
       if (u && !collected.has(u.entityId) && q.x >= u.atX) {
@@ -261,6 +268,20 @@ describe('passive pickup while walking to the death site (C10)', () => {
     const i = incident(h);
     assert.equal(i?.regained.length, 0);
     assert.deepEqual(i?.incidental?.map((x) => [x.source, x.count]), [['unplanned_collect', 7]]);
+    await h.service.close();
+  });
+});
+
+describe('non-item collects are never loot (trial 8e87ec3 finding T2)', () => {
+  it('an experience orb the server announced and the bot collected while walking is neither regained nor incidental', async () => {
+    const h = await boundWalker(8205);
+    const r = await walk(h, [], { orbCollect: { entityId: 904, atX: 22 } });
+    assert.equal(r.outcome.status, 'succeeded', JSON.stringify(r.outcome));
+    assert.deepEqual(r.outcome.evidence?.['nonItemCollected'], ['entity 904 x1']);
+    assert.deepEqual(r.outcome.evidence?.['incidentalCollected'], []);
+    const i = incident(h);
+    assert.deepEqual(i?.incidental ?? [], []);
+    assert.equal(i?.regained.length, 0);
     await h.service.close();
   });
 });

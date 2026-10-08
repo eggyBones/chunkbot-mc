@@ -116,6 +116,10 @@ export class SurvivalTracker {
   private readonly drops = new Map<number, DropStackFacts>();
   /** First-announced position of each item entity (spawn_entity) on this connection/life. */
   private readonly firstSeen = new Map<number, { x: number; y: number; z: number }>();
+  /** Entities the server announced as something other than an item (e.g. experience orbs). */
+  private readonly nonItemEntities = new Set<number>();
+  /** Kind of entities this bot collected recently (outlives entity_destroy; bounded). */
+  private readonly collectedKinds = new Map<number, 'item' | 'non_item' | 'unknown'>();
 
   /** Subscribes to tracker events (synchronous, in packet order). */
   subscribe(listener: (e: TrackerEvent) => void): () => void {
@@ -160,6 +164,8 @@ export class SurvivalTracker {
     this.itemEntities.clear();
     this.drops.clear();
     this.firstSeen.clear();
+    this.nonItemEntities.clear();
+    this.collectedKinds.clear();
     if (opts.seed) {
       for (const s of opts.seed.stacks) this.slots.set(s.slot, { ...s, meta: { ...s.meta } });
       this.invSource = 'ready_seed';
@@ -175,6 +181,10 @@ export class SurvivalTracker {
     };
     on('spawn_entity', (p: { entityId: number; type: number; x?: number; y?: number; z?: number }) => {
       const itemType = this.opts?.registry.itemEntityTypeId;
+      if (itemType !== undefined && p.type !== itemType) {
+        this.nonItemEntities.add(p.entityId);
+        if (this.nonItemEntities.size > 4_000) this.nonItemEntities.delete(this.nonItemEntities.values().next().value as number);
+      }
       if (itemType === undefined || p.type !== itemType) return;
       this.itemEntities.add(p.entityId);
       if (this.itemEntities.size > 4_000) this.itemEntities.delete(this.itemEntities.values().next().value as number);
@@ -185,7 +195,10 @@ export class SurvivalTracker {
     });
     on('collect', (p: { collectedEntityId: number; collectorEntityId: number; pickupItemCount?: number }) => {
       const self = this.self();
-      if (!this.opts || self === undefined || p.collectorEntityId !== self || !this.itemEntities.has(p.collectedEntityId)) return;
+      if (!this.opts || self === undefined || p.collectorEntityId !== self) return;
+      this.collectedKinds.set(p.collectedEntityId, this.itemEntities.has(p.collectedEntityId) ? 'item' : this.nonItemEntities.has(p.collectedEntityId) ? 'non_item' : 'unknown');
+      if (this.collectedKinds.size > 256) this.collectedKinds.delete(this.collectedKinds.keys().next().value as number);
+      if (!this.itemEntities.has(p.collectedEntityId)) return;
       const count = Number(p.pickupItemCount);
       if (!Number.isInteger(count) || count <= 0) return;
       const facts = this.drops.get(p.collectedEntityId);
@@ -207,12 +220,15 @@ export class SurvivalTracker {
         this.itemEntities.delete(id);
         this.drops.delete(id);
         this.firstSeen.delete(id);
+        this.nonItemEntities.delete(id);
       }
     });
     on('login', (p: { entityId?: number; worldState?: { death?: RawGlobalPos } }) => {
       this.itemEntities.clear();
       this.drops.clear();
       this.firstSeen.clear();
+      this.nonItemEntities.clear();
+      this.collectedKinds.clear();
       if (typeof p.entityId === 'number') this.selfId = p.entityId;
       if (p.worldState?.death) this.loginDeath = p.worldState.death;
     });
@@ -417,6 +433,11 @@ export class SurvivalTracker {
     return d ? { ...d, meta: { ...d.meta } } : undefined;
   }
 
+  /** What a collect by this bot took: a server-announced item, a server-announced non-item (orb), or never announced. */
+  collectedKind(entityId: number): 'item' | 'non_item' | 'unknown' {
+    return this.collectedKinds.get(entityId) ?? (this.itemEntities.has(entityId) ? 'item' : this.nonItemEntities.has(entityId) ? 'non_item' : 'unknown');
+  }
+
   /** Own entity id on this connection (from login). */
   selfEntityId(): number | undefined {
     return this.self();
@@ -437,6 +458,8 @@ export class SurvivalTracker {
     this.itemEntities.clear();
     this.drops.clear();
     this.firstSeen.clear();
+    this.nonItemEntities.clear();
+    this.collectedKinds.clear();
     if (this.state === 'alive' && !this.latestDeath) {
       // A respawn without a death (dimension travel) is not a death; inventory continues.
       return;

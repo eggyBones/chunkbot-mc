@@ -208,7 +208,7 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
       });
       services.perception.recordVisited();
       const settled = plan.settle(session.evidence.since(startSeq, 'collect', (e) => e.collectorEntityId === self), owner, ctx);
-      const evidence: Record<string, JsonValue> = { finalDistance: r.finalDistance, position: pos3(bot.entity.position), site: pos3(site), elapsedMs: r.elapsedMs, serverCorrections: r.corrections, plannedEntities: plan.size, countedRegained: settled.counted, incidentalCollected: settled.incidental };
+      const evidence: Record<string, JsonValue> = { finalDistance: r.finalDistance, position: pos3(bot.entity.position), site: pos3(site), elapsedMs: r.elapsedMs, serverCorrections: r.corrections, plannedEntities: plan.size, countedRegained: settled.counted, incidentalCollected: settled.incidental, nonItemCollected: settled.nonItem };
       const extra = `${settled.counted ? `; regained ${settled.counted} own item(s) on the way (server collect packets)` : ''}${settled.incidental.length ? `; ALSO passively collected loot that is NOT this incident's (${settled.incidental.join(', ')}), not counted` : ''}`;
       const near = distanceTo(bot, site) <= t.arrivalWithin + 1.5;
       if (r.status === 'arrived' || (guard === 'unrelated_loot_nearby' && near)) {
@@ -291,11 +291,18 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
         freeze(id, c.facts);
         return undefined;
       },
-      settle(collects: ReadonlyArray<{ collectedEntityId: number; count: number; atMs: number }>, owner: { goalId: string; goalEpoch: number; connectionEpoch: number }, ctx: { services: { ledger: { add(e: { kind: 'picked_up'; item: string; count: number; atMs: number }): void } }; candidate: { id: string }; progress(p: Record<string, JsonValue>, c: 'server_packet'): void }): { counted: number; incidental: string[] } {
+      settle(collects: ReadonlyArray<{ collectedEntityId: number; count: number; atMs: number }>, owner: { goalId: string; goalEpoch: number; connectionEpoch: number }, ctx: { services: { ledger: { add(e: { kind: 'picked_up'; item: string; count: number; atMs: number }): void } }; candidate: { id: string }; progress(p: Record<string, JsonValue>, c: 'server_packet'): void }): { counted: number; incidental: string[]; nonItem: string[]; byKey: Record<string, number> } {
         let counted = 0;
         const incidental: string[] = [];
+        const nonItem: string[] = [];
+        const byKey: Record<string, number> = {};
         for (const c of collects) {
           const f = plan.get(c.collectedEntityId);
+          if (!f && svc.collectedKind(owner.connectionEpoch, c.collectedEntityId) === 'non_item') {
+            // T2: the server announced this entity as a non-item (e.g. an experience orb): not loot, not incidental.
+            nonItem.push(`entity ${c.collectedEntityId} x${c.count}`);
+            continue;
+          }
           if (!f) {
             const key = seen.get(c.collectedEntityId)?.key ?? svc.dropFacts(owner.connectionEpoch, c.collectedEntityId)?.key;
             incidental.push(`${key ?? `entity ${c.collectedEntityId} (stack never stated)`} x${c.count}`);
@@ -305,9 +312,11 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
           }
           ctx.services.ledger.add({ kind: 'picked_up', item: f.key, count: c.count, atMs: c.atMs });
           ctx.progress({ collected: f.key, count: c.count }, 'server_packet');
-          counted += svc.recordRegain(owner, f.key, Math.min(c.count, f.count), ctx.candidate.id, f.meta);
+          const n = svc.recordRegain(owner, f.key, Math.min(c.count, f.count), ctx.candidate.id, f.meta);
+          counted += n;
+          if (n > 0) byKey[f.key] = (byKey[f.key] ?? 0) + n;
         }
-        return { counted, incidental };
+        return { counted, incidental, nonItem, byKey };
       },
     };
   }
@@ -441,10 +450,10 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
         },
       });
       const collects = session.evidence.since(startSeq, 'collect', (e) => e.collectorEntityId === self);
-      const { counted, incidental: unscoped } = plan.settle(collects, owner, ctx);
+      const { counted, incidental: unscoped, nonItem, byKey } = plan.settle(collects, owner, ctx);
       const after = await confirmInventory(act, services);
       const delta = before && after ? (after.counts.get(own.facts.key) ?? 0) - (before.counts.get(own.facts.key) ?? 0) : null;
-      const evidence: Record<string, JsonValue> = { target: { key: own.facts.key, count: own.facts.count, digest: own.facts.meta.digest ?? null }, plannedEntities: plan.size, collects: collects.length, countedRegained: counted, unscopedCollected: unscoped, confirmedDelta: delta, position: pos3(bot.entity.position) };
+      const evidence: Record<string, JsonValue> = { target: { key: own.facts.key, count: own.facts.count, digest: own.facts.meta.digest ?? null }, plannedEntities: plan.size, collects: collects.length, countedRegained: counted, unscopedCollected: unscoped, nonItemCollected: nonItem, countedByKey: byKey, confirmedDelta: delta, position: pos3(bot.entity.position) };
       const target = collectedTarget();
       if (!target || target.collectorEntityId !== self) {
         if (guard === 'unrelated_loot_nearby') return failed('unrelated_loot_nearby', 'stopped: other loot came within pickup range on the way (nothing unrelated was intentionally collected)', evidence, collects.length ? 'server_packet' : 'none');
@@ -454,7 +463,8 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
         if (r.status === 'out_of_bounds') return failed('outside_travel_bounds', 'stopped at the travel radius before collecting', evidence);
         return failed(r.status === 'no_path' ? 'no_safe_path' : 'not_collected', `did not collect ${own.facts.key} (${r.status})`, evidence);
       }
-      const effect = `collected ${own.facts.key} x${target.count} (server collect packet); counted ${counted} as regained prior possessions (not new acquisition); confirmed inventory change ${delta ?? 'unknown'}`;
+      const countedText = Object.entries(byKey).map(([k, n]) => `${n} ${k}`).join(', ') || '0';
+      const effect = `collected ${own.facts.key} x${target.count} (server collect packet); counted as regained prior possessions (not new acquisition): ${countedText}${Object.keys(byKey).length > 1 ? ' (planned neighbouring own drops collected in the same action)' : ''}; confirmed ${own.facts.key} inventory change ${delta ?? 'unknown'}`;
       if (unscoped.length) return { status: 'partial', reason: 'unscoped_item_collected', effect: `${effect}; ALSO collected unplanned loot (${unscoped.join(', ')}), not counted`, confirmation: 'server_packet', evidence };
       return { status: 'succeeded', effect, confirmation: after ? 'server_sync' : 'server_packet', evidence };
     },
