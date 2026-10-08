@@ -110,6 +110,17 @@ function armedScene(opts: { zombieAt?: number; player?: boolean; outsideAnchor?:
   return { sc, rt, z };
 }
 
+/** Installed entity-velocity handler; the existing installed physics advances the body. */
+function velocityPackets(sc: ReturnType<typeof scene>) {
+  const require = createRequire(import.meta.url);
+  const data = require('minecraft-data')('26.1.2') as { supportFeature(name: string): boolean };
+  sc.bot['supportFeature'] = (name: string) => data.supportFeature(name);
+  const entities = sc.bot['entities'];
+  (require('mineflayer/lib/plugins/entities') as (bot: unknown) => void)(sc.bot);
+  sc.bot['entities'] = entities; // Injection initializes an empty map; retain this rig's current identities.
+  return () => sc.client.emit('entity_velocity', { entityId: 1, velocity: { x: 0, y: 3200, z: 0 } });
+}
+
 describe('defend_against_threat (real skill, scripted server)', () => {
   it('defends a single supported zombie with verified gear; defeat only from the server death status', async () => {
     const { sc, rt } = armedScene();
@@ -189,9 +200,10 @@ describe('defend_against_threat (real skill, scripted server)', () => {
     await rt.service.close();
   });
 
-  it('health, armor or target age changing during the look await refuses the first attack', async () => {
-    for (const change of ['health', 'armor', 'age'] as const) {
+  it('health, armor, target age or physics footing changing during the look await refuses the first attack', async () => {
+    for (const change of ['health', 'armor', 'age', 'footing'] as const) {
       const { sc, rt, z } = armedScene();
+      const knockback = change === 'footing' ? velocityPackets(sc) : undefined;
       let resolveLook!: () => void;
       let looking = false;
       let attacks = 0;
@@ -202,7 +214,11 @@ describe('defend_against_threat (real skill, scripted server)', () => {
       assert.ok(await until(() => looking, 1_000));
       if (change === 'health') sc.client.emit('update_health', { health: 9, food: 20 });
       else if (change === 'armor') sc.client.emit('set_slot', { windowId: 0, slot: 6, item: { itemCount: 0 } });
-      else (z as unknown as { metadata: Record<number, unknown> }).metadata[reg.metadataIndex('zombie', 'baby')!] = true;
+      else if (change === 'age') (z as unknown as { metadata: Record<number, unknown> }).metadata[reg.metadataIndex('zombie', 'baby')!] = true;
+      else {
+        knockback!();
+        assert.ok(await until(() => rt.reader.self()?.fluid.onGround === false, 1_000), 'installed physics lifts the body; no forced onGround value');
+      }
       resolveLook();
       assert.ok(await until(() => rt.service.episodes().length > 0, 2_000), change);
       const steps = rt.service.episodes().at(-1)?.evidence['steps'] as Array<{ reason: string; response: string }>;
@@ -211,6 +227,58 @@ describe('defend_against_threat (real skill, scripted server)', () => {
       assert.equal(attacks, 0, `no attack after ${change} changed while aiming`);
       await rt.service.close();
     }
+  });
+
+  it('after one confirmed hit, velocity-induced loss of footing ends defense and requests retreat through the same finite grant without defeat credit', async () => {
+    const { sc, rt } = armedScene();
+    const knockback = velocityPackets(sc);
+    // No path simulation here: keep the requested retreat pending until cleanup.
+    // This control proves the production transition, not completed retreat motion.
+    Object.assign(sc.bot['pathfinder'] as object, { setMovements: () => undefined, isMoving: () => true });
+    const write = sc.client.write.bind(sc.client);
+    let reply: Promise<void> | undefined;
+    let attacks = 0;
+    sc.client.write = (name: string, data: Record<string, unknown>) => {
+      write(name, data);
+      if (name !== 'attack') return;
+      attacks += 1;
+      assert.equal(data['entityId'], 50);
+      if (attacks !== 1) return;
+      reply = (async () => {
+        knockback();
+        assert.ok(await until(() => rt.reader.self()?.fluid.onGround === false, 1_000));
+        sc.client.emit('damage_event', { entityId: 50, sourceTypeId: 1, sourceCauseId: 2, sourceDirectId: 2 });
+      })();
+    };
+    try {
+      rt.service.tick();
+      assert.equal(rt.service.hold()?.response, 'defend', 'current grounded admission remains admitted');
+      const grantId = (rt.leases.current!.owner as unknown as { grantId: string }).grantId;
+      assert.ok(await until(() => rt.service.hold()?.response === 'retreat', 2_000));
+      await reply;
+      assert.equal((rt.leases.current!.owner as unknown as { grantId: string }).grantId, grantId, 'same finite grant for the avoidance dispatch');
+      assert.ok(await until(() => rt.reader.self()?.fluid.onGround === true, 2_000), 'physics settles naturally');
+      assert.equal(attacks, 1, 'restored footing alone does not restart defense');
+      await rt.service.close();
+      const episode = rt.service.episodes().at(-1)!;
+      const steps = episode.evidence['steps'] as Array<{ response: string; reason: string | null; confirmation: string; effect: string }>;
+      assert.equal(steps[0]?.response, 'defend');
+      assert.equal(steps[0]?.reason, 'readiness_changed');
+      assert.match(steps[0]!.effect, /not_on_ground/);
+      assert.equal(steps[0]?.confirmation, 'server_packet');
+      assert.equal(steps[1]?.response, 'retreat');
+      assert.equal(episode.grantId, grantId, 'no replacement grant or refilled authority');
+      assert.equal(episode.outcome, 'revoked', 'cleanup cancels the pending test path; no claimed retreat success');
+      assert.equal(rt.service.counters.episodes, 1);
+      assert.equal(attacks, 1, 'no second attack while airborne or after settling back onto the floor');
+      assert.equal(rt.service.counters.hitsConfirmed, 1);
+      assert.equal(rt.service.counters.defeatsConfirmed, 0, 'a live target and retreat never earn death credit');
+      assert.ok(sc.session.bot.entities[50]);
+      assert.equal(rt.leases.current, undefined);
+      assert.equal(Object.values(sc.controls).some(Boolean), false);
+      assert.ok(episode.elapsedMs <= rt.service.config.mobs.maxEpisodeMs);
+      assert.ok(episode.displacement <= rt.service.config.mobs.maxDisplacement);
+    } finally { await rt.service.close(); }
   });
 
   it('unarmed: the same zombie is avoided (retreat planned), never fought', async () => {
