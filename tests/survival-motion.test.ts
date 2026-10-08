@@ -18,7 +18,7 @@ import { precondition, type AnySkill } from '../src/skills/definition.ts';
 import { ID, OW, SESSION_OW, assessInput, cleanupRoots, dieWithItems, harness, respawnFresh, settle, slot, snapshot, type Slot } from './survival-helpers.ts';
 
 after(cleanupRoots);
-type Scenario = 'own' | 'resync_foreign' | 'moving_foreign' | 'late_foreign' | 'unknown' | 'orb' | 'merge' | 'cancel' | 'moving_own' | 'wrong_identity' | 'reuse' | 'identity_count' | 'identity_neighbors' | 'foreign_recedes';
+type Scenario = 'own' | 'resync_foreign' | 'moving_foreign' | 'late_foreign' | 'unknown' | 'orb' | 'merge' | 'cancel' | 'moving_own' | 'wrong_identity' | 'reuse' | 'identity_count' | 'identity_neighbors' | 'foreign_recedes' | 'reuse_gap' | 'reuse_gap_collect' | 'collected_destroyed';
 
 async function run(scenario: Scenario, route = false) {
   const h = harness();
@@ -35,6 +35,8 @@ async function run(scenario: Scenario, route = false) {
   assert.equal(d.kind, 'propose');
   h.service.onSupportAdmitted({ proposalId: (d as { proposal: SurvivalProposal }).proposal.proposalId, goalId: 'goal-r400', goalEpoch: 5, connectionEpoch: 1, admittedAtMs: h.clock.now() });
   await settle(h);
+  const authority = () => { const i = h.service.status(h.clock.now()).incidents[0]!; return structuredClone({ attempts: i.attempts, budget: i.budget }); };
+  const authorityBefore = authority();
   const client = h.packets.client as unknown as FakeClient;
   const fake = fakeMineflayerBot(client, { dimension: SESSION_OW, at: { x: 24.5, y: 64, z: 10.5 } });
   fake.fill(0, 63, 0, 40, 63, 20, 'grass_block');
@@ -60,6 +62,9 @@ async function run(scenario: Scenario, route = false) {
   let ticks = 0;
   let cancelledAt: number | undefined;
   let stoppedAt: number | undefined;
+  let metadataGapAt: number | undefined;
+  let gapHadFacts: boolean | undefined;
+  let motionAfterGap = 0;
   const collected: number[] = [];
   const inventory: Record<number, Slot> = {};
   const abort = new AbortController();
@@ -68,6 +73,7 @@ async function run(scenario: Scenario, route = false) {
     h.packets.collect(id, count);
     h.packets.destroy(id);
     delete bot.entities[id];
+    if (id === 25 && scenario === 'collected_destroyed') events.emit('entityUpdate', own);
     if (id === 25) inventory[37] = slot('bread', count);
     if (id === 68) inventory[38] = slot('bread', count);
     h.packets.inventory(inventory);
@@ -82,6 +88,8 @@ async function run(scenario: Scenario, route = false) {
   });
   client.write = (name, data) => {
     if (name === 'window_click') {
+      // An unavoidable server collect arrives only during the post-stop correlated resync, without new metadata.
+      if (scenario === 'reuse_gap_collect' && metadataGapAt !== undefined && !collected.includes(25)) collect(25, 4);
       if (scenario === 'foreign_recedes' && starts === 0) { foreign.position = vec3(34.5, 64, 10.5); client.emit('sync_entity_position', { entityId: 68, x: 34.5, y: 64, z: 10.5 }); events.emit('entityMoved', foreign); }
       if (scenario === 'late_foreign' && starts > 0 && !collected.includes(68)) collect(68, 64);
       if (scenario === 'resync_foreign' && starts === 0) {
@@ -97,6 +105,7 @@ async function run(scenario: Scenario, route = false) {
   // A pathfinder tick runs after any prepended recovery veto. Server collects use vanilla's inflated pickup reach.
   events.on('physicsTick', () => {
     if (!goal || !controls) return;
+    if (metadataGapAt !== undefined) motionAfterGap += 1;
     const dx = goal.x + 0.5 - bot.entity.position.x;
     bot.entity.position = vec3(bot.entity.position.x + Math.sign(dx) * Math.min(Math.abs(dx), 0.4), 64, 10.5);
     for (const id of [25, 68]) {
@@ -155,6 +164,16 @@ async function run(scenario: Scenario, route = false) {
       h.packets.spawnItem(25, slot('bread', 4), own.position);
       collect(25, 4);
     }
+    if (ticks === 1 && (scenario === 'reuse_gap' || scenario === 'reuse_gap_collect')) {
+      metadataGapAt = bot.entity.position.x;
+      h.packets.destroy(25);
+      h.packets.spawnItemWithoutStack(25, own.position);
+      gapHadFacts = Boolean(h.service.dropFacts(1, 25));
+      // Mineflayer's replacement remains physically present; normal events precede any collect packet.
+      events.emit('entitySpawn', own);
+      events.emit('entityUpdate', own);
+      if (!controls) stoppedAt = bot.entity.position.x;
+    }
     if (ticks === 1 && scenario === 'merge') {
       h.packets.client.emit('entity_metadata', { entityId: 25, metadata: [{ key: 8, type: 'item_stack', value: slot('bread', 64) }] });
       // Collect arrives before any navigation poll; the frozen 4-item plan cannot credit part of the 64-stack.
@@ -165,7 +184,7 @@ async function run(scenario: Scenario, route = false) {
   }, 20);
   try {
     const outcome = await executor.execute({ id: 'act-r400', capability: route ? 'recovery_route_probe' : 'recover_lost_items', connectionEpoch: 1, goalEpoch: 5, timeoutMs: 2_000, parameters: route ? {} : { target: { snapshotId: 'snap-r400', handle: 'drp-1' } } } as never, abort.signal, { kind: 'goal', goalId: 'goal-r400', goalEpoch: 5, taskId: 'task-r400' });
-    return { outcome, starts, controls, clearCount, collected, at: bot.entity.position.x, cancelledAt, stoppedAt, returns: h.service.incidentReturns(incidentId), incident: h.service.status(h.clock.now()).incidents[0], effects: ledger.since(0), listeners: events.eventNames().filter((e) => e !== 'physicsTick'), tickListeners: events.listenerCount('physicsTick') };
+    return { outcome, starts, controls, clearCount, collected, at: bot.entity.position.x, cancelledAt, stoppedAt, metadataGapAt, gapHadFacts, motionAfterGap, authorityBefore, authorityAfter: authority(), returns: h.service.incidentReturns(incidentId), incident: h.service.status(h.clock.now()).incidents[0], effects: ledger.since(0), listeners: events.eventNames().filter((e) => e !== 'physicsTick'), tickListeners: events.listenerCount('physicsTick') };
   } finally {
     clearInterval(interval);
     evidence.detach();
@@ -318,4 +337,50 @@ it('R5: an initial route pickup veto stays latched when the foreign pile moves a
   assert.deepEqual(r.collected, []);
   assert.equal(r.outcome.reason, 'unrelated_loot_nearby');
   assert.equal(r.controls, false);
+});
+
+it('R6: a frozen id replaced without stack metadata stops intentional approach before any collect', async () => {
+  for (const route of [false, true]) {
+    const r = await run('reuse_gap', route);
+    assert.equal(r.gapHadFacts, false);
+    assert.equal(r.motionAfterGap, 0, JSON.stringify({ route, ...r }));
+    assert.equal(r.at, r.metadataGapAt);
+    assert.equal(r.controls, false);
+    assert.deepEqual(r.collected, []);
+    assert.deepEqual(r.returns?.regained, {});
+    assert.deepEqual(r.effects.filter((e) => e.kind === 'picked_up'), []);
+    assert.deepEqual(r.authorityAfter, r.authorityBefore);
+    assert.deepEqual(r.listeners, []);
+    assert.equal(r.tickListeners, 1);
+  }
+});
+
+it('R6: an unavoidable collect of the metadata-gap replacement stays keyless unknown without credit', async () => {
+  for (const route of [false, true]) {
+    const r = await run('reuse_gap_collect', route);
+    assert.equal(r.motionAfterGap, 0, JSON.stringify({ route, ...r }));
+    assert.equal(r.at, r.metadataGapAt);
+    assert.equal(r.controls, false);
+    assert.deepEqual(r.collected, [25]);
+    assert.deepEqual(r.returns?.regained, {});
+    assert.equal(r.returns?.attribution, 'unknown');
+    assert.deepEqual(r.effects.filter((e) => e.kind === 'picked_up'), []);
+    assert.deepEqual(r.incident?.incidental?.map((e) => [e.key, e.count]), [[undefined, 4]]);
+    assert.equal(r.outcome.status, 'partial');
+    assert.deepEqual(r.authorityAfter, r.authorityBefore);
+  }
+});
+
+it('R6: a legitimate frozen collect then destroy and entity event retains exact settlement once', async () => {
+  for (const route of [false, true]) {
+    const r = await run('collected_destroyed', route);
+    assert.equal(r.outcome.status, 'succeeded', JSON.stringify({ route, ...r }));
+    assert.deepEqual(r.collected, [25]);
+    assert.deepEqual(r.returns?.regained, { 'minecraft:bread': 4 });
+    assert.equal(r.returns?.attribution, 'server_attributed');
+    assert.deepEqual(r.incident?.incidental, []);
+    assert.deepEqual(r.effects.filter((e) => e.kind === 'picked_up').map((e) => e.count), [4]);
+    assert.deepEqual(r.authorityAfter, r.authorityBefore);
+    assert.equal(r.controls, false);
+  }
 });
