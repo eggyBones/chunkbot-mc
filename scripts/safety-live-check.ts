@@ -74,10 +74,11 @@ import { MineflayerConnection } from '../src/game/connection.ts';
 import { createSafetyRuntime } from '../src/safety/wiring.ts';
 import type { SafetyService } from '../src/safety/service.ts';
 import type { SessionSafetyReader } from '../src/safety/adapter.ts';
+import { SafetyTrialJournal, cleanupOnce, parseEntityTest, parseForceload, sameChunks } from '../src/safety/trial-journal.ts';
 import { allSkills } from '../src/skills/index.ts';
 import { safetySkills } from '../src/skills/safety.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
-import { rconCommand } from './lib/rcon.ts';
+import { trialRcon } from '../src/safety/trial-rcon.ts';
 
 type Json = Record<string, unknown>;
 
@@ -133,6 +134,12 @@ class Gate {
    */
   readonly interventions: Array<{ atMs: number; gate: string; command: string }> = [];
   phase = 'setup';
+  /** Set by a termination signal: every further non-restoration RCON command is refused. */
+  halted: string | undefined;
+  restoreDeadline: number | undefined;
+  /** Called after every gate (incremental partial report). */
+  afterGate: () => void = () => undefined;
+  journal: SafetyTrialJournal | undefined;
   readonly written: Array<{ atMs: number; name: string; entityId?: number }> = [];
   readonly store = new MemoryRunStore();
   readonly game: MineflayerConnection;
@@ -288,6 +295,7 @@ class Gate {
 
   /** Harness owner goal admission (travel anchor at the bot, bounded radius). */
   admit(radius: number): void {
+    if (this.halted) throw new Error(`halted (${this.halted}): no new safety authority`);
     this.epoch += 1;
     this.goalId = `goal-safety${this.epoch.toString().padStart(4, '0')}`;
     this.runtime.onGoalAdmitted({ goalId: this.goalId, epoch: this.epoch, admittedAtMs: Date.now() });
@@ -305,13 +313,24 @@ class Gate {
     this.leases.revokeCurrent('owner_stop');
   }
 
-  async rcon(command: string, record = true): Promise<string> {
-    const run = this.rconQueue.then(() => rconCommand(PINS.host, PINS.rconPort, this.password, command));
+  async rcon(command: string, record = true, restoring = false): Promise<string> {
+    const phase = restoring ? 'restore' : this.phase;
+    const readOnly = /^(?:data get |execute if |forceload query(?: |$)|difficulty$|list$)/.test(command);
+    const run = this.rconQueue.then(async () => {
+      if (this.halted && !restoring) throw new Error(`halted (${this.halted}): no further gate command`);
+      if (restoring && this.restoreDeadline !== undefined && Date.now() >= this.restoreDeadline) throw new Error('bounded restoration deadline exceeded');
+      const entry = !readOnly ? this.journal?.before(command, phase) : undefined;
+      if (!readOnly && entry === undefined) throw new Error('refusing mutation without durable trial journal');
+      const remaining = restoring && this.restoreDeadline !== undefined ? this.restoreDeadline - Date.now() : 2_000;
+      const reply = await trialRcon(PINS.host, PINS.rconPort, this.password, command, Math.min(2_000, remaining));
+      if (entry !== undefined) this.journal!.after(entry, reply);
+      return reply;
+    });
     this.rconQueue = run.catch(() => undefined);
     const reply = await run;
-    if (record) this.setup.push({ atMs: Date.now(), phase: this.phase, command, reply: reply.slice(0, 300) });
-    if (record && this.phase !== 'setup' && this.phase !== 'restore' && /^(tp|damage|effect give|effect clear|item replace|summon|fill|clear|kill)\b/.test(command)) {
-      this.interventions.push({ atMs: Date.now(), gate: this.phase, command });
+    if (record) this.setup.push({ atMs: Date.now(), phase, command, reply: reply.slice(0, 300) });
+    if (record && phase !== 'setup' && phase !== 'restore' && /^(tp|damage|effect give|effect clear|item replace|summon|fill|clear|kill)\b/.test(command)) {
+      this.interventions.push({ atMs: Date.now(), gate: phase, command });
     }
     return reply;
   }
@@ -328,19 +347,28 @@ class Gate {
     } catch (error) {
       evidence.push(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
       this.results.push({ id, title, status: 'fail', evidence });
-      process.stdout.write(`FAIL ${id} ${title}\n  ${evidence.at(-1)?.slice(0, 500)}\n`);
+      process.stdout.write(`FAIL ${id} ${title}\n`);
     } finally {
+      // The full (bounded) gate evidence goes to stdout too, so a killed process still leaves it in the log.
+      for (const line of evidence.slice(0, 16)) process.stdout.write(`  ${line.slice(0, 400)}\n`);
       this.stop();
-      this.phase = 'setup';
+      if (!this.halted) this.phase = 'setup';
+      try {
+        this.afterGate();
+      } catch {
+        // a partial-report write failure never changes a verdict
+      }
       await sleep(300);
     }
   }
 
   async connect(): Promise<void> {
+    if (this.halted) throw new Error(`halted (${this.halted}): no join`);
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), 40_000);
     try {
       await this.game.connect(abort.signal);
+      if (this.halted) throw new Error(`halted (${this.halted}) during join`);
     } finally {
       clearTimeout(timer);
     }
@@ -350,15 +378,16 @@ class Gate {
   async waitFor(what: string, cond: () => boolean | Promise<boolean>, ms = 10_000): Promise<void> {
     const until = Date.now() + ms;
     while (Date.now() < until) {
+      if (this.halted) throw new Error(`halted (${this.halted}) while waiting for ${what}`);
       if (await cond()) return;
       await sleep(100);
     }
     throw new Error(`timed out waiting for ${what}`);
   }
 
-  async nonAirBlocks(box: string): Promise<number | undefined> {
+  async nonAirBlocks(box: string, restoring = false): Promise<number | undefined> {
     const [x1, y1, z1] = box.split(' ');
-    const r = await this.rcon(`clone ${box} ${x1} ${y1} ${z1} masked force`, false);
+    const r = await this.rcon(`clone ${box} ${x1} ${y1} ${z1} masked force`, false, restoring);
     const m = /cloned (\d+) block/i.exec(r);
     if (m) return Number(m[1]);
     return /no blocks/i.test(r) ? 0 : undefined;
@@ -377,8 +406,11 @@ class Gate {
     return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
   }
 
-  async entityExists(tag: string): Promise<boolean> {
-    return !/failed|no entity|test failed|0$/i.test(await this.rcon(`execute if entity @e[tag=${tag},${ENTITY_AREA}]`, false));
+  async entityExists(tag: string, restoring = false): Promise<boolean> {
+    const reply = await this.rcon(`execute if entity @e[tag=${tag},${ENTITY_AREA}]`, false, restoring);
+    const exists = parseEntityTest(reply);
+    check(exists !== undefined, `entity presence unreadable: ${reply.slice(0, 120)}`);
+    return exists;
   }
 
   /** Scene inside the owned footprint: platform, pool, cleared bot. */
@@ -427,6 +459,7 @@ class Gate {
   async engaged(ms = 10_000): Promise<string> {
     const until = Date.now() + ms;
     while (Date.now() < until) {
+      if (this.halted) throw new Error(`halted (${this.halted}) during engagement staging`);
       const z = this.reader.entities({ scanRadius: 16, approachWindowMs: 1_500, provokedWindowMs: 6_000 }).find((e) => e.key === 'minecraft:zombie');
       if (z && z.distance <= 3.5 && (z.aggressive === true || z.damagedSelfAtMs !== null)) {
         return `staging: zombie already engaging in melee contact (distance ${z.distance}, aggressive ${z.aggressive}, attributed damage ${z.damagedSelfAtMs !== null})`;
@@ -463,39 +496,156 @@ interface RestoreCheck {
   detail: string;
 }
 
-async function run(): Promise<Json> {
+async function run(outDir: string): Promise<Json> {
   const g = new Gate();
+  const journal = new SafetyTrialJournal(join(outDir, 'restoration-journal.json'));
+  g.journal = journal;
   const restoreChecks: RestoreCheck[] = [];
   const addedForceload: Array<{ cx: number; cz: number }> = [];
   let backupTaken = false;
+  let backupPlanned = false;
   let difficulty: { original: string | undefined; changed: boolean } = { original: undefined, changed: false };
   let source = { head: 'unknown', dirty: -1 };
+  // Verified restoration, exactly once (normal end, failure, or a termination signal).
+  const restoreOnce = cleanupOnce(async () => {
+      g.stop();
+      g.phase = 'restore';
+      await restoreAll();
+  });
+  const report = (extra: Json = {}): Json => buildReport(g, { restoreChecks, addedForceload, difficulty, source }, { lease: arg('--fixture-lease'), ...extra });
+  const writePartial = (extra: Json = {}) => writeFileSync(join(outDir, 'report.partial.json'), `${JSON.stringify(report({ partial: true, ...extra }), null, 2)}\n`);
+  g.afterGate = () => writePartial();
+  // A termination signal (session teardown, operator stop) halts gate commands, runs the SAME verified
+  // restoration, writes the report and exits non-zero. (SIGKILL cannot be handled: the partial report remains.)
+  const onSignal = (signal: NodeJS.Signals) => {
+    if (g.halted) return;
+    g.halted = signal;
+    try { journal.remember({ interrupted: signal }); } catch (error) { restoreChecks.push({ what: 'interruption journal', ok: false, detail: String(error) }); }
+    process.stdout.write(`INTERRUPTED by ${signal}: halting gates and running verified restoration\n`);
+    void restoreOnce()
+      .catch((error) => restoreChecks.push({ what: 'restoration settlement', ok: false, detail: String(error) }))
+      .then(() => {
+        restoreChecks.forEach((c) => process.stdout.write(`  RESTORE ${c.ok ? 'OK' : 'FAILED'} ${c.what}: ${c.detail.slice(0, 200)}\n`));
+        writeFileSync(join(outDir, 'report.json'), `${JSON.stringify(report({ interrupted: signal, pass: false }), null, 2)}\n`);
+        process.exit(1);
+      });
+  };
+  async function restoreAll(): Promise<void> {
+      const deadline = Date.now() + 45_000;
+      g.restoreDeadline = deadline;
+      const rcon = (command: string, record = true) => g.rcon(command, record, true);
+      const step = async (what: string, fn: () => Promise<boolean | string>, local = false) => {
+        try {
+          if (!local && Date.now() >= deadline) throw new Error('bounded restoration deadline exceeded; no further mutation');
+          const r = await fn();
+          restoreChecks.push({ what, ok: r === true, detail: r === true ? 'verified' : String(r) });
+        } catch (error) {
+          restoreChecks.push({ what, ok: false, detail: error instanceof Error ? error.message : String(error) });
+        }
+      };
+      await step('tagged mobs removed', async () => {
+        await rcon(`kill @e[tag=${MOB_TAG},${ENTITY_AREA}]`);
+        return !(await g.entityExists(MOB_TAG, true)) || 'tagged mobs remain';
+      });
+      if (difficulty.original) {
+        // Always verified: restored when this trial changed it, otherwise proven unchanged.
+        await step(`difficulty ${difficulty.changed ? 'restored to' : 'unchanged at'} ${difficulty.original}`, async () => {
+          if (difficulty.changed) await rcon(`difficulty ${difficulty.original}`);
+          return DIFF_REPLY.exec(await rcon('difficulty', false))?.[1]?.toLowerCase() === difficulty.original || 'difficulty differs from the original';
+        });
+      }
+      await step('bot state cleared', async () => {
+        check(g.game.session(), 'owned bot is not online; player cleanup cannot be verified');
+        await rcon(`clear ${BOT}`);
+        await rcon(`effect clear ${BOT}`);
+        await rcon(`tp ${BOT} ${ARENA.x} ${SCENE_Y.y2 + 1} ${ARENA.z} 0 0`);
+        const inventory = await rcon(`data get entity ${BOT} Inventory`, false);
+        const effects = await rcon(`data get entity ${BOT} active_effects`, false);
+        const effectsEmpty = /:\s*\[\]\s*$/.test(effects) || /no elements matching.*active_effects/i.test(effects);
+        return /:\s*\[\]\s*$/.test(inventory) && effectsEmpty || `player state unverified: ${inventory}; ${effects}`;
+      });
+      if (backupTaken) {
+        await step('scene item/xp entities removed', async () => {
+          await rcon(`kill @e[type=item,${ENTITY_AREA}]`);
+          await rcon(`kill @e[type=experience_orb,${ENTITY_AREA}]`);
+          return true;
+        });
+        let sceneRestored = false;
+        await step('scene restored from backup', async () => {
+          await rcon(`clone ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2} ${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} replace force`);
+          const v = await rcon(`execute if blocks ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2} ${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} all`, false);
+          sceneRestored = /passed/i.test(v);
+          return sceneRestored || `scene differs from the pre-trial copy: ${v.slice(0, 120)}`;
+        });
+        await step('backup volume cleared and verified empty', async () => {
+          check(sceneRestored, 'scene comparison failed; preserving original backup for coordinator recovery');
+          await rcon(`fill ${BACKUP_BOX} air`);
+          const n = await g.nonAirBlocks(BACKUP_BOX, true);
+          return n === 0 || `backup volume still has ${n ?? 'unknown'} non-air blocks`;
+        });
+      } else if (backupPlanned) {
+        await step('unused backup cleared (scene was never changed)', async () => {
+          await rcon(`fill ${BACKUP_BOX} air`);
+          return await g.nonAirBlocks(BACKUP_BOX, true) === 0 || 'backup not verified empty';
+        });
+      }
+      for (const ch of addedForceload) {
+        await step(`forceload ${ch.cx},${ch.cz} removed (trial-added)`, async () => {
+          await rcon(`forceload remove ${ch.cx * 16} ${ch.cz * 16}`);
+          return /is not marked/i.test(await rcon(`forceload query ${ch.cx * 16} ${ch.cz * 16}`, false)) || 'still force-loaded';
+        });
+      }
+      const original = journal.snapshot().original;
+      if (original) await step('exact original forceload set retained', async () => {
+        const actual = parseForceload(await rcon('forceload query', false));
+        return actual !== undefined && sameChunks(actual, original.forceload) || 'forceload set differs or is unreadable';
+      });
+      await step('safety executor cleanup settled', async () => { await g.safety.close(); return true; }, true);
+      await step('owned bot disconnected', async () => { await g.game.disconnect('operator_stop'); return true; }, true);
+      journal.remember({ restoration: restoreChecks });
+  }
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(sig, onSignal);
   try {
     source = { head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(), dirty: execFileSync('git', ['status', '--porcelain'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).split('\n').filter(Boolean).length };
   } catch {
     // source identity unavailable
   }
   try {
+    check(source.dirty === 0 && source.head !== 'unknown', 'a clean frozen source is required; refusing fixture operations');
+    const originalDifficulty = DIFF_REPLY.exec(await g.rcon('difficulty', false))?.[1]?.toLowerCase();
+    const forceloadReply = await g.rcon('forceload query', false);
+    const originalForceload = parseForceload(forceloadReply);
+    check(originalDifficulty !== undefined && originalForceload !== undefined, 'original settings/forceload unreadable; refusing all mutations and join');
+    journal.capture({ difficulty: originalDifficulty, forceload: originalForceload, forceloadReply });
+    journal.remember({ source, fixture: PINS.profile, lease: arg('--fixture-lease'), mobTag: MOB_TAG });
+    difficulty.original = originalDifficulty;
     await g.connect();
     g.safety.start();
     for (const ch of sceneChunks()) {
       const r = await g.rcon(`forceload query ${ch.cx * 16} ${ch.cz * 16}`, false);
       if (/is not marked/i.test(r)) {
-        await g.rcon(`forceload add ${ch.cx * 16} ${ch.cz * 16}`);
+        check(!originalForceload.some((p) => p.cx === ch.cx && p.cz === ch.cz), 'forceload changed after original capture; refusing');
         addedForceload.push(ch);
+        journal.remember({ addedForceload }); // intent durable BEFORE add (also covers ambiguous interrupted writes)
+        await g.rcon(`forceload add ${ch.cx * 16} ${ch.cz * 16}`);
+      } else {
+        check(/is marked/i.test(r) && originalForceload.some((p) => p.cx === ch.cx && p.cz === ch.cz), 'forceload query unknown or changed; refusing');
       }
     }
     await sleep(1_000);
     const backupNonAir = await g.nonAirBlocks(BACKUP_BOX);
     check(backupNonAir === 0, `backup volume ${BACKUP_BOX} is not verified empty (${backupNonAir ?? 'unknown'} non-air blocks); refusing to change the scene`);
+    backupPlanned = true;
+    journal.remember({ backupPlanned, scene: SCENE_BOX, backup: BACKUP_BOX });
     const backupReply = await g.rcon(`clone ${SCENE_BOX} ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1}`);
     check(/cloned/i.test(backupReply) || /no blocks/i.test(backupReply), `scene backup failed: ${backupReply.slice(0, 120)}`);
+    check(/passed/i.test(await g.rcon(`execute if blocks ${SCENE_BOX} ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} all`, false)), 'scene backup not verified byte-for-block; refusing scene mutation');
     backupTaken = true;
-    difficulty.original = DIFF_REPLY.exec(await g.rcon('difficulty'))?.[1]?.toLowerCase();
-    check(difficulty.original !== undefined, 'could not read the original difficulty; refusing to continue');
+    journal.remember({ backupTaken });
     if (difficulty.original === 'peaceful') {
-      await g.rcon('difficulty easy');
       difficulty = { ...difficulty, changed: true };
+      journal.remember({ difficulty });
+      await g.rcon('difficulty easy');
     }
 
     // ---------------------------------------------------------------- water
@@ -704,63 +854,30 @@ async function run(): Promise<Json> {
       check(cleared, 'lease revoked synchronously');
       check(a.pos && b.pos && dist2(a.pos, b.pos) < 1.0, 'no further horizontal motion after stop');
     });
+  } catch (error) {
+    g.results.push({ id: 'SETUP', title: 'trial setup/operation settled', status: 'fail', evidence: [error instanceof Error ? error.message : String(error)] });
   } finally {
-    g.stop();
-    g.phase = 'restore';
-    const step = async (what: string, fn: () => Promise<boolean | string>) => {
-      try {
-        const r = await fn();
-        restoreChecks.push({ what, ok: r === true, detail: r === true ? 'verified' : String(r) });
-      } catch (error) {
-        restoreChecks.push({ what, ok: false, detail: error instanceof Error ? error.message : String(error) });
-      }
-    };
-    await step('tagged mobs removed', async () => {
-      await g.rcon(`kill @e[tag=${MOB_TAG},${ENTITY_AREA}]`);
-      return !(await g.entityExists(MOB_TAG)) || 'tagged mobs remain';
-    });
-    if (difficulty.original) {
-      // Always verified: restored when this trial changed it, otherwise proven unchanged.
-      await step(`difficulty ${difficulty.changed ? 'restored to' : 'unchanged at'} ${difficulty.original}`, async () => {
-        if (difficulty.changed) await g.rcon(`difficulty ${difficulty.original}`);
-        return DIFF_REPLY.exec(await g.rcon('difficulty', false))?.[1]?.toLowerCase() === difficulty.original || 'difficulty differs from the original';
-      });
-    }
-    await step('bot state cleared', async () => {
-      await g.rcon(`clear ${BOT}`);
-      await g.rcon(`effect clear ${BOT}`);
-      await g.rcon(`tp ${BOT} ${ARENA.x} ${SCENE_Y.y2 + 1} ${ARENA.z} 0 0`);
-      return true;
-    });
-    if (backupTaken) {
-      await step('scene item/xp entities removed', async () => {
-        await g.rcon(`kill @e[type=item,${ENTITY_AREA}]`);
-        await g.rcon(`kill @e[type=experience_orb,${ENTITY_AREA}]`);
-        return true;
-      });
-      await step('scene restored from backup', async () => {
-        await g.rcon(`clone ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2} ${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} replace force`);
-        const v = await g.rcon(`execute if blocks ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2} ${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} all`, false);
-        return /passed/i.test(v) || `scene differs from the pre-trial copy: ${v.slice(0, 120)}`;
-      });
-      await step('backup volume cleared and verified empty', async () => {
-        await g.rcon(`fill ${BACKUP_BOX} air`);
-        const n = await g.nonAirBlocks(BACKUP_BOX);
-        return n === 0 || `backup volume still has ${n ?? 'unknown'} non-air blocks`;
-      });
-    }
-    for (const ch of addedForceload) {
-      await step(`forceload ${ch.cx},${ch.cz} removed (trial-added)`, async () => {
-        await g.rcon(`forceload remove ${ch.cx * 16} ${ch.cz * 16}`);
-        return /is not marked/i.test(await g.rcon(`forceload query ${ch.cx * 16} ${ch.cz * 16}`, false)) || 'still force-loaded';
-      });
-    }
-    await g.safety.close().catch(() => undefined);
-    await g.game.disconnect('operator_stop').catch(() => undefined);
+    await restoreOnce();
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.off(sig, onSignal);
   }
-  const restoreOk = restoreChecks.every((c) => c.ok);
-  g.results.push({ id: 'RESTORE', title: 'verified restoration of settings, scene, entities and forceload', status: restoreOk ? 'pass' : 'fail', evidence: restoreChecks.map((c) => `${c.ok ? 'OK' : 'FAILED'} ${c.what}: ${c.detail}`) });
-  const counted = g.results.filter((r) => r.status !== 'skipped');
+  return report();
+}
+
+interface ReportState {
+  restoreChecks: RestoreCheck[];
+  addedForceload: Array<{ cx: number; cz: number }>;
+  difficulty: { original: string | undefined; changed: boolean };
+  source: { head: string; dirty: number };
+}
+
+function buildReport(g: Gate, st: ReportState, extra: Json = {}): Json {
+  const { restoreChecks, addedForceload, difficulty, source } = st;
+  const results = [...g.results];
+  if (restoreChecks.length > 0 || !extra['partial']) {
+    const restoreOk = restoreChecks.length > 0 && restoreChecks.every((c) => c.ok);
+    results.push({ id: 'RESTORE', title: 'verified restoration of settings, scene, entities and forceload', status: restoreOk ? 'pass' : 'fail', evidence: restoreChecks.map((c) => `${c.ok ? 'OK' : 'FAILED'} ${c.what}: ${c.detail}`) });
+  }
+  const counted = results.filter((r) => r.status !== 'skipped');
   return {
     check: 'MB-FLOW-003-C11/C13 immediate-safety mechanics gate (pre-integration module harness with a labeled safety-executor stand-in; no model calls; NOT integrated-application or real-provider acceptance)',
     credit: 'module mechanics only; operator interventions (positioning, damage, effects, equipment, summons) never earn autonomous pass credit',
@@ -772,13 +889,15 @@ async function run(): Promise<Json> {
     footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, mobTag: MOB_TAG, addedForceload, difficulty },
     restoration: restoreChecks,
     pass: counted.length > 0 && counted.every((r) => r.status === 'pass'),
-    results: g.results,
+    results,
     setup: g.setup,
     attacks: g.written.slice(-200),
     episodes: g.safety.episodes(),
     safetyOutcomes: g.outcomes.map((o) => ({ capability: o.capability, status: o.status, reason: o.reason ?? null, confirmation: o.confirmation, effect: o.effect.slice(0, 300), evidence: o.evidence })),
     safetyEvents: g.store.events.filter((e) => String(e.type).startsWith('safety_') || String(e.type).startsWith('lease_')).slice(-300),
     safetyStatus: g.safety.status(Date.now()),
+    ...(g.halted ? { interrupted: g.halted, pass: false } : {}),
+    ...extra,
   };
 }
 
@@ -797,11 +916,12 @@ async function main(): Promise<number> {
   const outDir = join(PROJECT_ROOT, 'var', 'live-check', `${stamp}${SUFFIX}-safety`);
   mkdirSync(outDir, { recursive: true });
   process.stdout.write(`safety gate (${PINS.profile}, lease ${lease}, safety executor ${realSafetyExecutorAvailable() ? 'REAL shared executor' : 'labeled STAND-IN'}) -> ${outDir}\n`);
-  const report = await run();
+  const report = await run(outDir);
   writeFileSync(join(outDir, 'report.json'), `${JSON.stringify({ ...report, lease }, null, 2)}\n`);
   process.stdout.write(`${report['pass'] ? 'PASS' : 'FAIL'} safety gate — ${outDir}\n`);
   return report['pass'] ? 0 : 1;
 }
+
 
 /**
  * Import safety: importing this module never runs anything. main() starts only
