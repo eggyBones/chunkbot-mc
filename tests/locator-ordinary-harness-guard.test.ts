@@ -112,13 +112,25 @@ describe('MB-LOC-002 ordinary harness scripted planner turns and privacy helper'
   it('wires complete action intervals and strict parsed privacy provenance into the actual ordinary scenarios', () => {
     assert.match(code, /reacquisitionProof\(events\(\), observations,/);
     assert.match(code, /turnsAfter === turnsBefore/);
-    assert.match(code, /verifiedHistory\(observations\)/);
+    assert.match(code, /verifiedHistory\(observations, ownerIdentity\)/);
     assert.match(code, /privacyOracle\(input,/);
     assert.match(code, /parsePlannerInput\(text\)/);
     assert.ok(!/leaksCoordinate|Number\.NaN|const probe =|const near =/.test(code), 'no blanket coordinate/axis exemption');
     assert.match(code, /appendFileSync\(join\(outDir, 'jev-requests.jsonl'\)/);
     assert.match(code, /cli\.send\('\/diag observe'\)/);
     assert.ok(!/cli\.send\('\/diag (?:run|do)/.test(code), 'observations do not control gameplay');
+  });
+  it('brackets the real read-only diagnostic with retained server point/UUID/dimension reads and response time', () => {
+    const capture = code.slice(code.indexOf('const observe = async'), code.indexOf('const sampleUntil = async'));
+    assert.ok(capture.indexOf('const before = await ownerServerRead()') < capture.indexOf("cli.send('/diag observe')"));
+    assert.ok(capture.indexOf('const after = await ownerServerRead()') > capture.indexOf('const line = await lineSince('));
+    assert.match(capture, /receivedAtMs: line\.atMs/);
+    assert.match(capture, /connectionEpochBefore: readyBefore/);
+    assert.match(capture, /connectionEpochAfter: readyAfter/);
+    assert.match(capture, /appendFileSync\(join\(outDir, 'observations.jsonl'\)/);
+    assert.match(code, /parseOwnerServerRead\(OWNER, \{ position, uuid, dimension \}/);
+    assert.match(code, /uuid: offlinePlayerUuid\(OWNER\)/);
+    assert.match(code, /retainedLH9Failure:/);
   });
   it('preserves first-option Jev, the finite completion bound, and genuine reconnect plus ready no-op control', () => {
     assert.match(code, /const pick = keys\[0\]/);

@@ -63,7 +63,7 @@ import { execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { insideBox, isEntryPoint, type Box } from './locator-live-check.ts';
 import type { FaultTurn } from './lib/fault-codex.ts';
-import { actionIntervals, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, type ObserverSample } from './lib/locator-ordinary-oracles.ts';
+import { actionIntervals, parseOwnerServerRead, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, type ObserverSample } from './lib/locator-ordinary-oracles.ts';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type P = { x: number; y: number; z: number };
@@ -195,6 +195,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   const { setFaultTurns, writeFaultCodex } = await import('./lib/fault-codex.ts');
   const { catalogProblems, expectedCapabilityIds, runProfile, LOCATOR_SKILL_IDS } = await import('./lib/profile-catalog.ts');
   const { loadConfigFile } = await import('../src/config/load.ts');
+  const { offlinePlayerUuid } = await import('../src/game/identity.ts');
   const mineflayer = (await import('mineflayer')).default;
   type Bot = ReturnType<typeof mineflayer.createBot>;
 
@@ -258,6 +259,15 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   const BOT = 'Chunkbot';
   const OWNER = 'FixtureOwner';
   const GUEST = 'FixtureGuest';
+  const ownerIdentity = { name: OWNER, uuid: offlinePlayerUuid(OWNER) };
+  // Separate read-only truth for a diagnostic interval; never sent to the app/models.
+  const ownerServerRead = async () => {
+    const fromMs = Date.now();
+    const position = await rcon(`data get entity ${OWNER} Pos`, false);
+    const uuid = await rcon(`data get entity ${OWNER} UUID`, false);
+    const dimension = await rcon(`data get entity ${OWNER} Dimension`, false);
+    return parseOwnerServerRead(OWNER, { position, uuid, dimension }, fromMs, Date.now());
+  };
   /** The ONLY teleport path: a declared destination checked against the footprint before any RCON. */
   const tp = async (player: string, key: keyof typeof ORD_TELEPORTS | 'netherRoof', rotation = '') => {
     if (key === 'netherRoof') {
@@ -436,12 +446,20 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   // Read-only application observation: never /diag run/do, no actuator lease.
   // Captures real LOS/identity and historical anchors; RCON truth stays in this harness.
   const observe = async (bot: P, ownerAt: P | null, serverAtMs: number) => {
+    assert(Date.now() - serverAtMs <= 1_500, 'observation bot sample is stale');
+    const before = await ownerServerRead();
+    const readyBefore = events().filter((e) => e.type === 'connection_ready').at(-1);
     const from = cli.length;
+    const requestedAtMs = Date.now();
     cli.send('/diag observe');
     const line = await lineSince(/^\[diag-json\] \{"kind":"observe"/, from, 10_000);
     const snapshot = (JSON.parse(line.text.slice('[diag-json] '.length)) as Json).snapshot as Json;
+    const after = await ownerServerRead();
+    const readyAfter = events().filter((e) => e.type === 'connection_ready').at(-1);
     const dashboard = existsSync(dashboardPath) ? JSON.parse(readFileSync(dashboardPath, 'utf8')) as Json : {};
-    const row = { runId: basename(dirname(eventsPath)), atMs: snapshot.takenAtMs, serverAtMs, bot, owner: ownerAt, snapshot, dashboard, scenario };
+    const runId = basename(dirname(eventsPath));
+    const row: ObserverSample = { runId, atMs: snapshot.takenAtMs, serverAtMs: before.toMs, bot, owner: ownerAt, snapshot, dashboard, scenario,
+      capture: { requestedAtMs, receivedAtMs: line.atMs, runId, connectionEpochBefore: readyBefore?.connectionEpoch, connectionEpochAfter: readyAfter?.connectionEpoch, before, after } };
     observations.push(row);
     appendFileSync(join(outDir, 'observations.jsonl'), `${JSON.stringify(row)}\n`);
     return snapshot;
@@ -475,7 +493,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     const toMs = untilMs;
     const ps = prompts().filter((x) => x.atMs >= fromMs && x.atMs <= toMs);
     const js = jevLog.filter((x) => x.atMs >= fromMs && x.atMs <= toMs);
-    const history = verifiedHistory(observations);
+    const history = verifiedHistory(observations, ownerIdentity);
     const allowed: Json[] = [];
     let hiddenRequests = 0;
     const scan = (text: string, atMs: number, source: string) => {
@@ -495,7 +513,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         return;
       }
       hiddenRequests += 1;
-      const result = privacyOracle(input, { runId: basename(dirname(eventsPath)), atMs, owner: sample.owner ?? owner, bot: sample.bot, connectionEpoch: ready.connectionEpoch, dimension: obs.dimension, history });
+      const result = privacyOracle(input, { runId: basename(dirname(eventsPath)), atMs, owner: sample.owner ?? owner, bot: sample.bot, ownerIdentity, connectionEpoch: ready.connectionEpoch, dimension: obs.dimension, history });
       for (const hit of result.findings) privacyFindings.push({ scenario, source, atMs, ...hit });
       for (const hit of result.allowed) allowed.push({ source, atMs, ...hit });
     };
@@ -1050,6 +1068,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         pass,
         privacyFindings,
         retainedFailure: { report: 'acceptance-native/var/live-check/2026-10-08T06-09-31-852Z-locator-ordinary/report.json', sha256: 'a2d00c656945a63eb083e170668f536f44cae08b29dcf94ecebb81f1fb255e6c', result: 'exit 1; 10/14; original evidence unchanged' },
+        retainedLH9Failure: { report: 'acceptance-planner/var/live-check/2026-10-08T07-37-15-110Z-locator-ordinary/report.json', sha256: '3c76d9f6d18036dc802e1f9f46170d07247793857aa668a7de246a1d368074c3', result: '17d0c08; exit 1; 7/14; original evidence unchanged' },
         privacyScans,
         restoreFailures,
         results,
