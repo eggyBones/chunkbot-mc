@@ -291,3 +291,34 @@ describe('manifest item states stay distinct (C10)', () => {
     await h.service.close();
   });
 });
+
+describe('status projection bound (C10 added fields)', () => {
+  it('stays within SURVIVAL_BOUNDS.statusChars with a large manifest, regains, retained and incidental effects', async () => {
+    const { boundStatus } = await import('../src/survival/service.ts');
+    const { SURVIVAL_BOUNDS } = await import('../src/contracts/survival.ts');
+    const h = harness({ pid: 8401 });
+    const kit: Record<number, Slot> = {};
+    const names = ['bread', 'iron_pickaxe', 'cobblestone', 'oak_log', 'dirt', 'cooked_beef', 'stone_pickaxe', 'iron_helmet', 'rotten_flesh', 'golden_apple'];
+    names.forEach((n, i) => (kit[9 + i] = slot(n, n.endsWith('pickaxe') || n.endsWith('helmet') ? 1 : 10)));
+    die(h, kit);
+    h.packets.respawn({ dimensionName: OW, location: SITE_BLOCK });
+    h.service.onLifecycle({ type: 'respawn', connectionEpoch: 1, dimension: SESSION_OW });
+    h.packets.inventory({ 9: slot('bread', 3) });
+    h.packets.health(20, 20);
+    for (let i = 0; i < 6; i += 1) h.packets.setSlot(20 + i, slot(names[i] as string, 5 + i));
+    await admit(h);
+    const owner = { ...GOAL, connectionEpoch: 1 };
+    for (const n of ['cobblestone', 'oak_log', 'dirt', 'cooked_beef']) for (let k = 0; k < 5; k += 1) h.service.recordRegain(owner, `minecraft:${n}`, 1, `a-${n}-${k}`);
+    const s = h.service.status(h.clock.now());
+    assert.ok(JSON.stringify(s).length <= SURVIVAL_BOUNDS.statusChars, `status ${JSON.stringify(s).length} chars`);
+    assert.equal(s.incidents.length, 1, 'the current incident is kept');
+    // The bound function trims progressively and never drops the first incident.
+    const big = structuredClone(s);
+    for (let i = 0; i < 5; i += 1) big.incidents.push(structuredClone(s.incidents[0] as (typeof s.incidents)[number]));
+    const b = boundStatus(big, 1_500);
+    assert.ok(JSON.stringify(b).length <= 1_500 || b.incidents.length === 1);
+    assert.equal(b.incidents[0]?.episodeId, s.incidents[0]?.episodeId);
+    await h.service.close();
+  });
+});
+

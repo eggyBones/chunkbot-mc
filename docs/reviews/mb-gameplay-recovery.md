@@ -9,7 +9,8 @@ Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree
 | Commit | Content |
 | --- | --- |
 | `2ffdf10` | C8/C9/C10 corrections, harness, offline tests |
-| (next) | The proposed C12 typed seam (declarations only, not consumed) and this review |
+| `549ce47` | The proposed C12 typed seam (declarations only, not consumed) and this review |
+| (this commit) | The status projection enforces the declared 4,000-character bound (C10 added fields) |
 
 Owned paths changed:
 - `src/contracts/survival.ts`
@@ -133,7 +134,7 @@ Official sources: the 26.1.2 and 26.2 `server.jar` files, read from the coordina
 - `npm ci`: 0
 - `npm run typecheck`: 0. Re-run after the C12 proposal: 0.
 - `npm run build`: 0
-- `npm test`: 0, with 787/787 passing. Survival is now 15 test files and 130 tests (`node --test tests/survival-*.test.ts`: 130/130), including the new `survival-persistence` and `survival-incidental` files.
+- `npm test`: 0, with 788/788 passing. Survival is now 15 test files and 131 tests (`node --test tests/survival-*.test.ts`: 131/131), including the new `survival-persistence` and `survival-incidental` files.
 - **Adverse checks:** reverting the tracker sync fix makes the respawn-race test fail, and removing the travel guard makes three travel tests fail. Both fixes were restored afterwards.
 - **Harness guard:** it spawns `scripts/survival-live-check.ts` with a missing or invalid lease (`[]`, `--fixture-lease`, `../x;rm`, `--with-settings`, `--fixture 26.2`). Every run exits 2 with no stdout and no output directory, before any password read, RCON command or join.
 - **Not run:**

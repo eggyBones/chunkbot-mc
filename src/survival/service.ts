@@ -17,6 +17,7 @@ import type { ObservationSnapshot } from '../contracts/observation.ts';
 import {
   GATED_LATER_SLICES,
   NECESSARY_ROUTINES,
+  SURVIVAL_BOUNDS,
   type AllowanceTaskRef,
   type InterruptedDirective,
   type DropIdentity,
@@ -1023,7 +1024,12 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
 
   // ------------------------------------------------------------ status
 
+  /** Read-only projection, bounded to SURVIVAL_BOUNDS.statusChars serialized characters (lists trimmed, newest kept). */
   status(nowMs: number): SurvivalStatus {
+    return boundStatus(this.fullStatus(nowMs));
+  }
+
+  private fullStatus(nowMs: number): SurvivalStatus {
     const v = this.tracker.vitals();
     const here = this.options.latestSnapshot?.()?.self.at;
     const cfg = this.cfg;
@@ -1081,6 +1087,32 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     for (const b of s.blocked) lines.push(`survival blocked ${b.routine}: ${b.reason} — ${clip(b.detail, 160)}`);
     return lines.slice(0, 12);
   }
+}
+
+/**
+ * Enforces the status projection bound: progressively trims per-incident lists
+ * (newest kept), then older incidents, then the remaining optional lists. The
+ * `incidents[0]` episode and every scalar label survive.
+ */
+export function boundStatus(s: SurvivalStatus, max: number = SURVIVAL_BOUNDS.statusChars): SurvivalStatus {
+  const size = (x: SurvivalStatus) => JSON.stringify(x).length;
+  if (size(s) <= max) return s;
+  const out: SurvivalStatus = structuredClone(s);
+  for (const n of [6, 3, 1]) {
+    for (const i of out.incidents) {
+      i.missing = i.missing.slice(0, n);
+      i.regained = i.regained.slice(-n);
+      if (i.retained) i.retained = i.retained.slice(0, n);
+      if (i.incidental) i.incidental = i.incidental.slice(-n);
+    }
+    out.blocked = out.blocked.slice(0, Math.max(2, n));
+    out.cooldowns = out.cooldowns.slice(0, Math.max(2, n));
+    if (size(out) <= max) return out;
+  }
+  while (out.incidents.length > 1 && size(out) > max) out.incidents.pop();
+  if (size(out) > max) out.interrupted = out.interrupted.slice(0, 1).map((d) => ({ ...d, instruction: clip(d.instruction, 60) }));
+  if (size(out) > max) out.gated = [];
+  return out;
 }
 
 export function survivalRoot(dataDir: string, config: SurvivalConfig | undefined): string {
