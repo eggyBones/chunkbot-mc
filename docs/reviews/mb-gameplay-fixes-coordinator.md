@@ -2,6 +2,22 @@
 
 Updated: 2026-10-08 UTC. Scope: [authorized gameplay fixes](../live-gameplay-fixes-plan.md). **Implementation and acceptance remain incomplete.** No accepted release, publication or live join is implied by these checks.
 
+## Current native Codex continuation
+
+Jake explicitly replaced the development-worker route with his personal Codex account in DSH. The loaded native provider and actual turn contexts prove `codex:codex-default`, ChatGPT subscription, CLI 0.160.0, `gpt-6.1-sol`, `xhigh`, `danger-full-access`, approval policy `never`. P/W/S run in new native Codex sessions against their preserved worktrees; L's clean approved source needs integration, so no redundant L session was launched. Old Claude sessions remain idle and their pending quota-era prompts were withdrawn with receipts. This does not change the gameplay planner's isolated subscription route or low reasoning effort.
+
+Root reviewed and approved P's `3b1bb33` continuation arithmetic and `848cfab` immutable destructive-target fence, S's `c4ae9b5` / `1046ebf` / `b87e213` packet attribution/readiness corrections, and W's `6f3f5df` / `6dd53ee` / `0656e47` strict defense, finite escape/cleanup and repeated-hazard accounting corrections for P integration. These source approvals are not world acceptance. Frozen S `b87e213` independently passes typecheck, build and 816/816 tests (direct exit 0), plus both read-only doctors.
+
+Both task-owned loopback fixtures were started through the installed controller from their initial stopped state. No worker has a world lease. Root's foreground S module run on 26.1.2 used the exclusively leased immutable `b87e213` checkout and finished with direct exit 1. G1/G1k pass, but G2 rejects the actual 68-bread inventory gain and G2b reports server delta 68 versus regained 4 plus known incidental 0. G3's physiology staging times out after an in-trial `death.attack.mob`. All eight restoration checks pass and an independent pre/post readback agrees exactly on settings, force-loaded chunks, scene/entity samples and zero players; the lease is released. Its failure remains evidence; no causal explanation or passing recovery result is assumed.
+
+| New review ID | Independent evidence / required correction |
+| --- | --- |
+| W-H2 | Actual vanilla 26.1.2 read-only RCON returns `Test passed. Count: 1` for an existing entity. Committed `38cb351` `parseEntityTest` returns unknown. Accept the observed successful form while continuing to reject command errors and unreadable replies; preserve unknown as unknown. Proof: ignored `codex/W-H2-entity-reply.json`. W received one queued correction. |
+| S-C12-R4 | Frozen `b87e213` 26.1.2 module trial at 05:00:48 UTC collects 68 bread against the four lost. The foreign 64-bread stack was stated earlier, but settlement reports it as an unknown-key incidental collect. G2/G2b fail. Investigate packet/plan/route timing, prevent approaching unrelated loot and retain known facts for truthful settlement; never relax the oversized-pile or truthful-accounting assertions. Report: `acceptance-recovery/var/live-check/2026-10-08T05-00-48-534Z-survival/report.json`. S received a focused correction; no worker fixture authority. |
+| P-C11-R6 | Combined ordinary `conservativeMovements` adds only the installed step-cost hook. The installed 2.4.5 pathfinder still offers diagonal descent into three-deep water: `[-2,-1,-1]` and `[-2,-1,1]`. Applying W's reviewed instance wrapper removes both entries. The ordinary follow/navigation path must install that complete policy with the authoritative world view; retain dry-detour, no-route and shallow-wading controls. Root inference-free proof: `codex/navigation-water-review.json` (exit 1). |
+
+## Previous Claude quota checkpoint
+
 Four local DSH native Claude Code workers used the Claude Team subscription, Opus 5.5, high effort and full access, in independent worktrees from common base 37c4c170199b4c9d867f720e64561a63a816d14c. The SDK verification and actual transcript model fields are retained privately. P and W reported “You've hit your session limit · resets 11pm (America/Phoenix)” at 02:32–02:33 UTC; all four sessions are idle. No alternate model, account or API implementation route was used. Resume through the required native route after fresh verification; existing implementation authorization persists.
 
 | Worker | Source at quota checkpoint | Remaining work |
