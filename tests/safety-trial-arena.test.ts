@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { arenaChecks, arenaShellPlan, insideTrialBox, mobArenaPlan, mobStageRefusals, MOB_TRIAL_ORIGIN, parseTrialUuid, refuseForeignOccupants, SAFETY_TRIAL_BOX, serverUnprovokedWolf, verifyArena, type ArenaCheck, type TrialBox, type TrialSummon } from '../src/safety/trial-arena.ts';
+import { arenaChecks, arenaShellPlan, insideMutationBox, insideTrialBox, mobArenaPlan, mobStageRefusals, MOB_TRIAL_ORIGIN, parseTrialUuid, refuseForeignOccupants, SAFETY_MUTATION_BOX, SAFETY_TRIAL_BOX, serverUnprovokedWolf, verifyArena, waterArenaPlan, type ArenaCheck, type TrialBox, type TrialSummon } from '../src/safety/trial-arena.ts';
 import { findFluidExits, findRetreatTargets, fluidState } from '../src/safety/geometry.ts';
 import { isBlockVisible, isEntityVisible, type WorldView } from '../src/perception/visibility.ts';
 import { planSafety } from '../src/safety/policy.ts';
@@ -15,7 +15,7 @@ const cells = (b: TrialBox, fn: (x: number, y: number, z: number) => boolean) =>
 };
 const verify = (c: ArenaCheck, read = at) => c.block ? read(...c.target) === c.block : cells(c.source, (x, y, z) => read(x, y, z) === read(x + c.target[0] - c.source[0], y + c.target[1] - c.source[1], z + c.target[2] - c.source[2]));
 
-describe('W-H4 sealed staging in the original clone', () => {
+describe('W-H4/H5 sealed staging within the original clone', () => {
   it('has no overlapping regions, no expanded blocks, a luminous floor and a sealed eight-high interior', () => {
     const seen = new Set<string>();
     for (const f of fills) {
@@ -25,11 +25,12 @@ describe('W-H4 sealed staging in the original clone', () => {
         assert.ok(!seen.has(key), `overlap ${key}`); seen.add(key); return true;
       });
     }
-    assert.equal(seen.size, 31 * 31 * 14);
+    assert.equal(seen.size, 29 * 25 * 14);
+    assert.deepEqual(SAFETY_MUTATION_BOX, [240, -61, 196, 268, -48, 220]);
     assert.deepEqual(SAFETY_TRIAL_BOX, [240, -61, 190, 270, -48, 220]);
-    assert.ok(cells([241, -57, 191, 269, -57, 219], (x, y, z) => at(x, y, z) === 'sea_lantern'));
-    assert.ok(cells([241, -56, 191, 269, -49, 219], (x, y, z) => at(x, y, z) === 'air'));
-    assert.ok(cells([240, -48, 190, 270, -48, 220], (x, y, z) => at(x, y, z) === 'sea_lantern'));
+    assert.ok(cells([241, -57, 197, 267, -57, 219], (x, y, z) => at(x, y, z) === 'sea_lantern'));
+    assert.ok(cells([241, -56, 197, 267, -49, 219], (x, y, z) => at(x, y, z) === 'air'));
+    assert.ok(cells([240, -48, 196, 268, -48, 220], (x, y, z) => at(x, y, z) === 'sea_lantern'));
     assert.equal(insideTrialBox([239, -60, 190, 270, -48, 220]), false);
     assert.throws(() => arenaChecks({ box: [240, -61, 190, 271, -48, 220], block: 'air' }), /outside/);
   });
@@ -37,15 +38,15 @@ describe('W-H4 sealed staging in the original clone', () => {
   it('whole-volume server comparisons detect isolated blast damage, missing roof/floor and interior obstructions', () => {
     const checks = fills.flatMap(arenaChecks);
     assert.ok(checks.every((c) => verify(c)));
-    for (const p of [[240, -55, 205], [270, -52, 201], [255, -54, 190], [249, -50, 220], [251, -48, 208], [258, -57, 206], [255, -60, 205], [249, -55, 208]] as const) {
+    for (const p of [[240, -55, 205], [268, -52, 201], [255, -54, 196], [249, -50, 220], [251, -48, 208], [258, -57, 206], [255, -60, 205], [249, -55, 208]] as const) {
       const corrupt = (x: number, y: number, z: number) => x === p[0] && y === p[1] && z === p[2] ? at(x, y, z) === 'air' ? 'stone' : 'air' : at(x, y, z);
       assert.ok(checks.some((c) => !verify(c, corrupt)), `single corrupt voxel ${p}`);
     }
     for (const c of checks) {
-      assert.ok(insideTrialBox(c.source));
+      assert.ok(insideMutationBox(c.source));
       if (!c.block) {
         const end: TrialBox = [...c.target, c.target[0] + c.source[3] - c.source[0], c.target[1] + c.source[4] - c.source[1], c.target[2] + c.source[5] - c.source[2]];
-        assert.ok(insideTrialBox(end), 'comparison never reads backup/outside scene');
+        assert.ok(insideMutationBox(end), 'comparison never reads backup/outside scene');
       }
     }
   });
@@ -83,20 +84,25 @@ describe('W-H4 sealed staging in the original clone', () => {
     assert.equal(isEntityVisible(world, eye, { ...p, z: 189.5 }, 1.95), false);
     assert.equal(isEntityVisible(world, eye, { ...p, y: -47 }, 1.95), false, 'opaque luminous ceiling also excludes exterior threats above');
     assert.equal(isEntityVisible(world, eye, { ...p, x: p.x + 2.5 }, 1.95), true);
-    for (let i = 0; i < 8; i += 1) {
-      const theta = i * Math.PI / 4;
+    for (let i = 0; i < 32; i += 1) {
+      const theta = i * Math.PI / 16;
       const threat = { x: p.x + 3 * Math.cos(theta), y: p.y, z: p.z + 3 * Math.sin(theta) };
       const legs = findRetreatTargets(world, p, { threats: [threat], separation: 8, legMax: 6, allowed: (x, _y, z) => Math.hypot(x + 0.5 - p.x, z + 0.5 - p.z) <= 12, visible: (x, y, z) => isBlockVisible(world, eye, x, y, z) });
       assert.ok(legs.length > 0, `retreat bearing ${i}`);
+      assert.ok(legs.some((t) => t.clearance >= 8), 'existing separation is attainable in every bearing');
       assert.ok(legs.every((t) => at(t.x, t.y - 1, t.z) === 'sea_lantern'));
+      for (const t of legs) for (let step = 0; step <= 20; step += 1) {
+        const x = Math.floor(p.x + (t.x + 0.5 - p.x) * step / 20);
+        const z = Math.floor(p.z + (t.z + 0.5 - p.z) * step / 20);
+        assert.equal(at(x, -57, z), 'sea_lantern', 'entire straight retreat corridor has dry solid support');
+        assert.equal(at(x, -56, z), 'air'); assert.equal(at(x, -55, z), 'air');
+      }
     }
   });
 
   it('the shared water shell preserves the four-deep pool, observed bobs, east bank and ceiling blocker', () => {
     const waterWorld = (lid = false): WorldView => ({ blockAt: (x, y, z) => {
-      const shell = arenaShellPlan().find((f) => within(f.box, x, y, z));
-      const pool = x >= 252 && x <= 258 && z >= 202 && z <= 208;
-      const name = shell?.block ?? (y === -61 ? 'dirt' : y >= -60 && y <= -57 ? pool ? lid && y === -57 ? 'stone' : 'water' : 'dirt' : 'air');
+      const name = waterArenaPlan(lid).find((f) => within(f.box, x, y, z))?.block ?? 'air';
       return { name, stateId: name === 'air' ? 0 : 1, shapes: name === 'air' || name === 'water' ? [] : [[0, 0, 0, 1, 1, 1]], ...(name === 'water' ? { level: 0 } : {}) };
     } });
     const world = waterWorld();
