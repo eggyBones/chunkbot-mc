@@ -72,26 +72,71 @@ const distanceToResult = (n: number) => Math.round(n * 100) / 100;
  * stack fits the remaining missing count (no oversized/merged pile), and a
  * server identity matches the lost item (including ordinary stacks' components).
  */
-const classify = (service: SurvivalService, fence: { goalEpoch: number; connectionEpoch: number; dimension: string }, entityId: number, remaining: Map<string, number>, identityReserved: Map<string, number> = new Map()): { ok: true; facts: DropStackFacts } | { ok: false; reason: string; detail: string } => {
+type ClassificationRoom = { count: number | null; identity: number | null };
+const classify = (service: SurvivalService, fence: { goalEpoch: number; connectionEpoch: number; dimension: string }, entityId: number, remaining: Map<string, number>, identityReserved: Map<string, number> = new Map()): { ok: true; facts: DropStackFacts } | { ok: false; reason: string; detail: string; room: ClassificationRoom } => {
+  // Only report allowances actually consulted by this classification, including zero.
+  const room: ClassificationRoom = { count: null, identity: null };
+  const refuse = (reason: string, detail: string) => ({ ok: false as const, reason, detail, room });
   const target = service.recoveryTarget(fence);
-  if ('error' in target) return { ok: false, reason: target.error, detail: target.detail };
+  if ('error' in target) return refuse(target.error, target.detail);
   const origin = service.dropFirstSeenAt(fence.connectionEpoch, entityId);
-  if (!origin || dist(origin, target.site.at) > target.searchRadius) return { ok: false, reason: 'foreign_drop_origin', detail: 'this entity was not first server-announced within the own incident search radius' };
+  if (!origin || dist(origin, target.site.at) > target.searchRadius) return refuse('foreign_drop_origin', 'this entity was not first server-announced within the own incident search radius');
   const facts = service.dropFacts(fence.connectionEpoch, entityId);
-  if (!facts) return { ok: false, reason: 'stack_facts_unknown', detail: 'the server has not stated this drop\'s stack (count/identity unknown); it is not collected' };
+  if (!facts) return refuse('stack_facts_unknown', 'the server has not stated this drop\'s stack (count/identity unknown); it is not collected');
   const want = remaining.get(facts.key) ?? 0;
-  if (want <= 0) return { ok: false, reason: 'not_sought', detail: `${facts.key} is not a still-missing item of this incident` };
+  room.count = want;
+  if (want <= 0) return refuse('not_sought', `${facts.key} is not a still-missing item of this incident`);
   const identity = service.dropIdentity(fence, facts.key, facts.meta);
-  if (typeof identity !== 'string') return { ok: false, reason: identity.error, detail: identity.detail };
-  if (identity === 'mismatch') return { ok: false, reason: 'metadata_mismatch', detail: `${facts.key} on the ground has a different server identity (damage/enchantments/name) than the lost item` };
-  if (identity === 'unproven') return { ok: false, reason: isValuable(facts.key) ? 'valuable_identity_unproven' : 'lost_identity_unproven', detail: `the lost ${facts.key}'s identity cannot be proven from server metadata; not collected` };
+  if (typeof identity !== 'string') return refuse(identity.error, identity.detail);
+  if (identity === 'mismatch') return refuse('metadata_mismatch', `${facts.key} on the ground has a different server identity (damage/enchantments/name) than the lost item`);
+  if (identity === 'unproven') return refuse(isValuable(facts.key) ? 'valuable_identity_unproven' : 'lost_identity_unproven', `the lost ${facts.key}'s identity cannot be proven from server metadata; not collected`);
   if (identity === 'match' && facts.meta.digest) {
-    const room = service.dropIdentityRemaining(fence, facts.key, facts.meta.digest) - (identityReserved.get(`${facts.key}#${facts.meta.digest}`) ?? 0);
-    if (facts.count > room) return { ok: false, reason: 'oversized_stack', detail: `the whole pile exceeds the ${room} still-missing items of this exact server identity; another identity's allowance is not used` };
+    room.identity = service.dropIdentityRemaining(fence, facts.key, facts.meta.digest) - (identityReserved.get(`${facts.key}#${facts.meta.digest}`) ?? 0);
+    if (facts.count > room.identity) return refuse('oversized_stack', `the whole pile exceeds the ${room.identity} still-missing items of this exact server identity; another identity's allowance is not used`);
   }
-  if (facts.count > want) return { ok: false, reason: 'oversized_stack', detail: `the server states ${facts.count} ${facts.key} in this pile but only ${want} are missing (merged or mixed origin); not collected` };
+  if (facts.count > want) return refuse('oversized_stack', `the server states ${facts.count} ${facts.key} in this pile but only ${want} are missing (merged or mixed origin); not collected`);
   return { ok: true, facts };
 };
+
+type PickupRegion = { region: 'bot' | 'site'; reference: 'bot' | 'site' | 'pickup_target'; at: { x: number; y: number; z: number } };
+type PickupVeto = (id: number, reason: string, checked: PickupRegion, room: ClassificationRoom) => void;
+
+/** One local diagnostic at the first item refusal; packet facts do not turn its position samples into server confirmation. */
+function firstPickupVeto(service: SurvivalService, ctx: ExecuteContext, site: { x: number; y: number; z: number }, searchRadius: number): PickupVeto {
+  let recorded = false;
+  return (id, reason, checked, room) => {
+    if (recorded) return;
+    recorded = true;
+    const epoch = ctx.session.connectionEpoch;
+    const facts = service.dropFacts(epoch, id);
+    const origin = service.dropFirstSeenAt(epoch, id);
+    const originDistance = origin ? dist(origin, site) : null;
+    const position = ctx.session.bot.entities[id]?.position;
+    const finite = (n: number) => Number.isFinite(n) ? n : null;
+    const distance = (at: { x: number; y: number; z: number }): JsonValue => position ? {
+      horizontal: finite(Math.hypot(position.x - at.x, position.z - at.z)), vertical: finite(Math.abs(position.y - at.y)),
+    } : null;
+    ctx.progress({ recoveryPickupVeto: {
+      provenance: 'local', entityId: id, reason, region: checked.region, reference: checked.reference,
+      goalId: ctx.owner.kind === 'goal' ? ctx.owner.goalId : null,
+      goalEpoch: ctx.owner.kind === 'goal' ? ctx.owner.goalEpoch : null,
+      connectionEpoch: epoch, dimension: String(ctx.session.bot.game.dimension), atMs: ctx.services.clock.now(),
+      serverStack: {
+        provenance: facts ? 'server_packet' : null, key: facts?.key ?? null, count: facts?.count ?? null,
+        incarnation: facts?.incarnation ?? null, digest: facts?.meta.digest ?? null, packetAtMs: facts?.atMs ?? null,
+        incarnationProvenance: facts ? 'tracker_spawn_sequence' : null,
+        digestProvenance: facts?.meta.digest ? 'derived_from_server_stack' : null,
+        packetTimeProvenance: facts ? 'local_packet_receipt' : null,
+      },
+      firstOrigin: {
+        provenance: origin ? 'server_spawn' : null, distanceProvenance: origin ? 'derived_from_server_spawn_and_incident_site' : null,
+        distanceToSite: originDistance, withinSearchRadius: originDistance === null ? null : originDistance <= searchRadius,
+      },
+      localDistances: { provenance: 'local', toBot: distance(ctx.session.bot.entity.position), toSite: distance(site), toCheckedPoint: distance(checked.at) },
+      remainingCountUsed: room.count, remainingIdentityCountUsed: room.identity,
+    } }, 'local');
+  };
+}
 
 /** Item entities (loaded, server-announced) within the pickup guard of a point. Used only for conservative refusal. */
 const itemsNear = (bot: { entities: Record<string, { id: number; name?: string; position?: { x: number; y: number; z: number } } | undefined> }, at: { x: number; y: number; z: number }, radius: number): number[] => {
@@ -112,7 +157,7 @@ const itemsNear = (bot: { entities: Record<string, { id: number; name?: string; 
  * by the service, and reports all remaining own collects as incidental.
  */
 type PickupPlan = ReturnType<typeof pickupPlan>;
-function pickupPlan(svc: SurvivalService, fence: { goalEpoch: number; connectionEpoch: number; dimension: string }, remaining: Map<string, number>) {
+function pickupPlan(svc: SurvivalService, fence: { goalEpoch: number; connectionEpoch: number; dimension: string }, remaining: Map<string, number>, veto: PickupVeto) {
   const cursor = svc.collectCursor();
   const plan = new Map<number, DropStackFacts>();
   const identityReserved = new Map<string, number>();
@@ -133,17 +178,23 @@ function pickupPlan(svc: SurvivalService, fence: { goalEpoch: number; connection
     /** Freezes an acceptable entity into the plan (target first). */
     freeze,
     /** undefined when the entity is (now) planned and unchanged; else why the action must stop. */
-    admit(id: number): string | undefined {
+    admit(id: number, checked: PickupRegion): string | undefined {
       const now = svc.dropFacts(fence.connectionEpoch, id);
       if (plan.has(id)) {
         const was = plan.get(id) as DropStackFacts;
         // Destroy/reused-spawn and empty metadata clear live facts before a new stack is stated.
         // Frozen facts can settle an earlier collect, but cannot authorize approach through that gap.
-        if (!now || now.incarnation !== was.incarnation || now.count !== was.count || now.key !== was.key || now.meta.digest !== was.meta.digest) return 'target_changed';
+        if (!now || now.incarnation !== was.incarnation || now.count !== was.count || now.key !== was.key || now.meta.digest !== was.meta.digest) {
+          veto(id, 'target_changed', checked, { count: null, identity: null });
+          return 'target_changed';
+        }
         return undefined;
       }
       const c = classify(svc, fence, id, remaining, identityReserved);
-      if (!c.ok) return 'unrelated_loot_nearby';
+      if (!c.ok) {
+        veto(id, c.reason, checked, c.room);
+        return 'unrelated_loot_nearby';
+      }
       freeze(id, c.facts);
       return undefined;
     },
@@ -202,7 +253,7 @@ export async function navigateRecoveryTravel(service: SurvivalService, ctx: Exec
   const target = service.recoveryTarget(fence);
   if ('error' in target) return target;
   if (target.goalId !== owner.goalId) return { error: 'not_a_recovery_goal', detail: 'the route belongs to another goal' };
-  const plan = pickupPlan(service, fence, new Map(target.sought));
+  const plan = pickupPlan(service, fence, new Map(target.sought), firstPickupVeto(service, ctx, target.site.at, target.searchRadius));
   const start = ctx.session.evidence.seq;
   const self = service.selfEntityId(owner.connectionEpoch) ?? ctx.session.bot.entity.id;
   let veto: string | undefined;
@@ -211,8 +262,9 @@ export async function navigateRecoveryTravel(service: SurvivalService, ctx: Exec
     const current = service.recoveryTarget(fence);
     if ('error' in current || current.goalId !== owner.goalId) return (veto = 'error' in current ? current.error : 'not_a_recovery_goal');
     // Loaded entities only; destination and bot pickup areas veto approach before passive collection.
-    for (const id of new Set([...itemsNear(ctx.session.bot, ctx.session.bot.entity.position, PICKUP_GUARD), ...itemsNear(ctx.session.bot, target.site.at, PICKUP_GUARD)])) {
-      const why = plan.admit(id);
+    const nearBot = itemsNear(ctx.session.bot, ctx.session.bot.entity.position, PICKUP_GUARD);
+    for (const id of new Set([...nearBot, ...itemsNear(ctx.session.bot, target.site.at, PICKUP_GUARD)])) {
+      const why = plan.admit(id, nearBot.includes(id) ? { region: 'bot', reference: 'bot', at: ctx.session.bot.entity.position } : { region: 'site', reference: 'site', at: target.site.at });
       if (why) return (veto = why);
     }
     return options.abortIf?.();
@@ -375,7 +427,7 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
       const fence = { goalEpoch: owner.goalEpoch, connectionEpoch: owner.connectionEpoch, dimension: String(bot.game.dimension) };
       // C10: walking can pick items up passively. Own acceptable drops near the path join a frozen plan (counted
       // only from server collect packets); any other item entity within pickup range stops the walk first.
-      const plan: PickupPlan = pickupPlan(service, fence, new Map(t.sought));
+      const plan: PickupPlan = pickupPlan(service, fence, new Map(t.sought), firstPickupVeto(service, ctx, site, t.searchRadius));
       try {
         const self = service.selfEntityId(owner.connectionEpoch) ?? bot.entity.id;
         const startSeq = session.evidence.seq;
@@ -390,7 +442,7 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
           ...(bounds ? { bounds } : {}),
           abortIf: () => {
             for (const id of itemsNear(bot as never, bot.entity.position, PICKUP_GUARD)) {
-              const why = plan.admit(id);
+              const why = plan.admit(id, { region: 'bot', reference: 'bot', at: bot.entity.position });
               if (why) return (guard = why);
             }
             return undefined;
@@ -508,15 +560,18 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
       if (!services.perception.withinTravel(live.position)) return precondition('outside_travel_bounds', 'the drop is outside the travel radius');
       const targetId = live.entityId;
       const remaining = new Map(t.sought);
+      const veto = firstPickupVeto(service, ctx, t.site.at, t.searchRadius);
       const own = classify(service, fence, targetId, remaining);
-      if (!own.ok) return precondition(own.reason, own.detail);
+      if (!own.ok) {
+        veto(targetId, own.reason, { region: 'site', reference: 'pickup_target', at: live.position }, own.room);
+        return precondition(own.reason, own.detail);
+      }
       /** Entities whose collection would be counted (target + acceptable neighbours), with their server facts frozen now. */
-      const plan: PickupPlan = pickupPlan(service, fence, remaining);
+      const plan: PickupPlan = pickupPlan(service, fence, remaining, veto);
       try {
         plan.freeze(targetId, own.facts);
-        const admit = (id: number): string | undefined => plan.admit(id);
         for (const id of itemsNear(bot as never, live.position, PICKUP_GUARD)) {
-          const why = admit(id);
+          const why = plan.admit(id, { region: 'site', reference: 'pickup_target', at: live.position });
           if (why) return precondition(why, why === 'unrelated_loot_nearby' ? 'other loot within pickup range of the drop is not this incident\'s (nothing was collected)' : 'the drop changed before collection');
         }
         const self = service.selfEntityId(owner.connectionEpoch) ?? bot.entity.id;
@@ -547,11 +602,12 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
             // A foreign pile approaching the destination blocks intentional approach before passive pickup.
             const at = position();
             if (dist(at, t.site.at) > t.searchRadius || !services.perception.withinTravel(at)) return (guard = 'target_out_of_bounds');
-            for (const id of new Set([...itemsNear(bot as never, bot.entity.position, PICKUP_GUARD), ...itemsNear(bot as never, at, PICKUP_GUARD)])) {
-              const why = admit(id);
+            const nearBot = itemsNear(bot as never, bot.entity.position, PICKUP_GUARD);
+            for (const id of new Set([...nearBot, ...itemsNear(bot as never, at, PICKUP_GUARD)])) {
+              const why = plan.admit(id, nearBot.includes(id) ? { region: 'bot', reference: 'bot', at: bot.entity.position } : { region: 'site', reference: 'pickup_target', at });
               if (why) return (guard = why);
             }
-            const why = admit(targetId);
+            const why = plan.admit(targetId, { region: 'site', reference: 'pickup_target', at });
             if (why) return (guard = why);
             const c = collectedTarget();
             if (destroyed() && !c) return 'item_vanished';
