@@ -132,12 +132,28 @@ export interface VisibleOwnerProof {
   owner: Point; bot: Point; ownerIdentity: OwnerIdentity; botIdentity: OwnerIdentity;
   witnessSnapshotId?: string; capture?: NonNullable<ObserverSample['capture']>;
   serverReads?: ServerVisibilityRead[];
+  binding?: ModelObservationBinding;
 }
 export interface VisibilityScope { runId: string; goalEpoch: number; connectionEpoch: number }
 export interface ServerVisibilityRead { scopeBefore: VisibilityScope; scopeAfter: VisibilityScope; owner: OwnerServerRead; bot: OwnerServerRead }
 export interface VisibilityContext {
   runId: string; atMs: number; goalEpoch: number; connectionEpoch: number;
   ownerIdentity: OwnerIdentity; botIdentity: OwnerIdentity; snapshotId: string; takenAtMs: number;
+  binding?: ModelObservationBinding;
+}
+export interface ModelObservationBinding {
+  snapshotId: string; takenAtMs: number; goalEpoch: number; connectionEpoch: number;
+  requestId: string; journal: Row;
+}
+/** P 28796a1: task ownership and planning subject scope never substitute for snapshot scope. */
+export function modelObservationBinding(s: Row, events: readonly Row[], context: { source: 'jev_request' | 'planner_prompt'; runId: string; atMs: number; connectionEpoch: number }): ModelObservationBinding | undefined {
+  const type = context.source === 'jev_request' ? 'task_round' : 'planner_turn_started';
+  const e = events.filter((e) => e.type === type && e.run === context.runId && e.snapshotId === s.snapshotId && Number.isFinite(eventMs(e)) && eventMs(e) <= context.atMs).at(-1);
+  if (!e || typeof e.requestId !== 'string' || !e.requestId || typeof s.snapshotId !== 'string' || !s.snapshotId) return undefined;
+  if (type === 'planner_turn_started' && (typeof e.subject !== 'string' || !e.subject)) return undefined;
+  const goalEpoch = context.source === 'jev_request' ? e.snapshotGoalEpoch : e.goalEpoch;
+  if (!Number.isInteger(goalEpoch) || goalEpoch < 0 || goalEpoch !== s.goalEpoch || !Number.isInteger(e.connectionEpoch) || e.connectionEpoch < 1 || e.connectionEpoch !== context.connectionEpoch || e.connectionEpoch !== s.connectionEpoch || !Number.isFinite(e.snapshotTakenAtMs) || e.snapshotTakenAtMs !== s.takenAtMs || e.snapshotTakenAtMs > eventMs(e)) return undefined;
+  return { snapshotId: e.snapshotId, takenAtMs: e.snapshotTakenAtMs, goalEpoch, connectionEpoch: e.connectionEpoch, requestId: e.requestId, journal: e };
 }
 /** Consistency at the identified observation time, never at an arbitrarily nearby HTTP/server sample. */
 export function visibleOwnerConsistency(s: Row, witnesses: readonly ObserverSample[], ctx: VisibilityContext, reads: readonly ServerVisibilityRead[] = []): { proof?: VisibleOwnerProof; errors: string[] } {
@@ -184,7 +200,7 @@ export function visibleOwnerConsistency(s: Row, witnesses: readonly ObserverSamp
     if (!(before.toMs <= botBefore.fromMs && botBefore.fromMs <= botBefore.toMs && botBefore.toMs <= (c.capture?.requestedAtMs ?? s.takenAtMs) && botBefore.toMs <= s.takenAtMs && after.toMs <= botAfter.fromMs && botAfter.fromMs <= botAfter.toMs) || botAfter.toMs - before.fromMs > 1_500) continue;
     // Both sides independently agree with the shown self; no extrapolation/interpolation of unobserved motion.
     if (!same(s.self.at, botBefore.at) || !same(s.self.at, botAfter.at) || distance(s.self.at, before.at) > 32.2) continue;
-    return { errors: [], proof: { runId: ctx.runId, snapshotId: s.snapshotId, takenAtMs: s.takenAtMs, requestAtMs: ctx.atMs, goalEpoch: ctx.goalEpoch, connectionEpoch: ctx.connectionEpoch, dimension: dim(s.dimension), owner: s.owner.at, bot: s.self.at, ownerIdentity: ctx.ownerIdentity, botIdentity: ctx.botIdentity, ...(c.witnessSnapshotId ? { witnessSnapshotId: c.witnessSnapshotId } : {}), ...(c.capture ? { capture: c.capture } : {}), ...(c.serverReads ? { serverReads: c.serverReads } : {}) } };
+    return { errors: [], proof: { runId: ctx.runId, snapshotId: s.snapshotId, takenAtMs: s.takenAtMs, requestAtMs: ctx.atMs, goalEpoch: ctx.goalEpoch, connectionEpoch: ctx.connectionEpoch, dimension: dim(s.dimension), owner: s.owner.at, bot: s.self.at, ownerIdentity: ctx.ownerIdentity, botIdentity: ctx.botIdentity, ...(ctx.binding ? { binding: ctx.binding } : {}), ...(c.witnessSnapshotId ? { witnessSnapshotId: c.witnessSnapshotId } : {}), ...(c.capture ? { capture: c.capture } : {}), ...(c.serverReads ? { serverReads: c.serverReads } : {}) } };
   }
   return fail(mismatch ? 'visible_owner_position_disagrees_with_bracket' : 'visible_owner_independent_bracket_missing');
 }
