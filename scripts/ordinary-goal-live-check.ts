@@ -543,6 +543,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       await h.quiesce();
       await h.setup(`clear ${BOT}`); await h.setup(`effect clear ${BOT}`);
       check(/\[\]$/.test((await h.query(`data get entity ${BOT} Inventory`)).trim()), 'empty online inventory before CLI replacement');
+      check(/\[\]$|Found no elements matching/i.test(await h.query(`data get entity ${BOT} active_effects`)), 'empty online effects before CLI replacement');
       await h.quit();
     }
     const profile: Json = JSON.parse(JSON.stringify(freshScope || plain ? cfg : activeProfile)) as Json;
@@ -801,7 +802,9 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       const own = h.events().filter((e) => e.type === 'survival_regained' || e.type === 'survival_incident_return');
       check(own.some((e) => e.key === 'minecraft:oak_log'), 'actual server-attributed own returns occurred');
       const line = continued.bound.counts.find((c: Json) => c.basis === 'possession');
-      check(line && line.credited > 0 && line.credited <= held-8, 'restored credit excludes the eight old logs');
+      // The kill may race one last pickup after the pre-death RCON sample.
+      // Use the packet-frozen held count at interruption for exact credit.
+      check(line && line.held > 8 && line.credited > 0 && line.credited <= line.held-8, 'restored credit excludes the eight old logs from the frozen count');
       const end = await h.waitEvent((e) => e.type === 'goal_terminal' && e.goalId === goal.goalId && Date.parse(String(e.t)) > Date.parse(String(continued.bound.t)), GOAL_TIMEOUT_MS, 'continued original resource outcome');
       check(end.reason === 'outcome_verified' && end.state === 'completed', 'original resource outcome verified');
       check((await h.inventory())['minecraft:oak_log']! >= 18, 'server holds original eight plus ten new logs');
