@@ -11,7 +11,8 @@
 //                             walk to the best one inside the active bound
 //   bound (not terrain)    -> ask the route controller for the next counted
 //     limits progress         leg anchored at the bot's own position
-//   no frontier at all     -> report the specific local blocker
+//   no forward frontier    -> a BOUNDED detour around an OBSERVED obstacle
+//                             (MB-LOC-002), else the specific local blocker
 //   cue withdrawn/expired  -> stop advancing (never continue on old guidance)
 //
 // The runner issues movement only through the injected env (in production the
@@ -24,7 +25,7 @@ import type { RayHit, Vec, WorldView } from '../perception/visibility.ts';
 import type { LocatorService, LocatorSteering } from './service.ts';
 import type { RouteController } from './routes.ts';
 import { angleBetween } from './geometry.ts';
-import { boundLimited, classifyBlocker, frontierKey, frontiersToward, type Bounds, type FrontierChoice } from './terrain.ts';
+import { boundLimited, classifyBlocker, detourFrontiers, detourJustified, frontierKey, frontiersToward, type BlockerReport, type Bounds, type FrontierChoice } from './terrain.ts';
 
 /** Result of re-verifying a code-owned destination's provenance (C3). */
 export type DestinationRecheck = { ok: true } | { ok: false; reason: string; detail: string };
@@ -102,6 +103,30 @@ export interface RouteDeps {
 const MAX_STEPS = 48;
 const EDGE_MARGIN = 12;
 const MAX_MOVE_FAILURES = 4;
+/**
+ * MB-LOC-002 bounded detour around an OBSERVED obstacle (wall, drop, lava,
+ * water) across the bearing. An episode starts only when no forward frontier
+ * exists and the observed geometry justifies it; it keeps the cue bearing at
+ * its start as a FIXED frame and one committed side (switching at most once),
+ * never retreats sideways toward its origin line by more than
+ * DETOUR_RETREAT_SLACK, and spends at most MAX_DETOUR_STEPS steps and
+ * MAX_DETOUR_BLOCKS of walking. It clears (eventual progress) only when the bot
+ * is DETOUR_CLEAR_PROGRESS past its origin in the frame AND the current cue has
+ * a forward frontier again; otherwise the observed blocker is reported. At most
+ * MAX_DETOUR_EPISODES per window. Route legs/distance/time ceilings still bound
+ * everything, and a window continues locally only with NET progress along the
+ * cue (detours that briefly increase the distance are allowed; wandering is not
+ * progress).
+ */
+export const MAX_DETOUR_STEPS = 8;
+export const MAX_DETOUR_BLOCKS = 96;
+export const MAX_DETOUR_EPISODES = 3;
+/** Sideways retreat (blocks) toward the episode origin's frame line that a choice may make during an episode. */
+export const DETOUR_RETREAT_SLACK = 8;
+/** Progress in the episode's frame beyond its origin that clears a detour (the obstacle line is behind). */
+export const DETOUR_CLEAR_PROGRESS = 8;
+/** Net progress along the cue a window needs to continue locally (blocks). */
+export const MIN_WINDOW_PROGRESS = 4;
 const r1 = (n: number) => Math.round(n * 10) / 10;
 const horizontal = (a: Vec, b: Vec) => Math.hypot(a.x - b.x, a.z - b.z);
 const dist3 = (a: Vec, b: Vec) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
@@ -125,8 +150,18 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
   let legsBegun = 0;
   let ownerSeen = false;
   let lastSteer: Pick<LocatorSteering, 'direction' | 'distanceBand' | 'elevation' | 'precision' | 'ageMs'> | undefined;
-  let bestProgress = 0;
-  let initialBearing: number | undefined;
+  /** MB-LOC-002: NET progress along the cue, accumulated per step (conservative: see stepProgress; sideways ~0, back negative). */
+  let netProgress = 0;
+  /** An active detour episode: a fixed frame (the cue bearing when it began), its origin and committed side. */
+  let detour: { side: 1 | -1; steps: number; blocks: number; blocker: BlockerReport; switched: boolean; frame: number; origin: Vec3; maxLateral: number } | undefined;
+  /** Signed sideways offset of a point from the episode's frame line through its origin (positive on the committed side). */
+  const lateralOf = (d: NonNullable<typeof detour>, p: Vec3) => d.side * (Math.cos(d.frame) * (p.z - d.origin.z) - Math.sin(d.frame) * (p.x - d.origin.x));
+  /** A choice during an episode must not retreat sideways back across the obstacle (local-minimum backtracking). */
+  const retreats = (d: NonNullable<typeof detour>, p: Vec3) => lateralOf(d, p) < d.maxLateral - DETOUR_RETREAT_SLACK;
+  let detourEpisodes = 0;
+  /** The side of the last detour in this window (a new episode keeps it: no ping-pong). */
+  let lastDetourSide: 1 | -1 | undefined;
+  const detourLog: Array<Record<string, JsonValue>> = [];
 
   // The active bound: the live route leg only when it belongs to exactly this
   // goal's admission proof (same epochs, dimension, anchor, radius); else the
@@ -149,12 +184,25 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
       legsBegunNow: legsBegun,
       ownerSeen,
       movedBlocks: r1(horizontal(start, env.self())),
+      netProgress: r1(netProgress),
+      ...(detourLog.length > 0 || detour ? { detours: [...detourLog, ...(detour ? [{ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks), obstacle: detour.blocker.reason, outcome: 'active' }] : [])] } : {}),
       ...(lastSteer ? { cue: { direction: lastSteer.direction, distanceBand: lastSteer.distanceBand, elevation: lastSteer.elevation, precision: lastSteer.precision, ageMs: lastSteer.ageMs } } : {}),
       route: st ? { routeId: st.routeId, state: st.state, legsUsed: st.legsUsed, maxLegs: st.maxLegs, distanceUsed: st.distanceUsed, distanceSources: st.distanceSources, maxTotalDistance: st.maxTotalDistance, remainingMs: st.remainingMs, stalledLegs: st.stalledLegs } : null,
       ...extra,
     };
   };
   const fail = (reason: string, effect: string, extra: Record<string, JsonValue> = {}): RouteRunResult => ({ status: 'failed', reason, effect, evidence: evidence(extra) });
+  /**
+   * Conservative NET progress of one step: the smaller projection of the
+   * displacement on the bearing at the step's start and at its end (a large
+   * sideways return toward the bearing line is not credited as progress).
+   */
+  const stepProgress = (from: Vec3, to: Vec3, startBearing: number): number => {
+    const endBearing = target.kind === 'owner' ? (deps.locator?.steering()?.bearingRad ?? startBearing) : Math.atan2(target.at.z - to.z, target.at.x - to.x);
+    const dx = to.x - from.x;
+    const dz = to.z - from.z;
+    return Math.min(dx * Math.cos(startBearing) + dz * Math.sin(startBearing), dx * Math.cos(endBearing) + dz * Math.sin(endBearing));
+  };
   const beginLeg = (bearingRad: number | undefined): { ok: true } | { ok: false; blocker: RouteBlocker; detail: string } => {
     const r = deps.routes.beginLeg({ ...ctx(), at: env.self(), destination: destKind, ...(bearingRad !== undefined ? { bearingRad } : {}), ...(target.kind === 'fixed' ? { destinationAt: target.at } : {}) });
     if (!r.ok) return r;
@@ -211,6 +259,11 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
       const seen = env.ownerVisible();
       if (seen) {
         ownerSeen = true;
+        if (detour) {
+          // The visible owner takes over; a later cue starts afresh (no stale detour frame).
+          detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks), obstacle: detour.blocker.reason, outcome: 'owner_visible' });
+          detour = undefined;
+        }
         const d = dist3(self, seen);
         if (d <= params.within + 0.25) {
           return { status: 'succeeded', reason: 'owner_reached', effect: `the owner is visible and ${r1(d)} blocks away (within ${params.within}); verified from the bot's own position`, evidence: evidence({ ownerDistance: r1(d) }) };
@@ -276,8 +329,11 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
       // A destination inside the active bound and loaded: walk to it directly (conservative path).
       const world = env.world();
       if (inside(b, target.at) && world?.blockAt(Math.floor(target.at.x), Math.floor(target.at.y), Math.floor(target.at.z)) && !failedFrontiers.has(frontierKey(target.at))) {
+        const from = env.self();
         const res = await move(target.at, params.within, b, { timeoutMs: Math.max(5_000, params.durationMs - (env.now() - started)) });
         env.recordVisited();
+        const to = env.self();
+        netProgress += stepProgress(from, to, bearing);
         if (res.aborted === 'route_budget' && budgetStop) return budgetFail(budgetStop);
         if (res.aborted === 'destination_invalid' && destinationStop) return destinationFail(destinationStop);
         if (res.status === 'arrived') continue;
@@ -287,20 +343,38 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
         continue;
       }
     }
-    initialBearing ??= bearing;
     const direction = sectorOf(bearing);
 
     // 3. Safe local frontier toward the bearing inside the active bound.
     const obs = env.observe();
     const world = env.world();
     if (!obs || !world) return fail('not_connected', 'no current observation');
+    if (detour && angleBetween(detour.frame, bearing) > Math.PI / 2) {
+      // The cue itself moved to another side: the old detour frame is stale guidance.
+      detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks), obstacle: detour.blocker.reason, outcome: 'cue_changed' });
+      detour = undefined;
+    }
+    const floorSeenNow = (x: number, y: number, z: number) => obs.seen.has(`${x},${y},${z}`);
+    if (
+      detour &&
+      (env.self().x - detour.origin.x) * Math.cos(detour.frame) + (env.self().z - detour.origin.z) * Math.sin(detour.frame) >= DETOUR_CLEAR_PROGRESS &&
+      frontiersToward({ world, self: env.self(), bearingRad: bearing, bounds: b, radius: Math.min(env.observationRadius, 24), floorSeen: floorSeenNow, visited: env.visited(), exclude: failedFrontiers, elevation }).choices.some((c) => !retreats(detour as NonNullable<typeof detour>, c.at))
+    ) {
+      // Eventual progress: well past where the detour began (in its own frame) AND the current cue has a forward frontier again.
+      detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks), obstacle: detour.blocker.reason, outcome: 'cleared' });
+      detour = undefined;
+    }
+    // During a detour episode every choice is ranked in the episode's FIXED frame
+    // (the cue bearing when it began), so a cue that rotates as the bot walks
+    // sideways cannot pull it back into the obstacle (no local-minimum ping-pong).
+    const frame = detour ? detour.frame : bearing;
     const query = (bb: Bounds) => ({
       world,
       self: env.self(),
-      bearingRad: bearing,
+      bearingRad: frame,
       bounds: bb,
       radius: Math.min(env.observationRadius, 24),
-      floorSeen: (x: number, y: number, z: number) => obs.seen.has(`${x},${y},${z}`),
+      floorSeen: floorSeenNow,
       visited: env.visited(),
       exclude: failedFrontiers,
       elevation,
@@ -319,14 +393,65 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
         }
       }
     }
-    const pick = choices[0];
+    if (detour) {
+      const d = detour;
+      choices = choices.filter((c) => !retreats(d, c.at));
+    }
+    let pick: FrontierChoice | undefined = choices[0];
+    let detourStep = false;
+    if (pick && detour) {
+      // Forward steps (in the episode frame) are part of the episode, same budget, until it clears.
+      if (detour.steps >= MAX_DETOUR_STEPS || detour.blocks >= MAX_DETOUR_BLOCKS) {
+        const spent = detour;
+        detourLog.push({ side: spent.side, steps: spent.steps, blocks: r1(spent.blocks), obstacle: spent.blocker.reason, outcome: 'detour_budget_spent' });
+        detour = undefined;
+        return fail(spent.blocker.reason, `${spent.blocker.detail}; a bounded detour around the observed obstacle did not get past it (detour_budget_spent)`, { blocker: spent.blocker.reason, blockerEvidence: spent.blocker.evidence as unknown as JsonValue });
+      }
+      detour.steps += 1;
+      detourStep = true;
+    }
     if (!pick) {
-      const blocker = classifyBlocker(world, env.self(), bearing, obs.seen, { elevation, direction });
-      return fail(blocker.reason, blocker.detail, { blocker: blocker.reason, blockerEvidence: blocker.evidence as unknown as JsonValue });
+      const blocker = detour?.blocker ?? classifyBlocker(world, env.self(), bearing, obs.seen, { elevation, direction });
+      const blockerFail = (outcome: string) => {
+        if (detour) detourLog.push({ side: detour.side, steps: detour.steps, blocks: r1(detour.blocks), obstacle: detour.blocker.reason, outcome });
+        detour = undefined;
+        return fail(blocker.reason, outcome === 'not_justified' ? blocker.detail : `${blocker.detail}; a bounded detour around the observed obstacle did not find a way forward (${outcome})`, { blocker: blocker.reason, blockerEvidence: blocker.evidence as unknown as JsonValue });
+      };
+      // MB-LOC-002: a bounded sideways detour, only around an OBSERVED obstacle.
+      if (!detourJustified(blocker)) return blockerFail('not_justified');
+      if (!detour) {
+        if (detourEpisodes >= MAX_DETOUR_EPISODES) return blockerFail('episode_limit');
+      } else if (detour.steps >= MAX_DETOUR_STEPS || detour.blocks >= MAX_DETOUR_BLOCKS) return blockerFail('detour_budget_spent');
+      let side = detour?.side ?? lastDetourSide;
+      let options = detourFrontiers({ ...query(active), ...(side !== undefined ? { side } : {}) });
+      if (detour) {
+        const d = detour;
+        options = options.filter((o) => o.side !== d.side || !retreats(d, o.at));
+      }
+      if (side !== undefined && !options.some((o) => o.side === side)) {
+        // The committed side is closed in sight: switch once per episode (never ping-pong).
+        if (detour?.switched) return blockerFail('both_sides_closed');
+        side = side === 1 ? -1 : 1;
+        options = options.filter((o) => o.side === side);
+        if (detour) detour.switched = true;
+      } else if (side !== undefined) options = options.filter((o) => o.side === side);
+      const lateral = options[0];
+      if (!lateral) return blockerFail(detour ? 'no_sideways_frontier' : 'no_sideways_frontier_in_sight');
+      if (!detour) {
+        detourEpisodes += 1;
+        detour = { side: lateral.side, steps: 0, blocks: 0, blocker, switched: false, frame, origin: env.self(), maxLateral: 0 };
+      }
+      if (detour.side !== lateral.side) detour.maxLateral = 0; // switched: measure the new side afresh
+      detour.side = lateral.side;
+      lastDetourSide = lateral.side;
+      detour.steps += 1;
+      detourStep = true;
+      pick = lateral;
     }
 
     // 4. Walk to it; stop on a withdrawn cue, switch on a visible owner.
     const steerSeq = target.kind === 'owner' ? deps.locator?.steering()?.statementSeq : undefined;
+    const before = env.self();
     const res = await move(pick.at, 2, active, {
       timeoutMs: Math.min(60_000, Math.max(5_000, params.durationMs - (env.now() - started))),
       abortIf: () => {
@@ -340,9 +465,13 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
     });
     env.recordVisited();
     const st = routeStatus();
-    const progressNow = initialBearing !== undefined ? (env.self().x - start.x) * Math.cos(initialBearing) + (env.self().z - start.z) * Math.sin(initialBearing) : 0;
-    bestProgress = Math.max(bestProgress, progressNow);
-    env.progress({ routeSteps: steps, movedBlocks: r1(horizontal(start, env.self())), legsUsed: st?.legsUsed ?? 0, distanceUsed: st?.distanceUsed ?? 0 });
+    const after = env.self();
+    netProgress += stepProgress(before, after, bearing);
+    if (detourStep && detour) {
+      detour.blocks += horizontal(before, after);
+      detour.maxLateral = Math.max(detour.maxLateral, lateralOf(detour, after));
+    }
+    env.progress({ routeSteps: steps, movedBlocks: r1(horizontal(start, after)), netProgress: r1(netProgress), legsUsed: st?.legsUsed ?? 0, distanceUsed: st?.distanceUsed ?? 0, ...(detour ? { detourSteps: detour.steps } : {}) });
     if (res.aborted === 'route_budget' && budgetStop) return budgetFail(budgetStop);
     if (res.aborted === 'destination_invalid' && destinationStop) return destinationFail(destinationStop);
     if (res.aborted === 'owner_visible' || res.aborted === 'hint_changed') continue;
@@ -357,9 +486,12 @@ export async function runRoute(env: RouteEnv, target: RouteTarget, params: Route
     if (moveFailures > MAX_MOVE_FAILURES) return fail('no_safe_path', `walking ${direction} repeatedly failed (${res.status}); no safe walkable route found`);
   }
 
-  // Window ended without reaching the target.
+  // Window ended without reaching the target. MB-LOC-002: a cue-only window
+  // continues locally only with NET progress along the cue (wandering sideways
+  // or back and forth is not progress); a window that approached the VISIBLE
+  // owner counts its own movement.
   const moved = horizontal(start, env.self());
-  if (bestProgress >= 4 || moved >= 4) {
+  if (netProgress >= MIN_WINDOW_PROGRESS || (ownerSeen && moved >= MIN_WINDOW_PROGRESS)) {
     return { status: 'partial', reason: 'route_window_elapsed', effect: `moved ${r1(moved)} blocks ${target.kind === 'owner' ? 'toward the owner cue' : `toward ${target.label}`} (${steps} steps); not there yet`, evidence: evidence() };
   }
   return fail('no_progress', `no progress ${target.kind === 'owner' ? 'toward the owner cue' : `toward ${target.label}`} in this window`);
