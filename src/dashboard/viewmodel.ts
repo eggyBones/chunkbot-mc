@@ -246,6 +246,7 @@ export interface ViewModel {
     /** Raw bounded outcome contract, for an optional technical disclosure. */
     outcomeTechnical: string | null;
     survival: string | null;
+    safety: { title: string; detail: string; note: string; historical: boolean; tone: 'muted' | 'warn' | 'active' } | null;
     /** MB-FLOW-001 read-only automatic-work lines (null: not composed in this run). */
     autonomy: string[] | null;
     historical: boolean;
@@ -346,6 +347,18 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
       : `Inventory unknown — ${contents.reason}`;
 
   const dir = s?.directive;
+  const safety = dir?.safety;
+  const safetyFresh = Boolean(safety && appLive && now >= safety.observedAtMs && now - safety.observedAtMs <= Math.max(1_500, (s?.publisher.heartbeatIntervalMs ?? 500) * 3) &&
+    (safety.connectionEpoch === null ? safety.state === 'disabled' || safety.state === 'no_authority' : s?.connection.state === 'ready' && safety.connectionEpoch === s.connection.epoch));
+  const safetyLabels = { disabled: 'Safety disabled', no_authority: 'Safety has no control authority', monitoring: 'Safety monitoring', responding: 'Safety responding', blocked: 'Safety response blocked' };
+  const responseLabels = { escape_water: 'Leaving unsafe water', retreat: 'Moving away from a threat', defend: 'Defending against an engaging threat' };
+  const safetyVM: ViewModel['directive']['safety'] = safety ? {
+    title: `${safetyFresh ? '' : 'Last known — '}${safety.response ? responseLabels[safety.response] : safetyLabels[safety.state]}`,
+    detail: `${safety.reason ? `${safety.reason.replace(/_/g, ' ')} — ` : ''}${safety.detail}`,
+    note: `${safetyFresh ? 'Current' : 'Historical; not live'} · ${safety.connectionEpoch === null ? 'connection not reported' : `connection ${safety.connectionEpoch}`} · app state at ${new Date(safety.observedAtMs).toISOString().slice(11, 19)} UTC`,
+    historical: !safetyFresh,
+    tone: !safetyFresh ? 'muted' : safety.state === 'blocked' ? 'warn' : safety.state === 'responding' ? 'active' : 'muted',
+  } : s?.integrations.safety ? { title: 'Safety state unavailable', detail: 'The safety service did not report a current summary.', note: 'No current reading', historical: true, tone: 'muted' } : null;
   const goal = dir?.goal;
   const phase = goal?.phase ?? 'idle';
   const details: Row[] = [];
@@ -531,6 +544,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
             ? { text: `Automatic work paused${dir.pause.manualGoalsAllowed ? '; a manual goal can still execute' : ''} — ${dir.pause.reason}${dir.pause.sinceMs ? ` (since ${new Date(dir.pause.sinceMs).toISOString().slice(11, 19)} UTC)` : ''}`, tone: 'warn' }
             : null,
       survival: dir?.survival ? `${dir.survival.routine}: ${dir.survival.reason}${dir.survival.phase ? ` (${dir.survival.phase}${dir.survival.attempt !== undefined ? `, attempt ${dir.survival.attempt}` : ''})` : ''}` : null,
+      safety: safetyVM,
       autonomy: autonomyLines,
       historical: !appLive,
     },

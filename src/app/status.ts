@@ -3,6 +3,14 @@ import type { ConnectionState, GoalRecord, ReadyInfo } from '../contracts/index.
 import type { EngineStatus } from '../goals/goal-engine.ts';
 import { DASHBOARD_BOUNDS, type DashboardMemorySummary, type DashboardPause, type DashboardPendingDirective } from '../contracts/dashboard.ts';
 import type { MemoryFact, MemoryScope } from '../contracts/memory.ts';
+import type { SafetyStatus } from '../contracts/safety.ts';
+
+/** Immediate safety is application state; absence of motion authority is not a claim that the world is safe. */
+export function safetyStatusLine(s: SafetyStatus): string {
+  const response = s.state === 'responding' && s.episode ? `; response ${s.episode.response} (${s.episode.hazards.join(', ')})` : '';
+  const blocker = s.blocker ? `; blocked ${s.blocker.reason}: ${s.blocker.detail}` : '';
+  return `safety: ${s.state}${response}${blocker}; authority ${s.authority.basis}; connection ${s.connectionEpoch ?? 'unknown'}; episodes ${s.counters.episodes}, retreats ${s.counters.retreats}, defenses ${s.counters.defenses}`;
+}
 
 export interface StatusInput {
   connection: ConnectionState;
