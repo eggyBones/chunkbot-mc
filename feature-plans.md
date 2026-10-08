@@ -1,6 +1,6 @@
 # Chunkbot feature plans
 
-Updated: 2026-10-07 Arizona (2026-10-08 UTC). Owner: Codex. Status: **MB-V1-00 through MB-V1-04 and feature batch001 accepted; batch002 acceptance incomplete; gameplay fixes authorized for parallel implementation; MB-V1-05 remains unassigned.**
+Updated: 2026-10-07 Arizona (2026-10-08 UTC). Owner: Codex. Status: **MB-V1-00 through MB-V1-04 and feature batch001 accepted; batch002 acceptance incomplete; four gameplay-fix branches under review, shared corrections quota-blocked; MB-V1-05 remains unassigned.**
 
 Jake authorized Codex supervision, local DSH startup, and implementation of these plans with Claude Opus 5.5 workers and full access on 2026-10-04. Use parallel native Opus 5.5 workers for separable authorized assignments and continue them through independent review.
 
@@ -33,15 +33,17 @@ Jake selected **MB-FLOW-001 progression**, **MB-FLOW-003 survival/death recovery
 
 ## Current gameplay-fix implementation
 
-Jake authorized implementation on 2026-10-07 Arizona and requested parallel workflow workers. [Live gameplay fixes](docs/live-gameplay-fixes-plan.md) assigns no-question behavior, correct distant following, water safety, recovery/continuation and newly reported mob survival. Native local DSH Claude Opus 5.5 workers use separate worktrees with one shared application writer. The prior logout still governs the live server; wait for a fresh join instruction.
+Jake authorized implementation on 2026-10-07 Arizona and requested parallel workflow workers. [Live gameplay fixes](docs/live-gameplay-fixes-plan.md) assigns no-question behavior, correct distant following, water safety, recovery/continuation and newly reported mob survival. Four native local DSH Claude Opus 5.5 workers implemented separate branches with one shared application writer. [Independent review](docs/reviews/mb-gameplay-fixes-coordinator.md) records both-release recovery/locator module passes, real ordinary goal results and critical remaining corrections. Claude reported a subscription session limit resetting at 11 p.m. Arizona (2026-10-08 06:00 UTC); drafts and consolidated pending reviews are preserved. No gameplay-fix source is accepted or deployed. The prior logout still governs the live server; wait for a fresh join instruction.
+
+Jake now authorizes continued implementation with **native DSH Codex workers on his personal ChatGPT account**, exactly `gpt-6.1-sol`, `xhigh` effort and full permissions. P/W/S take over their preserved source/drafts and outstanding corrections in parallel; the approved L source is ready for shared integration. The prior Claude route and quota checkpoint are historical. Current native sessions, source handoffs and acceptance evidence belong in supervision; no new gameplay release is accepted from this route change.
 
 | ID | Detailed fix plan | Status |
 | --- | --- | --- |
-| MB-PLAN-006 | [Act without follow-up questions; chicken/tree/house grounding](docs/v1-planner-plan.md#mb-plan-006--act-without-follow-up-questions) | Authorized; zero follow-up questions is Jake's firm product requirement |
-| MB-LOC-002 | [Correct direction, lost-owner behavior and beyond-128-block ordinary following](docs/locator-follow-plan.md#mb-loc-002--wrong-direction-and-distance-loss) | Authorized; parent module proof exists, ordinary command acceptance open |
-| MB-FLOW-003-C11 | [Surface/shore protection during follow and movement transitions](docs/survival-routines-plan.md#mb-flow-003-c11--water-safety-during-following) | Authorized; mechanics and ownership gates required before far-follow acceptance |
-| MB-FLOW-003-C12 | [Resume compatible unfinished work after recovery](docs/survival-routines-plan.md#mb-flow-003-c12--resume-compatible-work-after-recovery) | Authorized; unsafe replay remains prohibited |
-| MB-FLOW-003-C13 | [Survival first around mobs](docs/survival-routines-plan.md#mb-flow-003-c13--survival-first-around-mobs) | Authorized with water safety; retreat by default, bounded defense with verified appropriate gear |
+| MB-PLAN-006 | [Act without follow-up questions; chicken/tree/house grounding](docs/v1-planner-plan.md#mb-plan-006--act-without-follow-up-questions) | Branch under review: real chicken/absent-target/stop examples pass with zero questions; destructive tree replan fails; house gathering remains open |
+| MB-LOC-002 | [Correct direction, lost-owner behavior and beyond-128-block ordinary following](docs/locator-follow-plan.md#mb-loc-002--wrong-direction-and-distance-loss) | Module passes both fixtures: directions and 300-block reunion; canonical lineage ready for shared wiring, ordinary acceptance open |
+| MB-FLOW-003-C11 | [Surface/shore protection during follow and movement transitions](docs/survival-routines-plan.md#mb-flow-003-c11--water-safety-during-following) | Source/draft under review: first escape passes, interrupted trial and stop/reauthorization failure remain; shared real executor wiring open |
+| MB-FLOW-003-C12 | [Resume compatible unfinished work after recovery](docs/survival-routines-plan.md#mb-flow-003-c12--resume-compatible-work-after-recovery) | Shared checkpoint/ports under review; acquisition arithmetic and unknown-return attribution failures block acceptance; unsafe replay prohibited |
+| MB-FLOW-003-C13 | [Survival first around mobs](docs/survival-routines-plan.md#mb-flow-003-c13--survival-first-around-mobs) | Retreat/defense source under review; unknown gear/age readiness and shared wiring require correction; ordinary hazard trials pending |
 
 Batch002 native source is integrated in the development checkout, with acceptance gaps. The last live application remains accepted batch001 d348d58; public 90450c4 adds only local controls/docs. Locator module gates include a 300-block reunion, but normal real-planner/Jev following remains unaccepted. Progression and recovery **have started**, but are not loaded in that live artifact; automatic item retrieval and compatible owner-work continuation are not delivered. Do not describe a Git push as a loaded gameplay update.
 
@@ -53,7 +55,7 @@ Jake's requested upgrades are broken down in [the companion roadmap](docs/compan
 | --- | --- | --- |
 | MB-FLOW-001 | [Default progression, upgrades and home building](docs/autonomous-progression-plan.md) | Development integrated; real/combined acceptance incomplete; not live |
 | MB-FLOW-002 | [Continue current work while the next directive loads](docs/smooth-handoff-plan.md) | Implemented/integrated; accepted in batch001 |
-| MB-FLOW-003 | [Survival routines and death recovery — progression subplan](docs/survival-routines-plan.md) | Development integrated; pickup/persistence acceptance fails; not live |
+| MB-FLOW-003 | [Survival routines and death recovery — progression subplan](docs/survival-routines-plan.md) | Old batch002 development integrated; new pickup/persistence/meal modules pass both fixtures; continuation/safety acceptance incomplete; not live |
 | MB-LOC-001 | [Locator-assisted following and bounded travel](docs/locator-follow-plan.md) | Both fixture module gates pass 19/19; ordinary/combined acceptance open; not live |
 | MB-MEM-001 | [Persistent gameplay memory and known locations](docs/gameplay-memory-plan.md) | Implemented/integrated; accepted in batch001 |
 | MB-UI-001 | [Local dashboard, token usage, OpenRouter spend and optional Codex allowance](docs/chunkbot-dashboard-plan.md) | Implemented/integrated; accepted in batch001 |
