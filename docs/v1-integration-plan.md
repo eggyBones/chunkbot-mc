@@ -2,6 +2,8 @@
 
 Created/updated: 2026-10-04. Status: **Planned; unassigned.** Depends on MB-V1-01 through MB-V1-04. Read [architecture](v1-architecture-plan.md), [contracts](v1-contracts.md), and [supervision](agent-supervision.md).
 
+Acceptance refinement recorded 2026-10-06 Arizona: Jake requires **no follow-up questions**. [MB-PLAN-006](v1-planner-plan.md#mb-plan-006--act-without-follow-up-questions) supersedes the old clarification-based product criteria. Far-follow/water/recovery additions in [the live gameplay intake](live-gameplay-fixes-plan.md) need their own module and real ordinary-goal evidence; none is accepted or assigned by this plan update. The installed accepted release still has its previous clarification behavior.
+
 ## Outcome and scope
 
 Jake can launch Chunkbot, give differing natural-language goals, and see the Codex subscription planner decide prerequisites/steps while Jev chooses grounded actions and Minecraft code verifies results. Stop remains responsive. The app reports real completion, partial progress, missing information/capability, or bounded failure.
@@ -12,9 +14,9 @@ Proposed owned paths: `src/app/`, `src/goals/`, integration tests, README/config
 
 ## Integrated behavior
 
-One goal engine handles natural-language intake, clarification, accepted outcome contract, knowledge queries, rolling task windows, Jev decisions, execution leases, predicates, recovery, and limits. Both chat and terminal use it. Stop/status bypass providers.
+One goal engine handles natural-language intake, reasonable grounded interpretation, accepted outcome contract, knowledge queries, rolling task windows, Jev decisions, execution leases, predicates, recovery, and limits. Both chat and terminal use it. Stop/status bypass providers. The target MB-PLAN-006 policy refuses owner-facing clarification and uses bounded repair or declarative blockers.
 
-Idle is quiet, planning/clarification is stationary, and execution reports verified progress. Task completion is distinct from goal completion. Persistent behaviors remain active. Exhausting a plan window requests continuation; missing ingredients/tools produce prerequisite feedback rather than a scripted resource handler.
+Idle is quiet, active planning/repair is stationary, and execution reports verified progress. Safe current work may continue during handoff preparation. No goal waits for a solicited owner answer. Task completion is distinct from goal completion. Persistent behaviors remain active. Exhausting a plan window requests continuation; missing ingredients/tools produce prerequisite feedback rather than a scripted resource handler.
 
 Explicit planned mining/placement/interaction can change the world. Navigation must not modify it silently. Hidden resources/player positions cannot become targets through protocol-data shortcuts. A lost owner can use a remembered waypoint, but an owner-proximity outcome requires actual owner observation.
 
@@ -42,12 +44,12 @@ These are a representative suite; they do not define the allowed command languag
 | Resource not initially visible | Controlled world | Bounded survey/exploration finds it or reports actual resource/path limit; no hidden-world shortcut |
 | New composition chosen at acceptance, e.g. two item goals then return | Real models/world; no code changes | New task window/predicates composed from catalog, all requested outputs preserved |
 | Already-owned items, ingredient consumption, full inventory | World + fixtures | Acquisition/possession/final-output baselines and space handling are correct |
-| Ambiguous quantity/output/destination | Real planner + clarification fixtures | Useful interpretation/question, correlated answer, no action while awaiting required clarification |
+| Ambiguous quantity/output/destination and nearby deictic targets | Real planner + policy/grounding fault fixtures | Reasonable grounded assumption and action, or one precise declarative blocker; zero follow-up/confirmation questions or answer waits |
 | Unsupported mechanic/capability | Catalog/provider fixture | Exact missing capability; no keyword-based blanket rejection or false success |
 | Removed target/missing tool/workstation/recipe change | Controlled world + fixtures | Revalidation and grounded replan preserve the original goal |
 | Stop during navigation/mining/crafting/furnace waiting | Real world | Prompt control clear, closed interfaces, accurate partial effects |
 | Stop/replacement during either provider | Delayed fixtures + real transport cancel probe | Stale response ignored and old cleanup cannot stop new work |
-| Stable follow/processing/clarification wait | Real world + call counter | Healthy waiting, no false no-progress failure or repeated inference |
+| Stable follow/processing/blocked wait | Real world + call counter | Healthy waiting, no false no-progress failure, unanswered question or repeated inference |
 | Hidden target/other-player/spoofed chat | World + identity fixtures | No hidden observation or unauthorized goal/model call |
 | Bad schema/unknown skill/invalid selector/impossible recipe | Provider/catalog fixtures | Rejected before action, bounded repair/replan |
 | Timeout/auth/payment/quota/model errors | Provider fixtures | Bounded handling, honest usage reservation, no planner billing fallback |

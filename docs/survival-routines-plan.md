@@ -1,6 +1,6 @@
 # MB-FLOW-003 — Survival routines and death recovery
 
-Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Status: **Native implementation in progress in [batch002](feature-batch-002-plan.md); not yet accepted.**
+Reported: 2026-10-06 UTC (2026-10-05 in Arizona). Status: **Native implementation integrated into development in [batch002](feature-batch-002-plan.md); acceptance incomplete, not deployed. Water and continuation reports recorded for planning.**
 Subplan of [MB-FLOW-001 default progression](autonomous-progression-plan.md). Integrates [handoff](smooth-handoff-plan.md), [gameplay memory](gameplay-memory-plan.md) and [dashboard](chunkbot-dashboard-plan.md).
 
 ## Outcome and happy path
@@ -23,7 +23,7 @@ Coordinator defaults:
 
 Stop latches all autonomous action, including eating and recovery, until explicit resume. Recording a death and showing status may continue while paused. Logout leaves recovery pending for a future authorized connection; it never triggers a reconnect.
 
-## Current implementation and gaps
+## Baseline at initial planning
 
 Source inspection for this plan found:
 
@@ -62,9 +62,9 @@ Use condition thresholds with hysteresis, cooldowns and a bounded upkeep allowan
 3. **Assess loss and feasibility.** Compare fresh server-confirmed inventory/equipment with the pre-death record. Retained inventory may mean no recovery trip is needed; do not assume keepInventory rules or query privileged server state. Missing/unknown pre-death evidence produces an explicitly partial manifest. Determine whether the location, route, gear and current health are adequate.
 4. **Prepare minimally.** Use a small, freshly verified home emergency kit or acquire essential cheap food/tool/protection when that is feasible within the recovery budget. Reserve pickup space. Do not carry more irreplaceable gear into the same hazard or spend an unbounded time rebuilding before looking for the original belongings.
 5. **Travel within accepted bounds.** Reuse catalog-backed navigation to an own-death location and known route. A death outside the current admission radius needs an explicitly accepted bounded route policy, such as [MB-LOC-001](locator-follow-plan.md), rather than silently moving the anchor. Unknown portal routes, unsupported dimensions and unsafe paths remain blockers. No teleport, RCON-assisted travel, hidden map or global dropped-entity scan.
-6. **Reacquire and verify.** Only fresh visible drops in the scoped recovery area become candidates. Use existing server collection evidence plus authoritative inventory resync. Track regained quantities and identity/metadata only where proven. Item merging and mixed player drops can make origin uncertain; do not claim exact ownership or sweep unrelated loot. Ambiguous shared piles require a conservative boundary or owner clarification.
-7. **Conclude or wait honestly.** Distinguish recovered, partially recovered, blocked, known destroyed and still missing/unknown. A local search finding nothing does not prove every item despawned. Item availability depends on server mechanics and loaded state; no fabricated exact countdown. Once bounded recovery ends, propose replacement of essential missing gear or ask for a specific blocker rather than repeating the same run.
-8. **Reassess the original work.** Recovery completion is not completion of the interrupted owner goal. Continue only from a compatible semantic checkpoint with its original accepted outcome/baseline and verified effects. If that cannot be preserved safely, show the interruption and obtain clarification rather than re-admitting “collect N new items” with a new baseline. With no unresolved owner directive, resume progression through a fresh assessment.
+6. **Reacquire and verify.** Only fresh visible drops in the scoped recovery area become candidates. Use existing server collection evidence plus authoritative inventory resync. Track regained quantities and identity/metadata only where proven. Item merging and mixed player drops can make origin uncertain; do not claim exact ownership or sweep unrelated loot. Ambiguous shared piles use a conservative boundary or a declarative blocker, never a follow-up question under MB-PLAN-006.
+7. **Conclude or wait honestly.** Distinguish recovered, partially recovered, blocked, known destroyed and still missing/unknown. A local search finding nothing does not prove every item despawned. Item availability depends on server mechanics and loaded state; no fabricated exact countdown. Once bounded recovery ends, assess a supported replacement of essential missing gear or state the concrete blocker rather than repeating the same run or asking a question.
+8. **Reassess the original work.** Recovery completion is not completion of the interrupted owner goal. Continue only from a compatible semantic checkpoint with its original accepted outcome/baseline and verified effects. If that cannot be preserved safely, show a declarative interruption instead of re-admitting “collect N new items” with a new baseline. MB-FLOW-003-C12 supplies the required continuation delivery gate. With no unresolved owner directive, resume progression through a fresh assessment.
 
 Further deaths append related incidents; they do not overwrite the original valuable gear location with an empty-handed recovery death. Bound history/retrieval and distinguish each incident's losses and recovered items. Persist only historical facts and compatible semantic state, never old actions or an active lease. Reconnect/update behavior follows [MB-OPS-001](live-update-plan.md) and the owner's current pause/logout preference.
 
@@ -113,7 +113,7 @@ Required checks when implemented: affected AGENTS.md typecheck/build/test and bo
 
 ## Remaining delivery
 
-All automatic policies, durable incident capture, safe recovery, new metadata/primitives, continuation semantics and end-to-end evidence remain unimplemented/unverified. Jake authorized core implementation in batch002; Codex owns the shared ports and fixture leases. The existing snapshot/death memory seam is delivered by batch001, while automatic recovery policies and evidence remain to be implemented. Review target: docs/reviews/mb-flow-003-survival-routines.md.
+Native incident capture, survival policies, durable recovery authority and skills are integrated in development. The second actual module trial passes death capture/canonical dimension/recovery admission but fails post-collection persistence and mixed-pile/full recovery (C9/C10); current server clock-reply parsing also needs a passing rerun. The first slice intentionally holds unsupported owner continuation. Real ordinary planner/Jev recovery, shared supervisor integration, core upkeep and continuation are not accepted. The last live batch001 application has neither these policies nor configured persistent memory. C11/C12 below define the new water and continuation requirements; this intake implements nothing. Review target: docs/reviews/mb-flow-003-survival-routines.md.
 
 ## Batch002 contract review and decisions
 
@@ -155,3 +155,108 @@ Corrected trial 2 (2026-10-07 03:16 UTC, immutable2472442) preserves exit1. C7 n
 **MB-FLOW-003-C9 — invalid post-collection persistence.** Recorded before correction from the same actual trial: after a server-confirmed cobblestone20 collection, the attempt write fails schema validation (“Too small: expected number to be >0”), revoking further authority as attempt_write_failed. Diagnose the invalid stored record, retain attempt/budget accounting, and prove full collection/persistence/restart. No source fix or acceptance is inferred from this report.
 
 **MB-FLOW-003-C10 — mixed-pile trial inventory exceeds the admitted lost manifest.** Recorded before correction: G2 RCON sees bread5 where the manifest lost4; G2b sees cobblestone84 and no recovered iron pickaxe/enchanted sword, while full recovery is not claimed. Inspect actual server-stated summoned stack counts, identity, passive pickup during travel/collection and the action/partial-effect journal before attributing the cause; the setup prose alone does not prove an oversized foreign stack. Keep known foreign piles and unrelated loot outside recovery authority and report incidental effects truthfully. The failed trial remains evidence, not acceptance. Report: batch002-2472442/var/live-check/2026-10-07T03-16-10-804Z-survival/report.json.
+
+## MB-FLOW-003-C11 — Water safety during following
+
+Reported: 2026-10-06 Arizona (2026-10-07 UTC). Implementation authorized: 2026-10-07 Arizona. Status: **Assigned to parallel immediate-safety work, with one shared integration writer.** Jake reports repeated drowning during follow, including immediate sinking when follow was lost around the 128-block distance. Affects ordinary follow and shared navigation, not only future autonomous survival. [Locator regression dependency](locator-follow-plan.md#mb-loc-002--wrong-direction-and-distance-loss).
+
+### Evidence and outcome
+
+Incident context: live run-9d8d6a18e52b, eggyBot69 on Java 26.2/protocol 776 using accepted d348d58. Exact failed goal, fluid depth, oxygen history, server corrections and action/control sequence are not identified. The source navigation policy allows water with liquidCost 4; water is not in the dangerous-block avoidance list. Follow clears its path/controls on task exit or ownership loss. The model-visible observation supplies health/food but no air/submersion facts. No existing gate certifies following across deep water or floating after follow ends. These are seams, not proof that a specific physics patch or path-clear call caused the report.
+
+While authorized gameplay is active, Chunkbot must avoid unsupported water entry and promptly use a proven local surface/shore action when submerged. Losing sight, changing follow windows, finishing a route leg or hitting a route limit must not discard the protection needed to leave water. After escape, freshly reassess the owner directive without asking questions. Do not accept far following until this works on the actual 26.2 physics stack.
+
+### Scope and defaults
+
+- Begin with swimming/surfacing and safe shoreline exit, usable by existing follow, move_near, exploration and locator/death-site navigation. Boats, ocean expeditions, underwater mining, potions, bubble-column travel and combat are excluded unless separately supported.
+- Prefer an observed safe dry route. If swimming is unproved, refuse a water-crossing path with a concrete blocker; a higher water cost alone is not drowning protection. A safe detour cannot require unseen terrain or navigation digging/placing.
+- Track current own submersion, relevant fluid/head clearance and air/health with connection/dimension/freshness/provenance. Use supported server metadata where available and label local physics estimates separately. Missing air is unknown, not a full reserve; do not infer a safe state from health remaining high.
+- Detect unsafe submersion locally; do not wait for a Codex/Jev turn to begin a proven emergency response. Use the same fenced executor/lease with a narrowly code-owned safety grant, finite action/time/displacement bounds and verified prerequisites. No independent controller or unowned setControlState loop.
+- Suspend unsafe following, clear competing path controls, surface with a verified control pattern, then use a freshly observed reachable shore when needed. Do not blindly jump under a solid ceiling, chase the owner's vertical position underwater, dig a tunnel, or keep swimming into a wall.
+- Safety spans normal movement/task transitions and a natural follow blocker while gameplay remains unpaused. Specify ownership transfer before implementing it; a stopped task cannot continue using its revoked lease. Any necessary emergency travel exception is explicit, narrow and code-owned, never a route re-anchor/global radius increase.
+- Explicit stop/logout/death/disconnect wins. Stop revokes ordinary and safety controls and latches paused; it does not leave a hidden buoyancy worker. Status may state that the paused bot is submerged without asking a question. Logout disconnects and never starts a safety reconnect.
+- On initial join/respawn, assess fresh self state before ordinary movement if this safety policy is enabled. No retained controls/handles from the previous lifecycle. Do not enable persistence-dependent automatic work by guessing a world scope.
+- After surfacing, prove current clearance/air recovery as available before resuming compatible work. Unsupported/no-exit conditions produce one truthful blocker; no repeated model calls or repeated fatal attempts. Persist historical hazards/incidents only under the correct configured scope.
+
+### Bounded gates and source ownership
+
+Inspect src/skills/navigation.ts and movement.ts; src/execution/actuator.ts and lease.ts; TaskRuntime low-health/local-continuation branches; src/app/skill-runtime.ts; own metadata in game/server-evidence.ts and connection.ts; perception/observation/survival contracts and supervisor policy. Inspect installed pinned pathfinder/swim logic and integrity-recorded prismarine-physics/Mineflayer compatibility inputs. Never hand-edit node_modules.
+
+| Gate | Question, probe and decision |
+| --- | --- |
+| W-G1 | Is sinking a control/ownership failure or a physics/data mismatch? On separately leased 26.1.2 and 26.2 fixtures, record server-observed body position, fluid/ceiling state, air metadata, health, corrections and actual controls for shallow/deep still water, a current and a wall. Compare installed physics/control behavior before proposing a vendor patch. |
+| W-G2 | What surfacing/exit action is mechanically supported? Verify held jump/swim controls, available head clearance, an observed shore and no-path cases. Choose measured conservative air thresholds, finite episode bounds and hysteresis. A dry-land motion unit test or lack of death in peaceful mode does not prove underwater safety. |
+| W-G3 | Who protects a boundary transition? Exercise visibility loss, 128-block ordinary bound, expanded-route exhaustion, follow-window settlement and replacement while in water. Decide the single-lease/safety-grant handoff and cancellation order, including stop during each await. Unknown authority cannot authorize a reflex. |
+
+| ID | Observable acceptance |
+| --- | --- |
+| W1 | Controlled supported deep-water follow surfaces and exits/holds safely with server-confirmed air/health/position evidence. No drowning damage or death, no RCON rescue, and no provider round trip for the immediate response. Test both versions at unchanged recorded survival settings. |
+| W2 | Visible follow and locator-seeking cross a supported water route, or deliberately choose a safe detour/blocker. Repeat owner visibility loss, ordinary radius failure, route exhaustion and task-window completion in water; protection survives natural transitions. |
+| W3 | Low air, missing/stale metadata, ceiling, flowing water, unreachable shore and repeated hazard yield bounded truthful behavior. Unsupported crossings are refused before entry; no invented swim capability or endless retry. |
+| W4 | Stop/replacement/logout/death/dimension change cancel controls and callbacks correctly; an old safety lease cannot move a new goal. Low-health escape uses the narrow existing admission rules; counters/budgets do not reset. |
+| W5 | Combined immutable-build normal Codex/Jev follow trial passes after the local mechanics gates. Record fresh final vitals, actual motion and all fixture restoration; dashboard/status reports safety/blocked state accurately. |
+
+Future split: survival worker owns new safety policy/metadata consumption and focused tests; the designated shared writer owns existing navigation, actuator, task/goal/app/contract wiring. Locator consumes the agreed safety port. Codex approves any vendor change and runs AGENTS.md affected checks, both fixtures' mechanics/compatibility regressions and real ordinary-goal acceptance. New harness entry points must be documented when they actually exist; no probe is run by this intake.
+
+## MB-FLOW-003-C12 — Resume compatible work after recovery
+
+Reported: 2026-10-06 Arizona (2026-10-07 UTC). Implementation authorized: 2026-10-07 Arizona. Status: **Assigned across recovery service and the designated shared GoalEngine writer.** Jake asks whether the planned loop, retrieval and resuming work have started. They have substantial native development source; the live release has no automatic recovery/progression, and compatible owner-work continuation is still missing. C1's first-slice held state is a safety boundary, not delivery of the eventual resume outcome.
+
+Happy path: an owner job has verified partial progress; death revokes it; a durably recorded bounded recovery returns the belongings; fresh observation and code validate the semantic checkpoint; the planner chooses only remaining supported work; the original outcome is verified; progression resumes only after a finite owner job is finished. A persistent follow job returns to seeking/visible follow rather than being marked complete by recovery.
+
+### Required continuation contract
+
+- Hold the original owner instruction, immutable accepted outcome, admission inventory/anchor semantics, verified effects, remaining goal/session limits and explicit pause/supersession state. Recovery is separate supporting work and cannot satisfy the original job by itself.
+- Never resubmit the old sentence as a fresh “collect N additional” goal or replay saved tasks/actions/handles. Define a typed code-owned continuation seam, with fresh epoch/connection bindings and reference/outcome revalidation, that preserves original semantic accounting. If the GoalEngine cannot preserve it yet, continuation remains blocked until that seam exists.
+- Recovered prior possessions cannot count as newly gathered resources. Previously completed crafts/placements remain historical verified effects, while possession/equipment/structure conditions require fresh server truth. A replacement goal from Jake supersedes the held directive immediately.
+- Stop/logout blocks recovery and continuation; bare resume clears only the pause latch and starts a fresh admissible assessment. It is not permission to replay an unsupported checkpoint. No automatic reconnect or update manager is included.
+- First deliver compatible continuation after respawn/safety interruption in the same authorized application session. Restart may retain a non-executable scoped checkpoint, but does not silently resume it; restart/update continuation needs its own proven budget/semantic compatibility and release policy.
+- If continuation or recovery is partial/unsupported, choose a safe supported next step within the original contract, or state one declarative blocker. Never ask a follow-up, silently change the outcome, abandon held owner intent for unrelated progression, or refill allowances by creating a new goal.
+
+### Gates, milestones and remaining evidence
+
+Gate RC-G1: inspect actual held owner checkpoint, GoalEngine outcome binding/evidence invalidation, supervisor admission and durable stores. Probe a count-based job with pre-death progress, recovered items and consumed ingredients. Decide a versioned semantic continuation schema and what is demonstrably compatible; predicate shape alone is insufficient.
+
+Gate RC-G2: run genuine pickup/persistence acceptance after correcting C9/C10 and current clock parsing. Distinguish full recovery, partial pickup, incidental loot and keep-inventory retention before trying to resume. Use current server inventory/item identity as the oracle; no in-trial restored gear.
+
+| ID | Observable acceptance |
+| --- | --- |
+| RC1 | Real Codex/Jev owner resource job dies after verified partial work, recovers accessible gear and continues only its remaining original job. Demonstrate preserved acquisition baseline and no double credit from recovered items. |
+| RC2 | Partial construction/crafting/equipment and persistent follow each freshly re-ground supported remaining work. No duplicate craft/placement, false completion, question or saved action replay. |
+| RC3 | Partial/unsafe recovery, unsupported checkpoint, stop, new owner command, restart and another recovery death remain truthful and bounded. Attempt/turn/task/elapsed/spend allowances survive supporting admissions without reset. |
+| RC4 | With no held owner job, verified recovery returns to fresh useful progression. Status/memory/dashboard distinguish held directive, supporting recovery and actual continuation; ordinary pipeline acceptance proves the loop. |
+
+This gate refines R9–R10 and parent A9; it does not replace their full feature acceptance. Progression/shared writer owns continuation admission and checkpoint/status composition; survival owns durable incident/recovery authority. Codex owns schema approval, combined review and real-provider checks. Persistent scope must be explicitly configured before recovery is installed in the real profile. Existing failed recovery reports remain open evidence, and no new release is accepted by this document.
+
+## MB-FLOW-003-C13 — Survival first around mobs
+
+Reported and implementation authorized: 2026-10-07 Arizona (2026-10-08 UTC). Status: **Assigned with C11 to the immediate-safety worker.** Jake reports poor mob handling and requires Chunkbot to prioritize his own survival regardless of the active job. Avoid mobs, or fight when current tools/armor and conditions make defense reasonable. Exact mob types, damage events and failed goal traces are unspecified; the report is user evidence, not a proven classifier or attack defect. Context is the preceding Java 26.2 live play on accepted batch001, which lacked batch002 survival.
+
+Happy path: Chunkbot is following, collecting or building; a fresh visible hostile threat enters a bounded danger area. Code suspends unsafe work promptly, releases its competing controls, chooses an observed escape or a supported defensive engagement, verifies improved safety, and freshly resumes compatible remaining work without changing the original goal outcome. Immediate protection cannot wait on a new model turn. Being equipped alone does not make every mob safe to fight.
+
+Confirmed direction: survival takes priority over work; avoidance and appropriately equipped fighting are both requested. **Coordinator assumptions:** prefer retreat; initially admit defensive melee only against individually supported, reachable threats with adequate equipped weapon/armor, durability, health/food and escape space. Creeper fuse/explosion, ranged threats, groups, low health, missing equipment, unknown disposition and unsafe terrain favor avoidance. Do not chase passive mobs or provoke neutral mobs merely because they are nearby. Never attack the owner or another player. No follow-up questions, automatic gear restoration, ranged-combat expansion or invulnerability promise is included.
+
+### Mechanics, observation and ownership
+
+- Consume bounded current player-visible entity observations with provenance/freshness and the actual supported release's entity/mechanics facts. Hidden global mob scans/coordinates cannot enter the models or policy. Supported damage/source packet evidence may corroborate a threat; unexplained damage remains unknown.
+- Expose threat/retreat/defending/blocked status truthfully and quietly. Distinguish visibility loss from server-proven defeat. Validate attack reach, current target identity, server effects and equipped item facts at dispatch; a target leaving view is not a kill.
+- Add a code-owned local safety policy through the same task/executor/lease infrastructure used by C11. There is one actuator owner. A finite safety grant explicitly suspends unsafe work and transfers ownership; old task cleanup cannot clear the new lease. Use finite duration/action/displacement and repeated-hazard ceilings. No unowned combat loop or model-granted escape authority.
+- Reassess each bounded response from fresh state. Retreat follows observed safe geometry, accounts for water/falls/lava and route bounds, and cannot dig/place towers or roam indefinitely. No supported exit produces a declarative blocker with actual safety state. Do not freeze silently while continuing a hazardous goal.
+- Explicit stop/logout/death/disconnect/dimension change wins over safety and cancels every timer, interface and control. Join/respawn starts from fresh assessment; startup replays no saved target. Normal task/window/route transitions retain safety coverage while gameplay remains unpaused.
+- After safety, retain original admission semantics, immutable outcome, verified progress and remaining allowances. C12 supplies compatible continuation after death/recovery; a survival action cannot complete the owner job or refill its budgets.
+
+### Bounded gates and acceptance
+
+**M-G1:** inspect actual entity observation, damage/metadata and existing attack/pathfinder behavior for vanilla 26.1.2 and exactly 26.2. Use credential-free unit probes, then a leased bounded arena with recorded summons/settings and finally restoration. Decide which hostile matchups, equipment facts and escape mechanics are actually supported. Keep unsupported cases in avoidance.
+
+**M-G2:** inject a threat during sustained following, mining, planner preparation and a local safety transition. Observe revocation, lease transfer, action fencing and fresh post-response continuation. Decide shared wiring from the real task/goal lifecycle rather than adding a second controller.
+
+| ID | Observable acceptance |
+| --- | --- |
+| M1 | Unequipped/low-health Chunkbot promptly stops unsafe work and increases server-confirmed separation from a supported visible threat using a safe observed route; no inference is required to trigger protection. |
+| M2 | With verified appropriate gear, a supported isolated melee threat is defended against using bounded attacks and code-verified effects. Downgrade to retreat when health/equipment/target conditions change. No player/passive/neutral accidental attacks. |
+| M3 | Creeper/ranged/group/hidden/stale/unknown-threat and blocked escape cases remain conservative and bounded; water safety is retained; no fabricated kill/safe claim or endless retry. |
+| M4 | Stop/replacement/death/disconnect/dimension changes clear owned actions promptly, stale callbacks cannot move/attack, and original goal accounting survives a safety pause. Both supported fixtures prove actual mechanics. |
+| M5 | Combined ordinary Codex/Jev follow and resource goals respond to real fixture mobs while preserving their immutable outcomes and resuming compatible work. Record model calls, action journals, vitals, server evidence and restoration separately from module evidence. |
+
+W owns new safety contracts/modules/tests/harnesses; P owns existing perception/game/task/goal/navigation/app wiring; S owns recovery state; L consumes the approved safety seam. Codex reviews contract and combat admission defaults, grants exclusive fixture driver leases and runs required integrated/provider checks. Any vendor change requires a separately reviewed reproducible patch; never edit node_modules.

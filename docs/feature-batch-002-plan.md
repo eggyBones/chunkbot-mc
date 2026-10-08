@@ -1,6 +1,8 @@
 # Feature batch002 — Progression, survival and locator following
 
-Authorized: 2026-10-06. Owner/coordinator: Codex. Status: **three native implementations running in parallel; acceptance pending**. Parent: [companion roadmap](companion-upgrades-plan.md). Base delivery: [accepted batch001](reviews/mb-batch001-coordinator-review.md).
+Authorized: 2026-10-06. Owner/coordinator: Codex. Status: **three native implementations integrated into development; acceptance incomplete, not deployed**. Parent: [companion roadmap](companion-upgrades-plan.md). Base delivery: [accepted batch001](reviews/mb-batch001-coordinator-review.md).
+
+Checkpoint 2026-10-06 Arizona (2026-10-07 UTC): last native turns hit subscription limits and were idle with empty queues. Locator module gates pass 19/19 on both fixtures; real ordinary L7 and corrected combined regression remain open. Recovery still fails post-collection persistence/mixed-pile checks; progression needs real full-house and combined-loop evidence. Historical setup/worker assignments below remain recorded. [New live gameplay reports](live-gameplay-fixes-plan.md) are planning-only intake; no new worker turn, probe or deployment is authorized by writing those plans. Jake's latest logout instruction has been completed.
 
 Jake selected the next three suggested features and will join tonight for final V1 gameplay acceptance. This batch implements and verifies those features against the separate loopback fixtures. **MB-V1-05 and live gameplay acceptance are deferred until Jake's evening session.** Do not connect the live bot, inspect/change the live server, or touch Jake's client/world for this batch.
 
@@ -11,6 +13,8 @@ Jake selected the next three suggested features and will join tonight for final 
 - **MB-LOC-001:** [locator following](locator-follow-plan.md), L1–L7. Decode real owner waypoint broadcasts into coarse fresh hints, seek/reacquire the owner after losing sight and traverse beyond the original 128-block bound through declared finite route legs. No exact hidden-owner coordinate, global player scan, navigation digging/towering or fabricated arrival.
 
 Full feature outcomes are required. Contract milestones, module tests and research alone are not completion. Genuine unsupported mechanics must have exact evidence and an honest blocker; continue independent assigned work.
+
+Product refinement: Jake now requires zero gameplay follow-up questions (MB-PLAN-006). This supersedes question/answer waits as a desired experience in the original assumptions below; blocked owner intent stays visible through declarative notices. C11 water safety and MB-LOC-002 direction/distance cases gate follow acceptance; C12 compatible continuation refines survival R9/R10 and progression A9. These reports have not been sent as implementation continuations.
 
 ## Ownership and parallel integration
 

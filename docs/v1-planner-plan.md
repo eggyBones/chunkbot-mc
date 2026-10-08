@@ -2,6 +2,8 @@
 
 Created/updated: 2026-10-06. Status: **Verified locally and built; accepted by Codex.** Contract dependency: MB-V1-01; integrated execution follows MB-V1-03. Read [architecture](v1-architecture-plan.md), [contracts](v1-contracts.md), and G-03/G-06 in [research](v1-research.md).
 
+The accepted baseline below supports correlated clarification. Jake's later **MB-PLAN-006 no-follow-up policy** supersedes that product requirement for the next implementation; it is recorded, not yet implemented or deployed. See [live gameplay intake](live-gameplay-fixes-plan.md). Historical clarification evidence remains evidence of the previous release.
+
 ## Outcome and happy path
 
 Jake gives a broad instruction. A separate Codex gameplay process uses his subscription to interpret the outcome, query relevant game knowledge, decide prerequisite steps, and produce bounded task-specific Jev instructions. The goal engine validates and executes the steps. As the world changes, Codex revises the plan until the accepted goal is verified, cancelled, or concretely blocked.
@@ -129,3 +131,59 @@ Acceptance: use goal-correlated verified task/action evidence across all windows
 ## Independent acceptance
 
 All PLAN-1..5 and MB-PLAN-001..005 accepted2026-10-06. [Complete coordinator evidence](reviews/mb-v1-04-coordinator-review.md):36 direct passing checks and all19 distinct real/fault acceptance cases across the retained full run and corrected real P4 subset. Original18/19 false-negative report remains recorded. Source/build verified unchanged; final V1 delivery proceeds through MB-V1-05.
+
+## MB-PLAN-006 — Act without follow-up questions
+
+Reported: 2026-10-06 Arizona (2026-10-07 UTC). Implementation authorized: 2026-10-07 Arizona. Status: **Assigned to the designated shared planner/application writer.** Applies to owner goals, replacement preparation, automatic goals and recovery continuation on both chat and terminal.
+
+Jake's decision: “I never want him to ask me follow up question — just make him act.” Reports: “Kill that chicken” beside the bot produced “What chicken?”; removing a floating birch tree produced a confirmation and then another collection question; establishing Chunkbot's house “here” produced another question. There must be no follow-up or confirmation ladder.
+
+### Evidence and unresolved cause
+
+The accepted live artifact d348d58 and root development prompt explicitly permit needs_clarification. GoalEngine has separate active-goal and preparation branches that emit qN questions and wait for answers. This is a permitted behavior in the old release, now an unwanted policy. Merely changing a sentence in the prompt would leave executable question paths.
+
+The shared catalog already contains attack_entity, mine_block, movement and collection primitives; development adds home construction. Missing combat capability is not established as the chicken failure. Exact snapshot inclusion, handle selection, stale-reference translation, distance/reach and planner output for Jake's incidents have not been matched. A chicken next to the bot can still be excluded or omitted by perception; inspect that before attributing every question to interpretation.
+
+### Desired behavior and coordinator defaults
+
+Interpret open-ended instructions using fresh visible targets, supplied constraints and available knowledge. State a short useful assumption only when it affects the result, then act. The owner may refine the task by sending a new instruction; Chunkbot does not solicit that refinement.
+
+| Example / condition | Default and verified result |
+| --- | --- |
+| One nearby visible matching chicken | Bind that entity, approach if necessary, attack through the registered bounded capability, and report defeat only from server evidence. Never attack a player or owner. |
+| Several matching ordinary targets with no supplied distinguishing constraint | Prefer the closest reachable match; break equivalent ties deterministically. State the chosen target briefly and proceed. Preserve explicit names, handles, locations and exclusions. |
+| “That floating tree” | Ground one local observed tree/remnant, bind its bounded work area, remove the requested remaining logs/canopy as supported, and collect useful drops. Removing the target is the outcome; collecting an arbitrary number of birch logs cannot silently replace it. |
+| “Set up your house here” | Bind a fresh visible owner location or an explicit supplied site, select a nearby vacant bounded footprint, and use the practical home default with supported material prerequisites. [Home placement details](autonomous-progression-plan.md#owner-directed-home-placement-without-questions). |
+| Quantity or material omitted | Choose a modest task-appropriate amount/material using observed inventory, version knowledge and the capability limits. Say the interpretation; do not ask for a number or menu selection. Exact requested outputs still bind. |
+| Target absent or stale | Use a bounded useful survey/re-grounding attempt where authorized; preserve target identity. If still unavailable, state the visibility/path blocker. Do not substitute an unrelated object or wander indefinitely. |
+| No safe supported action / missing authority / hidden site | State one concrete blocker without asking a question, requesting confirmation, claiming completion or inventing permission. Preserve useful verified partial progress. |
+
+“Here” does not authorize unseen owner coordinates. Tree grouping is bounded observed geometry, not a world-wide log scan. A branch failing or becoming unreachable can produce partial removal; final success needs a supported code-evaluable target-area outcome. If existing selectors/predicates cannot express it, add the necessary general grounding/evidence mechanism after a bounded probe, rather than hardcoding these phrases.
+
+### Policy, states, cancellation and persistence
+
+- Make the no-question policy application-owned and default for this companion. Exclude clarification proposals from the gameplay output schema and instructions; enforce the same policy at runtime for malformed, legacy or stale proposals before any question event/notice or awaiting_owner state. A model cannot toggle the policy.
+- Apply enforcement to admitted goals, preparation, lookahead, automatic support and continuation. A forbidden clarification may receive a counted bounded repair within existing allowances; exhaustion produces a declarative blocker. Never reopen a fresh epoch to obtain more repairs.
+- Do not relay raw planner prose that asks the owner for a decision through an interpretation, cannot_execute field or progress notice. Use validated declarative summaries/app-owned notices; dropping a question mark is not enforcement. Internal knowledge queries remain allowed and do not ask Jake.
+- While planning/repairing, retain existing handoff rules: safe current work may continue during preparation; unsafe work is revoked. Stop/status remain provider-independent. A failed draft cannot acquire a lease or silently discard unresolved owner intent for unrelated progression.
+- Already emitted legacy qN state is handled explicitly when an accepted release is installed: retire the pending question and freshly reassess only if ownership, policy and original semantics permit. Do not emit it again or treat a stray “yes” as permission for a different destructive task. No automatic reconnect or startup replay is added here.
+- Preserve original accepted outcome, admission inventory, goal anchor, verified effects and every existing limit. No-question behavior does not allow weakening visibility, target binding, property boundaries or model isolation. Empty input is still rejected before replacement; provider/quota errors remain honest blockers without fallback.
+
+### Seams and bounded gates
+
+Inspect src/planner/prompt.ts and wire.ts; src/contracts/planner.ts; both needs_clarification paths and checkProposal in src/goals/goal-engine.ts; command/app notices and dashboard directive projection; targetScope/admittedParameters, perception handle translation, src/skills/entities.ts, mining.ts and construction.ts; home site admission.
+
+- **N-G1 — Target availability:** in a leased fixture place one/multiple chickens, an isolated floating tree beside another tree, and a vacant/occupied “here” site. Compare ordinary model-visible snapshots with known server fixture truth, catalog candidates and fresh execution revalidation. Resolve omission versus grounding/interpretation before changing perception bounds.
+- **N-G2 — No-question boundary:** inject clarification in active/preparing/lookahead/support outputs and questions embedded in other text. Observe chat, terminal, journal and dashboard. Decide the schema migration and declarative notice path from actual wiring; all paths must honor the policy without raw question publication.
+- **N-G3 — Target outcome:** run removal and home goals through generic predicates. Identify any missing reusable grouping/site/completion seam, with positive and stale/hidden/unrelated-target probes. Preserve immutable target meaning across replans.
+
+### Milestones and acceptance
+
+| ID | Observable acceptance |
+| --- | --- |
+| N1 | Fault proposals and embedded questions never produce owner-facing follow-ups or an answer wait. Bounded counted repair/blocker, cancellation and quota handling are verified on both command surfaces and preparation. |
+| N2 | Real ordinary chicken/tree/home commands with actual Codex/Jev act from reasonable defaults without answers. Assert server-confirmed target defeat/removal/finished shelter, or precise partial/blocker where deliberately unavailable. Gather missing house materials in the full acceptance trial. |
+| N3 | Repeat with multiple, moved, hidden, missing and unreachable targets; include a new unseen-at-development composition. Correct target binding, no hidden-coordinate shortcut, no unrelated destruction and unchanged outcomes/counters are proven. |
+| N4 | Stop/replacement/death/disconnect during planning and execution revoke owned work; stale drafts and legacy questions cannot revive it. Loaded accepted release later proves the same behavior without an operator answer. |
+
+Future checks: applicable AGENTS.md typecheck/build/test, planner diagnostic/isolation and fault checks, handoff regression, skills/identity checks on both fixtures, then coordinator-run real planner/Jev ordinary-goal acceptance within the existing cap. Update previous clarification-based acceptance scenarios to test this policy, preserving historical reports. No tests or implementation are authorized by this documentation intake. Review target when delivered: docs/reviews/mb-plan-006-no-questions.md.

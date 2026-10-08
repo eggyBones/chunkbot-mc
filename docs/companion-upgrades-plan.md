@@ -11,6 +11,8 @@ These plans describe new behavior, not capabilities already delivered. Existing 
 
 ## Confirmed decisions
 
+Latest refinement, 2026-10-06 Arizona: **Chunkbot must never ask Jake follow-up questions.** Use reasonable grounded defaults and act; state a concrete blocker when execution is unsupported or unsafe. [Gameplay-fix intake](live-gameplay-fixes-plan.md) links no-question grounding, direction/distance following, water safety and safe work continuation plans. This refinement is recorded, not implemented in the accepted live application.
+
 - **MB-FLOW-001:** after Jake connects Chunkbot, progression is the default activity. Owner instructions take priority. After a finite owner task completes, Chunkbot returns to progression.
 - **MB-FLOW-003:** within progression, remember death coordinates and attempt to recover Chunkbot's belongings. Jake also requested other ordinary player habits be specified; the child plan labels proposed upkeep defaults and recovery limits.
 - **Stop is deliberate:** after !chunkbot stop, Chunkbot stays paused until explicitly resumed. It must not silently restart progression.
@@ -54,6 +56,8 @@ MB-FLOW-003 shares progression/lifecycle ownership with MB-FLOW-001/002. Define 
 Jake's standing preference is parallel Opus 5.5 implementation for independent ready features. After shared contracts are established, handoff, memory, locator and dashboard modules can be assigned to separate workers with disjoint ownership; default progression integrates the accepted handoff/memory foundations. Codex retains shared contracts, composition, manifests, CLI/config, integration and acceptance. Use separate branches/worktrees once Git is set up, and lease shared fixture/live-check windows. Handoff and progression overlap goal scheduling and need an explicit dependency boundary. Follow [the parallel workflow](../agent-workflow.md#parallel-assignments-and-git-isolation); these feature documents remain proposals, not worker launch receipts.
 
 ## Baseline evidence and gaps
+
+The following paragraphs describe the initial pre-batch001 baseline. Current accepted batch001 includes optional memory, dashboard and smooth handoff. Batch002 progression/survival/locator source is integrated in development but unaccepted and absent from the last live artifact. Memory remains unconfigured in the real profile. Use [the current release/evidence table](live-gameplay-fixes-plan.md#what-exists-versus-what-jake-was-playing) for present delivery status; initial gaps below are historical, not claims that development has never started.
 
 Live Java 26.2 session run-8a0b31de06a5 connected successfully. Jake reported freezing on a new command and losing Chunkbot during following. GoalEngine currently revokes the old owner before planning the new instruction. The recorded follow task stopped when Jake left the 128-block admission travel radius and later lacked visible owner evidence. This is distinct from its 32-block observation radius.
 

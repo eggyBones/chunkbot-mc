@@ -1,6 +1,6 @@
 # MB-FLOW-001 — Default survival progression and a home
 
-Reported: 2026-10-06. Status: **Native implementation in progress in [batch002](feature-batch-002-plan.md); not yet accepted.**
+Reported: 2026-10-06. Status: **Native implementation integrated into development in [batch002](feature-batch-002-plan.md); real/combined acceptance incomplete, not deployed.**
 Parent: [companion upgrades](companion-upgrades-plan.md). Foundations: [handoff](smooth-handoff-plan.md), [memory](gameplay-memory-plan.md).
 Subplan: [MB-FLOW-003 survival routines and death recovery](survival-routines-plan.md).
 
@@ -18,8 +18,8 @@ Coordinator assumptions:
 - A small practical shelter with roof, usable entrance, crafting/furnace access and storage is the initial home-building target. Elaborate architecture, settlements and every end-game mechanic are later capability extensions.
 - Progression is available through normal run, not auth login, connect-check, doctor or diagnostic harnesses. A fresh world/profile starts with progression enabled; the owner stop latch is preserved across restarts until resume.
 - Add !chunkbot resume (and the terminal equivalent) as an explicit control. !chunkbot status shows mode, active directive, next preparation, progress and blockers. Ordinary Minecraft goals remain open-ended.
-- If an owner task blocks or needs an answer, preserve and show its unresolved intent; do not silently abandon it for unrelated progression. Finite verified completion is the automatic return trigger.
-- Prefer useful verified work over artificial motion. It is acceptable to rest, await clarification, or pause on a real prerequisite/provider/safety limit.
+- If an owner task blocks, preserve and show its unresolved intent; do not silently abandon it for unrelated progression. Finite verified completion is the automatic return trigger. Jake's later MB-PLAN-006 policy requires reasonable grounded defaults and no follow-up questions.
+- Prefer useful verified work over artificial motion. Rest or pause on a real prerequisite/provider/safety limit; state the blocker declaratively rather than waiting for a requested answer.
 
 No automatic Microsoft login, server connection/reconnect service, model billing fallback or indefinite unbudgeted calls.
 
@@ -54,6 +54,16 @@ Inspect whether placement, reach, doors, material acquisition and shelter verifi
 
 A stopped build records confirmed placements and unknown effects separately. After restart, inspect the actual site and repair/replan from observed differences rather than replaying the checklist. Register “home” only with honest evidence; remember a chosen site separately from a verified usable shelter.
 
+### Owner-directed home placement without questions
+
+Reported 2026-10-06 Arizona under [MB-PLAN-006](v1-planner-plan.md#mb-plan-006--act-without-follow-up-questions): “set up his house here” caused another question. Desired behavior: state that a small practical home will be built at the grounded local site, then acquire supported missing materials and build. No size/material/location menu, confirmation or alternate resource-only goal.
+
+Coordinator default: capture a fresh visible owner's local position or an explicit owner-supplied site when interpreting “here.” Search only a small observed vacant neighborhood around that anchor, within admitted travel/site limits; prefer the nearest safe footprint and retain its identity through the project. If the owner/site cannot be grounded, state a blocker without guessing hidden coordinates. Safe handoff preparation carries a provisional site only; revalidate it before admission and prevent a moving owner from silently relocating an accepted project.
+
+An existing scoped home/project must not silently override the explicit new-site instruction or create a second incompatible persisted “home.” Gate the current single-home selector/project contract: distinguish continuation at the same site from an explicit replacement site, retire only the previous bot project identity with truthful history, and never demolish its old house or another player's structure. Shared construction/project changes stay with the progression writer.
+
+Acceptance: ordinary real Codex/Jev “build your house here” starts without an answer, gathers prerequisites and verifies the complete approved shelter near the grounded anchor. Repeat an occupied site, owner moving during preparation, an existing home elsewhere, insufficient materials and stop/restart. Correct target/site binding, no unrelated destruction, honest partial progress and fresh repair are required. These scenarios supplement A3/A6; provisioned-material scripted construction alone does not close them.
+
 ## Seams and bounded research gates
 
 Inspect src/goals/goal-engine.ts, src/app/app.ts, src/app/skill-runtime.ts, src/planner/prompt.ts, shared goal/planner/capability/predicate contracts, src/tasks/task-runtime.ts, src/skills/crafting.ts, src/skills/placement.ts, src/skills/inventory.ts, src/skills/interfaces.ts, src/execution/predicates.ts and decision/spend limits.
@@ -73,7 +83,7 @@ Gate A-G3: define code-verifiable shelter criteria from a small fixture build. V
 | A1 | Normal run starts a useful bounded goal without an owner command. Disabled/inference-free profiles and diagnostics make zero model calls; no new connection is initiated by scheduling. |
 | A2 | Empty-inventory and prepared-inventory survival trials choose different prerequisites, verify useful supplies/upgrades, then automatically select another attainable milestone. No per-phrase code/prompt edits. |
 | A3 | Real planner/Jev gathers materials and completes a small home with verified roof/enclosure/entrance/workstations/storage. Save the home and inspect server truth; zero in-trial world fixes. |
-| A4 | Owner command overrides progression; finite completion returns to progression. Persistent follow retains ownership. Unanswered clarification/blocked owner instruction stays visible. |
+| A4 | Owner command overrides progression; finite completion returns to progression. Persistent follow retains ownership. Blocked owner instruction stays visible without a requested answer under MB-PLAN-006. |
 | A5 | Stop during planning, movement, crafting and building cancels both execution and lookahead and stays paused through a timer advance/restart. Resume freshly reassesses. |
 | A6 | Partial house survives stop/restart. Fresh verification correctly continues or repairs, without duplicate placements, fabricated stored materials or changing another world's base. |
 | A7 | No resources, unsafe path, low health, provider failure, run spend cap and repeated blocked goals produce bounded, meaningful waiting. They do not create inference loops or fresh budgets. |
@@ -85,6 +95,8 @@ Required checks: affected AGENTS.md typecheck/build/test, both doctors, connecti
 ## Remaining delivery
 
 Supervisor, pause/resume preference, bounded milestone selection, house capabilities/verification, survival-routine integration, real multi-milestone trials and delivery evidence remain unverified. MB-FLOW-003 core recovery/upkeep is assigned concurrently in batch002; later mechanics remain separately gated. Review target: docs/reviews/mb-flow-001-progression.md.
+
+Delivery checkpoint 2026-10-06 Arizona: native supervisor, durable pause/project scope and home construction are integrated in development; scripted/fault-provider U0–U5 provide limited milestone evidence. Real full material-gathering house A3, combined progression/survival and [compatible work continuation](survival-routines-plan.md#mb-flow-003-c12--resume-compatible-work-after-recovery) remain open. The live batch001 application has no default progression/home loop. [Current gameplay-fix intake](live-gameplay-fixes-plan.md) is planning only and assigns no new worker work.
 
 ## Batch002 shared-port review
 

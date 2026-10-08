@@ -1,8 +1,10 @@
 # Live server connection — eggyBot69
 
-Reported: 2026-10-06. Coordinator: Codex. Status: **Chunkbot rejoined at Jake's latest request; local scripts requested.** Jake's latest instruction, “alright lets give it a shot and see if he can connect”, supersedes the04:28 UTC deferral. Coordinator resumed bounded online connection and idle launch at2026-10-06 05:02 UTC. Native worker: `session-1d547f0f-eccd-4429-9b8e-56b4c91fe0fe`, completed/idle; full [worker brief](reviews/mb-server-001-worker-brief.md), [independent acceptance](reviews/mb-server-001-coordinator-review.md).
+Reported: 2026-10-06. Coordinator: Codex. Status: **Logged out at Jake's latest request; dashboard remains open with historical status.** Earlier successful join instructions below are historical. Native worker: `session-1d547f0f-eccd-4429-9b8e-56b4c91fe0fe`, completed/idle; full [worker brief](reviews/mb-server-001-worker-brief.md), [independent acceptance](reviews/mb-server-001-coordinator-review.md).
 
 ## Requested outcome and boundaries
+
+**Latest instruction — 2026-10-07 UTC (2026-10-06 Arizona):** Jake asks “first can you log him out please?” during [gameplay-fix planning](live-gameplay-fixes-plan.md). Codex ran the installed logout.command: direct exit 0, owned PID71629 exited, server connection closed and final status published. The active receipt was retired by the control; the dashboard remains open with historical readings. No client/server/auth changes occurred. This supersedes the preceding join; retain cached bot identity/config and do not reconnect without a fresh instruction. Planning continues without worker launches or gameplay probes.
 
 **Latest instruction — 2026-10-07T03:03:32.898200+00:00:** Jake explicitly asks to log Chunkbot back in and requests simple local play/dashboard/logout scripts. Cached eggyBot69 successfully rejoined on the same accepted public artifact as PID71629, verified ready; run `run-9d8d6a18e52b` is recorded in the private current receipt. The live dashboard7382 is reused. Subsequent owner gameplay is active through real Codex/Jev. This supersedes the preceding logout instruction; no server/client/launcher operation occurred. Local controls are scoped as MB-OPS-002-L1, with no hot-reload or server trigger implementation.
 
@@ -24,7 +26,7 @@ Coordinator assumption: use the established remote endpoint of the currently pla
 
 ## MB-SERVER-001 — Live server is newer than Chunkbot's protocol stack
 
-Reported/status: 2026-10-06; **compatibility accepted locally; actual online login/spawn verified and persistent bot running**.
+Reported/status: 2026-10-06; **compatibility accepted locally; actual online login/spawn verified historically; currently logged out at Jake's request**.
 
 Initial observed evidence before implementation:
 
