@@ -26,7 +26,7 @@ describe('ordinary-goal live harness guard', () => {
     for (const later of ['mkdirSync(', 'run(outDir']) assert.ok(mainBody.indexOf(later) > leaseCheck, `${later} only after the lease check`);
     const topLevel = source.split('\n').filter((l) => /^(const|let|var|await|[a-zA-Z_$][\w$]*\()/.test(l));
     for (const l of topLevel) assert.ok(!/readRconPassword\(|rconCommand\(|mkdirSync\(|writeFileSync\(|createBot\(|new Harness\(|new CliProcess\(/.test(l), `top-level side effect: ${l}`);
-    assert.ok(source.indexOf('this.password = readRconPassword()') > source.indexOf('class Harness'));
+    assert.ok(source.indexOf('if (!io) this.password = readRconPassword()') > source.indexOf('class Harness'));
     assert.ok(!/process\.kill\(|pkill|killall/.test(source), 'never signals anything but its own child');
     assert.ok(!/[`'"](gamerule\s+\w+\s+(?:true|false|\d+)|difficulty\s+(?:peaceful|easy|normal|hard)|time\s+(?:set|add)|weather\s+\w+|spawnpoint|setworldspawn)\b/.test(source), 'no settings or respawn changes; read-only preconditions are allowed');
   });
