@@ -12,6 +12,8 @@ Worker L: native Claude Opus 5.5 (local DSH), worktree `gameplay-follow`, branch
 | `566ada3` | G6 F1 live direction gate in `scripts/locator-live-check.ts`; new `scripts/locator-ordinary-live-check.ts` (actual CLI, scenarios O0–O9); harness guard tests |
 | `0875031` | Ordinary-composition tests against the real `SkillRuntime` locator wiring |
 | `1f27dc9` | This review/handoff |
+| `a9f3e00` | Coordinator corrections: conservative visible-owner progress (no ownerSeen latch); detour path allowance enforced during dispatch |
+| `8b24f28` | MB-FLOW-003-C12 route lineage: `RouteCarry`, `exportCarry`/`revokeWithCarry`/`admitContinuation` (focused commit for P) |
 | `283179a` | Two-sided bounded detour (switch once with a return-plus-search budget, ≤ 3 × 96 per episode), the observed obstacle reported when a window ends mid-detour, river/bridge dry-route tests, dynamic catalog verification in O0, model-visible catalog check in O1, P-L8 |
 
 Changed paths (ownership only): `src/locator/route-runner.ts`, `src/locator/terrain.ts`, `src/skills/locator.ts`, `scripts/locator-live-check.ts`, `scripts/locator-ordinary-live-check.ts` (new), `tests/locator-sim.ts` (new helper), `tests/locator-runner.test.ts`, `tests/locator-direction.test.ts` (new), `tests/locator-detour.test.ts` (new), `tests/locator-harness-guard.test.ts`, `tests/locator-ordinary-harness-guard.test.ts` (new), `tests/locator-composition.test.ts` (new), this file. No shared file, contract, config, vendor or `node_modules` edit.
@@ -106,6 +108,79 @@ Mutation check: restoring the old fallback makes the three negative tests fail (
 | `npm run doctor -- --config config/examples/fixture.json` | 0 | |
 
 `dist/cli.js` sha256 `de9409f3ddb24e918274db15435ad1a15d1c5a2896f93149e7799b58e0fa7553`. Nothing is running.
+
+## MB-FLOW-003-C12 route lineage (continuation of the same logical goal)
+
+Owned by L: `src/contracts/locator.ts` and `src/locator/routes.ts`. Tests: `tests/locator-continuation.test.ts` (11).
+
+**The shared type.** P's proposal `56cb906` sketches `RouteCarry` inside `src/contracts/continuation.ts`. That sketch is insufficient for the required lineage semantics. The canonical route-owned shape is now `RouteCarry` in `src/contracts/locator.ts`, next to `RouteCeilings`, which P's sketch already imports from there.
+
+Minimal required shape (exact field list):
+`version, routeId, goalId, originalGoalEpoch, fromGoalEpoch, connectionEpoch, dimension, source, grantedAtMs, exportedAtMs, destinations, admissionAnchor, admissionRadius, ceilings (original, absolute routeDeadlineMs), legsUsed, lastLeg, stalledLegs, distance {total, clientPhysics, serverCorrections, correctionCount}, state ('authorized'|'exhausted'|'blocked'), blocker {reason, detail}|null, ownerCoordinates, boundOwnDeath, continuations`.
+
+Fields the sketch lacked:
+- logical `goalId`, `fromGoalEpoch`, connection, dimension and source;
+- the exact admission anchor and radius;
+- the distance SOURCES;
+- route state and blocker detail;
+- the last-leg summary;
+- owner-typed coordinates and the frozen own incident;
+- the continuation count.
+
+**What P should do in `continuation.ts`:** delete its local `RouteCarry` and use `import type { RouteCarry } from './locator.ts'` for `ContinuationCheckpoint.route`. Nothing is duplicated.
+
+**API (on `RoutePort` / `RouteController`):**
+- `exportCarry(goalEpoch)`: captures the CURRENT, not-yet-revoked route of that epoch. An active leg is finalized as `interrupted_progressed` / `interrupted_stalled` from its last own sample; it stays counted, extends the stall run when stalled, and is never executable again. The export changes no route state; it records itself as the route's latest admissible export. It returns `undefined` after revocation or for another epoch.
+- `revokeWithCarry(reason, goalEpoch)`: export, then revoke, atomically.
+- `admitContinuation(carry, admission)`: replaces `admit` for a continuation and is synchronous. It accepts only the controller's LATEST unadmitted export of that route, byte-identical (canonical JSON), once. It requires:
+  - the same logical `goalId`;
+  - a FRESH epoch, greater than every admitted epoch and than `fromGoalEpoch`;
+  - the same connection epoch and dimension;
+  - EXACTLY the original admission anchor and radius (never the respawn position);
+  - the same source.
+
+  **Accepted:** the original routeId, `grantedAtMs` and frozen ceilings, including the absolute deadline. Consumed legs, distance with its sources, stalled run, last leg, owner coordinates and the frozen incident are all kept. `continuation {originalGoalEpoch, fromGoalEpoch, count}` is set, and there is no leg authority until a new counted leg begins. New legs are numbered after `legsUsed`. Own-movement counting restarts its chain at the first post-admission sample, so the respawn displacement is not counted and nothing carried is reduced.
+
+  **Terminal lineage** (exhausted or blocked before the interruption, original deadline passed, distance/leg ceiling reached, stall limit reached): recorded for truthful status, with NO travel authority (`kind: 'terminal'`).
+
+  **Refused** (`stale_epoch`, `unknown_or_stale_carry`, `goal_mismatch`, `connection_mismatch`, `dimension_mismatch`, `anchor_mismatch`, `source_mismatch`): nothing installed. A fresh epoch is still consumed (fail closed), so it can never get a fresh grant later.
+- Plain `admit` of a logical goal id that already had a route is refused (`continuation_requires_carry`). Even a mistaken call cannot refill an allowance.
+- No movement, handle, candidate, task, path goal or actuator lease is part of the carry. The continuation re-observes and plans freshly.
+
+**Required integration by P (exact):**
+1. In the lifecycle/interruption path that creates a checkpoint, call `routes.revokeWithCarry('lifecycle_<type>', goalEpoch)` (or `exportCarry` immediately before the existing revoke) BEFORE `SkillRuntime.onLifecycle` / `onGoalTerminal` revoke the route, and store the result in `checkpoint.route`.
+2. In the continuation admission (the `onGoalAdmitted` path for a continued goal), call `routes.admitContinuation(checkpoint.route, {...admission, admissionAnchor: checkpoint.anchor.at, admissionRadius: checkpoint.anchor.radius})` INSTEAD of `routes.admit`. Report `kind` and `reason` in status.
+3. Never call `admit` for a continuation. It is refused anyway.
+
+Tests cover:
+- export before revoke, and nothing exported after revoke;
+- `revokeWithCarry`;
+- original ceilings, absolute deadline, anchor and routeId;
+- legs, distance and all three distance sources kept;
+- no executable leg after admission, and monotonic leg numbering (3, then 4);
+- respawn displacement not counted;
+- repeated deaths (count 2, cumulative history; an older export or a repeated admission refused);
+- expired deadline;
+- prior exhausted (distance) and blocked (stalled);
+- an interrupted stalled leg extending the stall run;
+- stale epoch, connection, dimension, anchor, radius, goal, source, tampered distance/ceilings and forged routeId refusals;
+- plain re-admit refused;
+- a new goal id granted normally;
+- the frozen own incident kept, and a changed incident refused.
+
+**Checks at the C12 code commit `8b24f28`** (direct exits, each output redirected to a log and `$?` captured immediately):
+
+| Check | Exit | Result |
+| --- | --- | --- |
+| `npm run typecheck` | 0 | |
+| `npm run build` | 0 | |
+| `npm test` | 0 | 838/838 |
+| locator suites (13 files) | 0 | 153/153 |
+| doctor (`fixture.json`) | 0 | |
+
+`dist/cli.js` sha256 `de9409f3ddb24e918274db15435ad1a15d1c5a2896f93149e7799b58e0fa7553`.
+
+The ownerSeen/raw-moved correction (C1 above, `a9f3e00`) is complete: `ownerSeen` is now only an evidence field. No window continues on it; once the owner is lost, sideways or backward movement can only debit progress.
 
 ## Fixture footprint and restoration (for guard review; no lease requested before it)
 
