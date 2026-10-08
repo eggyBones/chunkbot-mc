@@ -120,7 +120,8 @@ export class SurvivalTracker {
   /** Server-stated stack of each item entity (its own metadata packet; C3 authority, never a label). */
   private readonly drops = new Map<number, DropStackFacts>();
   /** First-announced position of each item entity (spawn_entity) on this connection/life. */
-  private readonly firstSeen = new Map<number, { x: number; y: number; z: number }>();
+  private readonly firstSeen = new Map<number, { x: number; y: number; z: number; incarnation: number }>();
+  private entitySerial = 0;
   /** Entities the server announced as something other than an item (e.g. experience orbs). */
   private readonly nonItemEntities = new Set<number>();
   /** Kind of entities this bot collected recently (outlives entity_destroy; bounded). */
@@ -205,7 +206,7 @@ export class SurvivalTracker {
       this.itemEntities.add(p.entityId);
       if (this.itemEntities.size > 4_000) this.itemEntities.delete(this.itemEntities.values().next().value as number);
       if (Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)) {
-        this.firstSeen.set(p.entityId, { x: p.x as number, y: p.y as number, z: p.z as number });
+        this.firstSeen.set(p.entityId, { x: p.x as number, y: p.y as number, z: p.z as number, incarnation: ++this.entitySerial });
         if (this.firstSeen.size > 4_000) this.firstSeen.delete(this.firstSeen.keys().next().value as number);
       }
     });
@@ -231,14 +232,14 @@ export class SurvivalTracker {
         return;
       }
       const at = this.firstSeen.get(p.collectedEntityId);
-      this.emit({ type: 'own_item_collect', connectionEpoch: this.opts.connectionEpoch, entityId: p.collectedEntityId, count, facts: facts ? { ...facts, meta: { ...facts.meta } } : undefined, firstSeenAt: at ? { ...at } : undefined, atMs: this.now() });
+      this.emit({ type: 'own_item_collect', connectionEpoch: this.opts.connectionEpoch, entityId: p.collectedEntityId, count, facts: facts ? { ...facts, meta: { ...facts.meta } } : undefined, firstSeenAt: at ? { x: at.x, y: at.y, z: at.z } : undefined, atMs: this.now() });
     });
     on('entity_metadata', (p: { entityId: number; metadata?: Array<{ key: number; type: string; value: unknown }> }) => {
       if (!this.itemEntities.has(p.entityId) || !this.opts) return;
       for (const m of p.metadata ?? []) {
         if (m.key !== ITEM_STACK_KEY || m.type !== 'item_stack') continue;
         const parsed = parseSlot(m.value as RawSlot, this.opts.registry);
-        if (parsed) this.drops.set(p.entityId, { entityId: p.entityId, key: parsed.key, count: parsed.count, meta: parsed.meta, atMs: this.now() });
+        if (parsed) this.drops.set(p.entityId, { entityId: p.entityId, incarnation: this.firstSeen.get(p.entityId)?.incarnation ?? 0, key: parsed.key, count: parsed.count, meta: parsed.meta, atMs: this.now() });
         else this.drops.delete(p.entityId);
         if (this.drops.size > 2_000) this.drops.delete(this.drops.keys().next().value as number);
       }
@@ -467,6 +468,12 @@ export class SurvivalTracker {
   dropStack(entityId: number): DropStackFacts | undefined {
     const d = this.drops.get(entityId);
     return d ? { ...d, meta: { ...d.meta } } : undefined;
+  }
+
+  /** First server announcement of this current entity incarnation, never its later moved position. */
+  dropFirstSeenAt(entityId: number): { x: number; y: number; z: number } | undefined {
+    const at = this.firstSeen.get(entityId);
+    return at ? { x: at.x, y: at.y, z: at.z } : undefined;
   }
 
   /** Stack stated at an own collect packet; survives entity_destroy for bounded action settlement only. */

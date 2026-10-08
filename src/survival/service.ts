@@ -200,6 +200,10 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   private readonly syncBaselines = new Map<string, { connectionEpoch: number; counts: Map<string, number>; reported: Map<string, number> }>();
   private dimensionValue: string | undefined;
   private unsubscribeTracker: (() => void) | undefined;
+  /** Only entities frozen by an executing recovery pickup plan defer packet credit to its settlement. */
+  private readonly collectPlans = new Set<{ fence: { goalId: string; goalEpoch: number; connectionEpoch: number }; episodeId: string; ids: Map<number, number>; unsettled: Set<number> }>();
+  private collectSerial = 0;
+  private readonly passiveCollects: Array<{ serial: number; connectionEpoch: number; entityId: number; count: number; returned?: { key: string; count: number }; incidentalRecorded: boolean }> = [];
 
   constructor(options: SurvivalServiceOptions) {
     this.options = options;
@@ -328,6 +332,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   }
 
   async close(): Promise<void> {
+    this.abandonCollectPlans();
     await this.flush();
     if (this.book && this.book.version !== this.persistedVersion && this.store?.canWrite) {
       await this.store.write(this.book.snapshot());
@@ -340,6 +345,8 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   // ------------------------------------------------------------ lifecycle
 
   attachConnection(source: SurvivalPacketSource, ctx: { connectionEpoch: number; selfPosition: () => { dimension: string; at: { x: number; y: number; z: number } } | undefined; containerLayout?: () => { id: number; inventoryStart: number } | undefined; seed?: Parameters<SurvivalTracker['attach']>[1]['seed'] }): void {
+    this.abandonCollectPlans();
+    this.passiveCollects.length = 0;
     this.tracker.attach(source, { connectionEpoch: ctx.connectionEpoch, registry: this.options.registry, now: this.options.now, selfPosition: ctx.selfPosition, ...(ctx.containerLayout ? { containerLayout: ctx.containerLayout } : {}), ...(ctx.seed ? { seed: ctx.seed } : {}) });
     this.record({ type: 'survival_tracker_attached', connectionEpoch: ctx.connectionEpoch, seeded: Boolean(ctx.seed) });
   }
@@ -354,20 +361,25 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
         this.dimensionValue = event.info.dimension;
         return;
       case 'death':
+        this.abandonCollectPlans();
         this.tracker.ensureDeathCaptured();
         this.allowances.revokeFor(undefined, 'death');
         this.pending.clear();
         return;
       case 'respawn':
+        this.abandonCollectPlans();
+        this.passiveCollects.length = 0;
         this.dimensionValue = event.dimension;
         this.pending.clear();
         return;
       case 'dimension_change':
+        this.abandonCollectPlans();
         this.dimensionValue = event.to;
         this.allowances.revokeFor(undefined, 'dimension_change');
         this.pending.clear();
         return;
       case 'ended':
+        this.abandonCollectPlans();
         this.allowances.revokeFor(undefined, 'connection_ended');
         this.pending.clear();
         this.syncBaselines.clear();
@@ -701,6 +713,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       return;
     }
     this.active = undefined;
+    this.abandonCollectPlans();
     this.allowances.revokeFor(a.goalEpoch, `goal_${end.reason}`);
     const cfg = this.cfg;
     if (!cfg) return;
@@ -962,6 +975,10 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     return this.tracker.dropStack(entityId);
   }
 
+  dropFirstSeenAt(connectionEpoch: number, entityId: number): { x: number; y: number; z: number } | undefined {
+    return this.tracker.connectionEpoch === connectionEpoch ? this.tracker.dropFirstSeenAt(entityId) : undefined;
+  }
+
   /** Packet-time own-collect stack, retained through destroy; never used to authorize a live target. */
   collectedFacts(connectionEpoch: number, entityId: number): DropStackFacts | undefined {
     return this.tracker.connectionEpoch === connectionEpoch ? this.tracker.collectedStack(entityId) : undefined;
@@ -983,7 +1000,20 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     if ('error' in t) return t;
     const e = this.book?.get(t.episodeId);
     if (!e) return { error: 'episode_not_open', detail: 'the recovery episode is not open' };
-    return this.book?.identityStatus(e, key, meta) ?? 'unproven';
+    const identity = this.book?.identityStatus(e, key, meta) ?? 'unproven';
+    if (identity !== 'not_required') return identity;
+    // Ordinary stacks also carry components. A matching key cannot authorize foreign named/damaged supplies.
+    const lost = e.lastAlive.stacks.filter((s) => s.key === key);
+    if (e.lastAlive.source !== 'server_packets' || meta?.metadata !== 'server_slot' || !meta.digest || lost.some((s) => !s.meta.digest || s.meta.metadata !== 'server_slot')) return 'unproven';
+    return lost.some((s) => s.meta.digest === meta.digest) ? 'not_required' : 'mismatch';
+  }
+
+  /** Still-missing count for a valuable/component-distinct identity; whole-key room cannot replace it. */
+  dropIdentityRemaining(fence: { goalEpoch: number; connectionEpoch: number; dimension: string }, key: string, digest: string): number {
+    const target = this.recoveryTarget(fence);
+    if ('error' in target) return 0;
+    const m = this.book?.get(target.episodeId)?.manifest?.missing.find((x) => x.key === key);
+    return m?.identities?.find((x) => x.digest === digest)?.count ?? 0;
   }
 
   /** go_to_death_site arrived (fenced). */
@@ -1061,15 +1091,79 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
 
   // ------------------------------------------------------------ C12 ContinuationSurvivalPort (approved, P 4409ba1)
 
+  /** A frozen skill plan owns settlement of these entities only; other collector paths remain observable. */
+  recoveryCollectPlan(fence: { goalId: string; goalEpoch: number; connectionEpoch: number }): { reserve(entityId: number): void; settled(entityId: number): void; close(): void } {
+    const a = this.active;
+    if (!a?.episodeId || a.routine !== 'death_recovery' || a.goalId !== fence.goalId || a.goalEpoch !== fence.goalEpoch || a.connectionEpoch !== fence.connectionEpoch || this.collectPlans.size >= 16) return { reserve: () => undefined, settled: () => undefined, close: () => undefined };
+    const plan = { fence: { ...fence }, episodeId: a.episodeId, ids: new Map<number, number>(), unsettled: new Set<number>() };
+    this.collectPlans.add(plan);
+    return { reserve: (id) => { const facts = this.dropFacts(fence.connectionEpoch, id); if (facts && this.collectPlans.has(plan) && plan.ids.size < 256) plan.ids.set(id, facts.incarnation); }, settled: (id) => { plan.unsettled.delete(id); }, close: () => {
+      if (this.collectPlans.has(plan)) this.markUnsettledCollectPlan(plan);
+      this.collectPlans.delete(plan);
+    } };
+  }
+
+  private markUnsettledCollectPlan(plan: { episodeId: string; unsettled: Set<number> }): void {
+    if (!plan.unsettled.size) return;
+    this.incidents.markEpisodeAmbiguous(plan.episodeId, 'frozen_plan_settlement_incomplete');
+    this.record({ type: 'survival_incident_attribution_unknown', episodeId: plan.episodeId, reason: 'frozen_plan_settlement_incomplete', entities: [...plan.unsettled] });
+  }
+
+  private abandonCollectPlans(): void {
+    for (const p of this.collectPlans) this.markUnsettledCollectPlan(p);
+    this.collectPlans.clear();
+  }
+
+  /**
+   * Consume an already processed passive packet for ONE action effect report. Match packet order/count,
+   * not independently sampled tracker/journal timestamps (which can differ even on the same packet).
+   */
+  collectCursor(): number { return this.collectSerial; }
+
+  takePassiveCollect(after: number, epoch: number, entityId: number, count: number): { returned?: { key: string; count: number }; incidentalRecorded: boolean } | undefined {
+    const i = this.passiveCollects.findIndex((c) => c.serial > after && c.connectionEpoch === epoch && c.entityId === entityId && c.count === count);
+    if (i < 0) return undefined;
+    return this.passiveCollects.splice(i, 1)[0];
+  }
+
   /** Exact own item returns outside recovery; unplaceable own collects taint lineage through every collector path. */
   private onOwnCollect(e: Extract<TrackerEvent, { type: 'own_item_collect' | 'own_unknown_collect' }>): void {
     const cfg = this.cfg;
     if (!cfg) return;
-    // The frozen C3 plan credits stated recovery pickups once via recordRegain. An unknown collect cannot be in
-    // that plan: keep its ambiguity even while recovery runs, independently of incidental effect reporting.
-    if (e.facts && this.active?.routine === 'death_recovery' && this.active.connectionEpoch === e.connectionEpoch) return;
+    const serial = ++this.collectSerial;
+    const a = this.active;
+    const plan = a && [...this.collectPlans].find((p) => p.fence.goalId === a.goalId && p.fence.goalEpoch === a.goalEpoch && p.fence.connectionEpoch === e.connectionEpoch && p.ids.has(e.entityId));
+    const planned = Boolean(plan);
+    this.record({ type: 'survival_own_collect', connectionEpoch: e.connectionEpoch, entityId: e.entityId, count: e.count, packetAtMs: e.atMs, key: e.facts?.key ?? null, stackCount: e.facts?.count ?? null, incarnation: e.facts?.incarnation ?? null, digest: e.facts?.meta.digest ?? null, firstSeenAt: e.firstSeenAt ?? null, dimension: this.dimensionValue ?? null, goalId: a?.goalId ?? null, settlement: planned && e.facts ? 'frozen_plan' : 'packet_attribution' });
+    // Only a stated entity actually frozen by a skill plan defers credit. Route/ordinary/passive collects must
+    // reach the incident book even while supporting recovery owns the goal. Unknown collects always taint.
+    if (plan && e.facts) {
+      if (plan.ids.get(e.entityId) === e.facts.incarnation) { plan.unsettled.add(e.entityId); return; }
+      this.incidents.markEpisodeAmbiguous(plan.episodeId, 'frozen_entity_replaced');
+      this.record({ type: 'survival_incident_attribution_unknown', episodeId: plan.episodeId, reason: 'frozen_entity_replaced', entityId: e.entityId });
+      const recorded = this.recordIncidental(plan.fence, { key: e.facts.key, count: e.count, uncertainReturn: true, detail: 'server reused a frozen pickup entity id; the new entity is not authorized by the old plan' });
+      this.passiveCollects.push({ serial, connectionEpoch: e.connectionEpoch, entityId: e.entityId, count: e.count, incidentalRecorded: recorded });
+      if (this.passiveCollects.length > 256) this.passiveCollects.shift();
+      return;
+    }
     const r = this.incidents.ownCollect({ connectionEpoch: e.connectionEpoch, count: e.count, facts: e.facts, firstSeenAt: e.firstSeenAt }, this.dimensionValue, cfg.recovery.searchRadius);
-    if (r.attributed) this.record({ type: 'survival_incident_return', incidentId: r.attributed.incidentId, key: r.attributed.key, count: r.attributed.count, collector: 'outside_recovery' });
+    if (r.attributed) {
+      this.passiveCollects.push({ serial, connectionEpoch: e.connectionEpoch, entityId: e.entityId, count: e.count, returned: { key: r.attributed.key, count: r.attributed.count }, incidentalRecorded: false });
+      const episodeId = this.incidents.episodeOf(r.attributed.incidentId);
+      const episode = episodeId ? this.book?.get(episodeId) : undefined;
+      const n = episode && this.book ? this.book.regain(episode, r.attributed.key, r.attributed.count, e.atMs, e.facts?.meta, 'server_attributed_collect') : 0;
+      if (n > 0 && episode) {
+        const b = this.syncBaselines.get(episode.episodeId);
+        if (b) b.reported.set(r.attributed.key, (b.reported.get(r.attributed.key) ?? 0) + n);
+        if (episode.incidentFactId) this.memoryUpdate(episode.incidentFactId, { regained: [{ key: r.attributed.key, count: n }] }, `server-attributed passive pickup of ${n} ${r.attributed.key} from the own incident`);
+        this.persistSoon();
+      }
+      this.record({ type: 'survival_incident_return', incidentId: r.attributed.incidentId, episodeId: episodeId ?? null, entityId: e.entityId, packetAtMs: e.atMs, key: r.attributed.key, count: r.attributed.count, episodeCounted: n, collector: a?.routine === 'death_recovery' ? 'during_recovery' : 'outside_recovery' });
+    } else if (a?.routine === 'death_recovery' && a.connectionEpoch === e.connectionEpoch) {
+      const recorded = this.recordIncidental(a, { ...(e.facts ? { key: e.facts.key } : {}), count: e.count, detail: 'own server collect outside a frozen recovery plan; not attributed to this incident' });
+      this.passiveCollects.push({ serial, connectionEpoch: e.connectionEpoch, entityId: e.entityId, count: e.count, incidentalRecorded: recorded });
+    }
+    if (this.passiveCollects.length > 256) this.passiveCollects.splice(0, this.passiveCollects.length - 256);
     if (r.ambiguous?.length) this.record({ type: 'survival_incident_attribution_unknown', incidents: r.ambiguous, entityId: e.entityId, key: e.facts?.key ?? null, count: e.count });
   }
 
