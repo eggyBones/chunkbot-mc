@@ -63,7 +63,8 @@ import { execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { insideBox, isEntryPoint, type Box } from './locator-live-check.ts';
 import type { FaultTurn } from './lib/fault-codex.ts';
-import { actionIntervals, parseOwnerServerRead, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, type ObserverSample } from './lib/locator-ordinary-oracles.ts';
+import { actionIntervals, parseOwnerServerRead, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, visibleOwnerConsistency, type ObserverSample } from './lib/locator-ordinary-oracles.ts';
+import { startVisibilityCapture } from './lib/locator-ordinary-visibility-capture.ts';
 import { captureStationaryPosition, originalPositionTarget, POSITION_SETTLE, type PlayerPositionRead, type PositionScope, type PositionTarget, type StationaryPositionProof } from './lib/locator-ordinary-origin.ts';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -264,10 +265,27 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   // Separate read-only truth for a diagnostic interval; never sent to the app/models.
   const ownerServerRead = async () => {
     const fromMs = Date.now();
-    const position = await rcon(`data get entity ${OWNER} Pos`, false);
-    const uuid = await rcon(`data get entity ${OWNER} UUID`, false);
-    const dimension = await rcon(`data get entity ${OWNER} Dimension`, false);
+    const field = (name: string) => {
+      const remainingMs = fromMs + 1_500 - Date.now();
+      assert(remainingMs > 0, 'owner visibility read exceeded its bounded interval');
+      return rcon(`data get entity ${OWNER} ${name}`, false, remainingMs);
+    };
+    const position = await field('Pos');
+    const uuid = await field('UUID');
+    const dimension = await field('Dimension');
     return parseOwnerServerRead(OWNER, { position, uuid, dimension }, fromMs, Date.now());
+  };
+  const botServerRead = async () => {
+    const fromMs = Date.now();
+    const field = (name: string) => {
+      const remainingMs = fromMs + 1_500 - Date.now();
+      assert(remainingMs > 0, 'bot visibility read exceeded its bounded interval');
+      return rcon(`data get entity ${BOT} ${name}`, false, remainingMs);
+    };
+    const position = await field('Pos');
+    const uuid = await field('UUID');
+    const dimension = await field('Dimension');
+    return parseOwnerServerRead(BOT, { position, uuid, dimension }, fromMs, Date.now());
   };
   /** The ONLY teleport path: a declared destination checked against the footprint before any RCON. */
   const tp = async (player: string, key: keyof typeof ORD_TELEPORTS | 'netherRoof', rotation = '') => {
@@ -371,6 +389,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   const events = () => readJsonl(eventsPath);
   const tOf = (e: Json) => Date.parse(String(e.t));
   const positionChecks: Json[] = [];
+  let visibilityCapture: ReturnType<typeof startVisibilityCapture> | undefined;
   const positionScope = (): PositionScope => {
     const ev = events(), ready = ev.filter((e) => e.type === 'connection_ready').at(-1);
     assert(ready && !ev.some((e) => e.type === 'connection_ended' && e.connectionEpoch === ready.connectionEpoch && tOf(e) >= tOf(ready)), 'position capture requires a current owned ready connection');
@@ -494,6 +513,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   const observe = async (bot: P, ownerAt: P | null, serverAtMs: number) => {
     assert(Date.now() - serverAtMs <= 1_500, 'observation bot sample is stale');
     const before = await ownerServerRead();
+    const botBefore = await botServerRead();
     const readyBefore = events().filter((e) => e.type === 'connection_ready').at(-1);
     const from = cli.length;
     const requestedAtMs = Date.now();
@@ -501,11 +521,12 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     const line = await lineSince(/^\[diag-json\] \{"kind":"observe"/, from, 10_000);
     const snapshot = (JSON.parse(line.text.slice('[diag-json] '.length)) as Json).snapshot as Json;
     const after = await ownerServerRead();
+    const botAfter = await botServerRead();
     const readyAfter = events().filter((e) => e.type === 'connection_ready').at(-1);
     const dashboard = existsSync(dashboardPath) ? JSON.parse(readFileSync(dashboardPath, 'utf8')) as Json : {};
     const runId = basename(dirname(eventsPath));
     const row: ObserverSample = { runId, atMs: snapshot.takenAtMs, serverAtMs: before.toMs, bot, owner: ownerAt, snapshot, dashboard, scenario,
-      capture: { requestedAtMs, receivedAtMs: line.atMs, runId, connectionEpochBefore: readyBefore?.connectionEpoch, connectionEpochAfter: readyAfter?.connectionEpoch, before, after } };
+      capture: { requestedAtMs, receivedAtMs: line.atMs, runId, connectionEpochBefore: readyBefore?.connectionEpoch, connectionEpochAfter: readyAfter?.connectionEpoch, before, after, botBefore, botAfter } };
     observations.push(row);
     appendFileSync(join(outDir, 'observations.jsonl'), `${JSON.stringify(row)}\n`);
     return snapshot;
@@ -552,14 +573,18 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
       const ready = events().filter((e) => e.type === 'connection_ready' && tOf(e) <= atMs).at(-1);
       assert(ready && own, 'privacy scan lacks current connection/self');
       const obs = input.observation ?? input.state?.observation;
+      let visibility;
       if (obs.owner?.visible === true) {
-        const shown = obs.owner.at;
-        assert(sample.owner && shown && Math.hypot(shown.x - sample.owner.x, shown.y - sample.owner.y, shown.z - sample.owner.z) <= 0.18 && dist(sample.bot, sample.owner) <= 32.2, 'model-visible owner claim disagrees with server visibility distance/position');
-        allowed.push({ source, atMs, path: 'observation.owner.at', reason: 'current visible owner independently confirmed by server sample', serverAtMs: sample.atMs, at: shown });
-        return;
-      }
-      hiddenRequests += 1;
-      const result = privacyOracle(input, { runId: basename(dirname(eventsPath)), atMs, owner: sample.owner ?? owner, bot: sample.bot, ownerIdentity, connectionEpoch: ready.connectionEpoch, dimension: obs.dimension, history });
+        const binding = source === 'jev_request'
+          ? events().filter((e) => e.type === 'task_round' && e.snapshotId === obs.snapshotId && tOf(e) <= atMs).at(-1)
+          : events().filter((e) => e.type === 'planner_turn_started' && e.snapshotId === obs.snapshotId && tOf(e) <= atMs).at(-1);
+        const consistency = visibleOwnerConsistency(obs, observations, { runId: basename(dirname(eventsPath)), atMs, goalEpoch: binding?.goalEpoch ?? binding?.snapshotGoalEpoch, connectionEpoch: ready.connectionEpoch, snapshotId: binding?.snapshotId, takenAtMs: binding?.snapshotTakenAtMs, ownerIdentity, botIdentity: { name: BOT, uuid: offlinePlayerUuid(BOT) } }, visibilityCapture?.reads ?? []);
+        visibility = consistency.proof;
+        if (!visibility) privacyFindings.push({ scenario, source, atMs, path: 'observation.owner', value: JSON.stringify(obs.owner), reason: consistency.errors.join('; '), snapshotId: obs.snapshotId, claimedTakenAtMs: obs.takenAtMs ?? null });
+        else allowed.push({ source, atMs, path: 'observation.owner.at', reason: 'identified visible owner independently bracketed at observation time', visibility });
+      } else hiddenRequests += 1;
+      // A visibility flag never exempts the rest of the actual model-visible request.
+      const result = privacyOracle(input, { runId: basename(dirname(eventsPath)), atMs, owner: sample.owner ?? owner, bot: visibility?.bot ?? sample.bot, ownerIdentity, connectionEpoch: ready.connectionEpoch, dimension: obs.dimension, history, ...(visibility ? { visibility } : {}) });
       for (const hit of result.findings) privacyFindings.push({ scenario, source, atMs, ...hit });
       for (const hit of result.allowed) allowed.push({ source, atMs, ...hit });
     };
@@ -654,6 +679,16 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     assert(!events().some((e) => ['goal_admitted', 'skill_started', 'planner_turn_started', 'route_authorized'].includes(e.type)), 'gameplay work started during origin capture');
     owner = await fixturePlayer(OWNER);
     const o = () => owner as Bot;
+    const visibilityScope = () => ({ ...positionScope(), goalEpoch: events().filter((e) => e.type === 'goal_admitted').at(-1)?.epoch ?? 0 });
+    visibilityCapture = startVisibilityCapture({
+      read: async () => {
+        const scopeBefore = visibilityScope();
+        const owner = await ownerServerRead(), bot = await botServerRead();
+        return { scopeBefore, scopeAfter: visibilityScope(), owner, bot };
+      },
+      wait: (ms) => sleep(ms),
+      record: (row) => appendFileSync(join(outDir, 'visibility-reads.jsonl'), `${JSON.stringify({ scenario, ...row })}\n`),
+    });
 
     await check('O0', 'CLI ready with the locator and routes composed; the owner cue is tracked on this connection', async (ev) => {
       const loc = cli.lines.find((l) => l.text.startsWith('[chunkbot] locator: '))?.text ?? 'no locator line';
@@ -1022,6 +1057,8 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
   } catch (error) {
     results.push({ id: 'FATAL', title: 'ordinary harness run settled', pass: false, evidence: [error instanceof Error ? error.stack ?? error.message : String(error)], data: {} });
   } finally {
+    // Settle this harness-owned read tail before online cleanup, origin restoration or child shutdown.
+    await visibilityCapture?.stop();
     scenario = 'restore';
     const step = async (label: string, fn: () => Promise<unknown>) => {
       appendFileSync(join(outDir, 'commands.jsonl'), `${JSON.stringify({ atMs: Date.now(), scenario, phase: 'cleanup_intent', label })}\n`);
@@ -1078,9 +1115,12 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
     }
     for (const player of ownedPlayers) await step(`${player.username} owned connection ended`, () => quitPlayer(player));
     await step('loopback Jev callbacks/connections closed', async () => {
-      if (!jevServer) return;
-      jevServer.closeAllConnections();
-      await new Promise<void>((r, j) => jevServer!.close((error) => error ? j(error) : r()));
+      if (jevServer) {
+        jevServer.closeAllConnections();
+        await new Promise<void>((r, j) => jevServer!.close((error) => error ? j(error) : r()));
+      }
+      assert(!visibilityCapture || visibilityCapture.status().settled, 'visibility read callbacks remain active');
+      assert(!visibilityCapture?.status().failure && !visibilityCapture?.status().capped, 'visibility capture failed or reached its bounded read limit');
     });
     await step('zero final players', async () => {
       let list = '';
@@ -1111,6 +1151,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         privacyFindings,
         retainedFailure: { report: 'acceptance-native/var/live-check/2026-10-08T06-09-31-852Z-locator-ordinary/report.json', sha256: 'a2d00c656945a63eb083e170668f536f44cae08b29dcf94ecebb81f1fb255e6c', result: 'exit 1; 10/14; original evidence unchanged' },
         retainedLH9Failure: { report: 'acceptance-planner/var/live-check/2026-10-08T07-37-15-110Z-locator-ordinary/report.json', sha256: '3c76d9f6d18036dc802e1f9f46170d07247793857aa668a7de246a1d368074c3', result: '17d0c08; exit 1; 7/14; original evidence unchanged' },
+        retainedLH11Failure: { report: 'acceptance-native/var/live-check/2026-10-08T18-10-33-695Z-locator-ordinary/report.json', sha256: 'c2cbcc87f47c7cd6b309303f0e9007b4d81a3b33c631cb38f9359f7b2bb0c131', result: '26f1fa0/application88ebfc9; 26.1.2; exit 1; O1c fails; twelve behavior gates and RESTORE pass, both CLI exits 0 and all14 cleanup; original unchanged' },
         retainedLH10Failures: [
           { report: 'acceptance-native/var/live-check/2026-10-08T16-29-13-690Z-locator-ordinary/report.json', sha256: '747f92e663d6a5eefaa20757271c40e098b05c6303ffc9307acacfc97517b5ba', result: 'a0ae3f8; 26.1.2; exit 1; thirteen behavior gates pass, RESTORE fails; original evidence unchanged' },
           { report: 'acceptance-planner/var/live-check/2026-10-08T16-29-13-689Z-26.2-locator-ordinary/report.json', sha256: '0e39aa4353ce6476206d180253f42af19b4821725cbd23c6764c3cba79f52001', result: 'a0ae3f8; 26.2; exit 1; thirteen behavior gates pass, RESTORE fails; original evidence unchanged' },
@@ -1128,6 +1169,7 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         finalPositions,
         botOrigin: botStart ?? null,
         positionChecks,
+        visibilityCapture: visibilityCapture?.status() ?? null,
         observations,
       },
       null,
