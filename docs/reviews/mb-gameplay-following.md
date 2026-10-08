@@ -17,6 +17,8 @@ Worker L: native Claude Opus 5.5 (local DSH), worktree `gameplay-follow`, branch
 | `a3d80e2` | D1: default owner-statement age limit 600 s; freshness regressions |
 | `9a55e49` (branch `chunkbot/gameplay-follow-module`) | Module/harness milestone = `a9f3e00` + D1, without C12 |
 | `7a77aeb` | C12: `RouteLineage` (superset of P's approved `RouteCarry`), `nextLegIndex`, malformed-lineage guard |
+| `879c65e` | G6 correction: deterministic staging before every measured cue target; payload-identity helper; reproduction and same-chunk regressions |
+| `022e04f` (branch `chunkbot/gameplay-follow-module`) | Module line = `9a55e49` + the G6 correction, without C12 (rerun source) |
 | `283179a` | Two-sided bounded detour (switch once with a return-plus-search budget, ≤ 3 × 96 per episode), the observed obstacle reported when a window ends mid-detour, river/bridge dry-route tests, dynamic catalog verification in O0, model-visible catalog check in O1, P-L8 |
 
 Changed paths (ownership only): `src/locator/route-runner.ts`, `src/locator/terrain.ts`, `src/skills/locator.ts`, `scripts/locator-live-check.ts`, `scripts/locator-ordinary-live-check.ts` (new), `tests/locator-sim.ts` (new helper), `tests/locator-runner.test.ts`, `tests/locator-direction.test.ts` (new), `tests/locator-detour.test.ts` (new), `tests/locator-harness-guard.test.ts`, `tests/locator-ordinary-harness-guard.test.ts` (new), `tests/locator-composition.test.ts` (new), this file. No shared file, contract, config, vendor or `node_modules` edit.
@@ -184,6 +186,52 @@ Tests cover:
 `dist/cli.js` sha256 `de9409f3ddb24e918274db15435ad1a15d1c5a2896f93149e7799b58e0fa7553`.
 
 The ownerSeen/raw-moved correction (C1 above, `a9f3e00`) is complete: `ownerSeen` is now only an evidence field. No window continues on it; once the owner is lost, sideways or backward movement can only debit progress.
+
+## First 26.2 G6 run (coordinator, immutable `a9f3e00`) and the harness correction
+
+**Result** (retained unchanged by the coordinator): `var/gameplay-fixes/acceptance-follow/var/live-check/2026-10-08T02-11-26-781Z-26.2-locator/report.json`, with the log in `var/gameplay-fixes/locator-g6-262.log`. Exit 1. Lease `gameplay-root-262-locator-g6-01` released; `restoreFailures` empty; no block, rule or attribute changes.
+
+| Check | Result |
+| --- | --- |
+| vec3i cues | PASS, all 12 bearings |
+| azimuth cues | PASS, all 12 |
+| first movement (server truth: ≥ 6 moved, ≥ 5 projected, ≤ 45°) | PASS, all 12 |
+| chunk cues | 10 of 12 pass |
+
+The two chunk-cue failures are 179 → −179 and −89 → −91. In each, the oracle required a new statement since the teleport and found none, yet the current cue (`tracking west far chunk` / `tracking north far chunk`) was correct. No axis reversal was observed.
+
+**Cause.** Both targets of each wrap pair lie in ONE transmitted chunk: (−76, −63) and (−63, −76) at a 200-block distance from the negative base. The official chunk connection updates only when the source CHUNK changes, so no new packet was due. This is a harness oracle/setup defect, not a cue defect.
+
+**Correction** (`879c65e` on the main line; `022e04f` on the module line):
+- **Staging.** Before EACH measured target, the owner is teleported to the declared staging point `f1Stage` (base + 8 east: block precision, inside the f1Teleports box, a payload different from every target). A new block-precision staging statement is REQUIRED.
+- **Measurement.** The target is then measured from after staging. It still requires a NEW statement of the oracle variant, an actionable cue and the true sector. No criterion is weakened and no undue packet is claimed.
+- **Helpers.** `f1PayloadKeys` and `payloadsDisjoint` encode the official payload identity: azimuth in 0.5° buckets, chunk, block; both near the view border.
+
+**Regressions:**
+- **Guard (L-owned):**
+  - Without staging, exactly the two failed wrap pairs share a payload (view distance 6 and 10). This reproduces the live failure.
+  - With staging, every stage → target payload differs.
+  - A source check confirms the staged loop and the unweakened `ok` condition.
+- **Module:** moving within one chunk sends no new statement while the current cue stays correct with an honestly growing age; staging then makes the next target statement new again.
+
+**Rerun source:**
+- **Module line (recommended for the frozen G6 rerun):** `022e04f`, branch `chunkbot/gameplay-follow-module` = `a9f3e00` + D1 (`9a55e49`) + this correction. No C12. Verified in a throwaway `/tmp` copy (`git archive` + `npm ci`): typecheck 0, build 0, `npm test` 0 (837/837), doctor 0. The harness without a lease exits 2 with no output. `dist/cli.js` sha256 `de9409f3…7553`.
+- **Main line:** `879c65e` (module + C12). typecheck 0, build 0, `npm test` 0 (851/851), doctor 0.
+- **Commands** (26.2, then 26.1.2):
+
+  ```
+  node scripts/locator-live-check.ts --fixture-lease <id> --fixture 26.2 --gates g6
+  node scripts/locator-live-check.ts --fixture-lease <id> --gates g6
+  ```
+
+- **Footprint:** unchanged except the declared staging point (−992.5, −60, −1000.5). It lies inside f1Teleports; it is not a block write.
+
+## Canonical route lineage API (for P, through the coordinator)
+
+- **Type:** `RouteLineage` in `src/contracts/locator.ts`, with `ROUTE_LINEAGE_VERSION`, `RouteContinuationResult` and `RouteContinuationRefusal`.
+- **Methods:** `RoutePort.exportCarry(goalEpoch)`, `revokeWithCarry(reason, goalEpoch)` and `admitContinuation(lineage, admission)`, implemented by `RouteController`.
+- **P's step:** alias it in `continuation.ts` (`export type RouteCarry = RouteLineage;`) instead of keeping the duplicate declaration.
+- **Commits:** `8b24f28` + `7a77aeb` on the main line.
 
 ## C12 alignment with P's approved declaration (`4409ba1`, commit `7a77aeb`)
 
