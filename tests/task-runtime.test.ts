@@ -209,7 +209,8 @@ describe('task round observation metadata', () => {
       const req = h.decisions[0]!;
       const observation = (bodyFor('typesafe/jev-1.13', req).state as Record<string, unknown>)['observation'] as Record<string, unknown>;
       const round = h.store.ofType('task_round')[0]!;
-      const snapshot = snapshots[0]!;
+      const snapshot = snapshots.find((s) => s.id === req.snapshotId)!;
+      assert.ok(snapshot, 'the actual frozen request identifies its observation');
       assert.equal((observation['inventory'] as unknown[]).length, [24, 12, 6][level]);
       assert.equal(round['requestId'], req.requestId);
       assert.equal(round['taskId'], req.taskId);
@@ -217,8 +218,10 @@ describe('task round observation metadata', () => {
       assert.equal(round['goalEpoch'], req.goalEpoch, 'existing task ownership remains explicit');
       assert.deepEqual({ id: round['snapshotId'], time: round['snapshotTakenAtMs'], connection: round['connectionEpoch'], goal: round['snapshotGoalEpoch'] }, { id: snapshot.id, time: snapshot.takenAtMs, connection: snapshot.connectionEpoch, goal: snapshot.goalEpoch });
       assert.deepEqual({ id: observation['snapshotId'], time: observation['takenAtMs'], connection: observation['connectionEpoch'], goal: observation['goalEpoch'] }, { id: snapshot.id, time: snapshot.takenAtMs, connection: snapshot.connectionEpoch, goal: snapshot.goalEpoch });
-      assert.notEqual(round['snapshotId'], snapshots[1]!.id);
-      assert.notEqual(round['snapshotTakenAtMs'], snapshots[1]!.takenAtMs, 'fresh execution time does not relabel the frozen model request');
+      const dispatch = snapshots[snapshots.indexOf(snapshot) + 1]!;
+      assert.ok(dispatch, 'dispatch revalidates with a later observation');
+      assert.notEqual(round['snapshotId'], dispatch.id);
+      assert.notEqual(round['snapshotTakenAtMs'], dispatch.takenAtMs, 'fresh execution time does not relabel the frozen model request');
       assert.ok(requestBytes('typesafe/jev-1.13', req) <= maxRequestBytes);
       maxRequestBytes = requestBytes('typesafe/jev-1.13', req) - 1; // force the next real fitting level, without widening any ceiling
     }
@@ -538,6 +541,30 @@ describe('task runtime: immediate-safety hold seam (MB-FLOW-003-C11/C13 shared w
       return { status: 'clear' as const, waitedMs: 5, episodes: 1 };
     }
   }
+
+  it('a hold beginning during predicate resync prevents candidate/model work and resumes from fresh health after clear', async () => {
+    const h = new Harness(), safety = new FakeSafety();
+    h.world.set('blk-1', log('blk-1', 1));
+    h.evaluate = () => ({ status: h.executed.length ? 'satisfied' : 'unsatisfied' });
+    const deps = h.deps({ safety }), evaluate = deps.predicates.evaluate;
+    let first = true;
+    deps.predicates.evaluate = async (...args) => {
+      if (first) { first = false; await Promise.resolve(); h.health = 6; safety.held = { reason: 'episode', detail: 'local safety preempted predicate wait', episodeId: 'se-0004' }; }
+      return evaluate(...args);
+    };
+    const waitClear = safety.waitClear.bind(safety);
+    safety.waitClear = async (signal) => {
+      assert.equal(h.generateCalls, 0); assert.equal(h.decisions.length, 0); assert.equal(h.executed.length, 0);
+      const result = await waitClear(signal); h.health = 20; return result;
+    };
+    const result = await new TaskRuntime(deps).run(h.task());
+    assert.equal(result.status, 'completed'); assert.equal(safety.waits, 1);
+    assert.equal(result.decisions, 1); assert.equal(result.actions, 1); assert.equal(result.rounds, 3);
+    const observation = (h.decisions[0]!.state as Record<string, unknown>)['observation'] as Record<string, unknown>;
+    assert.equal((observation['self'] as Record<string, unknown>)['health'], 20);
+    const events = h.store.events.map((e) => e.type);
+    assert.ok(events.indexOf('task_safety_clear') < events.indexOf('task_round'));
+  });
 
   it('no candidate is dispatched and no Jev call is made while safety holds; work continues from fresh state when clear', async () => {
     const h = new Harness();

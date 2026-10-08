@@ -1,8 +1,8 @@
 // Generic task runtime (MB-V1-03). One admitted TaskSpec at a time:
 //
 //   bind completion baseline -> loop {
-//     evaluate verified completion (code) -> done? / guards (ownership, no
-//     progress, low health) -> current filtered snapshot -> candidates from the
+//     evaluate verified completion (code) -> done? -> fresh filtered snapshot
+//     -> guards (ownership, no progress, low health) -> candidates from the
 //     REGISTERED resolvers of the task's allowed capabilities -> freeze a
 //     bounded option set + epochs -> one Jev choice (code-generated ID only) ->
 //     ownership check after the await -> revalidate the choice against a fresh
@@ -320,12 +320,14 @@ export class TaskRuntime implements TaskExecutionPort {
         }
         rounds += 1;
         // 1. Current filtered observation FIRST, so selector-based predicates see current visibility.
-        const snapshot = deps.perception.take(task.goalEpoch);
-        if (!snapshot) return finish('failed', 'not_connected', 'no observation: the game connection is not ready');
-        if (snapshot.connectionEpoch !== deps.connectionEpoch()) throw new Revoked();
+        const completionSnapshot = deps.perception.take(task.goalEpoch);
+        assertCurrent();
+        if (!completionSnapshot) return finish('failed', 'not_connected', 'no observation: the game connection is not ready');
+        if (completionSnapshot.connectionEpoch !== deps.connectionEpoch()) throw new Revoked();
         // 2. Verified completion, evaluated by code between actions.
         const evaluation = await deps.predicates.evaluate(bound, task.signal);
         assertCurrent();
+        if (completionSnapshot.connectionEpoch !== deps.connectionEpoch()) throw new Revoked();
         if (improved(completion, evaluation)) {
           lastProgressAt = clock.now();
           unproductive.clear();
@@ -334,6 +336,14 @@ export class TaskRuntime implements TaskExecutionPort {
         emit('task_completion', { round: rounds, status: evaluation.status, detail: clip(evaluation.detail, 300), evidence: evaluation.evidence as Record<string, JsonValue> });
         if (task.mode === 'complete' && evaluation.status === 'satisfied') return finish('completed', 'completion_verified', evaluation.detail);
         if (task.mode === 'maintain' && evaluation.status === 'satisfied') lastProgressAt = clock.now();
+        // Server-backed predicate evaluation may await a resync. Freeze guard,
+        // candidate and model state AFTER that await; never adopt a replacement
+        // connection or give the predicate's older visibility dispatch authority.
+        const snapshot = deps.perception.take(task.goalEpoch);
+        assertCurrent();
+        if (!snapshot) return finish('failed', 'not_connected', 'no observation: the game connection is not ready');
+        if (snapshot.connectionEpoch !== completionSnapshot.connectionEpoch || snapshot.connectionEpoch !== deps.connectionEpoch()) throw new Revoked();
+        if (deps.safety?.hold()) continue; // a hold that began during evaluation waits at the existing loop-top gate
         // 3. Guards: no meaningful progress on the unmet outcome within the window; low health.
         if (clock.now() - lastProgressAt > deps.limits.noProgressMs) {
           return finish('blocked', 'no_progress', `no outcome or owned-motion progress for ${Math.round((clock.now() - lastProgressAt) / 1000)}s (window ${Math.round(deps.limits.noProgressMs / 1000)}s); last completion check: ${evaluation.detail}`);
