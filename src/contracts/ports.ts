@@ -111,7 +111,14 @@ export interface CapabilityRegistry {
 /** Who an execution belongs to. Goal-owned work is fenced by the goal epoch. */
 export type ExecutionOwner =
   | { kind: 'goal'; goalEpoch: Epoch; goalId: string; taskId: string }
-  | { kind: 'diagnostic'; diagnosticId: string };
+  | { kind: 'diagnostic'; diagnosticId: string }
+  /**
+   * MB-FLOW-003-C11/C13: ONE code-built immediate-safety dispatch under a
+   * finite, code-owned grant (the safety service constructs it; a goal/task
+   * dispatch never carries it). The lease fence checks the grant on every
+   * command (expiry, epoch, authority, alive) through the same single lease.
+   */
+  | { kind: 'safety'; grantId: string; episodeId: string; connectionEpoch: number };
 
 export interface SkillExecutor {
   readiness(): Readiness;

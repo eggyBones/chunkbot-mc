@@ -182,7 +182,7 @@ export class SkillRuntime {
     ]);
     this.leases = new ActuatorLeases({
       clock,
-      ownerCurrent: (owner: ExecutionOwner) => (owner.kind === 'goal' ? owner.goalEpoch === options.goalEpoch() : options.diagnosticCurrent(owner.diagnosticId)),
+      ownerCurrent: (owner: ExecutionOwner) => (owner.kind === 'goal' ? owner.goalEpoch === options.goalEpoch() : owner.kind === 'diagnostic' ? options.diagnosticCurrent(owner.diagnosticId) : this.safetyGrantCurrent(owner.grantId)),
       connectionEpoch: options.connectionEpoch,
       clearShared: () => clearSharedControls(options.session()?.bot),
       record: (event) => store.record({ ...event, type: String(event['type'] ?? 'lease_event') }),
@@ -351,6 +351,36 @@ export class SkillRuntime {
         this.options.store.record({ type: 'route_admission_error', goalId: admission.goalId, message: error instanceof Error ? error.message : String(error) });
       }
     }
+  }
+
+  // ------------------------------------------------------------ MB-FLOW-003-C11/C13 shared safety seams (structural)
+
+  /** Installed by the immediate-safety service composition (W's SafetyPort.grantCurrent); absent: every safety owner is refused. */
+  private grantCheck: ((grantId: string) => boolean) | undefined;
+
+  installSafetyGrantCheck(check: ((grantId: string) => boolean) | undefined): void {
+    this.grantCheck = check;
+  }
+
+  /** Lease fence for `{ kind: 'safety' }` owners: fail closed without an installed, current grant. */
+  safetyGrantCurrent(grantId: string): boolean {
+    try {
+      return this.grantCheck?.(grantId) ?? false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * SafetyActuationPort over the existing single lease and executor (no second
+   * controller): synchronous preemption of a non-safety lease (the goal stays
+   * admitted) and execution of ONE code-built safety candidate.
+   */
+  safetyActuation(): { preemptCurrent(reason: 'safety_preempt'): { revoked: boolean; holder: string | null; clearMs: number | null }; execute(candidate: Parameters<SkillExecutorImpl['execute']>[0], signal: AbortSignal, owner: Extract<ExecutionOwner, { kind: 'safety' }>): ReturnType<SkillExecutorImpl['execute']> } {
+    return {
+      preemptCurrent: (reason) => this.leases.preemptForSafety(reason),
+      execute: (candidate, signal, owner) => this.executor.execute(candidate, signal, owner),
+    };
   }
 
   /** MB-FLOW-003-C12 (synchronous, before lifecycle invalidation): the ORIGINAL admission anchor of a goal epoch. */

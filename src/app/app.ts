@@ -107,6 +107,18 @@ export interface AppExtensions {
   decisionBudget?: GoalEngineDeps['decisionBudget'];
   /** MB-FLOW-003-C11/C13: immediate-safety authority nudge (see GoalEngineDeps.onSafetyAuthorityChanged). */
   onSafetyAuthorityChanged?: GoalEngineDeps['onSafetyAuthorityChanged'];
+  /** MB-FLOW-003-C11/C13: the admitted goal's travel bounds for the safety authority (retreat targets prefer them). */
+  travelBounds?(): { anchor: { x: number; y: number; z: number }; radius: number } | undefined;
+}
+
+/** Fresh explicit immediate-safety authority (W's SafetyAuthority shape), computed synchronously on every call. */
+export interface AppSafetyAuthority {
+  basis: 'owner_goal' | 'unpaused' | 'none';
+  detail: string;
+  connection: { ready: boolean; connectionEpoch: number; dimension: string } | null;
+  alive: boolean;
+  goal: { goalId: string; goalEpoch: number; source: 'owner' | 'support' | 'progression' | 'diagnostic' | 'unknown' } | null;
+  travel: { anchor: { x: number; y: number; z: number }; radius: number } | null;
 }
 
 /** Exit code used when Chunkbot shuts down because its connection ended (no operator terminal). */
@@ -239,6 +251,22 @@ export class ChunkbotApp implements CommandTarget {
     this.unsubscribe.push(deps.game.onLifecycle((event) => this.onLifecycle(event)));
     this.unsubscribe.push(deps.game.onChat((envelope) => this.onChat(envelope)));
     deps.store.record({ type: 'run_started', ...deps.runFacts });
+  }
+
+  /**
+   * MB-FLOW-003-C11/C13 authority host: the engine's basis (manual owner goal
+   * even while the automatic latch is set; explicit stop without a newer owner
+   * goal is none) plus connection, alive and travel facts. Independent of
+   * memory/autonomy/survival configuration. Dead or not ready -> none.
+   */
+  safetyAuthority(): AppSafetyAuthority {
+    const engine = this.engine.safetyAuthority();
+    const ready = this.deps.game.state === 'ready';
+    const info = this.deps.game.statusInfo();
+    const alive = ready && (info.health ?? 0) > 0;
+    const connection = ready ? { ready: true, connectionEpoch: this.deps.game.connectionEpoch, dimension: String(info.dimension ?? 'unknown') } : null;
+    const basis = alive ? engine.basis : 'none';
+    return { basis, detail: alive ? engine.detail : ready ? 'not alive (respawn pending)' : 'not connected', connection, alive, goal: engine.goal, travel: this.deps.extensions?.travelBounds?.() ?? null };
   }
 
   get connectionState(): GamePort['state'] {

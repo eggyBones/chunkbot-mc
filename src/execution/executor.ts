@@ -153,6 +153,8 @@ export class SkillExecutorImpl implements SkillExecutor {
     if (owner.kind === 'goal' && candidate.goalEpoch !== this.deps.goalEpoch()) {
       return finish({ status: 'precondition_failed', reason: 'stale_goal_epoch', effect: 'candidate belongs to a goal that no longer owns control' });
     }
+    // A safety dispatch is fenced by its own finite grant (displacement/time/action bounds of the
+    // safety service) and never by a goal epoch or goal travel anchor.
     // Goal-anchored travel bounds: the anchor is captured at goal ADMISSION
     // (SkillRuntime.onGoalAdmitted) and never set or moved by execution. A goal
     // action whose epoch does not own the current anchor is refused.
