@@ -26,6 +26,62 @@ export function survivalScopeDirectory(root: string, scope: MemoryScope): string
   return join(root, scope.worldProfile, `r${scope.worldRevision}`, scope.botProfile);
 }
 
+/**
+ * Schema v1 -> v2 (pure; plain JSON in, plain JSON out). v1 stored a manifest
+ * item's REMAINING amount in `count` (regains decremented it) and recorded
+ * each server-confirmed regain in the episode's `regained` list. v2 needs the
+ * ORIGINAL lost count plus a separate `regained` counter, so each item becomes
+ *   lost = v1 remaining + recorded regains of that key, regained = recorded regains,
+ * with the state derived from those counters. Nothing is invented: no regain
+ * that was not recorded, no item that was not in the manifest. A v1 `regained`
+ * label (code-generated only at count 0, which v1 could never write) keeps its
+ * recorded regains as both lost and regained; WITHOUT a recorded regain it
+ * becomes an explicit `unknown` remainder (never recovered evidence), and an
+ * episode `recovered` status is downgraded unless every item is regained. If v1's bounded regain list
+ * dropped old entries, the reconstructed lost count is LOWER than the truth,
+ * never higher, and the episode detail says the record was migrated.
+ */
+export function migrateV1Body(body: unknown): unknown {
+  if (!body || typeof body !== 'object') return body;
+  const b = structuredClone(body) as { episodes?: Array<Record<string, unknown>> };
+  for (const e of b.episodes ?? []) {
+    const regainedByKey = new Map<string, number>();
+    for (const r of (e['regained'] as Array<{ key?: unknown; count?: unknown }> | undefined) ?? []) {
+      if (typeof r.key === 'string' && typeof r.count === 'number' && r.count > 0) regainedByKey.set(r.key, (regainedByKey.get(r.key) ?? 0) + r.count);
+    }
+    const manifest = e['manifest'] as { missing?: Array<Record<string, unknown>> } | undefined;
+    for (const m of manifest?.missing ?? []) {
+      const key = String(m['key']);
+      const v1Count = typeof m['count'] === 'number' ? m['count'] : 0;
+      const recorded = regainedByKey.get(key) ?? 0;
+      if (m['state'] === 'regained') {
+        if (recorded > 0) {
+          // Only server-confirmed regains recorded in the episode count as regained evidence.
+          m['count'] = recorded;
+          m['regained'] = recorded;
+        } else {
+          // Inconsistent legacy label (code-generated v1 whole-key regains had count 0 and never persisted) with
+          // NO recorded server regain: kept as an explicit unknown remainder, never promoted to recovered evidence.
+          m['count'] = Math.max(1, v1Count);
+          m['regained'] = 0;
+          m['state'] = 'unknown';
+        }
+        continue;
+      }
+      m['count'] = v1Count + recorded;
+      m['regained'] = recorded;
+      if (m['state'] === 'missing' && recorded > 0) m['state'] = v1Count > 0 ? 'partially_regained' : 'regained';
+    }
+    // An episode labeled `recovered` is only kept when every migrated item is actually regained (no false full success).
+    const items = manifest?.missing ?? [];
+    if (e['status'] === 'recovered' && items.some((m) => m['state'] !== 'regained')) {
+      e['status'] = items.some((m) => typeof m['regained'] === 'number' && m['regained'] > 0) ? 'partially_recovered' : 'unknown';
+    }
+    if (typeof e['detail'] === 'string' && (manifest?.missing?.length ?? 0) > 0) e['detail'] = `${e['detail'] ? `${e['detail']}; ` : ''}migrated from survival schema v1`.slice(0, 200);
+  }
+  return b;
+}
+
 export function checksum(body: unknown): string {
   return `sha256:${createHash('sha256').update(JSON.stringify(body)).digest('hex')}`;
 }
@@ -103,6 +159,7 @@ export class SurvivalFileStore {
     const corrupt: number[] = [];
     let body: SurvivalStoreBody | undefined;
     let loaded = 0;
+    let loadedSchema = SURVIVAL_SCHEMA_VERSION as number;
     let newerSchema = false;
     for (const rev of revisions) {
       try {
@@ -111,13 +168,16 @@ export class SurvivalFileStore {
           newerSchema = true;
           break;
         }
-        const file = SurvivalStoreFileSchema.parse(raw);
-        if (file.checksum !== checksum(file.body)) throw new Error('checksum mismatch');
+        // The checksum covers the body exactly as written (a v1 body has no v2 defaults yet).
+        if (typeof raw['checksum'] !== 'string' || raw['checksum'] !== checksum(raw['body'])) throw new Error('checksum mismatch');
+        // v1 -> v2 migration AFTER the raw checksum and BEFORE the v2 schema (defaults and consistency rules).
+        const file = SurvivalStoreFileSchema.parse(raw['schemaVersion'] === 1 ? { ...raw, body: migrateV1Body(raw['body']) } : raw);
         const s = file.body.scope;
         const want = this.options.scope;
         if (s.worldProfile !== want.worldProfile || s.worldRevision !== want.worldRevision || s.botProfile !== want.botProfile) throw new Error('scope mismatch');
         body = file.body;
         loaded = rev;
+        loadedSchema = file.schemaVersion;
         break;
       } catch {
         corrupt.push(rev);
@@ -126,6 +186,7 @@ export class SurvivalFileStore {
     this.revision = Math.max(0, ...revisions);
     if (newerSchema) return { body: undefined, state: 'read_only', detail: `survival store was written by a newer schema; read-only (not overwritten)`, revision: this.revision, corrupt, discardedPartialWrites: discarded };
     if (!body && revisions.length > 0) return { body: undefined, state: 'read_only', detail: `no survival store revision verifies (${corrupt.length} unreadable); read-only, nothing replaced`, revision: this.revision, corrupt, discardedPartialWrites: discarded };
+    const migrated = !body || loadedSchema >= SURVIVAL_SCHEMA_VERSION ? '' : loadedSchema === 1 ? ` (schema v1 migrated to v${SURVIVAL_SCHEMA_VERSION}: lost = v1 remaining + recorded regains; nothing invented)` : ` (schema v${loadedSchema} read as v${SURVIVAL_SCHEMA_VERSION}: no checkpoint records)`;
     this.writable = this.lock();
     const state = !body ? 'empty' : corrupt.length > 0 ? 'recovered' : 'ready';
     const detail = !this.writable
@@ -133,8 +194,8 @@ export class SurvivalFileStore {
       : !body
         ? 'no survival episodes recorded yet'
         : corrupt.length > 0
-          ? `loaded revision ${loaded}; newer unreadable revision(s) ${corrupt.join(', ')} kept for inspection`
-          : `loaded revision ${loaded}`;
+          ? `loaded revision ${loaded}${migrated}; newer unreadable revision(s) ${corrupt.join(', ')} kept for inspection`
+          : `loaded revision ${loaded}${migrated}`;
     return { body, state: this.writable ? state : 'read_only', detail, revision: this.revision, corrupt, discardedPartialWrites: discarded };
   }
 
@@ -169,7 +230,9 @@ export class SurvivalFileStore {
     if (!this.writable) return Promise.resolve(undefined);
     const parsed = SurvivalStoreBodySchema.safeParse(body);
     if (!parsed.success) {
-      this.lastError = `invalid survival body: ${parsed.error.issues[0]?.message ?? 'invalid'}`;
+      // C9: name the exact invalid field so a rejected revision is diagnosable from the event alone.
+      const issue = parsed.error.issues[0];
+      this.lastError = `invalid survival body${issue?.path.length ? ` at ${issue.path.join('.')}` : ''}: ${issue?.message ?? 'invalid'}`;
       return Promise.resolve(undefined);
     }
     this.pendingCount += 1;

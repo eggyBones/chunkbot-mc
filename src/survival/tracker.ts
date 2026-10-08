@@ -58,8 +58,22 @@ export interface CapturedDeathRecord {
 export type TrackerEvent =
   | { type: 'death_captured'; death: CapturedDeathRecord }
   | { type: 'death_location_refined'; captureId: string; site: DeathSite }
-  | { type: 'respawn_ready'; connectionEpoch: number; inventory: InventoryFacts; vitals: Vitals | null }
+  /**
+   * Fresh respawn state. `inventory` is the FIRST full window-0 sync after the
+   * respawn packet (the authoritative respawn inventory, C10); `current` is the
+   * inventory when fresh state was reached and `packetsAfterSync` counts the
+   * inventory packets in between (e.g. passive pickups at the respawn point,
+   * which are never part of the respawn inventory).
+   */
+  | { type: 'respawn_ready'; connectionEpoch: number; inventory: InventoryFacts; current: InventoryFacts; packetsAfterSync: number; vitals: Vitals | null }
   | { type: 'inventory_changed' }
+  /**
+   * C12: the server says THIS bot collected an ITEM entity (other collectors and
+   * non-item entities such as experience orbs are not reported). `facts` is the
+   * entity's own server-stated stack (absent when never stated); `firstSeenAt`
+   * is the position where the server first announced the entity to this client.
+   */
+  | { type: 'own_item_collect'; connectionEpoch: number; entityId: number; count: number; facts: DropStackFacts | undefined; firstSeenAt: { x: number; y: number; z: number } | undefined; atMs: number }
   | { type: 'vitals_changed'; vitals: Vitals };
 
 interface RawGlobalPos {
@@ -93,11 +107,19 @@ export class SurvivalTracker {
   private readonly unconsumed: CapturedDeathRecord[] = [];
   private loginDeath: RawGlobalPos | undefined;
   private respawnSeen = false;
+  /** C10: the first full window-0 sync after the respawn packet, and inventory packets applied after it. */
+  private respawnSync: { inv: InventoryFacts; packetsAfter: number } | undefined;
   private openWindowId: number | undefined;
   /** Item entities announced by the server (spawn_entity of the item type) on this connection/life. */
   private readonly itemEntities = new Set<number>();
   /** Server-stated stack of each item entity (its own metadata packet; C3 authority, never a label). */
   private readonly drops = new Map<number, DropStackFacts>();
+  /** First-announced position of each item entity (spawn_entity) on this connection/life. */
+  private readonly firstSeen = new Map<number, { x: number; y: number; z: number }>();
+  /** Entities the server announced as something other than an item (e.g. experience orbs). */
+  private readonly nonItemEntities = new Set<number>();
+  /** Kind of entities this bot collected recently (outlives entity_destroy; bounded). */
+  private readonly collectedKinds = new Map<number, 'item' | 'non_item' | 'unknown'>();
 
   /** Subscribes to tracker events (synchronous, in packet order). */
   subscribe(listener: (e: TrackerEvent) => void): () => void {
@@ -136,10 +158,14 @@ export class SurvivalTracker {
     this.state = 'alive';
     this.frozen = undefined;
     this.respawnSeen = false;
+    this.respawnSync = undefined;
     this.loginDeath = undefined;
     this.openWindowId = undefined;
     this.itemEntities.clear();
     this.drops.clear();
+    this.firstSeen.clear();
+    this.nonItemEntities.clear();
+    this.collectedKinds.clear();
     if (opts.seed) {
       for (const s of opts.seed.stacks) this.slots.set(s.slot, { ...s, meta: { ...s.meta } });
       this.invSource = 'ready_seed';
@@ -153,11 +179,31 @@ export class SurvivalTracker {
       source.on(name, fn);
       this.listeners.push([name, fn]);
     };
-    on('spawn_entity', (p: { entityId: number; type: number }) => {
+    on('spawn_entity', (p: { entityId: number; type: number; x?: number; y?: number; z?: number }) => {
       const itemType = this.opts?.registry.itemEntityTypeId;
+      if (itemType !== undefined && p.type !== itemType) {
+        this.nonItemEntities.add(p.entityId);
+        if (this.nonItemEntities.size > 4_000) this.nonItemEntities.delete(this.nonItemEntities.values().next().value as number);
+      }
       if (itemType === undefined || p.type !== itemType) return;
       this.itemEntities.add(p.entityId);
       if (this.itemEntities.size > 4_000) this.itemEntities.delete(this.itemEntities.values().next().value as number);
+      if (Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)) {
+        this.firstSeen.set(p.entityId, { x: p.x as number, y: p.y as number, z: p.z as number });
+        if (this.firstSeen.size > 4_000) this.firstSeen.delete(this.firstSeen.keys().next().value as number);
+      }
+    });
+    on('collect', (p: { collectedEntityId: number; collectorEntityId: number; pickupItemCount?: number }) => {
+      const self = this.self();
+      if (!this.opts || self === undefined || p.collectorEntityId !== self) return;
+      this.collectedKinds.set(p.collectedEntityId, this.itemEntities.has(p.collectedEntityId) ? 'item' : this.nonItemEntities.has(p.collectedEntityId) ? 'non_item' : 'unknown');
+      if (this.collectedKinds.size > 256) this.collectedKinds.delete(this.collectedKinds.keys().next().value as number);
+      if (!this.itemEntities.has(p.collectedEntityId)) return;
+      const count = Number(p.pickupItemCount);
+      if (!Number.isInteger(count) || count <= 0) return;
+      const facts = this.drops.get(p.collectedEntityId);
+      const at = this.firstSeen.get(p.collectedEntityId);
+      this.emit({ type: 'own_item_collect', connectionEpoch: this.opts.connectionEpoch, entityId: p.collectedEntityId, count, facts: facts ? { ...facts, meta: { ...facts.meta } } : undefined, firstSeenAt: at ? { ...at } : undefined, atMs: this.now() });
     });
     on('entity_metadata', (p: { entityId: number; metadata?: Array<{ key: number; type: string; value: unknown }> }) => {
       if (!this.itemEntities.has(p.entityId) || !this.opts) return;
@@ -173,11 +219,16 @@ export class SurvivalTracker {
       for (const id of p.entityIds ?? []) {
         this.itemEntities.delete(id);
         this.drops.delete(id);
+        this.firstSeen.delete(id);
+        this.nonItemEntities.delete(id);
       }
     });
     on('login', (p: { entityId?: number; worldState?: { death?: RawGlobalPos } }) => {
       this.itemEntities.clear();
       this.drops.clear();
+      this.firstSeen.clear();
+      this.nonItemEntities.clear();
+      this.collectedKinds.clear();
       if (typeof p.entityId === 'number') this.selfId = p.entityId;
       if (p.worldState?.death) this.loginDeath = p.worldState.death;
     });
@@ -234,6 +285,7 @@ export class SurvivalTracker {
     if (this.invSource === 'unavailable') this.invSource = 'server_packets';
     this.invAtMs = this.now();
     if (this.frozen) this.frozen.clearing += 1;
+    if (this.respawnSync) this.respawnSync.packetsAfter += 1;
     this.emit({ type: 'inventory_changed' });
   }
 
@@ -251,6 +303,10 @@ export class SurvivalTracker {
       this.fullSync = true;
       this.invAtMs = this.now();
       if (this.frozen) this.frozen.clearing += 1;
+      if (this.state === 'respawned_awaiting_sync' && this.respawnSeen && !this.respawnSync && this.opts) {
+        // The authoritative respawn inventory: frozen at the first full sync after the respawn packet.
+        this.respawnSync = { inv: { source: 'server_packets', connectionEpoch: this.opts.connectionEpoch, atMs: this.invAtMs, stacks: clone(this.slots), fullSync: true, ...(this.heldHotbar !== undefined ? { heldHotbar: this.heldHotbar } : {}) }, packetsAfter: 0 };
+      } else if (this.respawnSync) this.respawnSync.packetsAfter += 1;
       this.emit({ type: 'inventory_changed' });
       this.maybeRespawnReady();
       return;
@@ -377,6 +433,11 @@ export class SurvivalTracker {
     return d ? { ...d, meta: { ...d.meta } } : undefined;
   }
 
+  /** What a collect by this bot took: a server-announced item, a server-announced non-item (orb), or never announced. */
+  collectedKind(entityId: number): 'item' | 'non_item' | 'unknown' {
+    return this.collectedKinds.get(entityId) ?? (this.itemEntities.has(entityId) ? 'item' : this.nonItemEntities.has(entityId) ? 'non_item' : 'unknown');
+  }
+
   /** Own entity id on this connection (from login). */
   selfEntityId(): number | undefined {
     return this.self();
@@ -396,6 +457,9 @@ export class SurvivalTracker {
     // A respawn (death or dimension travel) restarts the client's entity space.
     this.itemEntities.clear();
     this.drops.clear();
+    this.firstSeen.clear();
+    this.nonItemEntities.clear();
+    this.collectedKinds.clear();
     if (this.state === 'alive' && !this.latestDeath) {
       // A respawn without a death (dimension travel) is not a death; inventory continues.
       return;
@@ -413,6 +477,7 @@ export class SurvivalTracker {
     }
     this.state = 'respawned_awaiting_sync';
     this.respawnSeen = true;
+    this.respawnSync = undefined;
     this.fullSync = false;
   }
 
@@ -421,7 +486,14 @@ export class SurvivalTracker {
     if (!this.vitalsValue || this.vitalsValue.health <= 0) return;
     this.state = 'alive';
     const inv = this.inventory();
-    if (inv) this.emit({ type: 'respawn_ready', connectionEpoch: this.opts.connectionEpoch, inventory: inv, vitals: this.vitals() });
+    const sync = this.respawnSync;
+    this.respawnSync = undefined;
+    if (inv) this.emit({ type: 'respawn_ready', connectionEpoch: this.opts.connectionEpoch, inventory: sync ? sync.inv : inv, current: inv, packetsAfterSync: sync ? sync.packetsAfter : 0, vitals: this.vitals() });
+  }
+
+  /** C10 diagnostics: every server-stated dropped item stack currently known on this connection (bounded copy). */
+  dropStacks(limit = 64): DropStackFacts[] {
+    return [...this.drops.values()].slice(-limit).map((d) => ({ ...d, meta: { ...d.meta } }));
   }
 
   /** The login packet's last-death GlobalPos (historical; may predate this run). */
