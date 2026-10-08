@@ -171,6 +171,34 @@ describe('ContinuationSurvivalPort: incidentReturns', () => {
     await h.service.close();
   });
 
+  it('C12: a collect after the first respawn sync but before positive health cannot escape return attribution', async () => {
+    for (const mode of ['own_item', 'unknown_entity', 'unstated_item', 'non_item'] as const) {
+      const h = harness({ scoped: false });
+      const kit = { 36: slot('bread', 4) };
+      h.packets.inventory(kit);
+      h.packets.health(20, 20);
+      dieWithItems(h, kit);
+      const id = h.service.frozenInventory(1)!.incidentId;
+      h.packets.respawn({ dimensionName: OW, location: SITE_BLOCK });
+      h.service.onLifecycle({ type: 'respawn', connectionEpoch: 1, dimension: SESSION_OW });
+      h.packets.inventory({});
+      if (mode === 'own_item') h.packets.spawnItem(760, slot('bread', 4), NEAR);
+      if (mode === 'unstated_item') h.packets.spawnItemWithoutStack(760, NEAR);
+      if (mode === 'non_item') h.packets.spawnOther(760, NEAR);
+      h.packets.collect(760, 4);
+      h.packets.inventory(kit);
+      assert.equal(h.service.continuationGate(h.clock.now()).kind, 'wait', 'accounting is read-only; fresh positive health still gates continuation');
+      h.packets.health(20, 20);
+      assert.deepEqual(returns(h, id), {
+        incidentId: id, connectionEpoch: 1,
+        retained: {},
+        regained: mode === 'own_item' ? { 'minecraft:bread': 4 } : {},
+        attribution: mode === 'unknown_entity' || mode === 'unstated_item' ? 'unknown' : 'server_attributed',
+      }, mode);
+      await h.service.close();
+    }
+  });
+
   it('never a return: C10 incidental gains (respawn-point pickups), items outside the site radius, other connections, other collectors, orbs', () => {
     const h = harness({ pid: 9015 });
     h.packets.inventory(KIT);

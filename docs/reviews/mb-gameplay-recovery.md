@@ -31,7 +31,14 @@ Worker S: native DSH Codex, personal ChatGPT account, `gpt-6.1-sol` / `xhigh`, `
 | `82d7ede` | C12: P's continuation contract restored verbatim from `4409ba1`; duplicate S declarations removed; `ContinuationSurvivalPort` implemented (in-memory incident return ledger, gate, display-only checkpoint records, store schema v3) with tests |
 | `266b648` | Trial findings T2/T4 corrected (collects of server-announced non-item entities such as experience orbs are never loot or incidental; the pickup effect names every counted key); `createSurvivalService` passes `sessionId` through |
 | `5a4b560` | Coordinator rerun recorded; `continuationPort()` accessor with a type pin to P's contract; the gate waits (`not_alive`) while no connection is attached; exact P integration inputs |
-| (native correction, this commit) | S-C12-R3: unknown own collect reaches incident lineage, including during recovery; exact positive/unknown/non-item packet and executor controls |
+| `c4ae9b5` | S-C12-R3: unknown own collect reaches incident lineage, including during recovery; exact positive/unknown/non-item packet and executor controls |
+| (first-sync correction, this commit) | C12 incident accounting starts at the first full respawn inventory sync; a pickup before positive health cannot disappear from return lineage |
+
+### First-sync packet boundary correction
+
+After `c4ae9b5`, the remaining packet-order review reproduced a known own bread return of 4 arriving after the first empty respawn inventory sync but before positive health. The service waited for `respawn_ready` to assess incident loss, so the collect found no assessed incident and vanished; a later inventory sync could not repair that attribution. The discriminating regression exits 1 before correction (expected regained 4, actual empty).
+
+The tracker now emits an internal `respawn_inventory` event exactly at the first full sync. Only the read-only continuation incident book is assessed there. Recovery episode assessment, support admission and continuation readiness still await positive health; the later `respawn_ready` assessment is idempotent and cannot refill or replace the first-sync baseline. Four actual tracker/service packet controls cover exact own return, unannounced entity, announced item without stack, and known orb in that interval. A second full inventory sync cannot turn returned items into retained possessions. The public P port remains unchanged. Focused tests exit 0 (38/38) and typecheck exits 0; final offline checks are recorded with the completed native handoff.
 
 Owned paths changed:
 - `src/contracts/survival.ts`

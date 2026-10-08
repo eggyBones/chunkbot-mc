@@ -383,6 +383,12 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     const now = this.options.now();
     if (e.type === 'death_captured') return this.onDeath(e.death, now);
     if (e.type === 'own_item_collect' || e.type === 'own_unknown_collect') return this.onOwnCollect(e);
+    if (e.type === 'respawn_inventory') {
+      // Count lineage starts at the FIRST sync, including collects before positive health. This grants no
+      // recovery/action readiness: the episode and continuation gates still await respawn_ready.
+      this.incidents.assess(e.incidentId, e.inventory, Math.max(this.cfg.recovery.searchRadius, this.cfg.recovery.sameHazardRadius));
+      return;
+    }
     if (e.type === 'death_location_refined') {
       this.incidents.refineSite(e.captureId, e.site);
       const c = this.captures.get(e.captureId);

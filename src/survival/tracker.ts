@@ -66,6 +66,8 @@ export type TrackerEvent =
    * which are never part of the respawn inventory).
    */
   | { type: 'respawn_ready'; connectionEpoch: number; inventory: InventoryFacts; current: InventoryFacts; packetsAfterSync: number; vitals: Vitals | null }
+  /** First full respawn inventory, for read-only loss accounting before positive health permits any action. */
+  | { type: 'respawn_inventory'; incidentId: string; inventory: InventoryFacts }
   | { type: 'inventory_changed' }
   /**
    * C12: the server says THIS bot collected an ITEM entity (other collectors and
@@ -313,6 +315,7 @@ export class SurvivalTracker {
       if (this.state === 'respawned_awaiting_sync' && this.respawnSeen && !this.respawnSync && this.opts) {
         // The authoritative respawn inventory: frozen at the first full sync after the respawn packet.
         this.respawnSync = { inv: { source: 'server_packets', connectionEpoch: this.opts.connectionEpoch, atMs: this.invAtMs, stacks: clone(this.slots), fullSync: true, ...(this.heldHotbar !== undefined ? { heldHotbar: this.heldHotbar } : {}) }, packetsAfter: 0 };
+        if (this.latestDeath) this.emit({ type: 'respawn_inventory', incidentId: this.latestDeath.captureId, inventory: this.respawnSync.inv });
       } else if (this.respawnSync) this.respawnSync.packetsAfter += 1;
       this.emit({ type: 'inventory_changed' });
       this.maybeRespawnReady();
