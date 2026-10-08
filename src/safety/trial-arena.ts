@@ -4,35 +4,94 @@ import type { SafetyEntityFact, SafetyPlan } from '../contracts/safety.ts';
 import { parseEntityTest } from './trial-journal.ts';
 
 export type TrialBox = [number, number, number, number, number, number];
+/** Original clone/backup/restoration boundary; NEVER narrowed with staging. */
 export const SAFETY_TRIAL_BOX: TrialBox = [240, -61, 190, 270, -48, 220];
+/** Static staging boundary, buffered from the untouched north/east strips.
+ * It is not an entity exception: ANY intersecting foreign body still refuses. */
+export const SAFETY_MUTATION_BOX: TrialBox = [240, -61, 196, 268, -48, 220];
 export const MOB_TRIAL_ORIGIN = { x: 255.5, y: -56, z: 205.5 };
 export interface ArenaFill { box: TrialBox; block: string }
 export interface ArenaCheck { source: TrialBox; target: [number, number, number]; block?: string }
 
 export function insideTrialBox(box: TrialBox): boolean {
-  return box.every(Number.isInteger) && [0, 1, 2].every((i) => box[i]! >= SAFETY_TRIAL_BOX[i]! && box[i + 3]! <= SAFETY_TRIAL_BOX[i + 3]! && box[i]! <= box[i + 3]!);
+  return inside(box, SAFETY_TRIAL_BOX);
+}
+
+function inside(box: TrialBox, boundary: TrialBox): boolean {
+  return box.every(Number.isInteger) && [0, 1, 2].every((i) => box[i]! >= boundary[i]! && box[i + 3]! <= boundary[i + 3]! && box[i]! <= box[i + 3]!);
+}
+
+export function insideMutationBox(box: TrialBox): boolean {
+  return inside(box, SAFETY_MUTATION_BOX);
+}
+
+/** Both official releases' EntitySelectorParser.createAabb use delta+1 for
+ * positive extents; EntitySelector tests Entity.getBoundingBox().intersects.
+ * Thus max-min covers the last BLOCK's full volume AND overlapping bodies
+ * whose centers lie outside. No position/distance/species whitelist is used. */
+export function trialEntitySelector(box: TrialBox): string {
+  if (!insideTrialBox(box)) throw new Error('entity region outside original clone');
+  return `x=${box[0]},y=${box[1]},z=${box[2]},dx=${box[3] - box[0]},dy=${box[4] - box[1]},dz=${box[5] - box[2]}`;
+}
+
+/** The same leased-harness guard is exercised with a voxel/entity server in
+ * tests. Queries are sequential; unknown/concatenated replies refuse before
+ * the caller may fill, heal or remove anything. Partial evidence is retained. */
+export async function guardMutationVolume(read: (command: string) => Promise<string>, runTag: string, bot: string, record: (kind: 'entities' | 'players', command: string, reply: string) => void): Promise<void> {
+  if (!/^[A-Za-z0-9_]+$/.test(runTag) || !/^[A-Za-z0-9_]+$/.test(bot)) throw new Error('invalid staging identity');
+  const area = trialEntitySelector(SAFETY_MUTATION_BOX);
+  for (const [kind, command] of [
+    ['entities', `execute if entity @e[tag=!${runTag},type=!player,type=!item,type=!experience_orb,${area}]`],
+    ['players', `execute if entity @a[name=!${bot},${area}]`],
+  ] as const) {
+    const reply = await read(command);
+    record(kind, command, reply);
+    refuseForeignOccupants(reply);
+  }
 }
 
 /** Opaque walls exclude external mobs from player-visible policy input. The
  * luminous roof seals ingress/visibility; luminous floor prevents spawning.
- * Interior 29x29, eight blocks tall: the original 12-block finite grant fits.
+ * Interior 27x23, eight blocks tall. The existing six-block retreat leg fits
+ * from MOB_TRIAL_ORIGIN in every bearing; the 12-block grant is unchanged,
+ * and targets near walls must still pass the ordinary geometry checks.
  * All blocks are inside the ORIGINAL clone, with no clock/gamerule changes. */
 export function arenaShellPlan(): ArenaFill[] {
+  const [x1, , z1, x2, , z2] = SAFETY_MUTATION_BOX;
   return [
-    { box: [240, -56, 190, 240, -49, 220], block: 'stone' },
-    { box: [270, -56, 190, 270, -49, 220], block: 'stone' },
-    { box: [241, -56, 190, 269, -49, 190], block: 'stone' },
-    { box: [241, -56, 220, 269, -49, 220], block: 'stone' },
-    { box: [240, -48, 190, 270, -48, 220], block: 'sea_lantern' },
+    { box: [x1, -56, z1, x1, -49, z2], block: 'stone' },
+    { box: [x2, -56, z1, x2, -49, z2], block: 'stone' },
+    { box: [x1 + 1, -56, z1, x2 - 1, -49, z1], block: 'stone' },
+    { box: [x1 + 1, -56, z2, x2 - 1, -49, z2], block: 'stone' },
+    { box: [x1, -48, z1, x2, -48, z2], block: 'sea_lantern' },
   ];
 }
 
 export function mobArenaPlan(): ArenaFill[] {
+  const [x1, y1, z1, x2, , z2] = SAFETY_MUTATION_BOX;
   return [
-    { box: [240, -61, 190, 270, -58, 220], block: 'dirt' },
-    { box: [240, -57, 190, 270, -57, 220], block: 'sea_lantern' },
+    { box: [x1, y1, z1, x2, -58, z2], block: 'dirt' },
+    { box: [x1, -57, z1, x2, -57, z2], block: 'sea_lantern' },
     ...arenaShellPlan(),
-    { box: [241, -56, 191, 269, -49, 219], block: 'air' },
+    { box: [x1 + 1, -56, z1 + 1, x2 - 1, -49, z2 - 1], block: 'air' },
+  ];
+}
+
+/** Same four-deep pool and dirt bank as the proven trial, now all inside the
+ * smaller staging boundary. Non-overlapping final regions allow the server
+ * verifier to check the actual pool/floor/ceiling as well as the shell. */
+export function waterArenaPlan(lid = false): ArenaFill[] {
+  const [x1, y1, z1, x2, , z2] = SAFETY_MUTATION_BOX;
+  return [
+    { box: [x1, y1, z1, x2, y1, z2], block: 'dirt' },
+    { box: [x1, -60, z1, 251, -57, z2], block: 'dirt' },
+    { box: [259, -60, z1, x2, -57, z2], block: 'dirt' },
+    { box: [252, -60, z1, 258, -57, 201], block: 'dirt' },
+    { box: [252, -60, 209, 258, -57, z2], block: 'dirt' },
+    { box: [252, -60, 202, 258, lid ? -58 : -57, 208], block: 'water' },
+    ...(lid ? [{ box: [252, -57, 202, 258, -57, 208] as TrialBox, block: 'stone' }] : []),
+    ...arenaShellPlan(),
+    { box: [x1 + 1, -56, z1 + 1, x2 - 1, -49, z2 - 1], block: 'air' },
   ];
 }
 
@@ -41,6 +100,7 @@ export function mobArenaPlan(): ArenaFill[] {
  * into the original backup. One missing/blasted voxel fails a comparison. */
 export function arenaChecks(fill: ArenaFill): ArenaCheck[] {
   if (!insideTrialBox(fill.box)) throw new Error('arena region outside original clone');
+  if (!insideMutationBox(fill.box)) throw new Error('arena region outside staging mutation boundary');
   const [x, y, z] = fill.box;
   const out: ArenaCheck[] = [{ source: [x, y, z, x, y, z], target: [x, y, z], block: fill.block }];
   for (let i = 0; i < 3; i += 1) {
