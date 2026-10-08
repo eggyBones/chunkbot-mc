@@ -80,6 +80,10 @@ import { safetySkills } from '../src/skills/safety.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { trialRcon } from '../src/safety/trial-rcon.ts';
 import { serverWaterSupport, type TrialWaterBlock } from '../src/safety/trial-water.ts';
+import { arenaShellPlan, insideTrialBox, mobArenaPlan, mobStageRefusals, MOB_TRIAL_ORIGIN, parseTrialUuid, refuseForeignOccupants, serverUnprovokedWolf, verifyArena, type MobTrialGate, type TrialSummon } from '../src/safety/trial-arena.ts';
+import { planSafety } from '../src/safety/policy.ts';
+import { eyeOf, sessionWorld } from '../src/perception/perception.ts';
+import { isEntityVisible } from '../src/perception/visibility.ts';
 
 type Json = Record<string, unknown>;
 
@@ -134,6 +138,11 @@ class Gate {
    * (server-read RCON facts and safety episode results).
    */
   readonly interventions: Array<{ atMs: number; gate: string; command: string }> = [];
+  readonly staging: Json[] = [];
+  /** Bounded current-connection packet evidence. Test proof only; no RCON
+   * information is fed back into policy or used to grant authority. */
+  readonly damagePackets: Json[] = [];
+  private readonly summons = new Map<string, string>();
   phase = 'setup';
   /** Set by a termination signal: every further non-restoration RCON command is refused. */
   halted: string | undefined;
@@ -180,6 +189,10 @@ class Gate {
         const bot = mineflayer.createBot(options);
         // Proposed onBotCreated hook: attach the safety tracker BEFORE login.
         this.safety.attachConnection(bot._client as never, { connectionEpoch: this.game.connectionEpoch, registry: () => bot.registry });
+        bot._client.on('damage_event', (p: Json) => {
+          this.damagePackets.push({ atMs: Date.now(), phase: this.phase, connectionEpoch: this.game.connectionEpoch, ...p });
+          if (this.damagePackets.length > 128) this.damagePackets.shift();
+        });
         const write = bot._client.write.bind(bot._client);
         (bot._client as unknown as { write: (n: string, d: Json) => void }).write = (name: string, data: Json) => {
           if (name === 'attack' || name === 'use_entity') this.written.push({ atMs: Date.now(), name, ...(typeof data['entityId'] === 'number' ? { entityId: data['entityId'] } : typeof data['target'] === 'number' ? { entityId: data['target'] } : {}) });
@@ -351,6 +364,9 @@ class Gate {
       process.stdout.write(`FAIL ${id} ${title}\n`);
     } finally {
       // The full (bounded) gate evidence goes to stdout too, so a killed process still leaves it in the log.
+      try {
+        this.staging.push({ gate: id, atMs: Date.now(), verdict: this.results.at(-1)?.status, status: this.safety.status(Date.now()), damage: [...this.safety.tracker.damage], visible: this.reader.entities(this.safety.config.mobs) });
+      } catch (error) { this.staging.push({ gate: id, evidenceUnavailable: String(error) }); }
       for (const line of evidence.slice(0, 16)) process.stdout.write(`  ${line.slice(0, 400)}\n`);
       this.stop();
       if (!this.halted) this.phase = 'setup';
@@ -451,22 +467,57 @@ class Gate {
     return exists;
   }
 
-  /** Scene inside the owned footprint: platform, pool, cleared bot. */
-  async scene(opts: { lid?: boolean } = {}): Promise<void> {
+  async noForeignOccupants(): Promise<void> {
+    // Includes unknown entities/clouds/other players, excluding ONLY the
+    // fixture bot, this run's summons and the declared item/xp removal box.
+    const reply = await this.rcon(`execute if entity @e[tag=!${MOB_TAG},type=!player,type=!item,type=!experience_orb,${ENTITY_AREA}]`, false);
+    const occupied = parseEntityTest(reply);
+    this.staging.push({ gate: this.phase, atMs: Date.now(), foreignOccupantsReply: reply, occupied: occupied ?? 'unknown' });
+    refuseForeignOccupants(reply);
+    const players = await this.rcon(`execute if entity @a[name=!${BOT},${ENTITY_AREA}]`, false);
+    this.staging.push({ gate: this.phase, atMs: Date.now(), foreignPlayersReply: players });
+    refuseForeignOccupants(players);
+  }
+
+  async verifyMobArena(): Promise<void> {
+    const comparisons = await verifyArena((command) => this.rcon(command, false));
+    this.staging.push({ gate: this.phase, atMs: Date.now(), arenaVerified: true, comparisons, plan: mobArenaPlan() });
+  }
+
+  /** Scene inside the owned footprint: water unchanged; mob gates replace
+   * the pool with a sealed luminous dry floor. Restaged/verified every gate,
+   * including after a creeper can damage walls. Never kills natural mobs. */
+  async scene(opts: { lid?: boolean; mobs?: boolean } = {}): Promise<void> {
+    check(this.basis === 'none' && !this.leases.current, 'scene staging requires stopped ownership/controls');
+    await this.noForeignOccupants(); // BEFORE removal, fill or heal
     for (const c of [
       `kill @e[tag=${MOB_TAG},${ENTITY_AREA}]`,
       `kill @e[type=item,${ENTITY_AREA}]`,
       `kill @e[type=experience_orb,${ENTITY_AREA}]`,
-      `fill ${AREA.x1} ${PLATFORM.y1} ${AREA.z1} ${AREA.x2} ${SCENE_Y.y2} ${AREA.z2} air`,
-      `fill ${AREA.x1} ${PLATFORM.y1} ${AREA.z1} ${AREA.x2} ${PLATFORM.y2} ${AREA.z2} dirt`,
-      `fill ${POOL.x1} ${PLATFORM.y1} ${POOL.z1} ${POOL.x2} ${PLATFORM.y2} ${POOL.z2} water`,
-      ...(opts.lid ? [`fill ${POOL.x1} ${PLATFORM.y2} ${POOL.z1} ${POOL.x2} ${PLATFORM.y2} ${POOL.z2} stone`] : []),
+      ...(opts.mobs ? mobArenaPlan().map((f) => {
+        check(insideTrialBox(f.box), 'mob fill outside original clone');
+        return `fill ${f.box.join(' ')} minecraft:${f.block}`;
+      }) : [
+        `fill ${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} ${AREA.x2} ${SCENE_Y.y1} ${AREA.z2} dirt`,
+        `fill ${AREA.x1} ${PLATFORM.y1} ${AREA.z1} ${AREA.x2} ${SCENE_Y.y2} ${AREA.z2} air`,
+        `fill ${AREA.x1} ${PLATFORM.y1} ${AREA.z1} ${AREA.x2} ${PLATFORM.y2} ${AREA.z2} dirt`,
+        `fill ${POOL.x1} ${PLATFORM.y1} ${POOL.z1} ${POOL.x2} ${PLATFORM.y2} ${POOL.z2} water`,
+        ...(opts.lid ? [`fill ${POOL.x1} ${PLATFORM.y2} ${POOL.z1} ${POOL.x2} ${PLATFORM.y2} ${POOL.z2} stone`] : []),
+        ...arenaShellPlan().map((f) => {
+          check(insideTrialBox(f.box), 'water shell fill outside original clone');
+          return `fill ${f.box.join(' ')} minecraft:${f.block}`;
+        }),
+      ]),
       `clear ${BOT}`,
       `effect clear ${BOT}`,
       `effect give ${BOT} minecraft:instant_health 1 4 true`,
       `effect give ${BOT} minecraft:saturation 1 10 true`,
     ])
       await this.rcon(c);
+    this.summons.clear();
+    if (opts.mobs) await this.verifyMobArena();
+    else this.staging.push({ gate: this.phase, atMs: Date.now(), waterShellVerified: true, comparisons: await verifyArena((c) => this.rcon(c, false), arenaShellPlan()) });
+    await this.noForeignOccupants();
     await sleep(800);
   }
 
@@ -480,6 +531,7 @@ class Gate {
     await this.rcon(`summon minecraft:${kind} ${at.x} ${at.y} ${at.z} {Tags:["${MOB_TAG}","${tag}"],PersistenceRequired:1b${nbt}}`);
     // Daylight must not end a zombie trial early (no time change): fire resistance on the tagged mob only.
     await this.rcon(`effect give @e[tag=${tag},${ENTITY_AREA}] minecraft:fire_resistance infinite 0 true`);
+    this.summons.set(tag, `minecraft:${kind}`);
     return tag;
   }
 
@@ -488,23 +540,67 @@ class Gate {
     await sleep(800);
   }
 
-  /**
-   * Staging for M2/M2b (no safety authority yet, so nothing acts): wait until a
-   * fresh VISIBLE read shows the tagged zombie already engaging in melee
-   * contact (server aggressive flag or server-attributed damage, <= 3.5).
-   * Returns the evidence line, or throws (retained staging failure).
-   */
-  async engaged(ms = 10_000): Promise<string> {
-    const until = Date.now() + ms;
-    while (Date.now() < until) {
-      if (this.halted) throw new Error(`halted (${this.halted}) during engagement staging`);
-      const z = this.reader.entities({ scanRadius: 16, approachWindowMs: 1_500, provokedWindowMs: 6_000 }).find((e) => e.key === 'minecraft:zombie');
-      if (z && z.distance <= 3.5 && (z.aggressive === true || z.damagedSelfAtMs !== null)) {
-        return `staging: zombie already engaging in melee contact (distance ${z.distance}, aggressive ${z.aggressive}, attributed damage ${z.damagedSelfAtMs !== null})`;
+  async mobPrerequisites(gate: MobTrialGate, tags: string[], ev: string[], ms = 10_000): Promise<TrialSummon[]> {
+    check(this.basis === 'none' && !this.leases.current, 'mob staging requires no actuator authority');
+    await this.verifyMobArena();
+    await this.noForeignOccupants();
+    const s = this.game.session();
+    check(s, 'current session required for staging');
+    const summons: TrialSummon[] = [];
+    for (const tag of tags) {
+      const uuidReply = await this.rcon(`data get entity @e[tag=${tag},limit=1,${ENTITY_AREA}] UUID`, false);
+      const uuid = parseTrialUuid(uuidReply);
+      const raw = Object.values(s.bot.entities).find((e) => e.uuid === uuid);
+      const key = this.summons.get(tag);
+      check(uuid && raw && key && `minecraft:${raw.name}` === key, `staging_unready: exact tagged UUID/current species missing (${tag})`);
+      // Full server NBT is test proof only (never policy input), retained for
+      // gear, age and wolf anger/target attribution investigation.
+      const nbt = await this.rcon(`data get entity @e[tag=${tag},limit=1,${ENTITY_AREA}]`, false);
+      this.staging.push({ gate, atMs: Date.now(), tag, uuid, entityId: raw.id, key, nbt });
+      if (gate === 'M2b') {
+        const health = await this.rcon(`data get entity @e[tag=${tag},limit=1,${ENTITY_AREA}] Health`, false);
+        this.staging.push({ gate, atMs: Date.now(), tag, health });
+        const value = /has the following entity data: ([\d.]+)f$/.exec(health.trim());
+        check(value && Number(value[1]) >= 100, 'staging_unready: readiness-change target must survive the first bounded hit (server Health >=100)');
       }
-      await sleep(100);
+      let unprovoked: boolean | undefined;
+      if (key === 'minecraft:wolf') {
+        // Official exact-release NeutralMob writes anger_end_time as a long;
+        // NO_ANGER_END_TIME is -1, not legacy AngerTime:0 or arbitrary null.
+        const anger = await this.rcon(`data get entity @e[tag=${tag},limit=1,${ENTITY_AREA}] anger_end_time`, false);
+        const target = await this.rcon(`execute if data entity @e[tag=${tag},limit=1,${ENTITY_AREA}] persistentAngerTarget`, false);
+        unprovoked = serverUnprovokedWolf(anger, target);
+        this.staging.push({ gate, atMs: Date.now(), tag, anger, target, unprovoked });
+      }
+      summons.push({ tag, uuid, entityId: raw.id, key, visible: false, ...(unprovoked !== undefined ? { unprovoked } : {}) });
     }
-    throw new Error('staging_unready: the summoned zombie never showed server-stated engagement within melee contact; no defense is expected (retreat is the product default)');
+    let last: Json = {};
+    const snapshot = () => {
+      const now = Date.now();
+      const self = this.reader.self();
+      check(self, 'fresh self facts unavailable');
+      const visible = this.reader.entities(this.safety.config.mobs);
+      for (const summon of summons) {
+        const raw = s.bot.entities[summon.entityId];
+        summon.visible = !!raw && raw.uuid === summon.uuid && isEntityVisible(sessionWorld(s), eyeOf(s.bot), raw.position, raw.height ?? 1);
+      }
+      const plan = planSafety(self, visible, this.safety.policyContext(self));
+      const refusals = mobStageRefusals(gate, summons, visible, plan, now);
+      last = { gate, atMs: now, summons, visible, self, plan, refusals, damage: [...this.safety.tracker.damage], counters: { ...this.safety.counters } };
+      return refusals.length === 0;
+    };
+    await this.waitFor('exact isolated mob prerequisites', snapshot, ms).catch((error: unknown) => {
+      this.staging.push(structuredClone(last));
+      throw new Error(`staging_unready: ${error instanceof Error ? error.message : String(error)}; ${JSON.stringify(last['refusals'])}`);
+    });
+    // Re-read occupants and geometry after the asynchronous engagement wait.
+    await this.noForeignOccupants();
+    await this.verifyMobArena();
+    const stillReady = snapshot(); // revalidate vitals/target AFTER those awaits
+    this.staging.push(structuredClone(last));
+    check(stillReady, `staging_unready: prerequisites changed during server verification: ${JSON.stringify(last['refusals'])}`);
+    ev.push(`staging verified: ${JSON.stringify({ summons: last['summons'], visible: last['visible'], plan: last['plan'], damage: last['damage'], counters: last['counters'] })}`);
+    return summons;
   }
 
   episodeAfter(startCount: number) {
@@ -680,6 +776,10 @@ async function run(outDir: string): Promise<Json> {
     check(/passed/i.test(await g.rcon(`execute if blocks ${SCENE_BOX} ${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} all`, false)), 'scene backup not verified byte-for-block; refusing scene mutation');
     backupTaken = true;
     journal.remember({ backupTaken });
+    // Enclose/light the cloned footprint BEFORE enabling hostile spawns. The
+    // later water scenes preserve this shell, so foreign mobs cannot enter
+    // during W1/W1s and consume the same real episode history before M gates.
+    await g.scene();
     if (difficulty.original === 'peaceful') {
       difficulty = { ...difficulty, changed: true };
       journal.remember({ difficulty });
@@ -776,16 +876,18 @@ async function run(outDir: string): Promise<Json> {
 
     // ---------------------------------------------------------------- mobs
     await g.gate('M1', 'unarmed + zombie: retreat increases SERVER-measured separation; no attack', async (ev) => {
-      await g.scene();
-      await g.tp(ARENA);
-      const z = await g.summon('zombie', { x: ARENA.x + 4, y: ARENA.y, z: ARENA.z }, ',IsBaby:0b');
+      await g.scene({ mobs: true });
+      await g.tp(MOB_TRIAL_ORIGIN);
+      const z = await g.summon('zombie', { x: MOB_TRIAL_ORIGIN.x + 4, y: MOB_TRIAL_ORIGIN.y, z: MOB_TRIAL_ORIGIN.z }, ',IsBaby:0b');
       await sleep(500);
+      await g.mobPrerequisites('M1', [z], ev);
       const b0 = await g.serverBot();
       const z0 = await g.serverEntityPos(z);
       const n = g.safety.episodes().length;
       const writes = g.written.length;
       g.admit(12);
       await g.waitFor('retreat episode', () => g.episodeAfter(n).length > 0, 25_000);
+      g.stop(); // prevent a subsequent episode while reading postconditions
       const b1 = await g.serverBot();
       const z1 = await g.serverEntityPos(z);
       const ep = g.episodeAfter(n)[0]!;
@@ -795,56 +897,69 @@ async function run(outDir: string): Promise<Json> {
       check(b0.pos && z0 && b1.pos, 'server positions readable before/after (unreadable evidence fails the gate)');
       check(z1, 'zombie position unreadable after the retreat (server evidence missing; not counted as separation)');
       check(dist2(b1.pos, z1) > dist2(b0.pos, z0) + 2, 'server-measured separation increased');
+      check(b0.health !== null && b1.health !== null && b1.health >= b0.health, 'no health loss during the retreat');
     });
 
     await g.gate('M2', 'armed + single zombie: bounded defense; defeat only from the server death status', async (ev) => {
-      await g.scene();
-      await g.tp(ARENA);
+      await g.scene({ mobs: true });
+      await g.tp(MOB_TRIAL_ORIGIN);
       await g.arm();
-      const z = await g.summon('zombie', { x: ARENA.x + 2.5, y: ARENA.y, z: ARENA.z }, ',IsBaby:0b');
-      ev.push(await g.engaged());
+      const z = await g.summon('zombie', { x: MOB_TRIAL_ORIGIN.x + 2.5, y: MOB_TRIAL_ORIGIN.y, z: MOB_TRIAL_ORIGIN.z }, ',IsBaby:0b');
+      const [target] = await g.mobPrerequisites('M2', [z], ev);
+      check(target, 'exact current target');
       const n = g.safety.episodes().length;
       const writes = g.written.length;
+      const defeats = g.safety.counters.defeatsConfirmed;
+      const hits = g.safety.counters.hitsConfirmed;
       g.admit(12);
       await g.waitFor('defense episode', () => g.episodeAfter(n).length > 0, 25_000);
       const ep = g.episodeAfter(n)[0]!;
+      g.stop();
       const st = g.safety.status(Date.now());
       const after = await g.serverBot();
       const gone = !(await g.entityExists(z));
       ev.push(`episode ${ep.response}:${ep.outcome}/${ep.reason}: ${ep.detail}`);
       check(ep.response === 'defend', `defense chosen for an already-engaging supported melee threat (got ${ep.response}: ${ep.reason})`);
       ev.push(`attacks sent ${g.written.slice(writes).filter((w) => w.name === 'attack').length}; counters ${JSON.stringify(st.counters)}; zombie gone (RCON) ${gone}; bot health ${after.health}`);
-      check(st.counters.defeatsConfirmed >= 1, 'server death status confirmed');
+      check(st.counters.defeatsConfirmed === defeats + 1 && st.counters.hitsConfirmed > hits, 'THIS gate has server hits and a death status, not an earlier fight');
       check(gone, 'RCON confirms the zombie no longer exists (an unreadable reply counts as present)');
       check(after.health !== null, 'server health readable after the fight');
       check(g.written.slice(writes).filter((w) => w.name === 'attack').length <= 10, 'bounded attacks');
+      check(g.written.slice(writes).filter((w) => w.name === 'attack').every((w) => w.entityId === target.entityId), 'attacks only the exact UUID-matched staged target');
     });
 
     await g.gate('M2b', 'readiness change mid-fight (server damage) downgrades defense to retreat', async (ev) => {
-      await g.scene();
-      await g.tp(ARENA);
+      await g.scene({ mobs: true });
+      await g.tp(MOB_TRIAL_ORIGIN);
       await g.arm();
-      await g.summon('zombie', { x: ARENA.x + 2.5, y: ARENA.y, z: ARENA.z }, ',IsBaby:0b,Health:200f,attributes:[{id:"minecraft:max_health",base:200d}]');
-      ev.push(await g.engaged());
+      const z = await g.summon('zombie', { x: MOB_TRIAL_ORIGIN.x + 2.5, y: MOB_TRIAL_ORIGIN.y, z: MOB_TRIAL_ORIGIN.z }, ',IsBaby:0b,Health:200f,attributes:[{id:"minecraft:max_health",base:200d}]');
+      const [target] = await g.mobPrerequisites('M2b', [z], ev);
+      check(target, 'exact current target');
       const n = g.safety.episodes().length;
       const writes = g.written.length;
       g.admit(12);
-      await g.waitFor('first attack', () => g.written.slice(writes).some((w) => w.name === 'attack'), 15_000);
+      await g.waitFor('first attack', () => g.written.slice(writes).some((w) => w.name === 'attack' && w.entityId === target.entityId), 15_000);
       ev.push('INTERVENTION (no credit): operator /damage 11 creates the readiness change; the gate credits only the autonomous downgrade');
       await g.rcon(`damage ${BOT} 11 minecraft:generic`);
+      const damaged = await g.serverBot();
+      ev.push(`server readiness change: health ${damaged.health}, tracker vitals ${JSON.stringify(g.safety.tracker.vitals)}`);
+      check(damaged.health !== null && damaged.health < g.safety.config.mobs.defense.minHealth, 'server proves health below defense threshold');
       await g.waitFor('episode end', () => g.episodeAfter(n).length > 0, 25_000);
       const ep = g.episodeAfter(n)[0]!;
+      g.stop();
       const steps = (ep.evidence['steps'] as Array<{ response: string; reason: string | null }>) ?? [];
       ev.push(`steps: ${steps.map((s) => `${s.response}(${s.reason ?? '-'})`).join(' > ')}; outcome ${ep.outcome}/${ep.reason}`);
       check(steps[0]?.response === 'defend' && steps.some((s) => s.response === 'retreat'), 'defense downgraded to retreat after the readiness change');
+      check(g.written.slice(writes).filter((w) => w.name === 'attack').every((w) => w.entityId === target.entityId), 'readiness-change fight attacks only its own staged target');
     });
 
     await g.gate('M3', 'creeper with full gear: avoidance only, never an attack', async (ev) => {
-      await g.scene();
-      await g.tp(ARENA);
+      await g.scene({ mobs: true });
+      await g.tp(MOB_TRIAL_ORIGIN);
       await g.arm();
-      const c = await g.summon('creeper', { x: ARENA.x + 5, y: ARENA.y, z: ARENA.z });
+      const c = await g.summon('creeper', { x: MOB_TRIAL_ORIGIN.x + 5, y: MOB_TRIAL_ORIGIN.y, z: MOB_TRIAL_ORIGIN.z });
       await sleep(500);
+      await g.mobPrerequisites('M3', [c], ev);
       const n = g.safety.episodes().length;
       const writes = g.written.length;
       g.admit(12);
@@ -858,12 +973,13 @@ async function run(outDir: string): Promise<Json> {
     });
 
     await g.gate('M3b', 'passive cow and unprovoked wolf beside the bot: no episode, no attack', async (ev) => {
-      await g.scene();
-      await g.tp(ARENA);
+      await g.scene({ mobs: true });
+      await g.tp(MOB_TRIAL_ORIGIN);
       await g.arm();
-      await g.summon('cow', { x: ARENA.x + 2, y: ARENA.y, z: ARENA.z });
-      await g.summon('wolf', { x: ARENA.x - 2, y: ARENA.y, z: ARENA.z });
+      const cow = await g.summon('cow', { x: MOB_TRIAL_ORIGIN.x + 2, y: MOB_TRIAL_ORIGIN.y, z: MOB_TRIAL_ORIGIN.z });
+      const wolf = await g.summon('wolf', { x: MOB_TRIAL_ORIGIN.x - 2, y: MOB_TRIAL_ORIGIN.y, z: MOB_TRIAL_ORIGIN.z });
       await sleep(500);
+      await g.mobPrerequisites('M3b', [cow, wolf], ev);
       const n = g.safety.episodes().length;
       const writes = g.written.length;
       g.admit(12);
@@ -871,13 +987,16 @@ async function run(outDir: string): Promise<Json> {
       ev.push(`episodes ${g.episodeAfter(n).length}; status ${g.safety.status(Date.now()).state}; threats ${JSON.stringify(g.safety.status(Date.now()).threats)}`);
       check(g.episodeAfter(n).length === 0 && g.safety.hold() === null, 'no safety episode');
       check(g.written.slice(writes).every((w) => w.name !== 'attack'), 'no attack packet');
+      g.stop();
+      await g.mobPrerequisites('M3b', [cow, wolf], ev); // still genuinely unprovoked after the observation
     });
 
     await g.gate('M4', 'stop during a retreat: lease/controls cleared; no further motion', async (ev) => {
-      await g.scene();
-      await g.tp(ARENA);
-      await g.summon('zombie', { x: ARENA.x + 3, y: ARENA.y, z: ARENA.z }, ',IsBaby:0b');
+      await g.scene({ mobs: true });
+      await g.tp(MOB_TRIAL_ORIGIN);
+      const z = await g.summon('zombie', { x: MOB_TRIAL_ORIGIN.x + 3, y: MOB_TRIAL_ORIGIN.y, z: MOB_TRIAL_ORIGIN.z }, ',IsBaby:0b');
       await sleep(500);
+      await g.mobPrerequisites('M4', [z], ev);
       g.admit(12);
       await g.waitFor('retreat in progress', () => g.safety.hold()?.response === 'retreat' && g.leases.current !== undefined, 15_000);
       await sleep(400);
@@ -891,6 +1010,8 @@ async function run(outDir: string): Promise<Json> {
       const b = await g.serverBot();
       ev.push(`stop -> lease cleared ${cleared} (clearMs ${clearMs}, ${Date.now() - t}ms); server pos ${a.pos?.join(',')} -> ${b.pos?.join(',')}`);
       check(cleared, 'lease revoked synchronously');
+      const controls = g.game.session()?.bot.controlState;
+      check(controls && Object.values(controls).every((on) => on === false), 'all controls released after stop');
       check(a.pos && b.pos && dist2(a.pos, b.pos) < 1.0, 'no further horizontal motion after stop');
     });
   } catch (error) {
@@ -923,6 +1044,8 @@ function buildReport(g: Gate, st: ReportState, extra: Json = {}): Json {
     standIn: 'safety owners run through a labeled pre-integration stand-in executor until the shared ExecutionOwner `safety` variant exists',
     executor: g.executor,
     interventions: g.interventions,
+    staging: g.staging,
+    damagePackets: g.damagePackets,
     fixture: PINS.profile,
     source,
     footprint: { scene: SCENE_BOX, backup: BACKUP_BOX, mobTag: MOB_TAG, addedForceload, difficulty },
