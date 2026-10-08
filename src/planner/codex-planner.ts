@@ -194,6 +194,7 @@ export class CodexPlanner implements PlannerPort {
     this.totals.turns += 1;
     this.options.store.record({ type: 'planner_turn_started', ...base, authMode: auth.mode, promptChars: prompt.length, promptDigest: digest(prompt), schemaDigest: schema.digest, catalogVersion: request.catalog.catalogVersion, snapshotId: request.observation?.id ?? null, selectedModel: iso.model, effort: iso.effort });
     let turn: TurnResult;
+    const streamEvents = new Set<string>();
     try {
       turn = await runCodexTurn({
         command: iso.command,
@@ -205,6 +206,12 @@ export class CodexPlanner implements PlannerPort {
         signal,
         ...(this.options.table ? { table: this.options.table } : {}),
         onCleanup: (c) => this.options.store.record({ type: 'planner_process_cleanup', ...base, ...c }),
+        onEvent: (type) => {
+          if (!['turn.started', 'turn.completed'].includes(type) || streamEvents.has(type)) return;
+          streamEvents.add(type);
+          this.options.store.record({ type: type === 'turn.started' ? 'planner_stream_started' : 'planner_stream_completed', ...base });
+        },
+        onResponseStart: () => this.options.store.record({ type: 'planner_response_started', ...base }),
       });
     } catch (error) {
       this.totals.failedTurns += 1;

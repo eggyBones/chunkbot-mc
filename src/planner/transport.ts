@@ -63,6 +63,9 @@ export interface TurnSpec {
   onCleanup?(evidence: CleanupEvidence): void;
   /** Observes stream event types (no content), e.g. to detect `turn.started` in diagnostics. */
   onEvent?(type: string): void;
+  /** First allowed agent-message stream item, before parsing its content or
+   * waiting for process cleanup. Content/reasoning is never passed to observers. */
+  onResponseStart?(): void;
 }
 
 const ALLOWED_ITEMS = new Set(['agent_message', 'reasoning', 'error']);
@@ -80,6 +83,7 @@ export async function runCodexTurn(spec: TurnSpec): Promise<TurnResult> {
   let turnCompleted = false;
   let failure: { kind: PlannerFailureKind; detail: string } | undefined;
   let streamError: string | undefined;
+  let responseStarted = false;
   const count = (k: string) => (counts[k] = (counts[k] ?? 0) + 1);
 
   let proc: OwnedProcess | undefined;
@@ -114,6 +118,10 @@ export async function runCodexTurn(spec: TurnSpec): Promise<TurnResult> {
         const itemType = String(item['type'] ?? '');
         count(`item:${itemType}`);
         if (!ALLOWED_ITEMS.has(itemType)) return fail('prohibited_event', `prohibited ${itemType || 'untyped'} item in the planner stream (tools/agents are not allowed); the turn is rejected even if a final answer follows`);
+        if (itemType === 'agent_message' && !responseStarted) {
+          responseStarted = true;
+          spec.onResponseStart?.();
+        }
         if (itemType === 'error') {
           const message = String(item['message'] ?? '');
           if (classifyPlannerMessage(message) === 'model_mismatch') return fail('model_mismatch', clip(message, 300));

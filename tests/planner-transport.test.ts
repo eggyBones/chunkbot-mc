@@ -3,7 +3,7 @@
 // abort/timeout cleanup of the OWNED process group (including a child), late
 // output discarded, environment scrubbing. No real CLI or inference.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -51,6 +51,34 @@ describe('planner turn transport', () => {
     assert.equal(r.usage?.outputTokens, 50);
     assert.equal(r.eventCounts['item:agent_message'], 1);
     assert.equal(JSON.parse(readFileSync(join(dir, 'fault-codex-last-prompt-chars.json'), 'utf8')).hasJevKeyName, false);
+  });
+
+  it('marks the FIRST allowed response stream item before final output/process settlement, once and without content', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chunkbot-response-order-'));
+    const path = join(dir, 'fake.mjs');
+    writeFileSync(path, `const out=x=>process.stdout.write(JSON.stringify(x)+'\\n');
+      process.stdin.resume();process.stdin.on('end',()=>{
+        out({type:'turn.started'});
+        out({type:'item.completed',item:{type:'reasoning',text:'private test reasoning'}});
+        out({type:'item.started',item:{type:'agent_message',text:'first raw response'}});
+        setTimeout(()=>{
+          out({type:'item.updated',item:{type:'agent_message',text:'raw update'}});
+          out({type:'item.completed',item:{type:'agent_message',text:'{}'}});
+          out({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}});
+        },250);
+      });`);
+    const events: string[] = [], received: unknown[][] = [];
+    let settled = false;
+    const p = runCodexTurn(spec(process.execPath, { args: [path], onEvent: (type) => events.push(type), onResponseStart: (...args: unknown[]) => { received.push(args); events.push('FIRST_RESPONSE'); } })).finally(() => { settled = true; });
+    const until = Date.now()+3_000;
+    while (!received.length && Date.now()<until) await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(received, [[]], 'no text or reasoning reaches the observer');
+    assert.equal(settled, false, 'raw response is observable while the process still owns the turn');
+    const result = await p;
+    assert.equal(result.finalText, '{}');
+    assert.equal(received.length, 1);
+    assert.ok(events.indexOf('FIRST_RESPONSE') < events.indexOf('item.updated'));
+    assert.ok(events.indexOf('FIRST_RESPONSE') < events.indexOf('turn.completed'));
   });
 
   it('rejects a turn with a prohibited tool event even though a valid final answer follows', async () => {
