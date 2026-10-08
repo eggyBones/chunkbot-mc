@@ -305,7 +305,7 @@ async function stopChunkbot(): Promise<void> {
     chunkbot.child.kill('SIGKILL');
     exited = await Promise.race([chunkbot.exited, sleep(10_000).then(() => undefined)]);
   }
-  cleanupNote(`cli-exit:${chunkbot.pid}`, Boolean(exited) && !forced, JSON.stringify(exited ?? { notExited: true }));
+  cleanupNote(`cli-exit:${chunkbot.pid}`, Boolean(exited) && !forced && exited?.code === 0, JSON.stringify(exited ?? { notExited: true }));
   chunkbot.save(outDir);
 }
 
@@ -739,7 +739,7 @@ async function main(): Promise<void> {
         await setup(`kill @e[type=!player,${box}]`); await sleep(1_600);
         for (const c of [`kill @e[type=!player,${box}]`, `fill ${a.x1} -60 ${a.z1} ${a.x2} -50 ${a.z2} air`, `fill ${a.x1} -61 ${a.z1} ${a.x2} -61 ${a.z2} grass_block`, `fill ${a.x1} -63 ${a.z1} ${a.x2} -62 ${a.z2} dirt`, ...SCENE.logs.map((p) => `setblock ${p.x} ${p.y} ${p.z} oak_log`)]) await setup(c);
         for (const p of SCENE.logs) assert(/Test passed/i.test(await rconRaw(`execute if block ${p.x} ${p.y} ${p.z} oak_log`)), 'standard trunk restored');
-        assert(!/Test passed/i.test(await rconRaw(`execute if entity @e[type=!player,${box}]`)), 'no scene entities after cleanup');
+        assert(/Test passed/i.test(await rconRaw(`execute unless entity @e[type=!player,${box}]`)), 'server positively proves no scene entities after cleanup');
         cleanupNote('standard-scene', true, 'standard blocks/trunk restored; no scene entities');
       });
       if (owner) await step('owner-online-clear', () => clearPlayer('FixtureOwner'));

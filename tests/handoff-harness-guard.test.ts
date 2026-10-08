@@ -39,6 +39,14 @@ describe('handoff harness boundaries and death oracle', () => {
     assert.equal(r.bound.epoch, 17);
   });
 
+  it('cleanup requires a positive no-entity proof and a zero direct CLI exit', () => {
+    assert.match(source, /execute unless entity @e\[type=!player/);
+    assert.ok(!source.includes('assert(!/Test passed/i'));
+    assert.match(source, /exited\?\.code === 0/);
+    const stop = source.slice(source.indexOf('async function stopChunkbot'), source.indexOf('async function clearPlayer'));
+    assert.ok(stop.indexOf("await clearPlayer('Chunkbot')") < stop.indexOf("chunkbot.send('/quit')"));
+  });
+
   it('rejects draft replay, another goal, refilled counters, changed outcome and task replay', () => {
     for (const change of [
       { intentId: pending.intentId }, { instruction: 'dig a well' }, { goalId: 'goal-other' }, { epoch: 15 },

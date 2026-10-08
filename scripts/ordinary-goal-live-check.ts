@@ -29,8 +29,8 @@
 //       -> goal cancelled (owner_stop), no later goal action, latch paused; no question
 //   O7W manual follow without memory/autonomy: submerged outside an 8-block normal
 //       anchor -> finite safety grant; stop revokes it; a new manual goal grants fresh safety
-//   O8M/O8D ordinary follow with an unarmed/armed bot and one visible adult zombie:
-//       code-owned retreat/defense, server survival/separation/defeat evidence
+//   O8M/O8A/O8D ordinary follow: unarmed avoidance, equipped non-engaging
+//       avoidance, then equipped defense with server engagement proven BEFORE admission
 //   RC1  partial additional-log job -> death -> actual own recovery -> remaining original job
 //   RC2/RC2H/RC2C persistent follow, partial construction and craft/equipment continuation
 //   RC3/RC3N/RC3D stop/resume/restart, new owner supersession, another recovery death
@@ -126,6 +126,25 @@ export const LAYOUT = {
   },
   water: { platform: { x1: 200, x2: 223, z1: 194, z2: 219, y1: -60, y2: -57 }, pool: { x1: 204, x2: 210, z1: 203, z2: 209 }, bot: { x: 218.5, y: -56, z: 200.5 }, owner: { x: 218.5, y: -56, z: 198.5 }, submerged: { x: 207.5, y: -60, z: 206.5 } },
 } as const;
+
+/** RCON entity truth: an unreadable/error reply never proves absence. */
+export function fixtureEntityTest(reply: string): boolean | null {
+  if (/^Test passed[.,] Count: [1-9]\d*\.?$/i.test(reply.trim())) return true;
+  if (/^Test failed\.?$/i.test(reply.trim())) return false;
+  return null;
+}
+
+/** A y-only surface bob inside the pool cannot satisfy the escape oracle. */
+export function onWaterBank(p: V3): boolean {
+  const { platform, pool } = LAYOUT.water;
+  return Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) && Math.abs(p.y - (-56)) <= 0.2 &&
+    p.x >= platform.x1 && p.x < platform.x2 + 1 && p.z >= platform.z1 && p.z < platform.z2 + 1 &&
+    (p.x < pool.x1 || p.x >= pool.x2 + 1 || p.z < pool.z1 || p.z >= pool.z2 + 1);
+}
+
+export function currentMeleeDamage(damage: { entityId: number; sourceCauseId: number; atMs: number }, selfId: number, threatId: number, now: number): boolean {
+  return Number.isInteger(selfId) && Number.isInteger(threatId) && damage.entityId === selfId && damage.sourceCauseId > 0 && damage.sourceCauseId - 1 === threatId && now >= damage.atMs && now - damage.atMs <= 6_000;
+}
 
 /** Owner-facing question/answer prompts in CLI output lines (MB-PLAN-006 boundary). */
 export function questionLines(lines: readonly string[]): string[] {
@@ -237,7 +256,10 @@ class Harness {
     return /Test passed/i.test(await this.query(`execute if block ${p.x} ${p.y} ${p.z} ${key}`));
   }
   async entityExists(tag: string): Promise<boolean> {
-    return /Test passed/i.test(await this.query(`execute if entity @e[tag=${tag},${ENTITY_BOX}]`));
+    const reply = await this.query(`execute if entity @e[tag=${tag},${ENTITY_BOX}]`);
+    const exists = fixtureEntityTest(reply);
+    check(exists !== null, `entity presence unreadable; no absence credit: ${reply}`);
+    return exists;
   }
   async health(name: string): Promise<number> {
     const r = await this.query(`data get entity ${name} Health`);
@@ -347,6 +369,41 @@ class Harness {
     await sleep(800);
   }
 
+  /** No owner goal/safety authority yet. Prove the actual zombie hurt the bot. */
+  async stageMeleeEngagement(tag: string, summon: () => Promise<void>, ev: string[]): Promise<void> {
+    check(this.owner, 'owned observer must be online');
+    const observer = this.owner;
+    const damage: Array<{ entityId: number; sourceCauseId: number; atMs: number }> = [];
+    const onDamage = (p: { entityId: number; sourceCauseId: number }) => {
+      damage.push({ entityId: p.entityId, sourceCauseId: p.sourceCauseId, atMs: Date.now() });
+      if (damage.length > 32) damage.shift();
+    };
+    observer._client.on('damage_event', onDamage);
+    try {
+      await summon();
+      const reply = await this.query(`data get entity @e[tag=${tag},limit=1,${ENTITY_BOX}] UUID`);
+      const parts = /\[I;\s*(-?\d+),\s*(-?\d+),\s*(-?\d+),\s*(-?\d+)\]/.exec(reply);
+      check(parts, `staging UUID unreadable: ${reply}`);
+      const uuid = parts.slice(1).map((n) => (Number(n) >>> 0).toString(16).padStart(8, '0')).join('');
+      await this.waitForTruth('current server-attributed zombie melee engagement before admission', async () => {
+        const self = observer.players[BOT]?.entity;
+        const threat = Object.values(observer.entities).find((e) => e.uuid?.replaceAll('-', '').toLowerCase() === uuid);
+        if (!self || !threat || threat.name !== 'zombie') return false;
+        const hit = damage.findLast((d) => currentMeleeDamage(d, self.id, threat.id, Date.now()));
+        if (!hit) return false;
+        const p = await this.position();
+        const r = await this.query(`data get entity @e[tag=${tag},limit=1,${ENTITY_BOX}] Pos`);
+        const m = /\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]/.exec(r);
+        check(m, `staging threat position unreadable: ${r}`);
+        const distance = Math.hypot(p.x-Number(m[1]), p.y-Number(m[2]), p.z-Number(m[3]));
+        if (distance > 3.5 || !currentMeleeDamage(hit, self.id, threat.id, Date.now())) return false;
+        check(await this.health(BOT) >= 14, 'staged engagement retains defense health readiness');
+        ev.push(`PRECONDITION: server damage_event victim ${self.id}, cause ${threat.id}, tagged UUID ${uuid}, age ${Date.now()-hit.atMs}ms, current RCON distance ${distance.toFixed(2)}; no goal/safety authority during staging`);
+        return true;
+      }, 10_000);
+    } finally { observer._client.removeListener('damage_event', onDamage); }
+  }
+
   async interruptByDeath(goalId: string): Promise<void> {
     check(/false\b/.test(await this.query('gamerule keep_inventory')), 'loss recovery requires unchanged keep_inventory=false');
     await this.setup(`kill ${BOT}`); // Bounded operator trigger, never recovery credit.
@@ -418,7 +475,7 @@ class Harness {
     const run = this.runs.find((r) => r.pid === p.pid);
     const exit = exited ? { code: exited.code, signal: exited.signal, ...(killed ? { sigkillAfterMs: 20_000 } : {}) } : { notExited: true, sigkill: killed };
     if (run) run.exit = exit;
-    this.note(`cli-exit pid ${p.pid ?? '?'}`, Boolean(exited) && !killed, exited ? (killed ? `exited only after SIGKILL (${JSON.stringify(exit)})` : `exited (${JSON.stringify(exit)})`) : 'did NOT exit');
+    this.note(`cli-exit pid ${p.pid ?? '?'}`, Boolean(exited) && !killed && exited?.code === 0, exited ? (killed ? `exited only after SIGKILL (${JSON.stringify(exit)})` : `exited (${JSON.stringify(exit)})`) : 'did NOT exit');
     p.save(this.outDir);
     this.cli = undefined;
   }
@@ -442,7 +499,7 @@ class Harness {
     if (!this.cli) return;
     const from = this.cli.length;
     this.cli.send('stop');
-    await this.cli.waitSince(/\[chunkbot\] (Stopped|Nothing (to stop|was running)|Goal goal-\S+ cancelled)/, from, 15_000).catch(() => undefined);
+    await this.cli.waitSince(/\[chunkbot\] (Stopped|Nothing (to stop|was running)|Goal goal-\S+ cancelled)/, from, 15_000);
     await sleep(800);
   }
   /** MB-PLAN-006 boundary for one goal: no question/answer prompt, never awaiting the owner. */
@@ -750,11 +807,16 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       check(Math.hypot(p1.x-p0.x, p1.z-p0.z) < 0.6, 'no horizontal motion after stop');
       const second = await h.goal('follow me');
       const next = await h.waitEvent((e) => e.type === 'safety_episode_started' && e.grantId !== episode.grantId && e.suspended?.goalId === second.goalId, 30_000, 'new manual finite safety grant');
-      await h.waitEvent((e) => e.type === 'safety_episode_ended' && e.episodeId === next.episodeId && ['resolved', 'improved'].includes(e.outcome), 60_000, 'verified water improvement');
-      await h.waitForTruth('dry bank reached without rescue', async () => {
-        const p = await h.position(); const pool = LAYOUT.water.pool;
-        return p.y >= -56.2 && (p.x < pool.x1 || p.x >= pool.x2+1 || p.z < pool.z1 || p.z >= pool.z2+1) && await h.health(BOT) > 0;
-      });
+      const ended = await h.waitEvent((e) => e.type === 'safety_episode_ended' && e.episodeId === next.episodeId, 60_000, 'finite water episode');
+      check(['resolved', 'improved'].includes(ended.outcome), `water episode did not resolve: ${ended.outcome}`);
+      const bank0 = await h.position();
+      check(onWaterBank(bank0), `episode released before reaching a dry bank: ${JSON.stringify(bank0)}`);
+      check(await h.blockIs({ x: Math.floor(bank0.x), y: -57, z: Math.floor(bank0.z) }, 'minecraft:dirt'), 'server confirms dry stable support');
+      check(await h.blockIs({ x: Math.floor(bank0.x), y: -56, z: Math.floor(bank0.z) }, 'minecraft:air'), 'body cell is dry');
+      await sleep(1_500);
+      const bank1 = await h.position();
+      check(onWaterBank(bank1) && Math.hypot(bank1.x-bank0.x,bank1.z-bank0.z) < 0.8 && await h.health(BOT) > 0, `dry supported position stays settled after controls release: ${JSON.stringify(bank1)}`);
+      check(!h.events().some((e) => e.type === 'safety_episode_started' && Date.parse(String(e.t)) > Date.parse(String(ended.t))), 'a replacement episode cannot rescue premature release');
       const anchor = h.events().find((e) => e.type === 'goal_travel_anchor' && e.goalId === first.goalId)!;
       check(anchor.radius === 8 && Math.hypot(at.x-anchor.anchor.x,at.z-anchor.anchor.z) > anchor.radius, 'hazard staging really lies outside the original normal bound');
       check(h.events().filter((e) => e.type === 'goal_travel_anchor' && e.goalId === first.goalId).length === 1, 'safety never reanchors the interrupted job');
@@ -763,25 +825,44 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       ev.push(`no memory/autonomy, original normal radius 8; first grant ${episode.grantId} stopped; fresh grant ${next.grantId}; dry server position ${JSON.stringify(await h.position())}`);
     });
 
-    for (const armed of [false, true]) await h.scenarioRun(armed ? 'O8D' : 'O8M', `ordinary follow: ${armed ? 'equipped defense of one engaging adult zombie' : 'unarmed avoidance of a visible zombie'} through the single safety actuator`, only, async (ev) => {
-      await freshCli(armed ? 'mob-defense' : 'mob-retreat'); await h.resetScene();
+    for (const mode of [
+      { id: 'O8M', armed: false, engaging: false, title: 'unarmed avoidance of a visible zombie' },
+      { id: 'O8A', armed: true, engaging: false, title: 'equipped avoidance of a non-engaging adult zombie' },
+      { id: 'O8D', armed: true, engaging: true, title: 'equipped defense of an already-engaging adult zombie' },
+    ]) await h.scenarioRun(mode.id, `ordinary follow: ${mode.title} through the single safety actuator`, only, async (ev) => {
+      const { armed, engaging } = mode;
+      await freshCli(`mob-${mode.id.toLowerCase()}`); await h.resetScene();
       check(!/peaceful/i.test(await h.query('difficulty')), 'mob trial needs an unchanged non-peaceful fixture; no automatic settings change');
       for (const c of [`effect give ${BOT} minecraft:instant_health 1 4 true`, `effect give ${BOT} minecraft:saturation 1 10 true`]) await h.setup(c);
       if (armed) for (const c of [`item replace entity ${BOT} hotbar.0 with minecraft:iron_sword`, `item replace entity ${BOT} armor.head with minecraft:iron_helmet`, `item replace entity ${BOT} armor.chest with minecraft:iron_chestplate`]) await h.setup(c);
-      const goal = await startFollowing(); const at = await h.position(); const since = Date.now();
-      const tag = armed ? 'og_defense' : 'og_retreat';
-      await h.setup(`summon zombie ${at.x+2.5} ${at.y} ${at.z} {IsBaby:0b,PersistenceRequired:1b,Tags:["${tag}"]}`);
-      await h.setup(`effect give @e[tag=${tag},${ENTITY_BOX}] minecraft:fire_resistance infinite 0 true`);
+      const tag = `og_${mode.id.toLowerCase()}`;
+      const summon = async () => {
+        const at = await h.position();
+        await h.setup(`summon zombie ${at.x+2.5} ${at.y} ${at.z} {IsBaby:0b,PersistenceRequired:1b,${mode.id === 'O8A' ? 'NoAI:1b,' : ''}Tags:["${tag}"]}`);
+        await h.setup(`effect give @e[tag=${tag},${ENTITY_BOX}] minecraft:fire_resistance infinite 0 true`);
+      };
+      let goal: { goalId: string; from: number };
+      const since = Date.now();
+      if (engaging) {
+        await h.stageMeleeEngagement(tag, summon, ev);
+        // Admission immediately authorizes safety; waiting for a planner/task
+        // first could expire the already-proven engagement.
+        goal = await h.goal('follow me');
+      } else {
+        goal = await startFollowing();
+        await summon();
+        if (armed) ev.push('CONTROL: equipped but NoAI adult zombie has no attack/engagement; retreat remains required');
+      }
       const ep = await h.waitEvent((e) => e.type === 'safety_episode_started' && e.suspended?.goalId === goal.goalId && Date.parse(String(e.t)) >= since, 30_000, 'local mob episode');
-      check(ep.response === (armed ? 'defend' : 'retreat'), `expected code-owned ${armed ? 'defense' : 'retreat'}, got ${ep.response}`);
+      check(ep.response === (engaging ? 'defend' : 'retreat'), `expected code-owned ${engaging ? 'defense' : 'retreat'}, got ${ep.response}`);
       const ended = await h.waitEvent((e) => e.type === 'safety_episode_ended' && e.episodeId === ep.episodeId, 60_000, 'finite mob episode');
       check(await h.health(BOT) > 0, 'bot survived');
       const actions = h.events().filter((e) => e.type === 'skill_outcome' && e.owner === 'safety' && Date.parse(String(e.t)) >= since);
-      if (armed) {
+      if (engaging) {
         check(!await h.entityExists(tag), 'server confirms zombie absent');
         check(actions.some((a) => a.evidence?.defeatedByServerStatus === true), 'defeat requires server status evidence');
       } else {
-        check(!actions.some((a) => a.evidence?.attacksSent > 0), 'unarmed response sends no attacks');
+        check(!actions.some((a) => a.evidence?.attacksSent > 0), 'avoidance response sends no attacks');
         const reply = await h.query(`data get entity @e[tag=${tag},limit=1,${ENTITY_BOX}] Pos`);
         const m = /\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]/.exec(reply);
         check(m, 'threat position readable after retreat');
@@ -931,9 +1012,8 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
     };
     if (h.cli) {
       await step('cli-stop', async () => {
-        h.cli!.send('stop');
-        await sleep(500);
-        return 'stop sent to the owned CLI';
+        await h.quiesce();
+        return 'owned CLI acknowledged stop before restoration';
       });
     }
     if (h.forceloadBefore) {
