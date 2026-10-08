@@ -258,7 +258,7 @@ export class EpisodeBook {
    * regain is recorded in `regained` (<= count), so the durable body stays valid
    * when a whole key is regained.
    */
-  regain(e: RecoveryEpisode, key: string, count: number, nowMs: number, meta?: ItemMetadata): number {
+  regain(e: RecoveryEpisode, key: string, count: number, nowMs: number, meta?: ItemMetadata, provenance: 'scoped_visible_drop' | 'server_attributed_collect' = 'scoped_visible_drop'): number {
     const m = e.manifest?.missing.find((x) => x.key === mk(key) && manifestSought(x));
     if (!m || !Number.isInteger(count) || count <= 0) return 0;
     const identity = this.identityStatus(e, key, meta);
@@ -273,7 +273,7 @@ export class EpisodeBook {
     if (counted <= 0) return 0;
     m.regained = (m.regained ?? 0) + counted;
     m.state = manifestRemaining(m) === 0 ? 'regained' : 'partially_regained';
-    e.regained.push({ key: m.key, count: counted, atMs: nowMs, provenance: 'scoped_visible_drop' });
+    e.regained.push({ key: m.key, count: counted, atMs: nowMs, provenance });
     if (e.regained.length > SURVIVAL_BOUNDS.regained) e.regained.splice(0, e.regained.length - SURVIVAL_BOUNDS.regained);
     const running = e.attempts.find((a) => a.endedAtMs === undefined);
     if (running) running.regained += counted;

@@ -463,6 +463,8 @@ export type DropIdentity = 'not_required' | 'match' | 'mismatch' | 'unproven';
 /** Server-stated facts of one dropped item entity (from its own metadata packet; never a display label). */
 export interface DropStackFacts {
   entityId: number;
+  /** Tracker-local server spawn incarnation; a reused entity id never reuses a frozen pickup claim. */
+  incarnation: number;
   key: string;
   count: number;
   meta: ItemMetadata;
@@ -622,7 +624,7 @@ export const RecoveryEpisodeSchema = z
     cause: DeathCauseSchema,
     lastAlive: LastAliveSchema,
     manifest: LossManifestSchema.optional(),
-    regained: z.array(z.object({ key: RegistryKeySchema, count: z.number().int().positive(), atMs, provenance: z.enum(['scoped_visible_drop']) }).strict()).max(SURVIVAL_BOUNDS.regained),
+    regained: z.array(z.object({ key: RegistryKeySchema, count: z.number().int().positive(), atMs, provenance: z.enum(['scoped_visible_drop', 'server_attributed_collect']) }).strict()).max(SURVIVAL_BOUNDS.regained),
     /** C10: inventory effects NOT attributed to recovery (bounded, newest kept). */
     incidental: z.array(IncidentalEffectSchema).max(SURVIVAL_BOUNDS.incidental).default([]),
     attempts: z.array(RecoveryAttemptSchema).max(SURVIVAL_BOUNDS.attemptHistory),

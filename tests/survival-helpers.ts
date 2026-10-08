@@ -18,7 +18,7 @@ export const SESSION_OW = 'overworld';
 export const NETHER = 'minecraft:the_nether';
 export const NOW0 = 1_700_000_000_000;
 
-const ITEMS: Record<number, string> = { 1: 'bread', 2: 'iron_pickaxe', 3: 'rotten_flesh', 4: 'diamond_sword', 5: 'cobblestone', 6: 'golden_apple', 7: 'iron_helmet', 8: 'stone_pickaxe', 9: 'oak_log', 10: 'cooked_beef', 11: 'dirt' };
+const ITEMS: Record<number, string> = { 1: 'bread', 2: 'iron_pickaxe', 3: 'rotten_flesh', 4: 'diamond_sword', 5: 'cobblestone', 6: 'golden_apple', 7: 'iron_helmet', 8: 'stone_pickaxe', 9: 'oak_log', 10: 'cooked_beef', 11: 'dirt', 12: 'oak_planks' };
 export const ID: Record<string, number> = Object.fromEntries(Object.entries(ITEMS).map(([k, v]) => [v, Number(k)]));
 const DURABILITY: Record<string, number> = { iron_pickaxe: 250, diamond_sword: 1561, iron_helmet: 165, stone_pickaxe: 131 };
 const FOOD: Record<string, { foodPoints: number; saturation: number }> = { bread: { foodPoints: 5, saturation: 6 }, rotten_flesh: { foodPoints: 4, saturation: 0.8 }, golden_apple: { foodPoints: 4, saturation: 9.6 }, cooked_beef: { foodPoints: 8, saturation: 12.8 } };
