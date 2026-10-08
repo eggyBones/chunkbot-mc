@@ -37,6 +37,7 @@ export interface ObserverSample {
     requestedAtMs: number; receivedAtMs: number; runId: string;
     connectionEpochBefore: number; connectionEpochAfter: number;
     before: OwnerServerRead; after: OwnerServerRead;
+    botBefore?: OwnerServerRead; botAfter?: OwnerServerRead;
   };
 }
 export interface Trip { fromMs: number; toMs: number; goalId: string; goalEpoch: number; connectionEpoch: number }
@@ -125,7 +126,70 @@ export function verifiedHistory(observations: readonly ObserverSample[], ownerId
   });
 }
 
-export interface PrivacyMatch { path: string; value: string; reason: string; evidence?: HistoryProof }
+export interface VisibleOwnerProof {
+  runId: string; snapshotId: string; takenAtMs: number; requestAtMs: number;
+  goalEpoch: number; connectionEpoch: number; dimension: string;
+  owner: Point; bot: Point; ownerIdentity: OwnerIdentity; botIdentity: OwnerIdentity;
+  witnessSnapshotId?: string; capture?: NonNullable<ObserverSample['capture']>;
+  serverReads?: ServerVisibilityRead[];
+}
+export interface VisibilityScope { runId: string; goalEpoch: number; connectionEpoch: number }
+export interface ServerVisibilityRead { scopeBefore: VisibilityScope; scopeAfter: VisibilityScope; owner: OwnerServerRead; bot: OwnerServerRead }
+export interface VisibilityContext {
+  runId: string; atMs: number; goalEpoch: number; connectionEpoch: number;
+  ownerIdentity: OwnerIdentity; botIdentity: OwnerIdentity; snapshotId: string; takenAtMs: number;
+}
+/** Consistency at the identified observation time, never at an arbitrarily nearby HTTP/server sample. */
+export function visibleOwnerConsistency(s: Row, witnesses: readonly ObserverSample[], ctx: VisibilityContext, reads: readonly ServerVisibilityRead[] = []): { proof?: VisibleOwnerProof; errors: string[] } {
+  const fail = (reason: string) => ({ errors: [reason] });
+  if (s.owner?.visible !== true || !point(s.owner.at) || !point(s.self?.at)) return fail('visible_owner_point_missing');
+  if (s.snapshotId !== ctx.snapshotId || !Number.isInteger(s.goalEpoch) || s.goalEpoch !== ctx.goalEpoch || !Number.isInteger(s.connectionEpoch) || s.connectionEpoch !== ctx.connectionEpoch) return fail('visible_owner_snapshot_scope_unproven');
+  if (!Number.isFinite(s.takenAtMs) || s.takenAtMs !== ctx.takenAtMs || s.takenAtMs > ctx.atMs || ctx.atMs - s.takenAtMs > 1_500) return fail('visible_owner_snapshot_time_unproven');
+  const grounding = (s.entities ?? []).some((e: Row | string) => typeof e === 'string' ? /^player \(owner\) \d+(?:\.\d+)?m$/.test(e) : e.key === 'minecraft:player' && e.label === 'owner' && typeof e.handle === 'string' && point(e.at) && same(e.at, s.owner.at));
+  if (!grounding) return fail('visible_owner_grounding_missing');
+  type Frame = { before: OwnerServerRead; after: OwnerServerRead; botBefore?: OwnerServerRead; botAfter?: OwnerServerRead; times: number[]; witnessSnapshotId?: string; capture?: NonNullable<ObserverSample['capture']>; serverReads?: ServerVisibilityRead[] };
+  const frames: Frame[] = [];
+  const scopeMatches = (r: VisibilityScope) => r.runId === ctx.runId && r.goalEpoch === ctx.goalEpoch && r.connectionEpoch === ctx.connectionEpoch;
+  for (let i = 0; i < reads.length; i++) for (const skip of [1, 2]) {
+    const b = reads[i], a = reads[i + skip];
+    if (!b || !a || b.bot.toMs > s.takenAtMs || a.owner.fromMs < s.takenAtMs || a.bot.toMs - b.owner.fromMs > 1500 || ![b.scopeBefore, b.scopeAfter, a.scopeBefore, a.scopeAfter].every(scopeMatches)) continue;
+    const range = reads.slice(i, i + skip + 1);
+    if (!range.flatMap((r) => [r.scopeBefore, r.scopeAfter]).every(scopeMatches)) continue;
+    frames.push({ before: b.owner, after: a.owner, botBefore: b.bot, botAfter: a.bot, times: range.flatMap((r) => [r.owner.fromMs, r.owner.toMs, r.bot.fromMs, r.bot.toMs]), serverReads: range });
+  }
+  for (const o of witnesses) {
+    const c = o.capture;
+    if (!c || o.runId !== ctx.runId || c.runId !== ctx.runId || c.connectionEpochBefore !== ctx.connectionEpoch || c.connectionEpochAfter !== ctx.connectionEpoch || o.snapshot.connectionEpoch !== ctx.connectionEpoch || o.snapshot.goalEpoch !== ctx.goalEpoch || dim(o.snapshot.dimension) !== dim(s.dimension)) continue;
+    frames.push({ before: c.before, after: c.after, ...(c.botBefore ? { botBefore: c.botBefore } : {}), ...(c.botAfter ? { botAfter: c.botAfter } : {}), times: [c.before.fromMs, c.before.toMs, c.requestedAtMs, o.snapshot.takenAtMs, c.receivedAtMs, c.after.fromMs, c.after.toMs], witnessSnapshotId: o.snapshot.id, capture: c });
+  }
+  let mismatch = false;
+  for (const c of frames) {
+    let before: OwnerServerRead, after: OwnerServerRead;
+    const reparse = (r: OwnerServerRead, identity: OwnerIdentity) => {
+      const parsed = parseOwnerServerRead(identity.name, r.replies, r.fromMs, r.toMs);
+      if (parsed.name !== r.name || parsed.uuid !== r.uuid || parsed.uuid !== identity.uuid || parsed.dimension !== r.dimension || dim(parsed.dimension) !== dim(s.dimension) || !point(r.at) || distance(parsed.at, r.at) > 0.000001) throw new Error('server identity/point mismatch');
+      return parsed;
+    };
+    try { before = reparse(c.before, ctx.ownerIdentity); after = reparse(c.after, ctx.ownerIdentity); } catch { continue; }
+    const times = c.times;
+    if (times.some((t, i) => !Number.isFinite(t) || (i > 0 && t < times[i - 1]!)) || after.toMs - before.fromMs > 1_500 || s.takenAtMs < before.toMs || s.takenAtMs > after.fromMs) continue;
+    if (distance(before.at, after.at) > 0.000001) continue; // a changing owner point is no independent current-position proof
+    if (!same(s.owner.at, before.at)) { mismatch = true; continue; }
+    if (!c.botBefore || !c.botAfter) continue;
+    let botBefore: OwnerServerRead, botAfter: OwnerServerRead;
+    try { botBefore = reparse(c.botBefore, ctx.botIdentity); botAfter = reparse(c.botAfter, ctx.botIdentity); } catch { continue; }
+    if (c.serverReads) {
+      try { if (c.serverReads.some((r) => distance(reparse(r.owner, ctx.ownerIdentity).at, before.at) > 0.000001 || !same(reparse(r.bot, ctx.botIdentity).at, s.self.at))) continue; } catch { continue; }
+    }
+    if (!(before.toMs <= botBefore.fromMs && botBefore.fromMs <= botBefore.toMs && botBefore.toMs <= (c.capture?.requestedAtMs ?? s.takenAtMs) && botBefore.toMs <= s.takenAtMs && after.toMs <= botAfter.fromMs && botAfter.fromMs <= botAfter.toMs) || botAfter.toMs - before.fromMs > 1_500) continue;
+    // Both sides independently agree with the shown self; no extrapolation/interpolation of unobserved motion.
+    if (!same(s.self.at, botBefore.at) || !same(s.self.at, botAfter.at) || distance(s.self.at, before.at) > 32.2) continue;
+    return { errors: [], proof: { runId: ctx.runId, snapshotId: s.snapshotId, takenAtMs: s.takenAtMs, requestAtMs: ctx.atMs, goalEpoch: ctx.goalEpoch, connectionEpoch: ctx.connectionEpoch, dimension: dim(s.dimension), owner: s.owner.at, bot: s.self.at, ownerIdentity: ctx.ownerIdentity, botIdentity: ctx.botIdentity, ...(c.witnessSnapshotId ? { witnessSnapshotId: c.witnessSnapshotId } : {}), ...(c.capture ? { capture: c.capture } : {}), ...(c.serverReads ? { serverReads: c.serverReads } : {}) } };
+  }
+  return fail(mismatch ? 'visible_owner_position_disagrees_with_bracket' : 'visible_owner_independent_bracket_missing');
+}
+
+export interface PrivacyMatch { path: string; value: string; reason: string; evidence?: HistoryProof; visibility?: VisibleOwnerProof }
 export function parsePlannerInput(text: string): Row {
   const line = text.split('\n').find((l) => l.startsWith('{'));
   if (!line) throw new Error('planner input JSON is missing');
@@ -133,8 +197,11 @@ export function parsePlannerInput(text: string): Row {
 }
 
 /** Keep the old numeric match strength, but authorize each occurrence with its exact field/point provenance. */
-export function privacyOracle(input: Row, context: { runId: string; atMs: number; owner: Point; bot: Point; ownerIdentity: OwnerIdentity; connectionEpoch: number; dimension: string; history: readonly HistoryProof[] }): { findings: PrivacyMatch[]; allowed: PrivacyMatch[] } {
+export function privacyOracle(input: Row, context: { runId: string; atMs: number; owner: Point; bot: Point; ownerIdentity: OwnerIdentity; connectionEpoch: number; dimension: string; history: readonly HistoryProof[]; visibility?: VisibleOwnerProof }): { findings: PrivacyMatch[]; allowed: PrivacyMatch[] } {
   const findings: PrivacyMatch[] = [], allowed: PrivacyMatch[] = [];
+  const obs = input.observation ?? input.state?.observation;
+  const v = context.visibility;
+  const visible = v && obs?.owner?.visible === true && obs.snapshotId === v.snapshotId && obs.takenAtMs === v.takenAtMs && obs.connectionEpoch === v.connectionEpoch && obs.goalEpoch === v.goalEpoch && v.runId === context.runId && v.requestAtMs === context.atMs && v.connectionEpoch === context.connectionEpoch && v.dimension === dim(context.dimension) && v.ownerIdentity.name === context.ownerIdentity.name && v.ownerIdentity.uuid === context.ownerIdentity.uuid && point(obs.owner.at) && same(obs.owner.at, v.owner) ? v : undefined;
   const values = new Set<number>();
   for (const v of [context.owner.x, context.owner.z]) for (const b of [Math.floor(v), Math.round(v)]) for (const d of [-1, 0, 1]) values.add(b + d);
   const matches = (v: number) => Number.isFinite(v) && values.has(Math.trunc(v));
@@ -144,7 +211,7 @@ export function privacyOracle(input: Row, context: { runId: string; atMs: number
       const row = v as Row;
       const historical = /^(?:state\.)?observation\.remembered\[\d+\]$/.test(path) && row.label === 'owner last seen';
       let proof: HistoryProof | undefined;
-      if (historical && point(row.at) && row.source === 'observed' && Number.isFinite(row.ageSeconds) && row.ageSeconds > 0) {
+      if (historical && point(row.at) && row.source === 'observed' && Number.isFinite(row.ageSeconds) && (row.ageSeconds > 0 || (row.ageSeconds === 0 && visible && same(row.at, visible.owner)))) {
         const observed = context.atMs - row.ageSeconds * 1_000;
         proof = context.history.find((h) => h.runId === context.runId && h.ownerIdentity.name === context.ownerIdentity.name && h.ownerIdentity.uuid === context.ownerIdentity.uuid && h.anchorId === row.anchorId && h.connectionEpoch === context.connectionEpoch && dim(row.dimension) === h.dimension && h.dimension === dim(context.dimension) && same(h.at, row.at) && h.observedAtMs < context.atMs && h.serverAtMs < context.atMs && h.capture.after.toMs < context.atMs && Math.abs(h.observedAtMs - observed) <= 1_500);
       }
@@ -159,6 +226,17 @@ export function privacyOracle(input: Row, context: { runId: string; atMs: number
       return;
     }
     if (typeof v === 'number' && matches(v)) {
+      if (visible && /^(?:state\.)?observation\.self\.at\.[xyz]$/.test(path) && parent && point(parent) && same(parent, visible.bot)) {
+        allowed.push({ path, value: String(v), reason: 'identified self field independently bracketed at observation time', visibility: visible });
+        return;
+      }
+      const visiblePath = /^(?:state\.)?observation\.owner\.at\.[xyz]$/.test(path);
+      const entity = /^(?:state\.)?observation\.entities\[(\d+)\]\.at\.[xyz]$/.exec(path);
+      const groundedOwner = entity ? obs.entities[Number(entity[1])] : undefined;
+      if (visible && parent && point(parent) && same(parent, visible.owner) && (visiblePath || (groundedOwner?.key === 'minecraft:player' && groundedOwner.label === 'owner' && typeof groundedOwner.handle === 'string'))) {
+        allowed.push({ path, value: String(v), reason: 'identified visible-owner field independently bracketed at observation time', visibility: visible });
+        return;
+      }
       // Local self/terrain positions can share one coordinate with a far owner.
       // Only complete, current, spatially bounded points at declared observation paths qualify.
       const localPath = /^(?:state\.)?observation\.(?:self\.at|(?:blocks|entities|drops|frontiers)\[\d+\]\.at)\.[xyz]$/.test(path);

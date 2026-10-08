@@ -142,6 +142,19 @@ describe('MB-LOC-002 ordinary harness scripted planner turns and privacy helper'
     assert.match(code, /noCue\.directive\.autonomy\.locator\.actionable === false/);
     assert.match(code, /assert\(freshCue,/);
   });
+  it('requires actual snapshot time/scope, retains independent server reads and scans all visible-request fields', () => {
+    assert.match(code, /visibleOwnerConsistency\(obs, observations,/);
+    assert.match(code, /takenAtMs: binding\?\.snapshotTakenAtMs/);
+    assert.match(code, /visibilityCapture\?\.reads/);
+    assert.match(code, /retainedLH11Failure:/);
+    const visible = code.slice(code.indexOf('if (obs.owner?.visible === true)'), code.indexOf('for (const hit of result.findings)'));
+    assert.ok(!/\breturn\s*;/.test(visible), 'a visible flag cannot exempt the rest of a model request');
+    assert.match(visible, /owner: sample\.owner \?\? owner/, 'hidden current coordinates still use request-time server owner, never the earlier visible point');
+    assert.match(code, /appendFileSync\(join\(outDir, 'visibility-reads.jsonl'\)/);
+    assert.ok(code.indexOf('await visibilityCapture?.stop()') < code.indexOf("scenario = 'restore'"));
+    const capture = code.slice(code.indexOf('visibilityCapture = startVisibilityCapture'), code.indexOf("await check('O0'"));
+    assert.ok(!/\/diag|\.send\(|\.chat\(|\.write\(/.test(capture), 'truth capture creates no snapshot/model/actuator action');
+  });
   it('records online cleanup before logout and asserts truthful CLI exits without a forced kill', () => {
     assert.ok(!/\.kill\(|SIGKILL/.test(code));
     assert.match(code, /shutdownProblems\(exited,/);
