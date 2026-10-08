@@ -36,7 +36,7 @@ describe('W-H4/H5 sealed staging within the original clone', () => {
   });
 
   it('whole-volume server comparisons detect isolated blast damage, missing roof/floor and interior obstructions', () => {
-    const checks = fills.flatMap(arenaChecks);
+    const checks = fills.flatMap((f) => arenaChecks(f));
     assert.ok(checks.every((c) => verify(c)));
     for (const p of [[240, -55, 205], [268, -52, 201], [255, -54, 196], [249, -50, 220], [251, -48, 208], [258, -57, 206], [255, -60, 205], [249, -55, 208]] as const) {
       const corrupt = (x: number, y: number, z: number) => x === p[0] && y === p[1] && z === p[2] ? at(x, y, z) === 'air' ? 'stone' : 'air' : at(x, y, z);
