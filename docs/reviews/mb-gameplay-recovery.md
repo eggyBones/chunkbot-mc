@@ -12,6 +12,8 @@ Worker S: native Claude Code (Opus 5.5, high effort) through local DSH. Worktree
 | `549ce47` | The proposed C12 typed seam (declarations only, not consumed) and this review |
 | `41733b2` | The status projection enforces the declared 4,000-character bound (C10 added fields) |
 | `08c9d89` | Coordinator schema review: state/count consistency invariants, v1 migration that reconstructs the original lost count from recorded regains, old-revision fallback tests |
+| `eb4456b` | Review doc commit id |
+| (this commit) | C12 proposal revision 2 after the joint review (declarations only) |
 
 Owned paths changed:
 - `src/contracts/survival.ts`
@@ -172,112 +174,31 @@ Earlier rounds (before the schema review):
 
 Source, build and running versions: source is HEAD of this branch, `dist/` was built from `2ffdf10`, and no process runs it. The harness imports `src` directly.
 
-## C12: proposed minimum typed seam (awaiting Codex/P approval; not implemented)
+## C12: proposed seam, revision 2 (after the joint review; awaiting P's shared API and Codex approval; not implemented)
 
-Declarations live at the end of `src/contracts/survival.ts` under `MB-FLOW-003-C12 (PROPOSED — NOT CONSUMED)`. Survival implements them only after approval.
+Declarations: the end of `src/contracts/survival.ts`, `MB-FLOW-003-C12 (PROPOSED r2 — NOT CONSUMED)`. Revision 1 (`549ce47`) is superseded. Changes per review point:
 
-### Survival responsibilities (S)
+1. **Same logical goal id.** Continuation re-admits the **same goal id** at a fresh epoch, so `JevDecisionAdapter.perGoal` (keyed by `goalId`, confirmed in `src/decision/jev-adapter.ts`) and every per-goal account keep one identity. The checkpoint carries the **full shared `GoalCounters`** type (imported from `planner.ts`, not a subset), the **original** ceilings (cumulative counters are compared with them; nothing is refilled or double-charged) and the **original absolute `deadlineAtMs`**. A past deadline holds the checkpoint with `deadline_passed`. Revision 1's "remaining ceilings" and "deadline minus active time" are withdrawn (old decision C is withdrawn).
+2. **Immutable original evidence.** The checkpoint and admission carry the original admission baseline with its provenance `detail` (unknown counts stay unknown and make count atoms not continuable), the immutable accepted outcome, the original anchor and code-confirmed `AcquisitionEntry` accounting (labeled evidence source; never planner text). The fresh resync at continuation is **current evidence for re-binding**, not a new acquisition baseline:
+   - `carried = min(V, max(0, F − B0))` (possession basis), so credit is bounded by prior verified progress and returned belongings restore at most V; incidental gains never add credit.
+   - `acquired(now) = carried + max(0, now − F)` (+ consumption since continuation); a latched consumed milestone stays satisfied; effect basis (crafting/smelting) carries V.
+   - Repeated interruptions recompute V against the ORIGINAL B0.
 
-- `holdCheckpoint(capture)` replaces `onOwnerGoalEnd` for `CHECKPOINT_INTERRUPTIONS`: `death`, `low_health`, `safety_interrupted`, `dimension_change`, `disconnected`, `kicked`.
-  - It stores a durable, non-executable `ContinuationCheckpoint` containing:
-    - the original instruction and interpretation;
-    - the **immutable accepted outcome**;
-    - the original admission baseline;
-    - the original **travel anchor** (dimension, point, radius);
-    - verified effects as historical labels;
-    - counters;
-    - remaining allowances, computed as caps minus counters and `goalDeadlineMs − activeMsUsed`;
-    - compatibility;
-    - a durable continuation counter (max 2);
-    - interruptions;
-    - `sessionId`, `holdUntilMs` and state.
-  - It never awaits I/O on the lifecycle path.
-- **Acquisition accounting:** survival computes `AcquisitionEntry` for each count atom.
-  - Possession basis uses `inventory_delta` or `inventory_amount collect_additional`. The verified amount comes from **survival's packet-frozen last-alive inventory** at death, or the current server inventory for other interruptions. Survival subtracts the original admission count and adds ledger-confirmed consumption.
-  - Effect basis uses `crafting_result` or `smelting_result` and counts skill-confirmed outputs.
-  - Latches from the last code evaluation are kept.
-- **Carry at continuation:** `credit = min(verifiedAcquired, max(0, freshCount − admissionCount))` for the possession basis, and `verifiedAcquired` for the effect basis.
-  - Recovered prior possessions can only restore previously verified credit, capped by what is actually held. They never add new credit.
-  - Example: lost and unrecovered logs must be gathered again. A finished craft stays done.
-- **Compatibility:**
-  - Compatible:
-    - finite outcomes made of `all` and atoms, where count atoms are not under `any`/`not` and their admission count is known;
-    - fresh-truth atoms: `inventory_amount possess`, `equipped`, `near_target`, `block_state`, `container_state`, `structure_state`, `entity_outcome`, plus `memory_state` with its original baseline;
-    - persistent `maintain` outcomes. Follow resumes seeking and maintaining; recovery never completes it.
-  - Otherwise the checkpoint is `unsupported`, a held declarative blocker.
-  - A checkpoint without an accepted outcome is unsupported unless P/Codex choose the option under Decisions.
-- `continuationReadiness()` returns one of four results:
+   | Case (goal: 10 beyond B0 = 8; +4 verified before death) | Fresh F | Carried | Completes at |
+   | --- | --- | --- | --- |
+   | full recovery | 12 | 4 | 18 |
+   | partial recovery | 9 | 1 | 18 |
+   | nothing recovered (originals lost too) | 0 | 0 | 10 (new acquisitions only) |
+   | respawn-point pickups | 17 | 4 | 23 |
+   | second death after +3 more (held 15), recovered 15 | 15 | 7 | 18 |
 
-  | Result | When |
-  | --- | --- |
-  | `wait` | The recovery episode is still open, support is running, a durable write is pending, the bot is not alive, autonomy is paused, or owner intake is live. Wait is silent and makes no inference calls. |
-  | `blocked` | One declarative reason, no question: unsupported outcome, another session (`restart_held`), exhausted, expired, outside the original anchor radius or dimension, or store failure. |
-  | `ready` | Returns a `ContinuationTicket` for this connection epoch only, with a short expiry. |
-  | `none` | No checkpoint is held. |
+   Planned tests: repeated interrupts, the baseline 8 / +4 / death / recovery 12 case, partial recovery, consumed-latched progress and uncertain data (unknown baseline, no frozen inventory → last code evaluation or not continuable).
+   **Residual for decision:** own drops that a NON-recovery skill picks up during the continuation would count as new (`now − F`). Option: survival reports server collects of item entities first seen inside an incident's search radius for a still-unaccounted lost key, and P subtracts them up to that remainder.
+3. **No executable data; groundable subset.** Atoms whose selectors are `registry`, `owner` or `owner_destination` (and inventory/equipment/crafting/smelting/structure atoms) are re-grounded freshly. `observed` handles, `prior_result` action ids, `remembered_anchor` and memory refs are not re-grounded: the checkpoint is held with one declarative reason (`AtomGrounding.reason`); the outcome is never rewritten. Count atoms under `any`/`not`, and count atoms with an unknown admission baseline, are not continuable either.
+4. **Not dependent on configured autonomy/memory/survival.** P holds the same-session checkpoint in memory. Survival supplies pure helpers (`groundOutcome`, `accountAtInterruption`, `carryAt`) usable with survival disabled, plus, when enabled: packet-frozen last-alive counts, a recovery-priority `continuationGate` (open recovery or running support → wait; absent service → clear), and OPTIONAL persistence of the plain checkpoint, loaded after a restart as `restart_held` (shown, never run). A new manual owner admission is not gated by the automatic progression latch; stop/supersession fences existing held work; nothing moves after stop.
+5. **Preemption is not a checkpoint.** Immediate W water/mob holds keep the goal admitted and TaskRuntime re-observes locally after the hold clears (no end, resubmission or action replay). Only interruptions that actually ended ownership (`CHECKPOINT_INTERRUPTIONS`) produce a checkpoint.
 
-- `beginContinuation(ticketId, admission, freshBaseline)`:
-  - durably counts the continuation **before** any action. `continuationAuthority()` returns durable, pending or failed, mirroring the C5 recovery attempt;
-  - returns the carry;
-  - refuses stale, expired or other-connection tickets.
-- `onContinuationTerminal(end)` maps the end state:
-
-  | End | Checkpoint state |
-  | --- | --- |
-  | `outcome_verified` | `completed` |
-  | `owner_stop` | `stopped_by_owner`, the same as an ordinary owner stop ending the job |
-  | `replaced` | `superseded_by_owner` |
-  | another checkpoint interruption | re-held with accumulated counters, active time and accounting (`recheckpoint`) |
-  | anything else | `blocked` |
-
-- `onOwnerInstruction` supersedes the checkpoint and `dismissInterrupted` dismisses it. Bare `resume` only clears the latch. The next fresh assessment may then continue a **compatible** held checkpoint, but never an unsupported one.
-- A restart loads other-session checkpoints as `restart_held`: visible, never run.
-
-### Shared integration requested from P (exact semantics; P is the writer)
-
-1. **`src/autonomy/supervisor.ts` `ownerTerminal`:** for `CHECKPOINT_INTERRUPTIONS`, call `survival.holdCheckpoint(capture)` with:
-   - the accepted outcome contract object;
-   - the admission baseline;
-   - the admission anchor proof, from `SkillRuntime.routeView(...).admission` or the perception travel anchor (dimension, point, radius);
-   - the last outcome evaluation's latched paths;
-   - ledger consumed, crafted and smelted counts since admission;
-   - verified prior-result labels;
-   - the counters and caps;
-   - active ms used and `goalDeadlineMs`;
-   - connection and dimension;
-   - a `matches(itemKey, selector)` function backed by the exact-version knowledge (tags).
-
-   P must capture the ledger summary before lifecycle invalidation. That needs a synchronous snapshot in the revocation prefix, or a ledger read before `invalidate`.
-2. **Supervisor scheduling:** after survival's `assess` returns `none` (no necessary support), call `continuationReadiness`.
-   - On `ready`, admit through a new **GoalEngine continuation admission**.
-   - On `blocked`, show the declarative blocker once and hold unrelated progression, as the C4 held intent does today.
-   - On `wait`, reschedule bounded.
-3. **`GoalEngine.admitContinuation(ticket)`** (new; same `admit` path):
-   - new goal id and epoch;
-   - `GoalSource` variant `{kind:'owner_continuation', checkpointId, originalGoalId, continuation}`, with owner priority;
-   - instruction = the original text (display and planner context);
-   - counters initialized from `ticket.counters`, so nothing resets;
-   - caps and deadline from `ticket.ceilings`;
-   - the accepted outcome **pre-bound**: no new outcome acceptance, and the existing `acceptedOutcome` rule makes the planner repeat it exactly;
-   - the fresh admission inventory captured as usual, then `survival.beginContinuation` (refusal terminates the goal blocked);
-   - a bound predicate with `carry` per path;
-   - task/action gating on `continuationAuthority === 'durable'`.
-
-   The single PlannerSlot, actuator lease and SpendLedger are unchanged.
-4. **`src/execution/predicates.ts`:** add an optional `carry` to `bind`, so `acquired = credit + (current − continuationBaseline)`.
-   - Consumed-since-continuation credit applies only with `mayBeConsumedLater`.
-   - A latched carry stays satisfied.
-   - Effect-basis atoms count ledger outputs since the continuation bind, plus credit.
-5. **`SkillRuntime.onGoalAdmitted`:** accept an explicit anchor for continuation goals, the **original** anchor, instead of capturing the current position. Survival's readiness already refuses when the bot is outside it or in another dimension.
-6. **Terminal routing:** source `owner_continuation` goes to `survival.onContinuationTerminal`, never `onOwnerGoalEnd`. Stop, replacement and lifecycle revocation keep their existing precedence.
-7. **Status and dashboard:** show `survival.checkpoints()`, kept distinct from supporting recovery and from automatic progression (RC4).
-8. **Config:** `survival.continuation.{maxContinuations (default 2, ceiling 2), holdMs (default 30 min)}` and the application `sessionId` passed to `createSurvivalService`.
-
-### Decisions requested (coordinator assumptions until answered)
-
-- **A:** a continuation goal stopped by the owner ends the job (`stopped_by_owner`). It is not held for resume.
-- **B:** a checkpoint without an accepted outcome (interrupted during planning) is `unsupported` in the first slice.
-  - Alternative: allow it only when `tasksAdmitted === 0`, planning from the held instruction with the original counters and anchor. No progress existed, so there is nothing to double-count.
-- **C:** continuation deadline = configured goal deadline minus active time already used. Held time during recovery does not consume it, but `holdUntilMs` bounds the hold.
+Survival adapts its durable/service bookkeeping after P's concrete shared API is approved. Until then nothing here is consumed, and survival still holds interrupted directives as `requires_owner_decision`.
 
 ## Lease request (after review): module gate, no model calls
 
