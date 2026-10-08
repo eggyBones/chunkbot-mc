@@ -66,7 +66,7 @@ describe('safety gate harness guard', () => {
     assert.match(code, /backup volume .* is not verified empty/, 'refuses to use a non-empty backup volume');
     assert.match(code, /addedForceload\.push/, 'only trial-added forceload chunks are tracked for removal');
     // Every fill/clone stays inside the declared scene/backup boxes.
-    for (const m of code.matchAll(/`fill ([^`]*)`/g)) assert.match(m[1] as string, /^\$\{(AREA|POOL|BACKUP_BOX)|^\$\{BACKUP_BOX\}/, `fill outside the declared boxes: ${m[1]}`);
+    for (const m of code.matchAll(/`fill ([^`]*)`/g)) assert.match(m[1] as string, /^\$\{(AREA|POOL|BACKUP_BOX|f\.box\.join\(' '\))/, `fill outside the declared boxes: ${m[1]}`);
   });
 
   it('interventions are recorded per gate and labeled as never earning pass credit; difficulty is always verified', () => {
@@ -89,9 +89,30 @@ describe('safety gate harness guard', () => {
     assert.match(w3, /INTERVENTION \(no credit\): water breathing/);
     assert.match(w3, /INTERVENTION \(no credit\): teleport rescue/);
     const m2 = code.slice(code.indexOf("g.gate('M2',"), code.indexOf("g.gate('M3',"));
-    assert.equal((m2.match(/ev\.push\(await g\.engaged\(\)\)/g) ?? []).length, 2, 'M2 and M2b both stage engagement before admission');
+    assert.equal((m2.match(/await g\.mobPrerequisites\('M2b?', \[z\], ev\)/g) ?? []).length, 2, 'M2 and M2b require the exact tagged, isolated, engaging target before admission');
     assert.match(m2, /INTERVENTION \(no credit\): operator \/damage/);
     assert.ok(!/!z1 \|\|/.test(code), 'missing server position is never a pass');
+  });
+
+  it('W-H4 wires intact arena/current prerequisites before every mob admission and preserves the one safety service/history', () => {
+    const gates = ['M1', 'M2', 'M2b', 'M3', 'M3b', 'M4'];
+    for (let i = 0; i < gates.length; i += 1) {
+      const start = code.indexOf(`g.gate('${gates[i]}',`);
+      const end = i + 1 < gates.length ? code.indexOf(`g.gate('${gates[i + 1]}',`) : code.indexOf('interface ReportState');
+      const body = code.slice(start, end);
+      assert.match(body, /g\.scene\(\{ mobs: true \}\)/);
+      assert.ok(body.indexOf('mobPrerequisites(') < body.indexOf('g.admit('));
+    }
+    const scene = code.slice(code.indexOf('async scene('), code.indexOf('async tp('));
+    assert.ok(scene.indexOf('noForeignOccupants()') < scene.indexOf('kill @e['), 'refusal precedes entity removal and scene mutation');
+    assert.match(scene, /verifyMobArena\(\)/);
+    assert.match(scene, /arenaShellPlan\(\)/, 'water also retains the closed shell');
+    const setup = code.slice(code.indexOf('backupTaken = true;'), code.indexOf("g.gate('W1',"));
+    assert.ok(setup.indexOf('await g.scene()') < setup.indexOf("g.rcon('difficulty easy')"), 'enclose before enabling natural hostile spawning');
+    assert.equal((code.match(/createSafetyRuntime\(/g) ?? []).length, 1, 'shared episode history/grants, never recreated per scenario');
+    assert.ok(!/\.counters\.[a-zA-Z]+\s*=(?!=)|\.resetLife\(|maxPerWindow\s*:|windowMs\s*:/.test(code), 'no product counter/window/life reset tricks');
+    assert.match(code, /damagePackets: g\.damagePackets/);
+    assert.match(code, /staging: g\.staging/);
   });
 
   it('W1 forbids an RCON rescue: no teleport between admission and the W1 verdict', () => {
