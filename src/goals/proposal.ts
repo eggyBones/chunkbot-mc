@@ -27,6 +27,7 @@ import {
   isPredicateWithinDepth,
   type CapabilityCatalog,
   type CapabilityRegistry,
+  type GoalOutcomeContract,
   type OutcomePredicate,
   type OwnerCoordinate,
   type ParameterSpec,
@@ -59,6 +60,8 @@ export interface ProposalLimits {
 
 /** Evidence the planner was actually given for this goal (reference validation). */
 export interface ProposalContext {
+  /** Already validated and bound by this goal's code. Its exact identity outlives shown-history eviction; it grants no task reference authority. */
+  acceptedOutcome?: GoalOutcomeContract;
   /** Version registry facts; without them registry/recipe references cannot be verified and are rejected. */
   registry?: RegistryFacts;
   /** Snapshots shown to the planner for this goal, by id. */
@@ -351,6 +354,13 @@ export function checkProposal(raw: unknown, registry: CapabilityRegistry, limits
   const proposal = parsed.data;
   if (proposal.disposition !== 'plan') return { ok: true, proposal };
 
+  // N1-R4: the original outcome is a code-owned binding, not a new request
+  // to execute its old handle. Only that exact contract survives eviction;
+  // every new task selector, completion and parameter still uses shown refs.
+  if (ctx.acceptedOutcome && canonical(proposal.outcome) !== canonical(ctx.acceptedOutcome)) {
+    return { ok: false, kind: 'semantic', problems: ['the plan changes the accepted goal outcome; repeat acceptedOutcome exactly (a changed outcome needs a new owner instruction)'] };
+  }
+
   const problems: string[] = [];
   if (proposal.tasks.length > limits.planWindowSteps) {
     problems.push(`plan window has ${proposal.tasks.length} steps; limit is ${limits.planWindowSteps}`);
@@ -377,7 +387,7 @@ export function checkProposal(raw: unknown, registry: CapabilityRegistry, limits
 
   // References: registry/recipes, shown handles/anchors, verified prior results, owner-typed coordinates.
   const c = new Checker(ctx);
-  c.predicate(outcomeRoot, 'outcome');
+  if (!ctx.acceptedOutcome) c.predicate(outcomeRoot, 'outcome');
   const catalog = registry.catalog();
   const seekingProblems = enableOwnerSeeking(proposal.tasks, catalog);
   if (seekingProblems.length > 0) return { ok: false, kind: 'semantic', problems: seekingProblems };

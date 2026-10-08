@@ -6,7 +6,7 @@
 // PredicateEngine on a credential-free fake world (no fixture, no inference).
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { sequentialIds, systemClock, type OutcomePredicate, type TaskSpec } from '../src/contracts/index.ts';
+import { sequentialIds, systemClock, type GoalOutcomeContract, type OutcomePredicate, type TaskSpec } from '../src/contracts/index.ts';
 import { TaskCandidateGenerator } from '../src/execution/candidates.ts';
 import { SkillExecutorImpl } from '../src/execution/executor.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
@@ -56,6 +56,43 @@ function treeScene() {
 const signal = () => new AbortController().signal;
 
 describe('MB-PLAN-006 N-G3 observation groups', () => {
+  it('N1-R4 keeps only the exact bound outcome after shown-history eviction; new tasks and destructive scope remain fenced', async () => {
+    const { perception, predicates, registry, knowledge, generator, scene } = treeScene();
+    const initial = perception.take(0)!;
+    const birch = initial.groups!.find((g) => g.support === 'floating')!;
+    const originalTarget = { kind: 'observed', snapshotId: initial.id, handle: birch.handle } as const;
+    const acceptedOutcome: GoalOutcomeContract = { kind: 'finite', outcome: { predicate: 'all', of: ['minecraft:birch_log', 'minecraft:birch_leaves'].map((selector) => ({ predicate: 'blocks_removed', target: originalTarget, selector })) } };
+    const bound = await predicates.bind(acceptedOutcome.outcome, signal());
+    // The trunk is gone, but the goal's original canopy remains bound.
+    scene.fill(-3, 2, 0, -3, 4, 0, 'air');
+    for (let i = 0; i < 10; i += 1) perception.take(0);
+    const fresh = perception.take(0)!;
+    const leaf = fresh.blocks.find((b) => b.key === 'minecraft:birch_leaves')!;
+    assert.ok(leaf);
+    const target = { kind: 'observed', snapshotId: fresh.id, handle: leaf.handle } as const;
+    const task: TaskSpec = { objective: 'Remove the remaining bound canopy.', decisionInstruction: 'Use the shown birch leaf.', allowedCapabilities: ['mine_block'], targetSelectors: [target], parameters: {}, completion: { predicate: 'blocks_removed', target, selector: 'minecraft:birch_leaves' } };
+    const raw = { version: 1, disposition: 'plan', interpretation: 'Finish the original removal.', outcome: acceptedOutcome, tasks: [task], morePlanningNeeded: true };
+    const context = { registry: knowledge, shown: new Map([[fresh.id, { handles: new Set([...fresh.blocks, ...(fresh.groups ?? [])].map((b) => b.handle)), dimension: fresh.dimension }]]), dimension: fresh.dimension };
+    const limits = { planWindowSteps: 4, remainingTaskAllowance: 10 };
+    assert.equal(checkProposal(raw, registry, limits, context).ok, false, 'unadmitted old outcomes cannot acquire authority');
+    const check = checkProposal(raw, registry, limits, { ...context, acceptedOutcome });
+    assert.ok(check.ok && check.proposal.disposition === 'plan', JSON.stringify(check));
+    assert.deepEqual(check.proposal.outcome, acceptedOutcome);
+    const scope = predicates.captureContinuation(bound).removal;
+    const remaining = generator.generate(check.proposal.tasks[0]!, fresh, scope);
+    assert.ok(remaining.candidates.some((c) => c.capability === 'mine_block'), 'fresh remaining leaf is still actionable');
+    const oak = fresh.groups!.find((g) => g.keys.some((k) => k.key === 'minecraft:oak_log'))!;
+    const substituted: TaskSpec = { ...task, targetSelectors: [{ kind: 'observed', snapshotId: fresh.id, handle: oak.handle }], completion: { ...task.completion, selector: 'minecraft:oak_log' } as OutcomePredicate };
+    assert.ok(generator.generate(substituted, fresh, scope).candidates.every((c) => c.capability !== 'mine_block'), 'accepted outcome cannot union oak into destructive authority');
+    for (const staleTask of [{ ...task, targetSelectors: [originalTarget] }, { ...task, completion: acceptedOutcome.outcome }]) {
+      const stale = checkProposal({ ...raw, tasks: [staleTask] }, registry, limits, { ...context, acceptedOutcome });
+      assert.ok(!stale.ok && stale.kind === 'reference', JSON.stringify(stale));
+    }
+    const altered = checkProposal({ ...raw, outcome: { kind: 'finite', outcome: { predicate: 'blocks_removed', target: originalTarget, selector: 'minecraft:oak_log' } } }, registry, limits, { ...context, acceptedOutcome });
+    assert.ok(!altered.ok && altered.kind === 'semantic', 'the old outcome identity cannot be edited');
+    const status = await predicates.evaluate(bound, signal());
+    assert.equal(status.status, 'unsatisfied', 'uncleared bound leaves cannot credit completion');
+  });
   it('reports the floating remnant and the grounded tree as separate bounded groups with support', () => {
     const { perception } = treeScene();
     const snap = perception.take(0)!;
