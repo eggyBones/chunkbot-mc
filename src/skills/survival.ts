@@ -137,7 +137,9 @@ function pickupPlan(svc: SurvivalService, fence: { goalEpoch: number; connection
       const now = svc.dropFacts(fence.connectionEpoch, id);
       if (plan.has(id)) {
         const was = plan.get(id) as DropStackFacts;
-        if (now && (now.incarnation !== was.incarnation || now.count !== was.count || now.key !== was.key || now.meta.digest !== was.meta.digest)) return 'target_changed';
+        // Destroy/reused-spawn and empty metadata clear live facts before a new stack is stated.
+        // Frozen facts can settle an earlier collect, but cannot authorize approach through that gap.
+        if (!now || now.incarnation !== was.incarnation || now.count !== was.count || now.key !== was.key || now.meta.digest !== was.meta.digest) return 'target_changed';
         return undefined;
       }
       const c = classify(svc, fence, id, remaining, identityReserved);
