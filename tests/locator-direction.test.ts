@@ -115,6 +115,35 @@ describe('MB-LOC-002 F1 first route movement on a clear plane agrees with the tr
   });
 });
 
+describe('MB-LOC-002 repeated target points sharing one transmitted chunk (G6 wrap pairs)', () => {
+  it('moving within one chunk at chunk precision sends NO new statement; the CURRENT cue stays correct and its age grows honestly', () => {
+    const start = { x: -1000.5, y: 64, z: -1000.5 };
+    // The live G6 wrap pair: 179 then -179 degrees at 200 blocks (same chunk -76,-63 here as on the fixture).
+    const a = ownerFrom(start, 179, 200);
+    const b = ownerFrom(start, -179, 200);
+    a.x = Math.round(a.x - 0.5) + 0.5; a.z = Math.round(a.z - 0.5) + 0.5;
+    b.x = Math.round(b.x - 0.5) + 0.5; b.z = Math.round(b.z - 0.5) + 0.5;
+    assert.equal(Math.floor(a.x / 16), Math.floor(b.x / 16));
+    assert.equal(Math.floor(a.z / 16), Math.floor(b.z / 16), 'both targets lie in one chunk');
+    const s = sim({ ownerAt: a, start });
+    const before = s.locator.status().counters.ownerStatements;
+    s.clock.t += 5_000;
+    s.owner.at = { ...b };
+    s.serverEmit();
+    assert.equal(s.locator.status().counters.ownerStatements, before, 'no new statement is due inside one chunk');
+    const h = s.locator.ownerHint();
+    assert.ok(h.actionable && h.direction === 'west' && h.precision === 'chunk', JSON.stringify(h));
+    assert.equal(h.ageMs, 5_000, 'the age is that of the unchanged current statement (never claimed new)');
+    // A genuinely different payload (staging near the bot) is a new statement, and the target after it is new again.
+    s.owner.at = { x: start.x + 8, y: 64, z: start.z };
+    s.serverEmit();
+    s.owner.at = { ...b };
+    s.serverEmit();
+    assert.equal(s.locator.status().counters.ownerStatements, before + 2);
+    assert.equal(s.locator.ownerHint().ageMs, 0);
+  });
+});
+
 describe('MB-LOC-002 F1 invalid, other-player, stale and unverified statements cannot steer', () => {
   const far = { x: 300.5, y: 64, z: 0.5 };
   const noMove = async (s: ReturnType<typeof sim>, label: string) => {

@@ -147,6 +147,51 @@ describe('MB-LOC-002 G6 F1 direction-matrix footprint', () => {
   });
 });
 
+describe('MB-LOC-002 G6 deterministic staging (first 26.2 G6 run on a9f3e00: chunk wrap pairs sent no new packet)', () => {
+  const VARIANTS = ['vec3i', 'chunk', 'azimuth'] as const;
+  const at = (key: string) => harness.F1_TELEPORTS[key]!;
+
+  it('reproduction: WITHOUT staging, consecutive measured targets at chunk distance share one transmitted payload exactly at the wrap pairs', () => {
+    for (const vd of [6, 10]) {
+      const shared: string[] = [];
+      for (const v of VARIANTS) {
+        let prev: string | undefined;
+        for (const b of harness.F1_BEARINGS) {
+          const key = harness.f1Key(v, b);
+          if (prev && !harness.payloadsDisjoint(harness.f1PayloadKeys(at(prev), harness.F1_BASE, vd), harness.f1PayloadKeys(at(key), harness.F1_BASE, vd))) shared.push(`${v}:${prev}->${b}`);
+          prev = key;
+        }
+      }
+      assert.deepEqual(shared, ['chunk:f1_chunk_179->-179', 'chunk:f1_chunk_m89->-91'], `view distance ${vd}: ${shared.join(', ')}`);
+    }
+  });
+
+  it('WITH staging: stage -> target and target -> stage always change the official payload (a new statement is due both ways)', () => {
+    for (const vd of [6, 10]) {
+      const stage = harness.f1PayloadKeys(harness.F1_STAGE, harness.F1_BASE, vd);
+      assert.deepEqual([...stage], [`vec3i:${Math.floor(harness.F1_STAGE.x)},${harness.F1_STAGE.y},${Math.floor(harness.F1_STAGE.z)}`], 'the stage is block precision, never ambiguous');
+      assert.ok(harness.payloadsDisjoint(stage, harness.f1PayloadKeys(harness.F1_BASE, harness.F1_BASE, vd)), 'the stage differs from the starting owner position');
+      for (const v of VARIANTS) {
+        for (const b of harness.F1_BEARINGS) {
+          const target = harness.f1PayloadKeys(at(harness.f1Key(v, b)), harness.F1_BASE, vd);
+          assert.ok(harness.payloadsDisjoint(stage, target), `vd ${vd} ${v} ${b}: stage and target payloads differ`);
+        }
+      }
+    }
+  });
+
+  it('the cue loop stages before EVERY measured target, requires the staging statement, then still requires a NEW target statement (no weakening)', () => {
+    const body = source.slice(source.indexOf("await check(`G6-cue-${variant}`"), source.indexOf("await check('G6-first-move'"));
+    const stageAt = body.indexOf("await tp(OWNER, 'f1Stage')");
+    const stagedRequired = body.indexOf('if (!staged)');
+    const targetAt = body.indexOf('await tp(OWNER, f1Key(variant, bearing))');
+    assert.ok(stageAt > 0 && stagedRequired > stageAt && targetAt > stagedRequired, 'stage, require it, then the target');
+    assert.match(body, /const t0 = Date\.now\(\);\s*await tp\(OWNER, f1Key\(variant, bearing\)\)/, 'the target statement is measured from AFTER staging');
+    assert.match(body, /const ok = Boolean\(p\) && h\.actionable && h\.direction === want;/, 'a new target statement, an actionable cue and the true sector are all still required');
+    assert.ok(harness.insideBox(harness.LOCATOR_FOOTPRINT.f1Teleports, harness.F1_STAGE));
+  });
+});
+
 describe('MB-LOC-001-C5 negative-scene geometry', () => {
   it('the bot starts west of every obstacle, the owner on intact ground, the drop is a platform inside the scene (bedrock never removed)', () => {
     const F = harness.LOCATOR_FOOTPRINT;

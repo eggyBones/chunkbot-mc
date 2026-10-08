@@ -147,12 +147,49 @@ export const F1_BEARINGS = [0, 45, 90, 135, 180, -135, -90, -45, 179, -179, -89,
 export const F1_DISTANCES = { vec3i: 40, chunk: 200, azimuth: 400 } as const;
 export const F1_YAWS = [0, 90, 180, -90, 135, -45] as const;
 export const f1Key = (variant: keyof typeof F1_DISTANCES, bearing: number) => `f1_${variant}_${bearing < 0 ? `m${-bearing}` : bearing}`;
+/**
+ * G6 staging point (8 blocks east of the base: block precision, a payload that
+ * differs from every measured target). Before EACH measured target the owner is
+ * staged here and that statement is required, so the target then necessarily
+ * produces a NEW statement: the official chunk connection sends an update only
+ * when the source CHUNK changes, so two consecutive targets in one chunk (the
+ * +/-179 and -89/-91 wrap pairs at chunk distance) yield no new packet although
+ * the current cue stays correct (first 26.2 G6 run, a9f3e00).
+ */
+export const F1_STAGE = { x: F1_BASE.x + 8, y: F1_BASE.y, z: F1_BASE.z };
 export const F1_TELEPORTS: Record<string, { x: number; y: number; z: number }> = Object.fromEntries([
   ['f1Base', F1_BASE],
+  ['f1Stage', F1_STAGE],
   ...(Object.keys(F1_DISTANCES) as Array<keyof typeof F1_DISTANCES>).flatMap((variant) =>
     F1_BEARINGS.map((b) => [f1Key(variant, b), { x: F1_BASE.x + Math.round(Math.cos((b * Math.PI) / 180) * F1_DISTANCES[variant]), y: F1_BASE.y, z: F1_BASE.z + Math.round(Math.sin((b * Math.PI) / 180) * F1_DISTANCES[variant]) }] as const),
   ),
 ]);
+
+/**
+ * The waypoint payloads the official 26.x rule may transmit for an owner at
+ * `owner` seen by a receiver at `bot` (static source: azimuth beyond 332 blocks,
+ * updated when the angle changes by more than 0.5 degrees; chunk precision when
+ * the owner's chunk is outside the receiver's view distance, updated only when
+ * the chunk changes; otherwise block precision, updated when the block changes).
+ * Near the view-distance border both chunk and block are possible. Two positions
+ * CERTAINLY produce different payloads (so moving between them must send a new
+ * statement) only when their key sets are disjoint.
+ */
+export function f1PayloadKeys(owner: { x: number; y: number; z: number }, bot: { x: number; y: number; z: number }, viewDistanceChunks: number): Set<string> {
+  const d = Math.hypot(owner.x - bot.x, owner.y - bot.y, owner.z - bot.z);
+  if (d > 332) {
+    const deg = (Math.atan2(bot.x - owner.x, -(bot.z - owner.z)) * 180) / Math.PI;
+    return new Set([`azimuth:${Math.round(deg / 0.5)}`]);
+  }
+  const block = `vec3i:${Math.floor(owner.x)},${Math.floor(owner.y)},${Math.floor(owner.z)}`;
+  const chunk = `chunk:${Math.floor(owner.x / 16)},${Math.floor(owner.z / 16)}`;
+  const chunks = Math.hypot(Math.floor(owner.x / 16) - Math.floor(bot.x / 16), Math.floor(owner.z / 16) - Math.floor(bot.z / 16));
+  if (chunks <= viewDistanceChunks - 1) return new Set([block]);
+  if (chunks >= viewDistanceChunks + 2) return new Set([chunk]);
+  return new Set([block, chunk]);
+}
+
+export const payloadsDisjoint = (a: Set<string>, b: Set<string>) => [...a].every((k) => !b.has(k));
 
 export function insideBox(b: Box, p: { x: number; y: number; z: number }): boolean {
   return p.x >= b.x1 && p.x <= b.x2 + 1 && p.y >= b.y1 && p.y <= b.y2 && p.z >= b.z1 && p.z <= b.z2 + 1;
@@ -627,16 +664,27 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
           for (const bearing of F1_BEARINGS) {
             const yaw = F1_YAWS[yawIndex++ % F1_YAWS.length]!;
             await tp(BOT, 'f1Base', ` ${yaw} 0`);
+            // Deterministic staging: a block-precision statement at f1Stage FIRST, so the
+            // measured target must produce a genuinely NEW statement (see F1_STAGE).
+            const ts = Date.now();
+            await tp(OWNER, 'f1Stage');
+            const staged = await waitOwner(ts, (x) => x.op !== 'untrack' && x.variant === 'vec3i', 5_000);
+            if (!staged) {
+              ev.push(`${bearing}deg yaw ${yaw}: staging produced no new block-precision owner statement  <-- MISMATCH`);
+              misses.push(`${bearing}(staging)`);
+              continue;
+            }
+            await sleep(300);
             const t0 = Date.now();
             await tp(OWNER, f1Key(variant, bearing));
             await sleep(600);
             const or = await oracle();
-            const p = await waitOwner(t0, (x) => or.variants.includes(x.variant), 5_000);
+            const p = await waitOwner(t0, (x) => x.op !== 'untrack' && or.variants.includes(x.variant), 5_000);
             await sleep(300);
             const h = hint();
             const want = (await oracle()).sector;
             const ok = Boolean(p) && h.actionable && h.direction === want;
-            ev.push(`${bearing}deg yaw ${yaw}: ${or.text}; expected ${or.variants.join('/')} ${want}; got ${p ? `${p.op}:${p.variant}` : 'no statement'} cue ${h.reason} ${h.direction ?? '-'} ${h.distanceBand} ${h.precision}${ok ? '' : '  <-- MISMATCH'}`);
+            ev.push(`${bearing}deg yaw ${yaw}: staged ${staged.op}:${staged.variant}; ${or.text}; expected NEW ${or.variants.join('/')} ${want}; got ${p ? `${p.op}:${p.variant}` : 'no new statement'} cue ${h.reason} ${h.direction ?? '-'} ${h.distanceBand} ${h.precision}${ok ? '' : '  <-- MISMATCH'}`);
             if (!ok) misses.push(`${bearing}`);
           }
           assert(misses.length === 0, `cue/variant mismatches at bearings ${misses.join(', ')}`);
