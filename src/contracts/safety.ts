@@ -222,11 +222,17 @@ export const SafetyFluidFactSchema = z
   .object({
     feetIn: z.enum(['water', 'lava', 'none']),
     eyeIn: z.enum(['water', 'lava', 'none']),
+    /**
+     * Fluid in this body column, including within one block below temporarily
+     * surfaced feet, without looking through solid support. Optional for older
+     * readers; absent is no proof that a fluid-supported bob is a dry exit.
+     */
+    columnFluid: z.enum(['water', 'lava', 'none', 'unknown']).optional(),
     /** What is under the feet: solid support, more fluid, or nothing. */
     support: z.enum(['solid', 'fluid', 'none', 'unknown']),
-    /** Contiguous fluid blocks from the feet block down (bounded; null when not in fluid). */
+    /** Contiguous fluid blocks from the body/nearby below-body column down (bounded; null when unknown or no fluid). */
     depth: z.number().int().min(0).max(32).nullable(),
-    /** Standing on the floor beneath keeps the eyes above the fluid (null: not in fluid). */
+    /** Standing on the column's floor keeps the eyes above the fluid (null: unknown or no fluid). */
     wadeable: z.boolean().nullable(),
     /**
      * Straight up from the eye: `open` (fluid then air, `surfaceDy` blocks up),
