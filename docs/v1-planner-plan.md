@@ -134,7 +134,7 @@ All PLAN-1..5 and MB-PLAN-001..005 accepted2026-10-06. [Complete coordinator evi
 
 ## MB-PLAN-006 — Act without follow-up questions
 
-Reported: 2026-10-06 Arizona (2026-10-07 UTC). Implementation authorized: 2026-10-07 Arizona. Status: **Assigned to the designated shared planner/application writer.** Applies to owner goals, replacement preparation, automatic goals and recovery continuation on both chat and terminal.
+Reported: 2026-10-06 Arizona (2026-10-07 UTC). Implementation authorized: 2026-10-07 Arizona. Status: **Shared worker branch implemented; independent review corrections and integration remain open.** Applies to owner goals, replacement preparation, automatic goals and recovery continuation on both chat and terminal.
 
 Jake's decision: “I never want him to ask me follow up question — just make him act.” Reports: “Kill that chicken” beside the bot produced “What chicken?”; removing a floating birch tree produced a confirmation and then another collection question; establishing Chunkbot's house “here” produced another question. There must be no follow-up or confirmation ladder.
 
@@ -143,6 +143,10 @@ Jake's decision: “I never want him to ask me follow up question — just make 
 The accepted live artifact d348d58 and root development prompt explicitly permit needs_clarification. GoalEngine has separate active-goal and preparation branches that emit qN questions and wait for answers. This is a permitted behavior in the old release, now an unwanted policy. Merely changing a sentence in the prompt would leave executable question paths.
 
 The shared catalog already contains attack_entity, mine_block, movement and collection primitives; development adds home construction. Missing combat capability is not established as the chicken failure. Exact snapshot inclusion, handle selection, stale-reference translation, distance/reach and planner output for Jake's incidents have not been matched. A chicken next to the bot can still be excluded or omitted by perception; inspect that before attributing every question to interpretation.
+
+Independent review update, 2026-10-08 UTC: frozen P1ab12aa passes 849 tests, both read-only doctors and the real subscription isolation/cancellation probe. Five ordinary owner examples with actual Codex/Jev produce no questions; one/multiple chicken selection, absent rabbit and stop pass. Floating-tree O3 fails: replan req-b0f8de72d9e9 admits a fresh group alongside birch_leaves/original removal identity, then mines three unrelated oak logs. **N1-R3** requires code-enforced target/key constraints and original lineage across windows; named targets cannot bypass registry constraints or union conflicting destructive authority. **N1-H2** corrects the happy-path tree's unreachable canopy geometry while retaining a separate bounded unreachable-target case and all unrelated-tree assertions. **N1-H1** requires clearing/verifying owned player inventory/effects before CLI logout. Full material gathering/house acceptance remains open. [Exact review and retained trial evidence](reviews/mb-gameplay-fixes-coordinator.md).
+
+Scripted handoff on the same source/26.2 passes eight of nine gates. **N1-H3** updates its old death oracle: the pending well instruction is discarded, while the original follow goal legitimately continues with its logical ID and a fresh epoch. Bind assertions to the discarded intent and separately verify continuation semantics/process cleanup, rather than forbidding every later admission. This is partial scripted evidence, not complete C12 or provider acceptance. P/W Claude workers reported a subscription session limit until 11 p.m. Arizona; native drafts and pending corrections remain preserved.
 
 ### Desired behavior and coordinator defaults
 
