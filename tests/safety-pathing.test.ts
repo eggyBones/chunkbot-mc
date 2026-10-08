@@ -10,8 +10,10 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
+import pathfinderPkg from 'mineflayer-pathfinder';
 import { applyDeepWaterAvoidance } from '../src/skills/safety.ts';
-import { conservativeMovements, goals } from '../src/skills/navigation.ts';
+import { conservativeMovements, goals, NAVIGATION_POLICY } from '../src/skills/navigation.ts';
+import { deepWaterStepCost } from '../src/safety/geometry.ts';
 import { safetyWorld } from '../src/safety/adapter.ts';
 import type { GameSession } from '../src/game/connection.ts';
 import { fakeClient, fakeMineflayerBot } from './skill-fakes.ts';
@@ -19,6 +21,7 @@ import { fakeClient, fakeMineflayerBot } from './skill-fakes.ts';
 const require = createRequire(import.meta.url);
 const AStar = require('mineflayer-pathfinder/lib/astar.js') as new (start: unknown, movements: unknown, goal: unknown, timeout: number, tickTimeout?: number, searchRadius?: number) => { compute(): { status: string; path: Array<{ x: number; y: number; z: number }> } };
 const Move = require('mineflayer-pathfinder/lib/move.js') as new (x: number, y: number, z: number, remaining: number, cost: number) => unknown;
+const RawMovements = (pathfinderPkg as unknown as { Movements: new (bot: unknown) => { exclusionAreasStep: Array<(b: { position: { x: number; y: number; z: number } }) => number> } }).Movements;
 
 function world(opts: { channel?: boolean; depth?: number }) {
   const fake = fakeMineflayerBot(fakeClient(), { at: { x: -7.5, y: 0, z: 0.5 }, dimension: 'overworld', loaded: 30 });
@@ -46,9 +49,14 @@ function plan(withPolicy: boolean, opts: { channel?: boolean; depth?: number }) 
 
 function neighbors(withPolicy: boolean, opts: { channel?: boolean; depth?: number }) {
   const { bot, session } = world(opts);
-  const { movements } = conservativeMovements(bot as never);
-  if (withPolicy) applyDeepWaterAvoidance(movements, safetyWorld(session));
   const view = safetyWorld(session);
+  // The production factory now installs the complete reviewed policy. Keep
+  // the former step-cost-only implementation as an explicit adverse control.
+  const movements = withPolicy ? conservativeMovements(bot as never).movements : new RawMovements(bot);
+  if (!withPolicy) {
+    Object.assign(movements as object, NAVIGATION_POLICY);
+    (movements as InstanceType<typeof RawMovements>).exclusionAreasStep.push((b) => deepWaterStepCost(view, b.position.x, b.position.y, b.position.z));
+  }
   const from = new Move(-3, 0, 0, 0, 0);
   const list = (movements as unknown as { getNeighbors(n: unknown): Array<{ x: number; y: number; z: number }> }).getNeighbors(from);
   const intoWater = list.filter((n) => view.blockAt(n.x, n.y, n.z)?.name === 'water' || view.blockAt(n.x, n.y + 1, n.z)?.name === 'water');
@@ -56,9 +64,9 @@ function neighbors(withPolicy: boolean, opts: { channel?: boolean; depth?: numbe
 }
 
 describe('deep-water path policy over the installed pathfinder', () => {
-  it('baseline (current shared navigation): the installed Movements step from the bank into swimming-depth water', () => {
+  it('legacy step-cost-only baseline: the installed Movements step diagonally into swimming-depth water', () => {
     const r = neighbors(false, { channel: true });
-    assert.ok(r.intoWater.length > 0, `the conservative policy alone offers a water entry: ${JSON.stringify(r.list.map((n) => [n.x, n.y, n.z]))}`);
+    assert.deepEqual(r.intoWater.map((n) => [n.x, n.y, n.z]), [[-2, -1, -1], [-2, -1, 1]], 'retain both actual library bypasses as the adverse control');
   });
 
   it('with the C11 policy the bank offers no entry into swimming-depth water', () => {

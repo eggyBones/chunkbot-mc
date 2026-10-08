@@ -8,7 +8,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { PROJECT_ROOT } from '../src/app/fixture-layout.ts';
-import { LAYOUT, currentMeleeDamage, fixtureEntityTest, onWaterBank, questionLines, verifyOrdinaryContinuation } from '../scripts/ordinary-goal-live-check.ts';
+import { LAYOUT, currentMeleeDamage, fixtureEntityTest, onWaterBank, ordinaryDryBankSupport, questionLines, verifyOrdinaryContinuation } from '../scripts/ordinary-goal-live-check.ts';
 import { SCENE } from '../scripts/lib/scene.ts';
 
 const SCRIPT = join(PROJECT_ROOT, 'scripts', 'ordinary-goal-live-check.ts');
@@ -88,6 +88,21 @@ describe('ordinary-goal live harness guard', () => {
     assert.match(source, /id: 'O8A', armed: true, engaging: false/);
     assert.match(source, /NoAI:1b/);
     assert.ok(!source.slice(source.indexOf('async stageMeleeEngagement'), source.indexOf('async interruptByDeath')).includes('h.goal('));
+  });
+
+  it('water release requires actual ground, dry body/eyes and recovered air, followed by three seconds of support', () => {
+    const bank = { x: 211.5, y: -56, z: 206.5 };
+    const facts = { onGround: true, floor: 'solid', feet: 'air', eye: 'air' } as const;
+    assert.equal(ordinaryDryBankSupport(bank, facts, 300), true);
+    assert.equal(ordinaryDryBankSupport({ x: 207.5, y: -56, z: 206.5 }, facts, 300), false, 'pool surface bob is never shore');
+    assert.equal(ordinaryDryBankSupport(bank, { ...facts, onGround: false }, 300), false, 'height alone is insufficient');
+    assert.equal(ordinaryDryBankSupport(bank, { ...facts, floor: 'water' }, 300), false, 'deep water below is insufficient');
+    assert.equal(ordinaryDryBankSupport(bank, { ...facts, feet: 'water' }, 300), false, 'this fixture requires dry shore, not a wading claim');
+    assert.equal(ordinaryDryBankSupport(bank, { ...facts, eye: 'water' }, 300), false);
+    for (const air of [null, 299, -1]) assert.equal(ordinaryDryBankSupport(bank, facts, air), false);
+    assert.match(source, /Date\.now\(\) - started >= 3_000 && samples >= 4/);
+    assert.match(source, /nbt=\{OnGround:1b\}/);
+    assert.match(source, /await h\.waterExitSettled\(ev\)/);
   });
 
   it('ordinary recovery oracle permits separate support and rejects authority refills or task replay', () => {

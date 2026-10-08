@@ -78,6 +78,7 @@ import mineflayer from 'mineflayer';
 import { DEFAULT_FIXTURE_PROFILE, PROJECT_ROOT, fixturePaths, fixturePins, fixtureProfileFromArgv } from '../src/app/fixture-layout.ts';
 import { MemoryConfigSchema } from '../src/contracts/memory.ts';
 import { smallShelterCells, type Facing } from '../src/autonomy/blueprint.ts';
+import { serverWaterSupport, type TrialWaterSupport } from '../src/safety/trial-water.ts';
 import { CLI, CliProcess } from './lib/cli-process.ts';
 import { rconCommand } from './lib/rcon.ts';
 import { SCENE } from './lib/scene.ts';
@@ -140,6 +141,11 @@ export function onWaterBank(p: V3): boolean {
   return Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) && Math.abs(p.y - (-56)) <= 0.2 &&
     p.x >= platform.x1 && p.x < platform.x2 + 1 && p.z >= platform.z1 && p.z < platform.z2 + 1 &&
     (p.x < pool.x1 || p.x >= pool.x2 + 1 || p.z < pool.z1 || p.z >= pool.z2 + 1);
+}
+
+/** Independent actual server facts, using W's reviewed support oracle. */
+export function ordinaryDryBankSupport(p: V3, support: TrialWaterSupport, air: number | null): boolean {
+  return onWaterBank(p) && serverWaterSupport(support) === 'dry' && air === 300;
 }
 
 export function currentMeleeDamage(damage: { entityId: number; sourceCauseId: number; atMs: number }, selfId: number, threatId: number, now: number): boolean {
@@ -367,6 +373,37 @@ class Harness {
     await this.setup(`fill ${pool.x1} ${p.y1} ${pool.z1} ${pool.x2} ${p.y2} ${pool.z2} water`);
     for (const [name, at] of [[BOT, LAYOUT.water.bot], [OWNER, LAYOUT.water.owner]] as const) await this.setup(`tp ${name} ${at.x} ${at.y} ${at.z}`);
     await sleep(800);
+  }
+
+  async waterExitSettled(ev: string[]): Promise<void> {
+    const started = Date.now();
+    let samples = 0;
+    let previous: V3 | undefined;
+    do {
+      const p = await this.position();
+      check(onWaterBank(p), `episode released before reaching a dry bank: ${JSON.stringify(p)}`);
+      const x = Math.floor(p.x), z = Math.floor(p.z);
+      const groundReply = await this.query(`execute if entity @a[name=${BOT},nbt={OnGround:1b},limit=1,${ENTITY_BOX}]`);
+      const onGround = fixtureEntityTest(groundReply);
+      check(onGround !== null, `server ground reply unreadable: ${groundReply}`);
+      const support: TrialWaterSupport = {
+        onGround,
+        floor: await this.blockIs({ x, y: -57, z }, 'minecraft:dirt') ? 'solid' : 'other',
+        feet: await this.blockIs({ x, y: -56, z }, 'minecraft:air') ? 'air' : 'other',
+        eye: await this.blockIs({ x, y: -55, z }, 'minecraft:air') ? 'air' : 'other',
+      };
+      const airReply = await this.query(`data get entity ${BOT} Air`);
+      const airMatch = /(-?\d+)s\s*$/.exec(airReply);
+      const air = airMatch ? Number(airMatch[1]) : null;
+      check(ordinaryDryBankSupport(p, support, air), `server confirms dry stable support/full air after release: ${JSON.stringify({ p, support, air })}`);
+      if (previous) check(Math.hypot(p.x-previous.x, p.z-previous.z) < 0.8, 'dry supported position stays settled after controls release');
+      ev.push(`settled server sample ${++samples}: ${JSON.stringify({ p, support, air })}`);
+      previous = p;
+      if (Date.now() - started >= 3_000 && samples >= 4) break;
+      await sleep(250);
+    } while (true);
+    check(await this.health(BOT) > 0, 'bot survives the settled water exit');
+    ev.push(`server dry support retained ${Date.now()-started}ms after release over ${samples} samples`);
   }
 
   /** No owner goal/safety authority yet. Prove the actual zombie hurt the bot. */
@@ -809,13 +846,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       const next = await h.waitEvent((e) => e.type === 'safety_episode_started' && e.grantId !== episode.grantId && e.suspended?.goalId === second.goalId, 30_000, 'new manual finite safety grant');
       const ended = await h.waitEvent((e) => e.type === 'safety_episode_ended' && e.episodeId === next.episodeId, 60_000, 'finite water episode');
       check(['resolved', 'improved'].includes(ended.outcome), `water episode did not resolve: ${ended.outcome}`);
-      const bank0 = await h.position();
-      check(onWaterBank(bank0), `episode released before reaching a dry bank: ${JSON.stringify(bank0)}`);
-      check(await h.blockIs({ x: Math.floor(bank0.x), y: -57, z: Math.floor(bank0.z) }, 'minecraft:dirt'), 'server confirms dry stable support');
-      check(await h.blockIs({ x: Math.floor(bank0.x), y: -56, z: Math.floor(bank0.z) }, 'minecraft:air'), 'body cell is dry');
-      await sleep(1_500);
-      const bank1 = await h.position();
-      check(onWaterBank(bank1) && Math.hypot(bank1.x-bank0.x,bank1.z-bank0.z) < 0.8 && await h.health(BOT) > 0, `dry supported position stays settled after controls release: ${JSON.stringify(bank1)}`);
+      await h.waterExitSettled(ev);
       check(!h.events().some((e) => e.type === 'safety_episode_started' && Date.parse(String(e.t)) > Date.parse(String(ended.t))), 'a replacement episode cannot rescue premature release');
       const anchor = h.events().find((e) => e.type === 'goal_travel_anchor' && e.goalId === first.goalId)!;
       check(anchor.radius === 8 && Math.hypot(at.x-anchor.anchor.x,at.z-anchor.anchor.z) > anchor.radius, 'hazard staging really lies outside the original normal bound');

@@ -2431,6 +2431,7 @@ export class GoalEngine {
           {
             ...(this.deps.registry ? { registry: this.deps.registry } : {}),
             shown: active.shown,
+            ...(active.outcome ? { acceptedOutcome: active.outcome.contract } : {}),
             anchors: active.anchors,
             ...(active.dimension ? { dimension: active.dimension } : {}),
             ownerCoordinates: ownerCoordinateList,
