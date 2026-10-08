@@ -31,6 +31,10 @@ export interface GameSession {
   readonly bot: Bot;
   readonly connectionEpoch: number;
   readonly evidence: ServerEvidence;
+  /** Uninterpreted name/protocol from this epoch's checked status ping.
+   * A reported alias may remain ambiguous; never infer an exact release from
+   * configuration, normalized library labels or the protocol alone. */
+  readonly serverReported?: { readonly version: string; readonly protocol: number };
 }
 
 export interface ConnectionOptions {
@@ -177,7 +181,13 @@ export class MineflayerConnection implements GamePort {
   session(): GameSession | undefined {
     const bot = this.bot;
     if (!bot || this.stateValue !== 'ready' || !this.evidence) return undefined;
-    return { bot, connectionEpoch: this.epochValue, evidence: this.evidence };
+    const reported = this.serverReported;
+    return {
+      bot,
+      connectionEpoch: this.epochValue,
+      evidence: this.evidence,
+      ...(reported ? { serverReported: Object.freeze({ version: reported.version, protocol: reported.protocol }) } : {}),
+    };
   }
 
   /** Name currently listed for a UUID in the server's player list. */
