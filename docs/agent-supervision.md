@@ -1,4 +1,22 @@
-# Current checkpoint — gameplay review, native quota prerequisite
+# Current checkpoint — native DSH Codex continuation
+
+Updated: 2026-10-08 UTC (2026-10-07 Arizona). Jake explicitly replaces the quota-blocked Claude implementation route with his personal Codex account in DSH: **native Codex harness, `gpt-6.1-sol`, `xhigh`, full permissions**. This authorizes continuing the existing gameplay-fix scope. The earlier Claude sessions and source/drafts are preserved; no Claude turn is resumed.
+
+The running local DSH remains PID5869/127.0.0.1:3080. Its public provider status confirms `codex-default` (`codex:codex-default`) is signed in with ChatGPT, plan `prolite`; the second profile is signed out and unused. A fresh probe through the installed provider-codex0.1.0 native integration at 04:27:06.881Z verifies CLI0.160.0, the intended home, exact `gpt-6.1-sol` and supported `xhigh`. Its full-access mapping is `danger-full-access`, `approvalPolicy: never`, native sandboxPolicy `dangerFullAccess`. No global account/default, integration dependency, gameplay-planner setting or login is changed. Redacted evidence is under ignored var/gameplay-fixes/codex.
+
+| Role | New native DSH session / existing workspace | Worktree and source handoff |
+| --- | --- | --- |
+| P — shared planner/integration | session-fae0f771-b2bf-4732-a569-db3396b156ab / fd2726bd-19ac-47d4-8545-e4215634d849 | gameplay-planner; source1ab12aa, docs-only handoff f5c7549; all five dirty paths preserved |
+| W — water/mob safety | session-698bd9ba-ac47-4ab4-90ac-bad0bb9732ee / acce0215-c372-43d3-9426-c8fd6cc5c6e6 | gameplay-safety; sourcefd8ce13, docs-only handoff cee1363; all six dirty paths preserved |
+| S — recovery/continuation | session-cd2c0bb0-accc-422b-bb20-b5a6b43d25a9 / 7644839f-cfc9-419c-998e-f3f139ff4ac6 | gameplay-recovery; source5a4b560, docs-only handoff9f15b55; clean |
+
+- Each session's exact cwd matches its existing registered workspace under /Users/jakewilcox/code/worktrees/chunkbot-mc; session membership is independently verified. Preset `relay-codex`, session-only personal route/model/effort and `danger-full-access` are configured and verified while idle. Full new briefs transfer the original complete assignment, independent correction IDs/evidence and preserved draft state. Prompts are prepared but native turn execution must still be confirmed after launch.
+- Claude P/W pending entries were removed using public session/updateQueue without starting turns; receipts and original briefs remain preserved. Old P/W/S/L sessions are independently idle. Source/index diffs were snapshotted before the handoff; documentation-only commits update current worker instructions without including or losing P's staged safety contract or the native drafts.
+- Three independent implementation assignments are ready: P fixes destructive target binding/accounting and integrates the approved L/S/W typed source; W finishes water authority/retreat/defense/cleanup; S fixes unknown own-collect attribution and typed continuation support. L's approved5028438 source requires shared integration, so no redundant fourth implementation session is started. Only P edits existing shared files. Workers do not coordinate or launch other workers.
+- Both fixtures remain stopped and all prior leases released. No worker has fixture, RCON, real-provider, credential or live-control authority. The accepted live artifact remains d348d58 and logged out. The gameplay planner's own pinned low-effort isolated Codex route is unchanged by development-worker settings.
+- Next: launch the three complete briefs, verify actual native turns/account bindings/model evidence, review focused corrected commits, grant exclusive coordinator-controlled fixture trials on frozen source and complete combined ordinary-goal acceptance. Preserve failed reports. No gameplay feature is accepted or deployed from this worker-route change.
+
+# Previous checkpoint — gameplay review, native quota prerequisite
 
 Updated: 2026-10-08 03:29 UTC (2026-10-07 Arizona). Jake's authorized usability/survival implementation continues under [the gameplay-fix plan](live-gameplay-fixes-plan.md). Four native local DSH Claude Code Opus 5.5/high/full-access workers implemented independent branches; **shared integration and review corrections remain incomplete**. The [coordinator review](reviews/mb-gameplay-fixes-coordinator.md) contains exact passing/failed trials and correction IDs. No new release is accepted, published, registered or joined. Jake's latest logout remains binding; accepted batch001 d348d58 is unchanged.
 
