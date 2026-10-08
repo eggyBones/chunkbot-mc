@@ -2,7 +2,72 @@
 
 Worker S: native DSH Codex, personal ChatGPT account, `gpt-6.1-sol` / `xhigh`, `danger-full-access` / approval `never`, per the coordinator's 2026-10-07 Arizona handoff. Earlier Claude sessions/commits remain preserved. Worktree `/Users/jakewilcox/code/worktrees/chunkbot-mc/gameplay-recovery`, branch `chunkbot/gameplay-recovery`, common base `37c4c170199b4c9d867f720e64561a63a816d14c`; native handoff `9f15b55` over application source `5a4b560`. Plans: [survival-routines-plan.md](../survival-routines-plan.md) (C7–C12, R1–R10) and [live-gameplay-fixes-plan.md](../live-gameplay-fixes-plan.md).
 
-**Delivery state:** ROOT approved S through `18dfdc662a9b59d19c75b10e58889b76bf6d44bc` and composed the private P/L integration in `dde21d6f5226464fc2d334a121aef95c711c0ca9`. Fresh real RC1 passes on both releases and 26.1.2 RC2C passes with exact full recovery; 26.2 RC2C fails after three conservative route pickup vetoes with zero returns. S-C12-R7 diagnosis cannot identify the vetoing drop from retained evidence; no behavioral defect or contamination cause is proved and no guard is relaxed. A bounded local-evidence diagnostic is proposed below for ROOT. All historical failures, including the prior partial/mixed/module trials, remain unchanged. S has no world lease and ran no gameplay inference, reconnect or deployment. Accepted live `d348d58` remains logged out.
+**Delivery state:** ROOT approved S through `18dfdc662a9b59d19c75b10e58889b76bf6d44bc` and documentation-only R7 diagnosis `98883c31e5f200e49911d9fa2f33c0775c696d80`; its supplied private P/L composition was `dde21d6f5226464fc2d334a121aef95c711c0ca9`. Real RC1 passes on both releases and 26.1.2 RC2C passes with exact full recovery; 26.2 RC2C fails after three conservative route pickup vetoes with zero returns. Exact veto entity/cause remains UNKNOWN. Subsequently authorized S-R14 is implemented in focused source commit `11a299c5d84f7989d4cc3ddf3f36566aa0c7ffac`, awaiting ROOT review/import and a new frozen capture trial. No behavioral defect or contamination cause is proved and no guard is relaxed. All historical failures remain unchanged. S has no world lease and ran no gameplay inference, reconnect or deployment. Accepted live `d348d58` remains logged out.
+
+## Native handoff S-R14: first pickup-veto evidence
+
+Reviewed clean parent `98883c31e5f200e49911d9fa2f33c0775c696d80`, whose application source was `18dfdc6`. Same registered session `session-cd2c0bb0-accc-422b-bb20-b5a6b43d25a9` / workspace `7644839f-cfc9-419c-998e-f3f139ff4ac6`, personal native `gpt-6.1-sol` / `xhigh` / full access / never. Worker workflow, ownership, staged/unstaged state, assigned plans and ROOT's current recorded finding were inspected before implementation. ROOT explicitly authorized the minimal evidence seam after accepting R7's diagnosis limit. Dependencies, native drafts, shared source/contracts and old failed reports are preserved.
+
+### Source, receipt and unchanged API
+
+Source commit **`11a299c5d84f7989d4cc3ddf3f36566aa0c7ffac`**, three owned paths: `src/skills/survival.ts`, `tests/survival-motion.test.ts`, `tests/survival-incidental.test.ts`. The latter adds the required clock to an older direct-skill test double. This role review is a separate documentation commit.
+
+Each recovery action captures its first item refusal through **`ctx.progress({ recoveryPickupVeto: receipt }, 'local')`**, at the existing classifier/frozen-target refusal. A local latch permits one receipt; later events, inventory awaits and packet/position changes cannot overwrite it. Registered `go_to_death_site`, `recover_lost_items` and approved `navigateRecoveryTravel` all use it. Resolvers/catalog/model prompts gain no payload fields. Classification order/reasons, pickup reach, entity iteration order, reservations, path/control revocation, passive settlement and credit rules remain unchanged.
+
+The bounded object contains only:
+
+| Field | Meaning/provenance |
+| --- | --- |
+| `provenance`, `entityId`, `reason` | Local refusal receipt, exact rejected entity and actual classifier reason or `target_changed`; public action reason remains unchanged. |
+| `goalId`, `goalEpoch`, `connectionEpoch`, `dimension`, `atMs` | Current action/session context and local sample time. |
+| `region`, `reference` | Bot/site-side check; reference distinguishes bot, incident site and scoped pickup target's neighborhood. |
+| `serverStack` | Nullable current key/count/incarnation/digest/`packetAtMs`. Metadata is server-stated; incarnation is explicitly `tracker_spawn_sequence`, digest `derived_from_server_stack`, packet time `local_packet_receipt`. Missing current facts leave every field null, even when old frozen facts exist. |
+| `firstOrigin` | Nullable current incarnation's first server-spawn proof, distance derived from that origin/incident site and existing search-radius comparison. |
+| `localDistances` | Explicitly local horizontal/absolute-vertical samples to bot, incident site and checked point. Missing position/non-finite measurements remain null. |
+| `remainingCountUsed`, `remainingIdentityCountUsed` | Only room actually consulted by the rejecting classifier, after existing frozen reservations. Unconsulted room is null; consulted zero stays zero. Frozen-change checks consult neither. |
+
+No raw NBT/components/labels/entity dump, new persistent store, timer or framework is introduced. Normal results retain `evidence.recoveryPickupVeto`; existing executor cancellation retains it under `evidence.localProgress.recoveryPickupVeto`, explicitly local. A diagnostic alone never confirms a partial effect or enters the ledger/incident-return book.
+
+The unchanged local executor can check its frozen target after a legitimate collect/destroy, recording `target_changed` with null current facts/distances. This is an approach fence, not a claim about earlier collections: existing exact settlement still succeeds and credits four once. Read outcome and packet settlement together; old frozen facts are never fabricated as current.
+
+**Shared dependency:** approved `navigateRecoveryTravel(service, ctx, options)` signature, returned `navigation`/`pickup`/`veto` shape and optional P/L recoveryTravel callback are unchanged. P remains sole app binder, L sole locator consumer. ROOT can import this exact dependency atop the approved source chain while retaining current composition. Existing outcome evidence carries the receipt; no shared source/contract/harness edit or companion import is required from S. Canonical P continuation declarations and original accounting remain untouched.
+
+### Discriminating offline evidence
+
+Production tracker/service, `SkillExecutorImpl`, `Actuator`, lease, server journal/resync and navigation run unchanged; server transport/pathfinder physics alone are simulated. Eight new controls prove:
+
+- Announced item without stack versus loaded item without server-origin proof: distinct `stack_facts_unknown`/`foreign_drop_origin`, null stack/unconsulted room, zero path/collect/credit.
+- Matching bread first announced outside the incident then moved next to the bot versus unsought dirt: truthful packet facts, original spawn distance distinct from current local distance, no identity-room consultation.
+- Component mismatch, oversized whole stack and neighboring stacks exhausting their identity allowance: exact reasons and consulted key/identity room of 8/4 or 4/0, no borrowed identity credit or raw names/components in evidence.
+- First bread64 refusal followed by dirt1 metadata/movement away during resync: one unchanged receipt at original distances/time, zero path/collect/credit.
+- Frozen metadata gap, identical stated replacement incarnation and merged64 stack: truthful current facts/nulls; event guard stops before another movement/collect; original attempts/budget unchanged.
+- Cancellation after refusal: receipt remains local; confirmation/confirmed partial effects stay `none`; zero commands after revocation.
+- Legitimate own bread4: one path/collect/ledger effect/return with original attribution/authority; post-collect local fence preserves settlement. Ordinary forwarding-route positive path has no veto receipt.
+- Moving foreign destination pile: first refusal is captured by the production event guard before the next physics movement or pickup.
+
+Existing controls retain keyless incidental/unknown/no-credit semantics for unavoidable metadata-gap collections, exact collect/destroy settlement, known foreign keys, orb exclusion, cancellation and strict whole-pile/component/first-origin guards. The forwarding route is seam evidence, not actual locator or ordinary-world acceptance.
+
+Exact new controls against preserved parent skill source fail **direct exit 1, 0/8** because the first-veto receipt did not exist; preceding movement/credit checks still show the original conservative behavior. Source/current controls/failed log remain `var/native-recovery-review/r14-parent-{survival.ts,controls.test.ts,controls.log}`. This proves missing observability, not unsafe classification or the historical R7 entity.
+
+### Direct checks, build and remaining acceptance
+
+Own checkout only, `/opt/homebrew/Cellar/node@24/24.21.0/bin` first in PATH; verified dependencies reused. Settled receipts:
+
+| Check | Direct exit/result | Own retained log |
+| --- | --- | --- |
+| Affected motion/route/incidental tests | 0, 40/40 | `var/native-recovery-review/r14-affected-final.log` |
+| `npm run typecheck` | 0 | `var/native-recovery-review/r14-typecheck-final.log` |
+| `npm run build` | 0 | `var/native-recovery-review/r14-build.log` |
+| `npm test` | 0, 851/851, 206 suites | `var/native-recovery-review/r14-test-final.log` |
+| Read-only doctor 26.1.2 | 0 | `var/native-recovery-review/r14-doctor-261.log` |
+| Read-only doctor 26.2 | 0 | `var/native-recovery-review/r14-doctor-262.log` |
+| `git diff --check` | 0 | Direct tool receipt |
+
+Intermediate failures remain: affected direct exit 1 (25/29) from wrong test expectations for block-centered site/post-collect fence; affected direct exit 1 (29/30) from synchronously cancelling inside a fake transport write before its actuator log completed (corrected to microtask revocation after that issued write returns); first full suite direct exit 1 (849/851) from two older direct-skill doubles omitting the required service clock. No production behavior changed to satisfy these fixture corrections. Logs: `r14-affected-initial.log`, `r14-affected-second.log`, `r14-test.log`. Final affected/full gates pass; prior R3–R7 failures remain.
+
+Own development dist: 152 JavaScript files, sorted relative `path + NUL + bytes + NUL` SHA256 **`1659cef7c23a9c361278365ffff9cd8e0e2c5f9d8411217e4d05018b1ea5160e`**, from `11a299c`'s exact application source. Artifact/report-hash receipt: `var/native-recovery-review/r14-artifact-receipt.json`. Doctors only read readiness; 26.2's missing own JRE/server remain warnings. No setup/start/stop/join/RCON, auth refresh, provider inference/key/vault, live control or deployment occurred. Account/model/global DSH and dependencies are unchanged.
+
+Retained 26.2 failure report SHA reverified `63cf05be25215eeabae15cd7458b135fa35d1b5c5055f83654c24c3e81b7bb1e`; 26.1.2 comparator SHA `c432f7f0e4104709e37c464459c811adf1b688819fc7ae1b9f8ad0b0504c6a09`. Exact R7 veto entity/cause remains UNKNOWN; this cannot reconstruct absent historical facts. ROOT owns review/import, next immutable capture with owned-spawn baseline, ordinary RC2C and both-release original/full-feature/provider/restoration gates. S-R14 authorized observability work is complete; full original acceptance remains open. Accepted live `d348d58` stays logged out.
 
 ## Native review S-C12-R7: faithful route-veto diagnosis
 
