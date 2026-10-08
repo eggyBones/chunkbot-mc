@@ -16,6 +16,7 @@ Worker L: native Claude Opus 5.5 (local DSH), worktree `gameplay-follow`, branch
 | `8b24f28` | MB-FLOW-003-C12 route lineage: `RouteCarry`, `exportCarry`/`revokeWithCarry`/`admitContinuation` (focused commit for P) |
 | `a3d80e2` | D1: default owner-statement age limit 600 s; freshness regressions |
 | `9a55e49` (branch `chunkbot/gameplay-follow-module`) | Module/harness milestone = `a9f3e00` + D1, without C12 |
+| `7a77aeb` | C12: `RouteLineage` (superset of P's approved `RouteCarry`), `nextLegIndex`, malformed-lineage guard |
 | `283179a` | Two-sided bounded detour (switch once with a return-plus-search budget, ≤ 3 × 96 per episode), the observed obstacle reported when a window ends mid-detour, river/bridge dry-route tests, dynamic catalog verification in O0, model-visible catalog check in O1, P-L8 |
 
 Changed paths (ownership only): `src/locator/route-runner.ts`, `src/locator/terrain.ts`, `src/skills/locator.ts`, `scripts/locator-live-check.ts`, `scripts/locator-ordinary-live-check.ts` (new), `tests/locator-sim.ts` (new helper), `tests/locator-runner.test.ts`, `tests/locator-direction.test.ts` (new), `tests/locator-detour.test.ts` (new), `tests/locator-harness-guard.test.ts`, `tests/locator-ordinary-harness-guard.test.ts` (new), `tests/locator-composition.test.ts` (new), this file. No shared file, contract, config, vendor or `node_modules` edit.
@@ -183,6 +184,22 @@ Tests cover:
 `dist/cli.js` sha256 `de9409f3ddb24e918274db15435ad1a15d1c5a2896f93149e7799b58e0fa7553`.
 
 The ownerSeen/raw-moved correction (C1 above, `a9f3e00`) is complete: `ownerSeen` is now only an evidence field. No window continues on it; once the owner is lost, sideways or backward movement can only debit progress.
+
+## C12 alignment with P's approved declaration (`4409ba1`, commit `7a77aeb`)
+
+P's approved `src/contracts/continuation.ts` exports a structural `RouteCarry`. It says L may refine the names in `locator.ts`.
+- **Rename.** If the locator-owned type were also named `RouteCarry`, the two `export *` lines in `contracts/index.ts` would collide. It is now `RouteLineage` (`ROUTE_LINEAGE_VERSION`). It is a strict superset of the approved shape: it adds the approved `nextLegIndex` (always `legsUsed + 1`), plus the identity and provenance fields the lineage rules need.
+- **Requested integration (P, one line):** in `continuation.ts`, `import type { RouteLineage } from './locator.ts'; export type RouteCarry = RouteLineage;`. The checkpoint then stores exactly what `exportCarry` returns and what `admitContinuation` accepts, and nothing is duplicated.
+- **Offline type evidence.** In a throwaway `/tmp` copy (nothing committed), adding P's `4409ba1` `continuation.ts` and its `export *` index line leaves the project typechecking (exit 0), with an explicit `RouteLineage → RouteCarry` assignment. No export collision.
+- **Hardening.** Malformed lineages (null, empty, missing fields) are refused without throwing, and a fresh epoch is consumed (fail closed).
+- **New tests:**
+  - `nextLegIndex` matches the leg actually begun across epochs;
+  - malformed inputs are refused;
+  - the exported lineage has the approved fields with the approved kinds.
+
+  Continuation suite: 14 tests.
+- **Checks at `7a77aeb`** (direct exits): typecheck 0, build 0, `npm test` 0 (847/847), doctor 0.
+- **Ownership.** Route carry stays a later focused dependency for P: `8b24f28` plus `7a77aeb`, on top of the module milestone. No shared source was edited.
 
 ## Coordinator decisions D1–D3 and milestone layout
 
