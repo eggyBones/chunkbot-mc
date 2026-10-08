@@ -13,6 +13,7 @@
 // Pure: no world, process or network access.
 import type { ChunkbotConfig } from '../../src/config/schema.ts';
 import { SURVIVAL_CAPABILITIES } from '../../src/contracts/survival.ts';
+import { SAFETY_CAPABILITIES } from '../../src/contracts/safety.ts';
 import { CONSTRUCTION_CAPABILITIES, MEMORY_CAPABILITIES } from '../../src/planner/wire.ts';
 import { allSkills } from '../../src/skills/index.ts';
 import { homeConstructionWanted } from '../../src/app/composition.ts';
@@ -21,6 +22,7 @@ import { homeConstructionWanted } from '../../src/app/composition.ts';
 export const LOCATOR_SKILL_IDS = ['seek_owner', 'route_travel'] as const;
 
 export interface RunProfile {
+  safety?: boolean;
   memory: boolean;
   locator: boolean;
   construction: boolean;
@@ -32,6 +34,7 @@ export function runProfile(config: ChunkbotConfig, automatic: boolean): RunProfi
   const memory = Boolean(config.memory?.enabled);
   const scope = Boolean(config.autonomy?.scope) || memory;
   return {
+    safety: config.safety?.enabled !== false,
     memory,
     locator: config.locator?.enabled !== false,
     construction: scope && homeConstructionWanted(config),
@@ -45,6 +48,7 @@ export function expectedCapabilityIds(profile: RunProfile): string[] {
     ...(profile.memory ? MEMORY_CAPABILITIES : []),
     ...(profile.construction ? CONSTRUCTION_CAPABILITIES : []),
     ...(profile.survival ? Object.values(SURVIVAL_CAPABILITIES) : []),
+    ...(profile.safety ? Object.values(SAFETY_CAPABILITIES) : []),
     ...(profile.locator ? LOCATOR_SKILL_IDS : []),
   ];
 }

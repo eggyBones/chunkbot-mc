@@ -145,7 +145,8 @@ export const moveNear: SkillDefinition<{ target: MoveTarget; within: number }> =
     }
     if (scope.named && scope.current.size === 0) unavailable.push(namedTargetUnavailable(scope, 'destination'));
     if (hints.wantsOwner) {
-      if (snapshot.owner.visible) add({ kind: 'owner' }, 'walk to the visible owner', snapshot.owner.distance ?? 99);
+      if (snapshot.owner.visible && snapshot.owner.at && !services.perception.withinTravel(snapshot.owner.at)) unavailable.push({ reason: 'owner_outside_travel_bounds', detail: 'the visible owner is outside ordinary movement bounds; seek_owner must begin a counted route leg' });
+      else if (snapshot.owner.visible) add({ kind: 'owner' }, 'walk to the visible owner', snapshot.owner.distance ?? 99);
       else unavailable.push({ reason: 'owner_not_visible', detail: 'the owner is not currently visible', evidence: { rememberedOwner: snapshot.remembered.some((r) => r.label === 'owner last seen') } });
     }
     for (const anchorId of hints.anchors) {
@@ -255,12 +256,14 @@ export const followEntity: SkillDefinition<{ target: MoveTarget; within: number;
     const admitted = admittedParameters(ctx, followEntity.params).values as { within?: number; durationMs?: number };
     const within = admitted.within ?? 3;
     const durationMs = admitted.durationMs ?? 30_000;
-    if (ctx.hints.wantsOwner && ctx.snapshot.owner.visible) drafts.push({ parameters: { target: { kind: 'owner' }, within, durationMs }, description: `follow the visible owner for ${Math.round(durationMs / 1000)}s` });
+    const outsideOwnerBound = ctx.snapshot.owner.visible && ctx.snapshot.owner.at && !ctx.services.perception.withinTravel(ctx.snapshot.owner.at);
+    if (ctx.hints.wantsOwner && ctx.snapshot.owner.visible && !outsideOwnerBound) drafts.push({ parameters: { target: { kind: 'owner' }, within, durationMs }, description: `follow the visible owner for ${Math.round(durationMs / 1000)}s` });
     for (const handle of scope.current) {
       const e = ctx.snapshot.entities.find((t) => t.handle === handle);
       if (e) drafts.push({ parameters: { target: { kind: 'handle', snapshotId: ctx.snapshot.id, handle }, within, durationMs }, description: `follow ${e.key} ${e.handle}` });
     }
     const unavailable: Unavailable[] = [];
+    if (ctx.hints.wantsOwner && outsideOwnerBound) unavailable.push({ reason: 'owner_outside_travel_bounds', detail: 'the visible owner requires a counted seek_owner route leg before ordinary following' });
     if (scope.named && drafts.length === 0) unavailable.push(namedTargetUnavailable(scope, 'entity to follow'));
     else if (drafts.length === 0) unavailable.push({ reason: 'no_visible_entity', detail: 'no visible entity to follow' });
     return { drafts, unavailable };

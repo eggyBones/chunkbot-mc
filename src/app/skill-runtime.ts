@@ -27,7 +27,13 @@ import type { AutonomyControl } from '../autonomy/control.ts';
 import { HomeProjectService } from '../autonomy/home.ts';
 import { ShelterInspector, constructionSkills, evaluateStructure } from '../skills/construction.ts';
 import type { GoalSource, RouteAdmission, RouteCarry, RouteGoalSource, SurvivalConfigInput } from '../contracts/index.ts';
-import type { SafetyActuationPort } from '../contracts/safety.ts';
+import type { SafetyActuationPort, SafetyAuthority } from '../contracts/safety.ts';
+import { createSafetyRuntime } from '../safety/wiring.ts';
+import type { SafetyService } from '../safety/service.ts';
+import { safetySkills } from '../skills/safety.ts';
+import { countFor } from '../goals/continuation.ts';
+import { safetyWorld } from '../safety/adapter.ts';
+import { bindNavigationWorld } from '../skills/navigation.ts';
 import { DEFAULT_LOCATOR_CONFIG, LocatorConfigSchema } from '../contracts/locator.ts';
 import { LocatorService } from '../locator/service.ts';
 import { RouteController } from '../locator/routes.ts';
@@ -58,6 +64,9 @@ export interface SkillRuntimeOptions {
   emitTask?: (kind: string, data: Record<string, unknown>) => void;
   /** Ignored runtime storage root (LoadedConfig.dataDir); required for MB-MEM-001 memory (absent: memory off). */
   dataDir?: string;
+  /** Application RUN identity, also used by survival's display-only checkpoints. */
+  sessionId?: string;
+  safetyAuthority?: () => SafetyAuthority;
   /**
    * Batch002 companion features (absent: none composed — existing harness
    * compositions are unchanged).
@@ -66,6 +75,7 @@ export interface SkillRuntimeOptions {
    * - `home`: home construction skills/predicate on the autonomy durable scope (MB-FLOW-001).
    */
   features?: {
+    safety?: boolean;
     locator?: boolean;
     survival?: { config: SurvivalConfigInput | undefined; scope: { worldProfile: string; worldRevision: number; botProfile: string } | undefined };
     home?: { control: AutonomyControl; interior: 2 | 3; maxSiteDistance: number };
@@ -91,6 +101,8 @@ export class SkillRuntime {
   readonly routes: RouteController | undefined;
   /** MB-FLOW-003 (when composed). */
   readonly survival: SurvivalService | undefined;
+  readonly safety: SafetyService | undefined;
+  private readonly safetySettlements = new Set<Promise<unknown>>();
   /** MB-FLOW-001 home construction (when composed). */
   readonly home: HomeProjectService | undefined;
   readonly inspector: ShelterInspector | undefined;
@@ -155,6 +167,7 @@ export class SkillRuntime {
           record: (e) => store.record(e),
           ...(this.memory ? { memory: this.memory } : {}),
           latestSnapshot: () => this.perception.latest(),
+          ...(options.sessionId ? { sessionId: options.sessionId } : {}),
           ...(routes ? { farRoute: () => (routes.policy.enabled && (routes.policy.destinations as readonly string[]).includes('own_death') ? 'locator_route_legs' : undefined) } : {}),
         })
       : undefined;
@@ -166,6 +179,16 @@ export class SkillRuntime {
       clock,
       limits: { observationRadius: config.limits.observationRadius, travelRadius: config.limits.travelRadius, ownerLossMs: config.limits.ownerLossMs },
     };
+    this.safety = features.safety ? createSafetyRuntime({
+      config: config.safety,
+      session: options.session,
+      perception: this.perception,
+      inTag: (tag, key) => Boolean(this.knowledge.recipes?.matches(tag, key)),
+      authority: () => options.safetyAuthority?.() ?? { basis: 'none', detail: 'application authority unavailable', connection: null, alive: false, goal: null, travel: null },
+      actuation: this.safetyActuation(),
+      clock, ids, record: (e) => store.record(e),
+    }).service : undefined;
+    if (this.safety) this.installSafetyGrantCheck((id) => this.safety!.grantCurrent(id));
     // MB-FLOW-001 home construction on the autonomy durable scope.
     if (features.home) {
       this.home = new HomeProjectService({ control: features.home.control, clock, record: (e) => store.record(e) });
@@ -179,6 +202,7 @@ export class SkillRuntime {
       ...memorySkills(this.memory),
       ...(this.home && this.inspector && features.home ? constructionSkills({ home: this.home, inspector: this.inspector, interior: features.home.interior, maxSiteDistance: features.home.maxSiteDistance }) : []),
       ...survivalSkills(this.survival),
+      ...(this.safety ? safetySkills(this.safety) : []),
       ...(this.routes ? locatorSkills({ ...(this.locator ? { locator: this.locator } : {}), routes: this.routes }) : []),
     ]);
     this.leases = new ActuatorLeases({
@@ -207,6 +231,12 @@ export class SkillRuntime {
       ...(this.memory ? { memory: this.memory } : {}),
       ...(home && inspector ? { structures: { evaluateStructure: (expect: 'site_approved' | 'enclosed' | 'complete') => evaluateStructure(home, inspector, options.session, expect) } } : {}),
       ...(this.survival ? { survival: this.survival } : {}),
+      incidentReturns: (incidentId, selector) => {
+        const r = this.survival?.incidentReturns(incidentId);
+        if (!r || r.attribution !== 'server_attributed') return null;
+        const matches = (sel: string, key: string) => sel.startsWith('#') ? Boolean(this.knowledge.recipes?.matches(sel, key)) : sel === key;
+        return countFor(r.regained, selector, matches) + countFor(r.retained, selector, matches);
+      },
     });
     if (this.memory) {
       this.memory.attachWorld(installedMemoryWorld({ session: options.session, perception: this.perception, ledger: this.ledger, clock }));
@@ -234,6 +264,7 @@ export class SkillRuntime {
       limits: { maxOptions: limits.decisionMaxOptions, noProgressMs: limits.noProgressMs, perTargetRetries: limits.perTargetRetries, lowHealth: limits.lowHealth },
       ...(options.emitTask ? { emit: options.emitTask } : {}),
       ...(this.survival ? { lowHealthAllowance: this.survival } : {}),
+      ...(this.safety ? { safety: this.safety } : {}),
     });
   }
 
@@ -241,9 +272,14 @@ export class SkillRuntime {
    * Connection creation hook (before login): the survival packet tracker and
    * the locator waypoint listener see join-time packets of THIS epoch.
    */
-  onBotCreated(bot: { _client?: unknown; entity?: { position?: { x: number; y: number; z: number } }; game?: { dimension?: unknown } }, connectionEpoch: number): void {
+  onBotCreated(bot: { _client?: unknown; registry?: unknown; entity?: { position?: { x: number; y: number; z: number } }; game?: { dimension?: unknown } }, connectionEpoch: number): void {
     const client = bot._client as (import('node:events').EventEmitter & { on(e: string, l: (p: never) => void): unknown }) | undefined;
     if (!client || typeof client.on !== 'function') return;
+    bindNavigationWorld(bot as GameSession['bot'], () => {
+      const s = this.options.session();
+      return s && s.bot === bot && s.connectionEpoch === connectionEpoch ? safetyWorld(s) : undefined;
+    });
+    this.safety?.attachConnection(client as never, { connectionEpoch, registry: () => bot.registry });
     if (this.survival) {
       try {
         this.survival.attachConnection(client as never, {
@@ -325,10 +361,9 @@ export class SkillRuntime {
     // MB-LOC-001: route authorization for THIS goal epoch from operator policy (synchronous; one admission per epoch).
     if (this.routes && proof && proof.goalEpoch === admission.epoch && cont) {
       // C12 route lineage: only the cumulative authorization transfers (L's RouteController); no refill, no old leg.
-      const routes = this.routes as unknown as { admitContinuation?(a: RouteAdmission, carry: RouteCarry): unknown };
-      if (cont.route && typeof routes.admitContinuation === 'function') {
+      if (cont.route) {
         try {
-          routes.admitContinuation({ goalId: admission.goalId, goalEpoch: admission.epoch, admittedAtMs: admission.admittedAtMs, source: 'owner', goalDeadlineMs: admission.deadlineAtMs ?? admission.admittedAtMs, connectionEpoch: proof.connectionEpoch, dimension: proof.dimension, admissionAnchor: { ...proof.anchor }, admissionRadius: proof.radius, ownerCoordinates: (admission.ownerCoordinates ?? []).map((c) => ({ x: c.x, y: c.y, z: c.z, source: c.source })) }, cont.route);
+          this.routes.admitContinuation(cont.route, { goalId: admission.goalId, goalEpoch: admission.epoch, admittedAtMs: admission.admittedAtMs, source: 'owner', goalDeadlineMs: admission.deadlineAtMs ?? admission.admittedAtMs, connectionEpoch: proof.connectionEpoch, dimension: proof.dimension, admissionAnchor: { ...proof.anchor }, admissionRadius: proof.radius, ownerCoordinates: (admission.ownerCoordinates ?? []).map((c) => ({ x: c.x, y: c.y, z: c.z, source: c.source })) });
         } catch (error) {
           this.options.store.record({ type: 'route_admission_error', goalId: admission.goalId, message: error instanceof Error ? error.message : String(error) });
         }
@@ -380,7 +415,12 @@ export class SkillRuntime {
   safetyActuation(): SafetyActuationPort {
     return {
       preemptCurrent: (reason) => this.leases.preemptForSafety(reason),
-      execute: (candidate, signal, owner) => this.executor.execute(candidate, signal, owner),
+      execute: (candidate, signal, owner) => {
+        const running = this.executor.execute(candidate, signal, owner);
+        this.safetySettlements.add(running);
+        void running.then(() => this.safetySettlements.delete(running), () => this.safetySettlements.delete(running));
+        return running;
+      },
     };
   }
 
@@ -390,11 +430,25 @@ export class SkillRuntime {
     return proof && proof.goalEpoch === goalEpoch ? { dimension: proof.dimension, at: { ...proof.anchor }, radius: proof.radius } : undefined;
   }
 
-  /** MB-FLOW-003-C12: route lineage export (L's RouteController.carryOut); null: no routes; undefined: cannot export. */
+  /** MB-FLOW-003-C12: atomically export the canonical route lineage then revoke it. */
   continuationRoute(goalEpoch: number): RouteCarry | null | undefined {
     if (!this.routes) return null;
-    const routes = this.routes as unknown as { carryOut?(goalEpoch: number): RouteCarry | null };
-    return typeof routes.carryOut === 'function' ? routes.carryOut(goalEpoch) : undefined;
+    return this.routes.revokeWithCarry('continuation_capture', goalEpoch);
+  }
+
+  /** Starts only after the app authority host has been installed. */
+  startSafety(): void { this.safety?.start(); }
+
+  /** Abort synchronously, then wait bounded for every owned executor settlement. */
+  async closeSafety(): Promise<void> {
+    await this.safety?.close();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      Promise.allSettled([...this.safetySettlements]).then(() => true),
+      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), this.options.config.limits.cleanupTimeoutMs); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    this.options.store.record({ type: 'safety_cleanup', settled, pending: this.safetySettlements.size });
   }
 
   /** Goal terminal (MB-MEM-001): verified outcomes become milestones; refs are released. Never throws. */
@@ -447,6 +501,7 @@ export class SkillRuntime {
   // (3) route/locator/inspector void connection-scoped state;
   // (4) lease, ledger, perception and interface invalidation.
   onLifecycle(event: GameLifecycleEvent): void {
+    this.safety?.onLifecycle(event);
     let survivalDeath: ReturnType<SurvivalService['deathContext']> | undefined;
     if (this.survival) {
       try {

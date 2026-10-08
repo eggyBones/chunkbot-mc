@@ -47,7 +47,7 @@
 import type { Vec3 } from './common.ts';
 import type { GoalRecord } from './goal.ts';
 import type { GoalOutcomeContract } from './predicate.ts';
-import type { RouteBlocker, RouteCeilings, RouteDestinationKind, RouteDistanceAccount } from './locator.ts';
+import type { RouteLineage } from './locator.ts';
 
 export const CONTINUATION_VERSION = 1 as const;
 /** Default continuation allowance per owner job (within the job's original limits). */
@@ -110,23 +110,7 @@ export interface RemovalCarry {
  * distance account, stalled history, blocker and ABSOLUTE deadline carry; the
  * ORIGINAL admission anchor/radius stay. No old leg is resumed.
  */
-export interface RouteCarry {
-  routeId: string;
-  originalGoalEpoch: number;
-  grantedAtMs: number;
-  ceilings: Readonly<RouteCeilings>;
-  destinations: readonly RouteDestinationKind[];
-  admissionAnchor: Vec3;
-  admissionRadius: number;
-  state: 'authorized' | 'leg_active' | 'exhausted' | 'blocked' | 'revoked';
-  legsUsed: number;
-  nextLegIndex: number;
-  distance: Readonly<RouteDistanceAccount>;
-  stalledLegs: number;
-  blocker: { reason: RouteBlocker; detail: string } | null;
-  /** Opaque frozen own-incident identity bound by the route (L-owned shape; compared, never re-bound). */
-  boundOwnDeath: unknown | null;
-}
+export type RouteCarry = RouteLineage;
 
 /** The same-session semantic checkpoint P holds in memory (S may persist a copy for display only). */
 export interface ContinuationCheckpoint {

@@ -111,7 +111,7 @@ export interface CapabilityRegistry {
 
 /** Who an execution belongs to. Goal-owned work is fenced by the goal epoch. */
 export type ExecutionOwner =
-  | { kind: 'goal'; goalEpoch: Epoch; goalId: string; taskId: string; destructiveScope?: readonly RemovalCarry[] }
+  | { kind: 'goal'; goalEpoch: Epoch; goalId: string; taskId: string; destructiveScope?: readonly RemovalCarry[]; requiresOwnerDirection?: boolean }
   | { kind: 'diagnostic'; diagnosticId: string }
   /**
    * MB-FLOW-003-C11/C13: ONE code-built immediate-safety dispatch under a
@@ -133,7 +133,7 @@ export interface SkillExecutor {
 
 /** Task-driven grounded candidate generation from the registered capability resolvers. */
 export interface CandidateGenerator {
-  generate(task: TaskSpec, snapshot: ObservationSnapshot, destructiveScope?: readonly RemovalCarry[]): CandidateSet;
+  generate(task: TaskSpec, snapshot: ObservationSnapshot, destructiveScope?: readonly RemovalCarry[], requiresOwnerDirection?: boolean): CandidateSet;
 }
 
 /**
@@ -289,6 +289,8 @@ export interface AdmittedTask {
   mode: TaskMode;
   /** Code-bound removal target from the immutable goal outcome, never supplied by a model. */
   destructiveScope?: readonly RemovalCarry[];
+  /** Code-derived from an accepted owner-target outcome; no undirected exploration may serve it. */
+  requiresOwnerDirection?: boolean;
   /** Aborted when the owning goal is stopped, replaced or ended by a lifecycle event. */
   signal: AbortSignal;
   /** True while the goal epoch that admitted this task still owns control. */

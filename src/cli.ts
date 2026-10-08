@@ -36,7 +36,8 @@ import { CodexPlanner } from './planner/codex-planner.ts';
 import { runPlannerCheck } from './planner/planner-check.ts';
 import { NotReadyPlanner } from './goals/not-ready.ts';
 import { PlannerJournal } from './telemetry/planner-journal.ts';
-import type { ContinuationSurvivalPort, PlannerPort, RunStore } from './contracts/index.ts';
+import type { PlannerPort, RunStore } from './contracts/index.ts';
+import { continuationPort } from './survival/wiring.ts';
 import { createDashboardRuntime, type DashboardRuntime } from './dashboard/runtime.ts';
 import { VIEWER_USAGE, parseViewerArgs, runDashboardViewer } from './dashboard/viewer-command.ts';
 import { memorySummaryFrom, pauseFrom, pendingDirectiveFrom } from './app/status.ts';
@@ -251,6 +252,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
   const survivalWanted = autonomy.enabled && config.survival?.enabled !== false && !scopeResolution?.conflict;
   const runtime = new SkillRuntime({
     features: {
+      safety: true,
       ...(config.locator?.enabled === false ? {} : { locator: true }),
       ...(survivalWanted ? { survival: { config: config.survival, scope } } : {}),
       ...(homeWanted && scope && !scopeResolution?.conflict ? { home: { control, interior: autonomyConfig.home.interior as 2 | 3, maxSiteDistance: autonomyConfig.home.maxSiteDistance } } : {}),
@@ -268,6 +270,8 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     spendRemainingUsd: () => Math.round(spend.remainingUsd() * 1e6) / 1e6,
     emitTask: (kind, data) => out(`[task-json] ${JSON.stringify(redact({ kind, ...data }, { maxStringChars: 600, maxArrayItems: 32, maxDepth: 6 }))}`),
     dataDir: loaded.dataDir,
+    sessionId: store.runId,
+    safetyAuthority: () => appRef?.safetyAuthority() ?? { basis: 'none', detail: 'application not composed', connection: null, alive: false, goal: null, travel: null },
   });
   runtimeRef = runtime;
   const memory = runtime.memory;
@@ -356,6 +360,10 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
       const lines = [`network: ${codecSummary(game.codecHealth())} (version support: ${supportLevel(config.minecraft.version) ?? 'unsupported'})`];
       if (dashboard) lines.push(dashboard.statusLine());
       if (memory) lines.push(...memory.statusLines());
+      if (runtime.safety) {
+        const s = runtime.safety.status(systemClock.now());
+        lines.push(`safety: ${s.enabled ? runtime.safety.hold()?.detail ?? 'clear' : 'disabled'}; episodes ${s.counters.episodes}, retreats ${s.counters.retreats}, defenses ${s.counters.defenses}`);
+      }
       if (codex) {
         const t = codex.totals;
         const cov = (known: number) => (known === t.completedTurns ? '' : ` [reported for ${known}/${t.completedTurns} completed turns]`);
@@ -371,6 +379,9 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
         supervisor?.onLifecycle(event);
       },
       cancelControl: (reason) => diagnostics?.cancel(reason) ?? false,
+      closeControl: () => runtime.closeSafety(),
+      onSafetyAuthorityChanged: (cause) => runtime.safety?.onAuthorityChanged(cause),
+      travelBounds: () => runtime.perception.travelBounds(),
       onGoalAdmitted: (admission) => {
         runtime.onGoalAdmitted(admission);
         supervisor?.onGoalAdmitted(admission);
@@ -408,7 +419,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
       // memory/autonomy/survival configuration; the survival port is attached when S's service provides it.
       continuation: {
         sessionId: store.runId,
-        ...(continuationSurvivalPort(runtime.survival) ? { survival: continuationSurvivalPort(runtime.survival)! } : {}),
+        ...(continuationPort(runtime.survival) ? { survival: continuationPort(runtime.survival)! } : {}),
         captureAnchor: (goalEpoch) => runtime.continuationAnchor(goalEpoch),
         captureRoute: (goalEpoch) => runtime.continuationRoute(goalEpoch),
         isAlive: () => (game.statusInfo().health ?? 0) > 0,
@@ -422,6 +433,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     },
   });
   appRef = app;
+  runtime.startSafety();
   supervisor = new AutonomySupervisor({
     engine: app.engine,
     control,
@@ -666,15 +678,6 @@ async function commandDashboard(argv: string[]): Promise<number> {
     throw error;
   }
   return runDashboardViewer(loaded, parsed.options, { out, err, env: process.env });
-}
-
-/**
- * MB-FLOW-003-C12: S's continuation service, when its survival service implements
- * the approved ContinuationSurvivalPort (structural check; absent otherwise).
- */
-function continuationSurvivalPort(survival: unknown): ContinuationSurvivalPort | undefined {
-  const s = survival as Partial<ContinuationSurvivalPort> | undefined;
-  return s && typeof s.frozenInventory === 'function' && typeof s.incidentReturns === 'function' && typeof s.continuationGate === 'function' && typeof s.persistCheckpoint === 'function' ? (s as ContinuationSurvivalPort) : undefined;
 }
 
 async function main(): Promise<void> {

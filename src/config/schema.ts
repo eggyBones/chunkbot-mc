@@ -7,6 +7,7 @@ import { MemoryConfigSchema } from '../contracts/memory.ts';
 import { AutonomyConfigSchema } from '../contracts/autonomy.ts';
 import { SurvivalConfigSchema } from '../contracts/survival.ts';
 import { LocatorConfigSchema } from '../contracts/locator.ts';
+import { SafetyConfigSchema } from '../contracts/safety.ts';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
@@ -223,6 +224,8 @@ export const ConfigSchema = z
     autonomy: AutonomyConfigSchema.optional(),
     /** MB-FLOW-003 survival routines/recovery. Absent: enabled with defaults whenever autonomy runs; `enabled: false` turns it off. */
     survival: SurvivalConfigSchema.optional(),
+    /** Immediate local safety also protects manual goals without memory/autonomy. */
+    safety: SafetyConfigSchema.optional(),
     /** MB-LOC-001 locator hints and code-owned route legs. Absent: defaults (routes only for owner goals). */
     locator: LocatorConfigSchema.optional(),
   })

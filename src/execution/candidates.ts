@@ -137,7 +137,7 @@ export class TaskCandidateGenerator implements CandidateGenerator {
     this.deps = deps;
   }
 
-  generate(task: TaskSpec, snapshot: ObservationSnapshot, destructiveScope?: readonly RemovalCarry[]): CandidateSet {
+  generate(task: TaskSpec, snapshot: ObservationSnapshot, destructiveScope?: readonly RemovalCarry[], requiresOwnerDirection = false): CandidateSet {
     const session = this.deps.session();
     const hints = taskHints(task);
     const candidates: ActionCandidate[] = [];
@@ -176,6 +176,10 @@ export class TaskCandidateGenerator implements CandidateGenerator {
     const perCap = this.deps.maxPerCapability ?? 6;
     const maxTotal = this.deps.maxTotal ?? 32;
     for (const capability of task.allowedCapabilities) {
+      if (capability === 'explore_frontier' && (requiresOwnerDirection || hints.wantsOwner)) {
+        unavailable.push({ capability, reason: 'owner_direction_required', detail: 'owner seeking uses a fresh locator cue or visible owner through seek_owner; undirected exploration has no authority', evidence: {} });
+        continue;
+      }
       const def = this.deps.registry.get(capability);
       if (!def) {
         unavailable.push({ capability, reason: 'capability_not_implemented', detail: `${capability} is not a registered capability`, evidence: {} });

@@ -160,6 +160,7 @@ export class SkillExecutorImpl implements SkillExecutor {
     // (SkillRuntime.onGoalAdmitted) and never set or moved by execution. A goal
     // action whose epoch does not own the current anchor is refused.
     if (owner.kind === 'goal') {
+      if (owner.requiresOwnerDirection && candidate.capability === 'explore_frontier') return finish({ status: 'precondition_failed', reason: 'owner_direction_required', effect: 'owner seeking cannot dispatch undirected exploration; no command was issued' });
       if (candidate.capability === 'mine_block' && owner.destructiveScope !== undefined && !removalScopeAllows(this.deps.services, candidate.parameters['target'], owner.destructiveScope, String(session.bot.game.dimension))) {
         return finish({ status: 'precondition_failed', reason: 'destructive_target_conflict', effect: 'block is outside the original bound removal target; no command was issued' });
       }

@@ -1482,7 +1482,8 @@ export class GoalEngine {
     this.recordTimings(active, startedAtMs);
     const removal = active.outcome ? this.deps.outcomes?.captureContinuation?.(active.outcome.bound).removal : undefined;
     const hasRemoval = active.outcome && outcomeAtoms(active.outcome.contract).some(({ atom }) => atom.predicate === 'blocks_removed');
-    const running = tasks.run({ taskId, goalId: active.record.id, goalEpoch: active.epoch, spec, mode, ...(hasRemoval ? { destructiveScope: removal ?? [] } : {}), signal: active.abort.signal, isCurrent: () => this.active === active && this.epoch === active.epoch && !active.abort.signal.aborted });
+    const requiresOwnerDirection = active.outcome && outcomeAtoms(active.outcome.contract).some(({ atom }) => 'target' in atom && atom.target.kind === 'owner');
+    const running = tasks.run({ taskId, goalId: active.record.id, goalEpoch: active.epoch, spec, mode, ...(hasRemoval ? { destructiveScope: removal ?? [] } : {}), ...(requiresOwnerDirection ? { requiresOwnerDirection: true } : {}), signal: active.abort.signal, isCurrent: () => this.active === active && this.epoch === active.epoch && !active.abort.signal.aborted });
     const cleanup: Cleanup = () => running.then(() => undefined, () => undefined);
     active.cleanups.add(cleanup);
     try {

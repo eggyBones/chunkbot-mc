@@ -110,6 +110,8 @@ export interface AppExtensions {
   onSafetyAuthorityChanged?: GoalEngineDeps['onSafetyAuthorityChanged'];
   /** MB-FLOW-003-C11/C13: the admitted goal's travel bounds for the safety authority (retreat targets prefer them). */
   travelBounds?(): { anchor: { x: number; y: number; z: number }; radius: number } | undefined;
+  /** Revokes additional owned local control synchronously, with bounded settlement. */
+  closeControl?(): Promise<void>;
 }
 
 /** Fresh explicit immediate-safety authority (the reviewed contract's SafetyAuthority), computed synchronously on every call. */
@@ -514,7 +516,9 @@ export class ChunkbotApp implements CommandTarget {
       this.joinAbort?.abort();
       this.continuationScheduler?.close();
       this.deps.extensions?.cancelControl?.('shutdown');
+      const controlClosed = this.deps.extensions?.closeControl?.();
       await this.engine.shutdown();
+      await controlClosed;
       await this.connecting;
       await this.deps.game.disconnect(reason === 'signal' ? 'shutdown_signal' : 'operator_stop', `shutdown (${reason})`);
       for (const off of this.unsubscribe.splice(0)) off();

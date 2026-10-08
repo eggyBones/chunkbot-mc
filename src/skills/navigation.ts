@@ -17,8 +17,15 @@ import pathfinderPkg from 'mineflayer-pathfinder';
 import type { GameSession } from '../game/connection.ts';
 import type { Actuator } from '../execution/actuator.ts';
 import type { Vec } from '../perception/visibility.ts';
+import { safetyWorld } from '../safety/adapter.ts';
+import { deepWaterStepCost, type SafetyBlockReader } from '../safety/geometry.ts';
 
 type Bot = GameSession['bot'];
+const navigationWorlds = new WeakMap<Bot, () => SafetyBlockReader | undefined>();
+/** Runtime installs its authoritative server/prediction-filtered world view. */
+export function bindNavigationWorld(bot: Bot, reader: () => SafetyBlockReader | undefined): void {
+  navigationWorlds.set(bot, reader);
+}
 const { Movements, goals } = pathfinderPkg as unknown as {
   Movements: new (bot: Bot) => Record<string, unknown> & { blocksToAvoid: Set<number>; scafoldingBlocks: number[] };
   goals: {
@@ -97,6 +104,11 @@ export const NAVIGATION_POLICY = {
  */
 export function conservativeMovements(bot: Bot, bounds?: { anchor: Vec; radius: number }): { movements: unknown; verified: Record<string, unknown> } {
   const m = new Movements(bot);
+  // W's reviewed geometry policy is shared by EVERY movement capability,
+  // including locator legs and ordinary follow/navigation. The bot-only
+  // fallback is for standalone callers without a connection evidence journal.
+  const world = navigationWorlds.get(bot)?.() ?? safetyWorld({ bot } as GameSession);
+  (m as unknown as { exclusionAreasStep: Array<(b: { position: Vec }) => number> }).exclusionAreasStep.push((b) => deepWaterStepCost(world, b.position.x, b.position.y, b.position.z));
   if (bounds) {
     (m as unknown as { exclusionAreasStep: Array<(b: { position: Vec }) => number> }).exclusionAreasStep.push((b: { position: Vec }) => (Math.hypot(b.position.x + 0.5 - bounds.anchor.x, b.position.z + 0.5 - bounds.anchor.z) > bounds.radius ? 100 : 0));
   }
