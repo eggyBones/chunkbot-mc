@@ -1442,7 +1442,11 @@ export class GoalEngine {
     } catch (error) {
       this.deps.store.record({ type: 'goal_admission_hook_error', goalId: record.id, message: error instanceof Error ? error.message : String(error) });
     }
-    if (extras.source?.kind === 'owner') this.safetyAuthorityChanged('owner_goal_admitted');
+    if (extras.source?.kind === 'owner') {
+      this.safetyAuthorityChanged('owner_goal_admitted');
+      // MB-FLOW-003-C12: an ACTIVE owner job's per-goal Jev budget survives any churn (released at its end unless held).
+      this.retainBudget(record.id, true);
+    }
     this.deps.store.record({
       type: 'goal_admitted',
       goalId: record.id,
@@ -2009,6 +2013,7 @@ export class GoalEngine {
       else if (reason === 'replaced') this.heldChanged(heldEntry, 'superseded_by_owner', 'replaced');
       else this.heldChanged(heldEntry, 'blocked', `ended:${reason}`);
     }
+    if (!heldInfo && active.source?.kind === 'owner' && !(heldEntry && heldEntry.cp.state === 'continuing')) this.retainBudget(active.record.id, false);
     const heldText = heldInfo ? (heldInfo.continuable ? ` — held: Chunkbot continues this job when it is safe (continuation ${heldInfo.continuations.used + 1} of at most ${heldInfo.continuations.max})` : ` — held, not continued (${heldInfo.reason.replace(/_/g, ' ')}); a new instruction replaces it`) : '';
     this.deps.notify({ goalId: active.record.id, ...(active.record.kind === 'operator_task_diagnostic' ? { audience: 'operator' as const } : {}), text: `Goal ${active.record.id} ${state} (${reason}): ${truncate(detail, 160)}${heldText}` });
     this.safetyAuthorityChanged('goal_terminal');

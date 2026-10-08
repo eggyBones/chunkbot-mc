@@ -422,3 +422,21 @@ describe('C12 GoalEngine: held owner job continues as the SAME goal with origina
     await h.engine.stop('owner_stop', 'chat');
   });
 });
+
+describe('C12 Jev budget retention through the engine lifecycle', () => {
+  it('an active owner job is retained from admission; a stopped (not held) job is released; a held job stays retained until it settles', async () => {
+    const h = harness();
+    const g = await runningJob(h, NEAR);
+    assert.deepEqual(h.budget.filter(([id]) => id === g.id), [[g.id, true]], 'retained while ACTIVE');
+    await h.engine.endOwnership('death', 'died');
+    await until(() => h.engine.checkpoints()[0]?.state === 'held');
+    assert.ok(!h.budget.some(([id, r]) => id === g.id && !r), 'still retained while HELD');
+    await h.engine.stop('owner_stop', 'chat');
+    assert.equal(h.budget.at(-1)?.[1], false, 'released once the held job is fenced');
+
+    const h2 = harness();
+    const g2 = await runningJob(h2, NEAR);
+    await h2.engine.stop('owner_stop', 'chat');
+    assert.deepEqual(h2.budget.filter(([id]) => id === g2.id), [[g2.id, true], [g2.id, false]], 'an ordinary end releases it');
+  });
+});

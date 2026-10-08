@@ -71,6 +71,9 @@ type AttemptResult =
   /** `usageTrusted`: whitelisted usage of a validated-but-rejected answer (MB-UI-001-C3); absent when not proven. */
   | { ok: false; kind: DecisionFailureKind; detail: string; httpStatus?: number; retryAfterMs?: number; usageTrusted?: TrustedUsage };
 
+/** Bound on retained (active/held) logical goal budgets; well above one active plus a few held owner jobs. */
+export const MAX_RETAINED_GOALS = 16;
+
 export class JevDecisionAdapter implements DecisionPort {
   private readonly o: JevAdapterOptions;
   private readonly endpoint: string;
@@ -128,10 +131,29 @@ export class JevDecisionAdapter implements DecisionPort {
     return this.perGoal.get(goalId) ?? 0;
   }
 
-  /** MB-FLOW-003-C12: keep (or release) a goal's per-goal attempt count across its continuation lineage. */
+  /**
+   * MB-FLOW-003-C12: keep (or release) a logical goal's per-goal attempt count
+   * while it is ACTIVE or HELD for continuation, so support-goal churn can never
+   * evict (and thereby refill) it. Bounded: at most MAX_RETAINED ids; the oldest
+   * retention is released first (recorded). Run SpendLedger behaviour is unchanged.
+   */
   retainGoalBudget(goalId: string, retain: boolean): void {
-    if (retain) this.retained.add(goalId);
-    else this.retained.delete(goalId);
+    if (!retain) {
+      this.retained.delete(goalId);
+      return;
+    }
+    this.retained.delete(goalId);
+    this.retained.add(goalId);
+    while (this.retained.size > MAX_RETAINED_GOALS) {
+      const oldest = this.retained.values().next().value as string;
+      this.retained.delete(oldest);
+      this.o.store.record({ type: 'jev_goal_budget_retention_released', goalId: oldest, reason: 'retention_bound' });
+    }
+  }
+
+  /** Retained logical goal ids (diagnostics/tests). */
+  retainedGoals(): string[] {
+    return [...this.retained];
   }
 
   private fail(kind: DecisionFailureKind, detail: string, request: DecisionRequest, attempts: number, httpStatus?: number): DecisionError {
