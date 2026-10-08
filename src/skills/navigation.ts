@@ -12,13 +12,14 @@
 //     it is not used; we watch path_update/goal_reached and verify position.
 // Policy: no digging, no placing/scaffolding, no towers, no parkour, no sprint,
 // no door opening, drop at most 3 blocks, avoid fire/lava/magma/campfires/
-// berry bushes/powder snow/wither roses, water allowed but costed.
+// berry bushes/powder snow/wither roses, deep water refused, shallow wading allowed.
 import pathfinderPkg from 'mineflayer-pathfinder';
 import type { GameSession } from '../game/connection.ts';
 import type { Actuator } from '../execution/actuator.ts';
 import type { Vec } from '../perception/visibility.ts';
 import { safetyWorld } from '../safety/adapter.ts';
-import { deepWaterStepCost, type SafetyBlockReader } from '../safety/geometry.ts';
+import type { SafetyBlockReader } from '../safety/geometry.ts';
+import { applyDeepWaterAvoidance } from './safety.ts';
 
 type Bot = GameSession['bot'];
 const navigationWorlds = new WeakMap<Bot, () => SafetyBlockReader | undefined>();
@@ -108,7 +109,9 @@ export function conservativeMovements(bot: Bot, bounds?: { anchor: Vec; radius: 
   // including locator legs and ordinary follow/navigation. The bot-only
   // fallback is for standalone callers without a connection evidence journal.
   const world = navigationWorlds.get(bot)?.() ?? safetyWorld({ bot } as GameSession);
-  (m as unknown as { exclusionAreasStep: Array<(b: { position: Vec }) => number> }).exclusionAreasStep.push((b) => deepWaterStepCost(world, b.position.x, b.position.y, b.position.z));
+  // Step costs alone miss installed diagonal/drop liquid landings. Use W's
+  // complete instance policy, including its getBlock safety fence.
+  applyDeepWaterAvoidance(m, world);
   if (bounds) {
     (m as unknown as { exclusionAreasStep: Array<(b: { position: Vec }) => number> }).exclusionAreasStep.push((b: { position: Vec }) => (Math.hypot(b.position.x + 0.5 - bounds.anchor.x, b.position.z + 0.5 - bounds.anchor.z) > bounds.radius ? 100 : 0));
   }
