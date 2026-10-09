@@ -742,3 +742,135 @@ It records that proof. Otherwise it fails as staging-unready.
 - **Faithful replica, not a live run:** the control replicates the scene on flat ground. Fixture terrain outside the scene is not modelled, but it cannot occlude the in-scene sight line. Server block confirmation is represented by the applied scene commands.
 - **J1 still depends on real behaviour:** Jev must choose the approach and the walk must succeed within the unchanged 240 s. No live run was made.
 - **Root reruns the real acceptance.**
+
+# P-PLAN-R20 — real 262 P4 "bring me some bread" (worker P)
+
+Parent `71b58805149bd98062397623fdafa85bfd84ed58`.
+
+| Item | Value |
+| --- | --- |
+| Test/harness commit | `4950b559f3a3837db779b5bdaa4925161f4b827c` |
+| Changed: `scripts/planner-live-check.ts` | +3/−1 (P4 evidence label only) |
+| Changed: new `tests/planner-p4-fixture.test.ts` | +77 |
+| `git diff 71b5880 4950b55` SHA-256 | `a6f55cf54d89eddea1bf6022bee4dc0603c893bd748782f8bd9f852e89fd414f` |
+
+No application, prompt or shared-core change. This role update is a separate commit.
+
+## Evidence (read only)
+
+The driver was still running, so no final report existed. I read:
+
+- the root log `var/gameplay-fixes/codex/R19-planner-real-262.log`;
+- the run journals `acceptance-planner/var/runs/run-bfecf3f6d9a6/events.jsonl` (SHA-256 `389706e9acc1c1324d0b0453a68af5fdb9ed9ec805303e02ae3c6d8ab4c13d5b`) and `planner.jsonl` (SHA-256 `79928b7e0c060c4f8d361272c952e5ca11e50aab41d9f4dd985f2aedbcf75f6a`), both as they stood when read;
+- the retained historical P4 reports.
+
+Rendered prompts and shown snapshots are not journaled (only digests), so the exact frontier list the model saw is inferred from the replica below and labelled as such.
+
+Labels in this section:
+- **fixture command / readback** = taken from the root log;
+- **journal** = taken from the run events/planner journal;
+- **replica** = my offline real-perception reconstruction;
+- **inference** = my reasoning.
+
+## Chronology of goal-d885cb5cd4bb
+
+| Source | Time / turn | Event |
+| --- | --- | --- |
+| Fixture command | setup | `kill @e[type=item,tag=chunkbot_front]`, then `summon item 203.5 -60 208.5 {Item:{id:"minecraft:bread",count:1},PickupDelay:0s}`, then `tp FixtureOwner 200.5 -60 209.5`. |
+| Readback | setup | Bread at 203.5,-60,208.5. |
+| Journal | 02:31:36 | Admitted. Anchor 205.5,-60,205.5, radius 128. Admission inventory `{}`. |
+| Journal | turns 1 and 3 | Planner proposes a chest-inspection task with completion `container_state … atLeast: 0`. The real schema rejects it both times (`tasks.0.completion.atLeast >= 1`); each counts a repair. Turn 2 asks knowledge: bread recipe, `drop_item`. |
+| Journal | turn 4 | Plan accepted. Immutable outcome ALL(`inventory_amount bread ≥ 3 possess`, `near_target owner ≤ 2`). Interpretation: "Bringing 3 bread to you". Window 1: `inspect_container` on the chest, completion ANY(bread ≥ 1, wheat ≥ 1). |
+| Journal | window 1 | Four inspections, each 58–83 ms from the start position (no movement), each "contains nothing (server-confirmed)". Ends `blocked/repeated_without_progress`; the R17 pre-terminal recheck agrees. |
+| Journal | turn 6 (replan) | Same outcome. Window 2: `explore_frontier` on the frontier the model chose, "Explore this north frontier once". It is admitted; the R17 owner-scope correction holds. |
+| Journal | window 2 | Arrives at 204.5,-60,185.5 (north). "Observed 8 visible block types (0 new), 5 entities, 0 drops". `visited_location` is verified, so the task completes. |
+| Journal | turn 7 (lookahead) | Wheat harvest query. |
+| Journal | turn 8 | `cannot_execute`: "No source of bread or wheat is visible after the bounded exploration, and the nearby chest is server-confirmed empty." |
+| Readback | end | Inventory `{}`; the bread entity is still present; Chunkbot is 24.33 from the owner. |
+
+## Faithful facts (`tests/planner-p4-fixture.test.ts`, replica)
+
+The replica uses the real PerceptionService, VersionKnowledge and PlannerProposalSchema over the actual scene commands and the actual P4 setup, which is read from the harness source.
+
+- The harness supplies exactly ONE pickable bread (count 1). The scene has no wheat, hay or other bread, and real knowledge says bread needs wheat.
+  - So the accepted outcome **possess ≥ 3 bread is unattainable in this fixture**, however well the bot explores. Root may have more context about the wider fixture world.
+- The bread is hidden behind the chest both from the start and from the actual north exploration end. It is visible from the owner's position (200.5,209.5), which is the delivery destination, and from the south and east sides of the chest.
+- Eight frontier directions are offered from the start. North is the one whose route never reveals the bread.
+- The zero-quantity completions in turns 1 and 3 are refused by the real schema exactly as journaled. The same proposal with `atLeast: 1` is valid.
+
+## Classification
+
+No deterministic application, task-runtime or perception defect is shown.
+
+**Behaved as designed:**
+- schema zero-quantity refusal and repair counting;
+- the bounded `repeated_without_progress` stop with the fresh pre-terminal read;
+- the R17 owner scope, which admitted the resource exploration;
+- original-anchor exploration and truthful `visited_location` completion;
+- truthful outcome status;
+- hidden-world privacy (the bread was never reported while occluded);
+- no owner question.
+
+**Planning choices, model-dependent:**
+
+1. **Quantity default.** "some bread" became possess ≥ 3. The v6/v7 guidance I added in MB-PLAN-006 (`36628a1`: "Quantity or material omitted: choose a modest task-appropriate amount … and say so") allows this. With this fixture it makes the outcome impossible.
+   - Both observed no-question P4 runs chose 3: R17 fault-Jev and R20 real.
+   - The historical passing P4 runs (2026-10-05/06) used the older clarification scenario. The owner's answer pinned "the dropped bread", and the outcome was bread ≥ 1. They are therefore **not comparable** evidence for the quantity default.
+2. **Search persistence.** After one exploration the model answered `cannot_execute` with 7 other directions, 12 planner turns, 6 replans and about 18 minutes of deadline remaining. This complies with the same MB-PLAN-006 line: "Target not visible: plan a bounded survey/explore step …; if it stays unavailable, answer cannot_execute". That line was written for deictic absent targets (O5 "kill that rabbit"). For a general resource search it encourages early refusal.
+   - The historical clarified runs instead searched from new viewpoints over 3 replans.
+3. **Direction choice.** The model picked north, the one direction whose route never reveals the bread. This is an uninformed choice and not a defect.
+
+## Proposals for root (not implemented; product and test decisions)
+
+**Testing correction (recommended first).**
+- P4's harness comment states the under-specification under test is *location* ("the owner names the item but not where it is"). The fixture supplies one bread.
+- Make the instruction explicit about quantity, for example "bring me a bread" or "bring me one bread". Location stays unspecified and occluded, and all P4 checks stay unchanged:
+  - no question;
+  - planner-selected movement;
+  - code-verified possession and delivery;
+  - RCON.
+- Alternatively, keep "some bread" and treat the quantity default as a product decision (next item). Do **not** add extra bread silently.
+- This requires root review, because it changes the trial input.
+
+**Product guidance option A — quantity (coordinator choice).**
+- Proposed replacement for the "Quantity or material omitted" line: "Quantity omitted for a named item ('bring me some X', 'get X'): 1 unless the owner's words or the job clearly need more (e.g. a recipe's ingredients), and say so."
+- Generic: no item enum, no rewrite of an accepted outcome.
+
+**Product guidance option B — search persistence.**
+- Proposed replacement for the "Target not visible" line: "Target not visible: for 'that/this/the' referents, one bounded survey/explore step, then cannot_execute with the visibility blocker. For a named resource to obtain, explore distinct unexplored directions within the admission radius (prefer frontiers not yet visited, and moving toward where the job ends, e.g. the owner for a delivery) before cannot_execute; never wander beyond the limits."
+- Model-dependent. It spends existing planner turns, replans and deadline only, and changes no code bounds.
+
+Either guidance change needs a fresh real-model acceptance by root on both versions. Neither is proven to make P4 pass, because the outcome depends on the model's quantity choice.
+
+**Release limitation until decided.** "bring me some X" for an occluded or absent item may:
+- choose a quantity larger than is available;
+- end `cannot_execute` after one exploration.
+
+It does so honestly: no question, no false credit, outcome unsatisfied.
+
+## Harness label fix
+
+The P4 evidence printed `window N task … "undefined"` because it read `task_started`, which carries only the app step label. It now reads the correlated `task_admitted` objective. Behaviour is unchanged; only the label is fixed.
+
+## Checks (Node 24 PATH; logs `var/native-checks/p-r20/`)
+
+| Check | Exit | Log SHA-256 |
+| --- | --- | --- |
+| P4 control on the pre-fix harness (3 fact cases pass; the label case fails as intended) | 1 | `db4c2f46e02bada7d8875acb4cdcef54431acd117593f4dc82965aea46886b10` |
+| `npm run typecheck` | 0 | `54f8c884c94b75895a95d9205c411167bfd4a94fd36c0a921ae8313e715fd7f8` |
+| `npm run build` | 0 | `1537c3e259c4849c097c4c340708415b7d230f36bcf2a1dfee6410196b294715` |
+| `npm test` (1492/1492) | 0 | `0c77c0b6ae15c7dbf8cba146fd7aaa99c3e2f06e1f439710efefe22538689f1f` |
+| Focused (P4 control, owner scope, planner engine, perception; 21/21) | 0 | `16d166279d81f83e2cef16a7d07b157e064b266a44116c9b9b54d6d75af06178` |
+| Doctor 26.1.2 config (read-only) | 0 | `f124ed40f629fe491809411ea8deaa861eee8a3f684e6fb6f7ff26fb217d67e7` |
+| Doctor 26.2 config | 0 | `d27f3a898c2054f976071fc265709d6bc9bcf85f6cd3ee01379c392bf8a49292` |
+| Canonical `100ec816…` + this change (temp detached worktree, removed): typecheck | 0 | `e3b0c442…b855` (empty output) |
+| Same: full suite (1642/1642) | 0 | `c6780b09d4bec3ad8ab08b6b760d9c520868776c754965c73db0b2e24ad89ced` |
+
+No inference was used in any test, and no fixture, RCON or provider access by me.
+
+## Uncertainty
+
+- **Prompts and snapshots not retained:** the exact frontier list and wording the model saw are reconstructed, not retained.
+- **Final report not yet written:** the outcome rests on the journals.
+- **Driver still running:** later events (P5+) were not part of this analysis, and the run-61 world was not touched.
+- **Proposal effects unknown:** whether either guidance proposal changes real-model behaviour is unknown until root runs real acceptance.
