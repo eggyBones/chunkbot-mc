@@ -97,3 +97,115 @@ It passes on unchanged source. That is intended: it documents correct behavior, 
 - The real follow pathfinder plugin is not loaded offline. The resumed mover is a goal-owned actuator with direct controls.
 - World, provider and combined acceptance stay with the coordinator.
 - O7F (hidden-owner oracle before staged execution) is outside W-R10's owned policy question and was not diagnosed.
+
+---
+
+# W-R11 — server held-gear oracle vs. actual R18 O8D worn-stack replies
+
+Narrow ownership exception granted by the coordinator: only `serverHeldGear` and its private parser helpers in `scripts/lib/ordinary-safety-oracles.ts`, the new `tests/safety-held-gear-oracle.test.ts`, and this document. No other oracle function, P harness/staging test, or application/shared source was edited. No world, RCON, fixture, provider, credential or root access was used. Canonical `acceptance-native` `3913fb1e9c76155684965db6a690e221e7e8f5e5` was read only.
+
+## Verdict
+
+R18 O8D did not execute on either release. That refusal came from a **proven harness representation defect**, not from combat or readiness policy. The actual worn armour now carries routine wear as a nested component. The baseline oracle could not parse that, so it reported the genuinely worn iron helmet and chestplate as absent, and the harness staging refused with `staging_unready: current server gear missing/unknown`. This supersedes W-R10's "current server gear missing/unknown" wording for O8D: actual worn-stack data has now been observed and read. The combat result itself remains unknown, because no defense episode ran.
+
+## Evidence identity
+
+| Artifact | SHA-256 |
+| --- | --- |
+| R18 261 report `acceptance-native/var/live-check/2026-10-09T01-45-54-344Z-ordinary-goals/report.json` | `59ec08d685c9743739ff4b631acf1ccf2d3074b5e5dda825ec0aecb0988023eb` |
+| R18 262 report `acceptance-planner/var/live-check/2026-10-09T01-45-54-736Z-26.2-ordinary-goals/report.json` | `e0bde872fc19e4436752528ca5731774d117aa7c81b168f020340f242edf5ed6` |
+| Baseline `scripts/lib/ordinary-safety-oracles.ts` (reviewed `24c1fc47`, identical to canonical `3913fb1`) | `9a2862b82e32cdb23f8ff049753e37dd0d36767f47dae05b0d36e6ad767b78e4` |
+
+Both reports record the same three O8D readbacks, taken after the genuine staging hit:
+- 261: `atMs` 1791510436544 to 1791510436545
+- 262: `atMs` 1791510436713 to 1791510436715
+
+The readbacks:
+- `data get entity Chunkbot Inventory` → `Chunkbot has the following entity data: [{count: 1, Slot: 0b, id: "minecraft:iron_sword"}]`
+- `data get entity Chunkbot equipment` → `Chunkbot has the following entity data: {head: {components: {"minecraft:damage": 1}, count: 1, id: "minecraft:iron_helmet"}, chest: {components: {"minecraft:damage": 1}, count: 1, id: "minecraft:iron_chestplate"}}`
+- `data get entity Chunkbot SelectedItemSlot` → `Chunkbot has the following entity data: 0`
+
+Both reports retain O8D `fail` with `staging_unready: current server gear missing/unknown`. They are unchanged.
+
+## Pre-fix reproduction (exact actual readbacks, baseline `6bf3a75`)
+
+The baseline `serverHeldGear` returns `{mainHand: "minecraft:iron_sword", head: null, chest: null, selectedSlot: 0}` for those exact replies. Its `worn()` regex `head: \{([^{}]*)\}` cannot span the nested `components` compound, so the worn pieces read as **absent**, not even as unknown. The harness check `gear.head === iron_helmet && gear.chest === iron_chestplate` then refuses.
+
+The new test file run against the baseline (pre-fix) exits 1 with 24 of 47 tests failing (log SHA-256 `a159268884d480e730df978ecdffe366fab8a4693de600142bb7f754865633e1`). Two groups failed:
+- **Actual replies:** the exact R18 replies and other normal nested components.
+- **Adverse cases the baseline also wrongly accepted:**
+  - duplicated `id`, `count` or `Slot`;
+  - a duplicated nested component key;
+  - missing, zero, negative, fractional or string `count`;
+  - a non-namespaced id;
+  - a non-compound Inventory entry;
+  - truncation, an extra closing brace, a dangling comma;
+  - an unknown equipment slot name, a non-stack worn slot, a misnested chest, a worn stack of two;
+  - a nested id or `Slot` impostor;
+  - oversized input.
+
+## Correction (`98322f8`)
+
+`serverHeldGear` now parses the three replies structurally:
+- **Reply shape:** the exact `<name> has the following entity data: ` prefix, followed by a strict, bounded SNBT subset parse (at most 16 384 characters, depth 12, 2 048 nodes). Accepted values are compounds with bare or quoted keys, lists, typed `[B;/I;/L;]` arrays, quoted strings with escapes, and suffixed numbers.
+- **Fails closed (null):** any malformation, duplicate key at any depth, trailing text, extra closer, dangling comma, unterminated string, or exceeded bound.
+- **Identity:** only a stack's **own top-level** `id` (namespaced string) and integer `count` (1..99) count.
+  - A stack may carry only `id`, `count` and optional `components` (a compound), plus `Slot` for Inventory entries. Any other top-level key, such as a misnested `chest`, is malformed.
+  - A nested `id` or `Slot` inside `components` is never an identity or a slot.
+- **Inventory:** must be a list of such stacks with a byte `Slot`. The held item is the single entry whose top-level `Slot` equals the selected slot; two such entries is ambiguous and returns null. Legacy `Slot: 100–103b` armour is carried, not worn.
+- **Equipment:** must be a compound whose keys are installed EquipmentSlot names (`mainhand, offhand, feet, legs, chest, head, body, saddle`). Every present slot must be a well-formed stack, and worn armour pieces (`head/chest/legs/feet`) must have `count: 1`. An off-hand stack such as 64 torches is valid and never counts as chest armour.
+- **SelectedItemSlot:** exactly one decimal digit 0..8. No type suffix, list, fraction, sign or empty reply is accepted.
+- **Unchanged:** the return shape, every caller, and all readiness/combat policy. Wear metadata does not revoke a known item identity; the harness still requires the exact sword, helmet and chestplate ids. The client-snapshot equipment check, health of at least 14, the 6 s damage window, reach 3.5, 10 s readiness, exact same-zombie kill, footing and identity/foreign refusals all stay with the existing harness and application code.
+
+`tests/safety-held-gear-oracle.test.ts` (48 tests):
+- **Actual replies:** the exact R18 readbacks produce `{iron_sword, iron_helmet, iron_chestplate, slot 0}`.
+- **No regression:** the R16 undamaged format still parses.
+- **Synthetic normal components:** damage, enchantments, custom name with escapes, trim, an int-array profile, a damaged sword and a carried stack.
+- **Synthetic impostors:** a nested container id, a missing top-level id, a nested `Slot`, offhand-as-chest, legacy and carried armour, a non-selected sword, and an off-hand stack.
+- **Fail-closed cases:** 38 malformed, duplicate, ambiguous, truncated, misnested, unreadable or invalid-selected-slot replies return null, plus oversized and over-deep inputs.
+
+## P test reconciliation (through root; I did not edit it)
+
+Canonical `tests/ordinary-safety-staging.test.ts`, the R16 O8D block, line 309:
+
+```
+[R16_INVENTORY, 'Chunkbot has the following entity data: {head: {components: {"minecraft:damage": 3}, count: 1, id: "minecraft:iron_helmet"}, chest: {count: 1, id: "minecraft:iron_chestplate"}}', '0', 'unparsed component body fails closed'],
+```
+
+This negative case encodes the defect. It expects a VALID nested `"minecraft:damage": 3` to refuse. With the corrected oracle it returns the full sword/helmet/chestplate gear, so that assertion fails as expected. Proposed replacement for P:
+1. Move this input to a positive expectation, "worn damaged helmet keeps identity", returning the full gear.
+2. If a fail-closed component case is still wanted, use a genuinely malformed body, e.g. `{head: {components: {"minecraft:damage": 3, count: 1, id: "minecraft:iron_helmet"}, chest: …}` (unterminated components) or a duplicated `"minecraft:damage"` key.
+
+I evaluated every other assertion in that block (lines 299, 301, 303–308) by direct calls to the corrected function. Each still holds. I did not run P's file in this worktree, because it is not present here. The remaining `meleeReplay` override cases (legacy/chest/selected) use formats covered by the same parse paths, but they were not executed.
+
+## Commits (parent → head)
+
+| Commit | Parent | Content |
+| --- | --- | --- |
+| `6bf3a756a33604e723872477c0ff9c0191932125` | `4bc64fefa5a3e2fbf2faceebe548950683bac7e2` | baseline dependency: exact copy of the reviewed `24c1fc47` oracle file (+260 lines) |
+| `98322f8d7bd96d9bcbac16f7db73a4a7b8cf9e93` | `6bf3a75` | correction: `scripts/lib/ordinary-safety-oracles.ts` (single hunk inside `serverHeldGear`, +170/−18), new `tests/safety-held-gear-oracle.test.ts` (+140) |
+| this doc commit | `98322f8` | role documentation only |
+
+The 14 other exported oracle functions are byte-unchanged:
+- `pendingRealTurn`, `verifyPlannerWaterRace`, `verifySafetyOwnership`, `verifyFiniteEpisode`;
+- `verifyNoAttacks`, `verifyPreemption`, `ownerStandingCommands`, `verifyHiddenOwner`;
+- `freshFarCue`, `verifySharedSafetyHistory`, `postReleaseMotion`, `insideSceneColumns`;
+- `foreignVisibleAfterResponse`, `verifyNoFarPoint`.
+
+Root imports only the correction diff `6bf3a75..98322f8`.
+
+## Checks (Node 24.21.0, direct exits; logs retained in this worktree's ignored `var/w-r11/`)
+
+| Command | Exit | Log SHA-256 |
+| --- | --- | --- |
+| focused test, pre-fix (baseline) | 1 (24/47 fail) | `a159268884d480e730df978ecdffe366fab8a4693de600142bb7f754865633e1` |
+| focused test, post-fix | 0 (48/48) | `52f9eec59c6f81da50dabd1badf22625ac282ce3d419320671cf6d3b3b1c66bf` |
+| `npm run typecheck` | 0 | `54f8c884c94b75895a95d9205c411167bfd4a94fd36c0a921ae8313e715fd7f8` |
+| `npm run build` | 0 | `1537c3e259c4849c097c4c340708415b7d230f36bcf2a1dfee6410196b294715` |
+| `npm test` (1008/1008; P's staging test file is not in this worktree) | 0 | `32acaf75b87094f5a1bd371280a312676aff66fe844990ecede26b5e18ef1ef1` |
+
+## Limitations
+
+- This is an offline representation proof from exact retained replies. No server re-read, world, provider or combat evidence exists for the corrected staging, and O8D's defense outcome remains unproven until the coordinator reruns it.
+- The SNBT subset covers the printed shapes of these three `data get` replies, not every SNBT form. Unsupported forms fail closed to `null`, which yields staging-unready, never a pass.
+- The expected failure of P's old line-309 case is separate from these focused checks and needs P's reconciliation after root approves this source.
