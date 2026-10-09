@@ -1,9 +1,15 @@
 // P-PLAN-R20: actual 262 real-Codex/real-Jev P4 ("bring me some bread",
 // goal-d885cb5cd4bb, run-bfecf3f6d9a6) ended cannot_execute. This control
-// records the FIXTURE and code facts that bound that result, using the real
+// records the DECLARED-SCENE and code facts around that result, using the real
 // PerceptionService, VersionKnowledge and proposal schema over the actual scene
 // commands and the harness's actual P4 setup (read from source; the harness has
 // top-level fixture side effects and is never imported). No inference.
+//
+// Scope: these facts cover only the declared scene commands and the P4 setup.
+// The goal's ORIGINAL admission radius (128) extends beyond that scene, and the
+// wider fixture world (including containers left by other trials) is UNKNOWN
+// here; nothing below proves a quantity unattainable in the whole world or the
+// whole authorized radius.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
@@ -42,13 +48,13 @@ function view(at: { x: number; z: number }) {
 }
 
 describe('P-PLAN-R20 P4 fixture and code facts (real perception/knowledge/schema)', () => {
-  it('the harness supplies exactly ONE pickable bread and no wheat/bread source anywhere in the scene', () => {
+  it('the declared P4 setup supplies exactly ONE pickable bread and the declared scene commands place no wheat/bread source (wider world unknown)', () => {
     assert.deepEqual({ ...BREAD }, { x: 203.5, y: -60, z: 208.5, count: 1 });
-    assert.ok(!sceneCommands().some((c) => /wheat|hay_block|bread|farmland/.test(c) && !/chunkbot_front/.test(c)), 'the base scene has no wheat, hay or other bread');
+    assert.ok(!sceneCommands().some((c) => /wheat|hay_block|bread|farmland/.test(c) && !/chunkbot_front/.test(c)), 'the declared scene commands place no wheat, hay or other bread');
     assert.match(P4, /kill @e\[type=item,tag=chunkbot_front\]/, 'the base scene bread (unpickable) is removed first');
     const k = new VersionKnowledge({ version: '26.2' });
     const recipe = JSON.stringify(k.answerOne({ kind: 'recipe', output: 'minecraft:bread' }));
-    assert.match(recipe, /minecraft:wheat/, 'bread needs wheat; so possess >= 2 bread is unattainable in this fixture');
+    assert.match(recipe, /minecraft:wheat/, 'bread needs wheat; so the declared scene alone cannot supply possess >= 2 bread (the wider world within the radius is unknown)');
   });
 
   it('occluded from the start and from the actual north exploration end; visible from the owner position and the south/east sides', () => {
