@@ -1483,7 +1483,17 @@ export class GoalEngine {
     this.recordTimings(active, startedAtMs);
     const removal = active.outcome ? this.deps.outcomes?.captureContinuation?.(active.outcome.bound).removal : undefined;
     const hasRemoval = active.outcome && outcomeAtoms(active.outcome.contract).some(({ atom }) => atom.predicate === 'blocks_removed');
-    const requiresOwnerDirection = active.outcome && outcomeAtoms(active.outcome.contract).some(({ atom }) => 'target' in atom && atom.target.kind === 'owner');
+    // P-PLAN-R17: owner-direction-only scope belongs to OWNER SEEKING, decided per
+    // task from code-checked structure (never an intent classifier): every task of
+    // an owner-only outcome (follow/come-with-me), and any task whose own
+    // completion or selectors target the owner (e.g. the delivery leg). A resource
+    // task inside a multi-condition resource+delivery outcome keeps ordinary,
+    // ORIGINAL-anchor-bounded exploration (explore_frontier never uses a route leg).
+    const outcomeAtomsList = active.outcome ? outcomeAtoms(active.outcome.contract) : [];
+    const ownerAtom = ({ atom }: (typeof outcomeAtomsList)[number]) => 'target' in atom && atom.target.kind === 'owner';
+    const ownerOnlyOutcome = outcomeAtomsList.length > 0 && outcomeAtomsList.every(ownerAtom);
+    const taskSeeksOwner = spec.targetSelectors.some((s) => s.kind === 'owner') || outcomeAtoms({ kind: 'finite', outcome: spec.completion }).some(ownerAtom);
+    const requiresOwnerDirection = active.outcome !== undefined && (ownerOnlyOutcome || taskSeeksOwner);
     const running = tasks.run({ taskId, goalId: active.record.id, goalEpoch: active.epoch, spec, mode, ...(hasRemoval ? { destructiveScope: removal ?? [] } : {}), ...(requiresOwnerDirection ? { requiresOwnerDirection: true } : {}), signal: active.abort.signal, isCurrent: () => this.active === active && this.epoch === active.epoch && !active.abort.signal.aborted });
     const cleanup: Cleanup = () => running.then(() => undefined, () => undefined);
     active.cleanups.add(cleanup);
