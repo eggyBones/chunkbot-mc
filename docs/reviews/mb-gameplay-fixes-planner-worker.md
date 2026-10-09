@@ -792,8 +792,8 @@ Labels in this section:
 
 The replica uses the real PerceptionService, VersionKnowledge and PlannerProposalSchema over the actual scene commands and the actual P4 setup, which is read from the harness source.
 
-- The harness supplies exactly ONE pickable bread (count 1). The scene has no wheat, hay or other bread, and real knowledge says bread needs wheat.
-  - So the accepted outcome **possess ≥ 3 bread is unattainable in this fixture**, however well the bot explores. Root may have more context about the wider fixture world.
+- The declared P4 setup supplies exactly ONE pickable bread (count 1). The declared scene commands place no wheat, hay or other bread, and real knowledge says bread needs wheat.
+  - So **the declared scene alone is insufficient** for the accepted outcome possess ≥ 3 bread. *(Corrected after root review: an earlier wording said "unattainable in this fixture, however well the bot explores".)* The ORIGINAL admission radius 128 extends beyond the declared scene, and the wider fixture world, including chests other trials may have left, is unknown to this analysis. No global impossibility within the world or the authorized radius is claimed.
 - The bread is hidden behind the chest both from the start and from the actual north exploration end. It is visible from the owner's position (200.5,209.5), which is the delivery destination, and from the south and east sides of the chest.
 - Eight frontier directions are offered from the start. North is the one whose route never reveals the bread.
 - The zero-quantity completions in turns 1 and 3 are refused by the real schema exactly as journaled. The same proposal with `atLeast: 1` is valid.
@@ -813,7 +813,7 @@ No deterministic application, task-runtime or perception defect is shown.
 
 **Planning choices, model-dependent:**
 
-1. **Quantity default.** "some bread" became possess ≥ 3. The v6/v7 guidance I added in MB-PLAN-006 (`36628a1`: "Quantity or material omitted: choose a modest task-appropriate amount … and say so") allows this. With this fixture it makes the outcome impossible.
+1. **Quantity default.** "some bread" became possess ≥ 3. The v6/v7 guidance I added in MB-PLAN-006 (`36628a1`: "Quantity or material omitted: choose a modest task-appropriate amount … and say so") allows this. In the declared scene it asks for more bread than that scene supplies; whether the wider world within the radius holds more is unknown.
    - Both observed no-question P4 runs chose 3: R17 fault-Jev and R20 real.
    - The historical passing P4 runs (2026-10-05/06) used the older clarification scenario. The owner's answer pinned "the dropped bread", and the outcome was bread ≥ 1. They are therefore **not comparable** evidence for the quantity default.
 2. **Search persistence.** After one exploration the model answered `cannot_execute` with 7 other directions, 12 planner turns, 6 replans and about 18 minutes of deadline remaining. This complies with the same MB-PLAN-006 line: "Target not visible: plan a bounded survey/explore step …; if it stays unavailable, answer cannot_execute". That line was written for deictic absent targets (O5 "kill that rabbit"). For a general resource search it encourages early refusal.
@@ -823,7 +823,7 @@ No deterministic application, task-runtime or perception defect is shown.
 ## Proposals for root (not implemented; product and test decisions)
 
 **Testing correction (recommended first).**
-- P4's harness comment states the under-specification under test is *location* ("the owner names the item but not where it is"). The fixture supplies one bread.
+- P4's harness comment states the under-specification under test is *location* ("the owner names the item but not where it is"). The declared P4 scene supplies one bread.
 - Make the instruction explicit about quantity, for example "bring me a bread" or "bring me one bread". Location stays unspecified and occluded, and all P4 checks stay unchanged:
   - no question;
   - planner-selected movement;
@@ -943,7 +943,7 @@ goal-388b88db4ec2 shows the same pattern as 262:
 - turn 6 `cannot_execute`;
 - no question, inventory `{}`, the bread left in the world.
 
-The P4 diagnosis and proposals above apply unchanged: the quantity is impossible in the fixture; single-frontier persistence is under the current guidance; the north choice is uninformed. The "undefined" objective label appears there too and is fixed in `4950b55`. P10 passed on 261.
+The P4 diagnosis and proposals above apply unchanged: the declared scene alone cannot supply the accepted quantity (wider world unknown); single-frontier persistence is under the current guidance; the north choice is uninformed. The "undefined" objective label appears there too and is fixed in `4950b55`. P10 passed on 261.
 
 ### Checks (Node 24 PATH; logs `var/native-checks/p-r20b/`)
 
@@ -983,7 +983,7 @@ Parent `e1566d53a4e06ce2b1b1fe18cfa2ad4d2fa019c9`. This role update is a separat
 ## Causal source (actual 261 goal-388b88db4ec2, 262 goal-d885cb5cd4bb)
 
 Two v7 lines produced the observed behaviour:
-- "Quantity or material omitted: choose a modest task-appropriate amount" → both runs accepted possess ≥ 3 bread; the fixture has one.
+- "Quantity or material omitted: choose a modest task-appropriate amount" → both runs accepted possess ≥ 3 bread; the declared scene supplies one (wider world unknown).
 - "Target not visible: … if it stays unavailable, answer cannot_execute" (written for deictic O5) → `cannot_execute` after one north frontier.
 
 The question-refusal repair guidance (`declarative.ts`) also said "modest quantity".
@@ -1019,7 +1019,7 @@ No limit, whitelist, model, provider, schema or code path changed.
 | Text | Exact A and B rules present; v7 "modest" and the single early-refusal rule gone in both instructions and repair guidance. Generic: the five new lines name no item/block/container, introduce no number except the default 1, and mention no model/provider/fallback; owner seeking unchanged. |
 | Grounding | One continuous real PerceptionService over the actual scene and P4 setup, admitted at the journaled anchor. For turn 6 (start) and turn 8 (after the journaled north arrival), the real `renderRequest` shows: the ORIGINAL bound 205.5,205.5 r128; the visible owner; 8 frontiers with direction and `visited`, ≥7 unvisited; the remaining turns/replans/deadline. The bread is occluded in both states. |
 | Meaningfulness | The actual north choice never reveals the bread. The unvisited, in-bound frontier nearest the visible owner reveals it from BOTH actual decision states. |
-| A attainable | possess ≥ 1 bread + near owner is schema-valid and matches the one supplied bread. |
+| A attainable | possess ≥ 1 bread + near owner is schema-valid and is satisfiable by the declared setup's one bread. |
 | Immutability (real GoalEngine) | A replan lowering an accepted possess ≥ 3 to 1 is refused ("changes the accepted goal outcome"); the repair request still shows the original; repeating it exactly is accepted. |
 
 Fail-before on the v7 sources: the three text controls fail; the four grounding/immutability controls pass (existing code facts).
@@ -1049,3 +1049,21 @@ No fixture, RCON, provider, key or live-control access.
 - "Toward where the job ends" assumes the owner is visible or remembered (it was in both replica states). The replica's owner visibility from the north end is inferred, not journaled.
 - A changes defaults for every owner instruction with an omitted number for a named item. Explicit numbers and jobs that clearly need more are unaffected. The harness's other goals give explicit numbers, except the house build, which is a job.
 - P10 (abfd5cb) is complete and unchanged; its own limits stand.
+
+## P-PLAN-R21 precision correction (root review of `4950b55` + `939acd0`)
+
+Root reported that this document and two synthetic-fixture tests over-claimed: they called possess ≥ 3 bread "unattainable/impossible in the fixture". The evidence supports only this:
+- The DECLARED P4 setup and scene commands supply one bread and no wheat, so **the declared scene alone is insufficient**.
+- The ORIGINAL admission radius 128 extends beyond that scene. The wider fixture world (for example, chests other trials left behind) is **unknown** to this analysis.
+
+**Wording corrected** (comments, test titles and assertion messages only):
+- in this document;
+- in `tests/planner-p4-fixture.test.ts` and `tests/planner-guidance-quantity-search.test.ts`.
+
+**Unchanged:** test definitions, items, coordinates, assertions and gates; source; the approved generic guidance A/B; and the original P4 input (instruction, count 1, hidden position).
+
+Root's original reports remain failed and unchanged (not read or touched by P):
+- 262: final 17/19 (P4, P10), SHA-256 `98804cb538f84d737a6ed2bd611a4e007957dfc0aeb6d9bebdc70e4a1ed0093c`.
+- 261: final 17/19 (P4, P6), SHA-256 `13260e76e41113ee8596176b1046042dc5a1295a72554698bca9bd67edcc1073`.
+
+P6 belongs to W's runtime reservation; P10 and P4 remain P's.
