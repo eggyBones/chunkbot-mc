@@ -1188,7 +1188,7 @@ export class GoalEngine {
           }
           case 'cannot_execute':
             // MB-PLAN-006: the planner's wording stays internal (journal); the owner sees an app-owned blocker.
-            this.discardPending(p, 'cannot_execute', publicBlocker({ missingCapabilities: proposal.missingCapabilities, feedback: [] }));
+            this.discardPending(p, 'cannot_execute', publicBlocker({ missingCapabilities: proposal.missingCapabilities, feedback: [], knowledge: p.knowledge }));
             return;
           case 'plan': {
             const now = this.deps.clock.now();
@@ -2484,7 +2484,7 @@ export class GoalEngine {
           }
           case 'cannot_execute': {
             // MB-PLAN-006: planner prose (missing / verifiedProgress) stays internal; the owner-visible blocker is app-owned.
-            const detail = `${publicBlocker({ missingCapabilities: proposal.missingCapabilities, feedback: active.feedback })}; ${this.progressSummary(active)}`;
+            const detail = `${publicBlocker({ missingCapabilities: proposal.missingCapabilities, feedback: active.feedback, knowledge: active.knowledge })}; ${this.progressSummary(active)}`;
             await this.finishIfCurrent(active, 'cannot_execute', detail);
             return;
           }

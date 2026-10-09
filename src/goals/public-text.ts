@@ -6,7 +6,7 @@
 // reason codes, code counters). The question detector in declarative.ts is
 // defense in depth on top of this boundary. Raw planner text stays internal
 // (planner requests, the redacted run store and planner journal).
-import type { GoalOutcomeContract, TaskFeedback, TaskSpec } from '../contracts/index.ts';
+import type { GoalOutcomeContract, KnowledgeResult, TaskFeedback, TaskSpec } from '../contracts/index.ts';
 import { describePredicate } from '../dashboard/outcome-text.ts';
 import { ownerQuestionIn } from './declarative.ts';
 
@@ -54,10 +54,16 @@ function reasonText(code: string): string | undefined {
  * own wording is not relayed; only capability ids it named (code-shaped and
  * declarative) and the latest code-verified task reasons are shown.
  */
-export function publicBlocker(input: { missingCapabilities: readonly string[]; feedback: readonly TaskFeedback[] }): string {
+export function publicBlocker(input: { missingCapabilities: readonly string[]; feedback: readonly TaskFeedback[]; knowledge?: readonly KnowledgeResult[] }): string {
   const parts: string[] = ['the planner found no supported way to continue'];
-  const caps = input.missingCapabilities.filter((c) => CODE_ID.test(c) && ownerQuestionIn(c.replace(/_/g, ' ')) === undefined).slice(0, 4);
+  const ownerSafe = (c: string) => CODE_ID.test(c) && ownerQuestionIn(c.replace(/_/g, ' ')) === undefined;
+  const caps = [...new Set(input.missingCapabilities.filter(ownerSafe))].slice(0, 4);
   if (caps.length > 0) parts.push(`missing capabilities: ${caps.join(', ')}`);
+  // P-PLAN-R20: capability ids this goal queried that the CODE catalog answered
+  // as not implemented (status "unknown"). A code fact, named even when the
+  // planner described the gap only in prose (which stays internal).
+  const checked = [...new Set((input.knowledge ?? []).filter((r) => r.query.kind === 'capability' && r.status === 'unknown').map((r) => (r.query as { id: string }).id).filter((id) => ownerSafe(id) && !caps.includes(id)))].slice(0, 4);
+  if (checked.length > 0) parts.push(`not implemented (checked against the capability catalog): ${checked.join(', ')}`);
   const last = input.feedback.at(-1);
   if (last) {
     const why = reasonText(last.reason);
