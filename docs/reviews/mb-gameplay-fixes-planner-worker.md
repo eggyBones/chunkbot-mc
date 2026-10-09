@@ -564,3 +564,88 @@ Pre-fix: 4 of 7 R18 controls fail as intended. The 3 that pass reproduce the act
 - **O8N 262:** the cleanup ordering removes the proven post-CLI exposure. Damage while the bot is present (e.g. a zombie re-targeting the owner during O8M) is not prevented. A depleted owner food state now refuses honestly instead of waiting.
 - **O8N 261:** a natural actor can stay out of sight for more than 10 s, which is an honest failure.
 - **O8D:** needs W's approved parser and is unchanged here.
+
+# R18 continuation — approved W-R11 dependency, damaged-gear readiness, R17 wording (worker P)
+
+Parent `4e92518` (R18 role).
+
+## Commits
+
+| Commit | Content |
+| --- | --- |
+| `d37d660` | Exact cherry-pick of root-approved W `98322f8d7bd96d9bcbac16f7db73a4a7b8cf9e93`, source/test only. Neither W's baseline `6bf3a75` nor its role `0a7f947` was imported. |
+| `fd7aab93982a5425b6d418cf37e2512ac33fde02` | My test reconciliation. |
+
+About `d37d660`:
+- W's parent baseline file equals my `24c1fc4` oracle file, so the pick applied without conflict.
+- `git diff 98322f8 d37d660 -- scripts/lib/ordinary-safety-oracles.ts tests/safety-held-gear-oracle.test.ts` is empty.
+- Paths: `scripts/lib/ordinary-safety-oracles.ts` (+170/−18) and `tests/safety-held-gear-oracle.test.ts` (+140).
+
+About `fd7aab9`:
+- Paths: `tests/ordinary-safety-staging.test.ts` (+36/−2) and `tests/task-terminal-freshness.test.ts` (+10/−8).
+- `git diff d37d660 fd7aab9` SHA-256 `cf32e8d651b45d06775ae87885dc0e0ce8c656d870a539294d26cdd9ef5698f5`.
+- `git diff 4e92518 fd7aab9` (both commits): 4 files, +357/−27, SHA-256 `d5c6062005286457001f49272623643ed3ee78fe63e1e4c6e5806eb540843759`.
+
+No application source, dist or config changed.
+
+## Gear reconciliation (O8D)
+
+**Actual R18 replies.** These come from 261 readbacks 1791510436544/436545 and 262 readbacks 436714/436715, which are identical:
+- `Inventory`: `[{count: 1, Slot: 0b, id: "minecraft:iron_sword"}]`
+- `SelectedItemSlot`: `0`
+- `equipment`: `{head: {components: {"minecraft:damage": 1}, count: 1, id: "minecraft:iron_helmet"}, chest: {components: {"minecraft:damage": 1}, count: 1, id: "minecraft:iron_chestplate"}}`
+
+The damage component comes from the genuine staging hit (261 `damage_event` 436044).
+
+**Retired case.** My R16 negative case "unparsed component body fails closed" refused all structurally valid damaged gear, so I replaced it. Two malformed actual structures are now refused instead:
+- the actual R18 damaged reply truncated inside a component;
+- a damaged helmet stack with no top-level `id` of its own.
+
+**New replay.** It drives the real `stageMeleeEngagement` readiness with the exact R18 equipment reply.
+
+- **Pass:** server gear `{iron_sword, iron_helmet, iron_chestplate, slot 0}`. The raw reply is recorded in the defense proof. The proof holds settled ≥ 250 ms over ≥ 2 samples, hit age ≤ 6 s, melee distance ≤ 3.5, and no mutations.
+- **Refuse:** with the same damaged reply, each of these still refuses before admission with no mutation:
+  - airborne;
+  - expired damage;
+  - foreign (unattributed) damage;
+  - client gear missing;
+  - unknown ground;
+  - baby;
+  - unsupported floor;
+  - active authority;
+  - bot health 13.5;
+  - a malformed equipment reply;
+  - held slot 1.
+
+**Fail-before.** With the pre-W parser bytes (`4e92518` oracle), the replay fails with the actual R18 message `staging_unready: current server gear missing/unknown`. The other 14 oracle functions are unchanged by W, and I did not edit the library.
+
+## P-TASK-R17 wording
+
+The introduction of `tests/task-terminal-freshness.test.ts` now describes the same-tick `window_items`/ack then `collect`/`entity_destroy`/`set_slot` order differently:
+- before: "exactly the actual 261 ordering";
+- now: a faithful, plausible installed-production ordering that reproduces the observed stale-terminal condition.
+
+The actual pickup packet times were not journaled. That limitation in the R17 section stands, and the source behavior is unchanged.
+
+The R16 fourth-sample position is reconstructed; it is covered by the R18 wording correction above.
+
+## Checks (Node 24 PATH; logs `var/native-checks/p-r18w/`)
+
+| Check | Exit | Log SHA-256 |
+| --- | --- | --- |
+| Damaged-gear replay on the pre-W parser (fails as intended) | 1 | `4ed319c579787453899b56173caccbeaccff7f8c20224cc3038c43641631b980` |
+| `npm run typecheck` | 0 | `54f8c884c94b75895a95d9205c411167bfd4a94fd36c0a921ae8313e715fd7f8` |
+| `npm run build` | 0 | `1537c3e259c4849c097c4c340708415b7d230f36bcf2a1dfee6410196b294715` |
+| `npm test` (1485/1485 = 1436 + 48 W + 1) | 0 | `83e0fbdf0207bb32da17db0778fc8fd33c4f5ff748fac20697ce3e0a4a411497` |
+| Focused (staging, W gear oracle, R18, far-route, guard, harness, R17 control; 102/102) | 0 | `b71e33589b91a020ae96c5a742b71e4348b4b67675ede0eed173d27330e4b44f` |
+| Doctor 26.1.2 config (read-only) | 0 | `f124ed40f629fe491809411ea8deaa861eee8a3f684e6fb6f7ff26fb217d67e7` |
+| Doctor 26.2 config | 0 | `d27f3a898c2054f976071fc265709d6bc9bcf85f6cd3ee01379c392bf8a49292` |
+| Root canonical `8ead4c9` + `git diff 740de23` (R18 + W + reconciliation; temp detached worktree, removed): typecheck | 0 | `e3b0c442…b855` (empty output) |
+| Same: full suite (1635/1635 = 1579 + 7 + 48 + 1) | 0 | `6b8beaebcb423560ab88e85500c548707906e66675fec851f89f1f4837f4a2a7` |
+
+The root acceptance copies were not touched.
+
+## Limitations
+
+- O8D combat itself remains untested until root reruns it live.
+- The damaged-gear acceptance covers the exact actual `minecraft:damage` shape and W's structural controls; it does not cover other live component shapes.
