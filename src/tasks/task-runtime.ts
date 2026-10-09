@@ -22,6 +22,17 @@
 // window simply elapsed and an equivalent candidate still exists. Elapsed time
 // grants no progress: an unmet condition still needs outcome or owned motion
 // progress before the existing stall deadline. No repeated inference is needed.
+//
+// W-R12 persistent maintenance preference: in a `maintain` task, when some
+// currently usable option is QUALIFIED sustained — its registered skill
+// definition declares a `sustained` policy (the registry stays authoritative),
+// it survived the retry/no-progress/low-health filtering above, and its own last
+// non-cancelled dispatch in this task (if any) ended in that policy's healthy
+// window — the bounded option set is frozen from that subset only, so Jev's one
+// real choice is a sustained action that thereafter continues locally. Finite
+// tasks keep every valid option; with no qualified sustained option the ordinary
+// full set is offered. Nothing is dispatched without that choice and the usual
+// post-await ownership/currentness/revalidation.
 import type {
   ActionCandidate,
   AdmittedTask,
@@ -262,6 +273,13 @@ export class TaskRuntime implements TaskExecutionPort {
     let holding = false;
     let allowanceAnnounced = false;
     let sustain: { candidate: ActionCandidate; jevActionId: string } | undefined;
+    /** Sustained options whose own last non-cancelled dispatch ended without a healthy window (W-R12): never preferred. */
+    const sustainDeclined = new Set<string>();
+    const noteSustainEnd = (key: string, c: ActionCandidate, outcome: SkillOutcome, continued: boolean) => {
+      if (!deps.sustained(c.capability) || outcome.status === 'cancelled') return; // a preemption/stop is not the skill's own end
+      if (continued) sustainDeclined.delete(key);
+      else sustainDeclined.add(key);
+    };
     const emit = (kind: string, data: Record<string, unknown>) => {
       store.record({ type: kind, taskId: task.taskId, goalId: task.goalId, goalEpoch: task.goalEpoch, ...data });
       deps.emit?.(kind, { taskId: task.taskId, goalId: task.goalId, ...data });
@@ -390,6 +408,7 @@ export class TaskRuntime implements TaskExecutionPort {
             const outcome = await this.dispatchCounted(task, next, gate.allowanceId, () => executeOwned(next, 'local_continuation'));
             actions += 1;
             sustain = this.afterOutcome(task, next, outcome, failures, succeeded, unproductive, sustain.jevActionId, () => (lastProgressAt = clock.now()));
+            noteSustainEnd(want, next, outcome, sustain !== undefined);
             continue;
           }
           emit('task_sustain_ended', { round: rounds, capability: sustain.candidate.capability, reason: 'no equivalent grounded option in the current observation' });
@@ -424,8 +443,11 @@ export class TaskRuntime implements TaskExecutionPort {
           return finish('blocked', 'no_candidates', `no allowed capability has a grounded option now${why ? ` (${why})` : ''}`);
         }
 
-        // 4c. Freeze a bounded option set and its epochs; ask Jev for one ID.
-        const offered = this.select(usable, deps.limits.maxOptions);
+        // 4c. Freeze a bounded option set and its epochs; ask Jev for one ID. A persistent
+        // (maintain) task freezes only its qualified sustained options when any is usable.
+        const preferred = task.mode === 'maintain' ? usable.filter((c) => deps.sustained(c.capability) !== undefined && !sustainDeclined.has(this.key(c))) : [];
+        const pool = preferred.length > 0 ? preferred : usable;
+        const offered = this.select(pool, deps.limits.maxOptions);
         const requestId = deps.ids.next('req');
         const request = this.fitRequest(task, snapshot, offered, requestId, evaluation, recent, rounds, set.unavailable);
         emit('task_round', {
@@ -439,7 +461,8 @@ export class TaskRuntime implements TaskExecutionPort {
           offered: offered.map((c) => ({ id: c.id, capability: c.capability, description: clip(c.description, 120) })),
           excludedByRetries: set.candidates.length - usable.length,
           unavailable: set.unavailable.slice(0, 8).map((u) => `${u.capability}:${u.reason}`),
-          truncated: set.truncated || usable.length > offered.length,
+          truncated: set.truncated || pool.length > offered.length,
+          ...(pool !== usable ? { sustainedPreference: { deferred: usable.filter((c) => !pool.includes(c)).slice(0, 8).map((c) => c.capability) } } : {}),
         });
         let choice: DecisionChoice;
         try {
@@ -505,6 +528,7 @@ export class TaskRuntime implements TaskExecutionPort {
         const outcome = await this.dispatchCounted(task, chosen, gate.allowanceId, () => executeOwned(chosen, 'jev', requestId));
         actions += 1;
         sustain = this.afterOutcome(task, chosen, outcome, failures, succeeded, unproductive, chosen.id, () => (lastProgressAt = clock.now()));
+        noteSustainEnd(want, chosen, outcome, sustain !== undefined);
       }
     } catch (error) {
       if (error instanceof Revoked || !task.isCurrent() || task.signal.aborted) return finish('cancelled', 'ownership_revoked', 'the owning goal was stopped, replaced or ended; no further action');
