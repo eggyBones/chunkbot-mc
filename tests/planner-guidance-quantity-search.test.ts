@@ -8,7 +8,9 @@
 // ("bring me some bread") accepted possess >= 3 bread under the v7 line
 // "choose a modest task-appropriate amount", explored ONE north frontier and
 // answered cannot_execute under the v7 line "Target not visible: ... if it stays
-// unavailable, answer cannot_execute". The fixture supplies exactly one bread.
+// unavailable, answer cannot_execute". The DECLARED P4 scene supplies exactly
+// one bread and no wheat; the ORIGINAL radius 128 extends beyond that scene and
+// the wider fixture world (e.g. containers left by other trials) is unknown here.
 //
 // Guidance is model-dependent; no inference runs here. These controls prove
 // (1) the instruction text the real planner receives, (2) that every fact the
@@ -16,8 +18,8 @@
 // perception over the actual P4 scene, (3) that following B from both actual
 // P4 decision states reaches a viewpoint where the occluded bread is visible
 // (and the actual north choice does not), (4) that an A-shaped outcome is
-// valid and attainable, and (5) that the real GoalEngine refuses a later plan
-// that rewrites an accepted quantity.
+// valid and satisfiable by the declared scene's one bread, and (5) that the
+// real GoalEngine refuses a later plan that rewrites an accepted quantity.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
@@ -168,7 +170,7 @@ describe('P-PLAN-R21 guidance B is grounded in what the planner actually receive
     }
   });
 
-  it('A: the A-shaped P4 outcome is schema-valid and attainable with the ONE bread the fixture supplies', () => {
+  it('A: the A-shaped P4 outcome is schema-valid and satisfiable by the ONE bread the declared P4 setup supplies', () => {
     assert.equal(BREAD.count, 1);
     const outcome = { predicate: 'all', of: [{ predicate: 'inventory_amount', selector: 'minecraft:bread', atLeast: 1, mode: 'possess' }, { predicate: 'near_target', target: { kind: 'owner' }, within: 2 }] };
     const proposal = { version: 1, disposition: 'plan', interpretation: 'Bringing you 1 bread; no amount was given.', outcome: { kind: 'finite', outcome }, tasks: [{ objective: 'Search a nearby unvisited frontier toward the owner for bread.', decisionInstruction: 'Explore the frontier.', allowedCapabilities: ['explore_frontier'], targetSelectors: [], parameters: {}, completion: { predicate: 'visited_location', target: { kind: 'owner' }, within: 24 } }], morePlanningNeeded: true };
