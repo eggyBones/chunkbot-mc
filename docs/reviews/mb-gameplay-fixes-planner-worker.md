@@ -965,3 +965,87 @@ No inference, fixture, RCON or provider access.
 
 - **Live P10:** passes only when the model either queries the capability or lists it as a snake_case id. Both have been observed. Root's fresh real run decides.
 - **P4:** remains a fixture/guidance product decision (see the proposals above).
+
+# P-PLAN-R21 — root-authorized guidance A/B for P4 (worker P)
+
+Parent `e1566d53a4e06ce2b1b1fe18cfa2ad4d2fa019c9`. This role update is a separate commit.
+
+- **Source/test commit:** `a32cf642b9ba12a89b4e38d865d4d02ff72cd71b`.
+- **Changed paths:**
+  - `src/planner/prompt.ts` (+7/−4)
+  - `src/goals/declarative.ts` (+2/−2)
+  - `tests/planner-capability-composition.test.ts` (+1/−1; P-owned since `2f3bf5e`, version pin v7→v8)
+  - new `tests/planner-guidance-quantity-search.test.ts` (+217)
+- **Diff:** `git diff e1566d5 a32cf64` SHA-256 `5149b76a22758a227d79d11012042a7a8e976a51eb736639e82d4a5a8843d8d2`.
+
+**Unchanged by this round:** the P4 instruction ('bring me some bread'), its hidden position, count 1, timeout and all harness gates. The W-R12 reservation was respected: `src/tasks/task-runtime.ts` and `tests/persistent-maintenance-selection.test.ts` are untouched.
+
+## Causal source (actual 261 goal-388b88db4ec2, 262 goal-d885cb5cd4bb)
+
+Two v7 lines produced the observed behaviour:
+- "Quantity or material omitted: choose a modest task-appropriate amount" → both runs accepted possess ≥ 3 bread; the fixture has one.
+- "Target not visible: … if it stays unavailable, answer cannot_execute" (written for deictic O5) → `cannot_execute` after one north frontier.
+
+The question-refusal repair guidance (`declarative.ts`) also said "modest quantity".
+
+## Change (instructions v8)
+
+**A — quantity.**
+- "Number omitted when obtaining or delivering a named item: plan for 1 unless the owner's words or the job clearly require more (e.g. a requested craft/build's ingredients or materials), and state that assumption."
+- "A number the owner gives always binds exactly. Never rewrite an accepted outcome to another quantity."
+- Material default kept separately; the interpretation example changed from "8 oak logs" to "1 oak log; no amount was given".
+- The repair guidance agrees.
+
+**B — specific targets versus resource search.**
+- "that/this/the" specific targets: one bounded survey/explore step, then an honest visibility/path blocker (unchanged meaning).
+- Obtaining a named resource: search before refusing.
+  - Use distinct current frontiers with `visited` false inside the ORIGINAL admission bound (`route.admission` when present, else `observation.perception.travel`; code already refuses resource exploration beyond it, R17).
+  - Spend only the existing remaining turns/replans/deadline.
+  - Prefer nearby and toward where the job ends.
+  - One empty container or one fruitless direction is not proof.
+  - Refuse only when:
+    - no unvisited frontier remains;
+    - repeated verified failure for the same reason; or
+    - the remaining limits cannot cover another step.
+  - Name what was searched.
+- "Never use hidden lookups or invented coordinates, and never wander indefinitely."
+
+No limit, whitelist, model, provider, schema or code path changed.
+
+## Controls (`tests/planner-guidance-quantity-search.test.ts`, no inference)
+
+| Group | Controls |
+| --- | --- |
+| Text | Exact A and B rules present; v7 "modest" and the single early-refusal rule gone in both instructions and repair guidance. Generic: the five new lines name no item/block/container, introduce no number except the default 1, and mention no model/provider/fallback; owner seeking unchanged. |
+| Grounding | One continuous real PerceptionService over the actual scene and P4 setup, admitted at the journaled anchor. For turn 6 (start) and turn 8 (after the journaled north arrival), the real `renderRequest` shows: the ORIGINAL bound 205.5,205.5 r128; the visible owner; 8 frontiers with direction and `visited`, ≥7 unvisited; the remaining turns/replans/deadline. The bread is occluded in both states. |
+| Meaningfulness | The actual north choice never reveals the bread. The unvisited, in-bound frontier nearest the visible owner reveals it from BOTH actual decision states. |
+| A attainable | possess ≥ 1 bread + near owner is schema-valid and matches the one supplied bread. |
+| Immutability (real GoalEngine) | A replan lowering an accepted possess ≥ 3 to 1 is refused ("changes the accepted goal outcome"); the repair request still shows the original; repeating it exactly is accepted. |
+
+Fail-before on the v7 sources: the three text controls fail; the four grounding/immutability controls pass (existing code facts).
+
+## Checks (Node 24 PATH; logs `var/native-checks/p-r21/`)
+
+| Check | Exit | Log SHA-256 |
+| --- | --- | --- |
+| New controls on v7 sources (3 fail, 4 pass) | 1 | `db0c6ea71e6515d7c34c4a840f345132b5d91e88c2198e78f8162aa54ecf1349` |
+| `npm run typecheck` | 0 | `54f8c884c94b75895a95d9205c411167bfd4a94fd36c0a921ae8313e715fd7f8` |
+| `npm run build` | 0 | `1537c3e259c4849c097c4c340708415b7d230f36bcf2a1dfee6410196b294715` |
+| `npm test` (1504/1504) | 0 | `3fd34e5921b92dc5e81e49807dab4e468f559a0d33cbb33497e03713611f491b` |
+| Focused: new controls, P4 fixture, MB-PLAN-006, capability composition, adapter, autonomy wire, planner engine, P10, owner scope (86/86) | 0 | `aadc1043de99f2317ed182a7695dd9dd9b8f11218dd503357a1f3676a40e6370` |
+| Doctor 26.1.2 config (read-only) | 0 | `f124ed40f629fe491809411ea8deaa861eee8a3f684e6fb6f7ff26fb217d67e7` |
+| Doctor 26.2 config | 0 | `d27f3a898c2054f976071fc265709d6bc9bcf85f6cd3ee01379c392bf8a49292` |
+| Canonical `100ec816…` + `git diff 71b5880 a32cf64 -- src scripts tests` (patch SHA-256 `679e7e99…8cbf`, temp detached worktree, removed): typecheck | 0 | `e3b0c442…b855` (empty output) |
+| Same: full suite (1654/1654) | 0 | `605e7e14fc5ff00406ff5d3a5aa042bd2cb5348266c51b73527bb1557ca85347` |
+
+No fixture, RCON, provider, key or live-control access.
+
+## Limitations (model-dependent; root fresh real acceptance required)
+
+- Guidance cannot force the model:
+  - it may still pick 3 for "some bread", or treat "the bread" as deictic;
+  - it may choose a non-revealing unvisited direction or refuse early.
+- Only the code-side facts B relies on are proven.
+- "Toward where the job ends" assumes the owner is visible or remembered (it was in both replica states). The replica's owner visibility from the north end is inferred, not journaled.
+- A changes defaults for every owner instruction with an omitted number for a named item. Explicit numbers and jobs that clearly need more are unaffected. The harness's other goals give explicit numbers, except the house build, which is a job.
+- P10 (abfd5cb) is complete and unchanged; its own limits stand.
