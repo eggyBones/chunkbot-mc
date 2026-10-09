@@ -19,10 +19,10 @@ export const OWNER_QUESTION_PROBLEM = 'owner_question_refused';
 
 /** The repair guidance the planner receives with a refusal (data, not owner text). */
 export const NO_QUESTION_GUIDANCE =
-  'Chunkbot never asks the owner follow-up questions or for confirmation. Choose the most reasonable grounded interpretation (fresh visible targets, the closest reachable match, a modest task-appropriate quantity, the visible owner for "here"), state the assumption declaratively and plan it; use needs_information for game knowledge; or answer cannot_execute with ONE declarative blocker (no question, no request for a reply).';
+  'Chunkbot never asks the owner follow-up questions or for confirmation. Choose the most reasonable grounded interpretation (fresh visible targets, the closest reachable match, 1 of a named item unless the owner\'s words or the job clearly need more, the visible owner for "here"), state the assumption declaratively and plan it; use needs_information for game knowledge; or answer cannot_execute with ONE declarative blocker (no question, no request for a reply).';
 
 /** Short form carried in a repair turn's rejection (bounded problem text); the full rule is in the planner instructions. */
-const SHORT_GUIDANCE = 'never ask the owner: plan the most reasonable grounded default (closest visible match, modest quantity, visible owner for "here"), query knowledge, or state ONE declarative blocker';
+const SHORT_GUIDANCE = 'never ask the owner: plan the most reasonable grounded default (closest visible match, 1 of a named item unless more is clearly needed, visible owner for "here"), query knowledge, or state ONE declarative blocker';
 
 const PATTERNS: Array<{ re: RegExp; why: string }> = [
   { re: /\?/, why: 'contains a question mark' },

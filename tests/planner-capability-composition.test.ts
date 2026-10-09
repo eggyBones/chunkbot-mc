@@ -150,7 +150,7 @@ for (const version of ['26.1.2', '26.2']) describe(`N1-C12-R5 capability composi
 });
 
 it('shared instructions distinguish local bounds, legal composition and current possession without granting authority or prescribing a recovery plan', () => {
-  assert.equal(PLANNER_INSTRUCTIONS_VERSION, 'gameplay-planner-v7');
+  assert.equal(PLANNER_INSTRUCTIONS_VERSION, 'gameplay-planner-v8');
   assert.match(PLANNER_INSTRUCTIONS, /preconditions and limitations describe that capability alone/);
   assert.match(PLANNER_INSTRUCTIONS, /existing cumulative leg, distance and time allowances/);
   assert.match(PLANNER_INSTRUCTIONS, /proves neither current possession nor current equipment/);
