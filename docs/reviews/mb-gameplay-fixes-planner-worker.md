@@ -649,3 +649,96 @@ The root acceptance copies were not touched.
 
 - O8D combat itself remains untested until root reruns it live.
 - The damaged-gear acceptance covers the exact actual `minecraft:damage` shape and W's structural controls; it does not cover other live component shapes.
+
+# P-JEV-R19 — J1 visible-chest staging (worker P)
+
+Parent `29bc73b4245caddf2cf45d5efa9659092d79d01b`. The source/test commit and this role update are separate commits.
+
+- **Source/test commit:** `c80a1badeeeace812fdaa9f0051f78e2c33ada05`.
+- **Changed paths:**
+  - `scripts/jev-live-check.ts` (+38/−1)
+  - new `tests/jev-j1-visibility.test.ts` (+106)
+- **Diff:** `git diff 29bc73b c80a1ba` SHA-256 `8670e594b8e35dc674ddddf651937467247d76ff999fd2e23b5478512e52bbc6`.
+- **Unchanged:** application source and other shared paths.
+
+Evidence was read only:
+- report `2026-10-09T02-00-43-044Z-jev-real` (SHA-256 `9aa6038f242ef5b9128f17e01d98881a2f641748de1046d30a6dc828dfa165a9`);
+- journal `run-88a502a4b00c/events.jsonl` (SHA-256 `f365e7580a5e12c8cc4d86fb5c28c7fac46bcdd4c5a984075f9d8065361e2943`);
+- retained J1 trials: 2026-10-05 real, 2026-10-06 fault and 2026-10-09 R17 real.
+
+The original failed reports are unchanged.
+
+## Actual R19 J1
+
+### Timeline (goal-dcd7ba30fa70, task-9bd797660e10)
+
+| Time | Event |
+| --- | --- |
+| 02:00:47.116 | Setup `tp Chunkbot 214.5 -60 196.5`. |
+| Round 1 | Completion `unknown`: "no visible minecraft:chest in the latest observation". |
+| Round 1 | Six `explore_frontier` options are offered, plus `move_near:no_grounded_destination`. Real Jev chooses "explore east toward frt-48". |
+| Next 240 s | 44 explore actions wander east and north to about 288–317, 73–144. |
+| 02:04:48.555 | Completion: "2.9 blocks from minecraft:chest blk-2171". The bot was then at about 288.5,-60,132.5, so this is some other chest in the fixture world, not the scene chest. |
+
+- The harness had already timed out waiting for the terminal (240 s).
+- Its RCON end-position proof (≤ 3.6 from the scene chest) would also have failed.
+- There is no task or movement regression: all actions succeeded and the completion predicate behaved correctly.
+
+### Earlier passes (2026-10-05 real, 2026-10-06 fault, 2026-10-09 R17 real)
+
+Every retained earlier J1 also began explore-only from the same start: its first round had six `explore_frontier` options and no approach. Those runs passed only because the chosen exploration happened to reveal the chest:
+- fault Jev picks the first option, west;
+- real Jev picked east then south.
+
+The declared "visible chest" was never visible at the start.
+
+## Cause
+
+The staging is wrong. The straight sight line from 214.5,-60,196.5 to the chest centre (203.5,-59.6,207.5) is diagonal. At x = 208.5 it is at z = 202.5, which is the centre of the scene oak trunk column (208,-60..-58,202).
+
+The control `tests/jev-j1-visibility.test.ts` confirms this. It builds the actual scene from `sceneCommands()`, exactly as the harness sends them, on flat fixture ground, then runs the real `PerceptionService` and `TaskCandidateGenerator` with the registered skills:
+- **Chest hidden:** neither the snapshot nor live line of sight shows the chest.
+- **Round 1 reproduced:** candidates are explore-only, with `move_near:no_grounded_destination`, exactly as journaled.
+
+## Correction (`scripts/jev-live-check.ts`, J1 only)
+
+**New start.** J1 now starts at `J1_START = 214.5,-60,200.5`:
+- inside the original scene, at standing level;
+- 13.1 blocks from the chest centre, so the walk is real (more than the completion radius of 3 plus 3).
+
+At that point the chest is visible in the snapshot and by live line of sight at every ±0.3 jitter. The real generator offers an approach to the chest. The suggested 214.5,198.5 also has live line of sight, but at some jitter positions its snapshot ray discovery misses the chest, so I rejected it as marginal.
+
+**Readiness proof before admission.** `j1VisibleChestReadiness` sends the actual CLI `/diag observe` (operator-only output; nothing reaches a model, no RCON). It is bounded to 10 s. It requires all of:
+- the snapshot was taken after the teleport;
+- `self` is within 0.5 of the start;
+- the scene chest block (203,-60,207) is visible, more than 3 blocks away.
+
+It records that proof. Otherwise it fails as staging-unready.
+
+**First round.** J1 now also requires its first round to offer `move_near` to the chest, so staged visibility held at task start.
+
+**Unchanged:**
+- objective, decision instruction, capabilities, selectors, completion;
+- the 240 s default timeout (no override);
+- the completed / ≥ 1 Jev decision assertions;
+- the RCON end proof ≤ 3.6 from the scene chest.
+
+## Checks (Node 24 PATH; logs `var/native-checks/p-r19/`)
+
+| Check | Exit | Log SHA-256 |
+| --- | --- | --- |
+| J1 control on the pre-fix harness (actual-start reproduction passes; declared-start and wiring fail as intended) | 1 | `04cc8dd958a4df0770967a17038801f612d14419a94c4c07abe7d4dc62998fc1` |
+| `npm run typecheck` | 0 | `54f8c884c94b75895a95d9205c411167bfd4a94fd36c0a921ae8313e715fd7f8` |
+| `npm run build` | 0 | `1537c3e259c4849c097c4c340708415b7d230f36bcf2a1dfee6410196b294715` |
+| `npm test` (1488/1488) | 0 | `eb6897ef263c92a65943e5022f1bf9cdb4811578c35178dc0cf6864aaa41036d` |
+| Focused (J1 control, perception, prediction visibility; 12/12) | 0 | `8124fc4e7ec575e5cf6cd7b7a9d96d46a6c9014248590cde4c378ffdef28e218` |
+| Doctor 26.1.2 config (read-only) | 0 | `f124ed40f629fe491809411ea8deaa861eee8a3f684e6fb6f7ff26fb217d67e7` |
+| Doctor 26.2 config | 0 | `d27f3a898c2054f976071fc265709d6bc9bcf85f6cd3ee01379c392bf8a49292` |
+| Canonical `8ead4c9` + `git diff 740de23` (R18 + W + reconciliation + J1; temp detached worktree, removed): typecheck | 0 | `e3b0c442…b855` (empty output) |
+| Same: full suite (1638/1638) | 0 | `5e3358809e264436af0a9edc2462b254c2e091e1a2dc840891971d4d092c1817` |
+
+## Limitations
+
+- **Faithful replica, not a live run:** the control replicates the scene on flat ground. Fixture terrain outside the scene is not modelled, but it cannot occlude the in-scene sight line. Server block confirmation is represented by the applied scene commands.
+- **J1 still depends on real behaviour:** Jev must choose the approach and the walk must succeed within the unchanged 240 s. No live run was made.
+- **Root reruns the real acceptance.**
