@@ -397,8 +397,29 @@ export class TaskRuntime implements TaskExecutionPort {
         }
 
         if (usable.length === 0) {
+          // P-TASK-R17: a terminal "nothing actionable" claim must rest on completion
+          // evidence no older than the observation that found nothing actionable. The
+          // evaluation above was answered before this snapshot (e.g. the server's
+          // inventory reply preceded an own pickup in the same tick, whose collect/
+          // destroy then removed the drop from view). One fresh code-evaluated read
+          // (correlated server resync): no action, no inference, no new round, no wait
+          // loop, no hidden lookup; ownership/connection/safety are re-checked after it.
+          const fresh = await deps.predicates.evaluate(bound, task.signal);
+          assertCurrent();
+          if (deps.connectionEpoch() !== snapshot.connectionEpoch) throw new Revoked();
+          if (improved(completion, fresh)) {
+            lastProgressAt = clock.now();
+            unproductive.clear();
+          }
+          completion = fresh;
+          emit('task_completion', { round: rounds, recheck: 'before_terminal', status: fresh.status, detail: clip(fresh.detail, 300), evidence: fresh.evidence as Record<string, JsonValue> });
+          if (deps.safety?.hold()) continue; // safety took control meanwhile: wait at the loop-top gate
+          if (fresh.status === 'satisfied') {
+            if (task.mode === 'complete') return finish('completed', 'completion_verified', fresh.detail);
+            continue; // maintain: the loop top holds the satisfied condition locally
+          }
           if (set.candidates.length > 0 && set.candidates.every(excludedFailing)) return finish('blocked', 'per_target_retries_exhausted', `all ${set.candidates.length} grounded option(s) failed more than ${deps.limits.perTargetRetries} retries`);
-          if (set.candidates.length > 0) return finish('blocked', 'repeated_without_progress', `the remaining ${set.candidates.length} grounded option(s) were already repeated without verified progress (or failed); last completion check: ${evaluation.detail}`);
+          if (set.candidates.length > 0) return finish('blocked', 'repeated_without_progress', `the remaining ${set.candidates.length} grounded option(s) were already repeated without verified progress (or failed); last completion check: ${fresh.detail}`);
           const why = set.unavailable.slice(0, 4).map((u) => `${u.capability}: ${u.reason}`).join('; ');
           return finish('blocked', 'no_candidates', `no allowed capability has a grounded option now${why ? ` (${why})` : ''}`);
         }
