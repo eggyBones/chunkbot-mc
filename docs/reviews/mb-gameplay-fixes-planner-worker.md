@@ -433,3 +433,134 @@ The pre-fix runs restored the exact pre-fix bytes of the three source files with
 - **P4 not re-run:** whether a re-run reaches bread depends on actual exploration revealing the occluded item within the ORIGINAL radius 128 and on real planner/Jev choices.
 - **What root must re-run:** real jev-live-check (both releases), planner-live-check with real and fault Jev, ordinary goals, handoff and locator, plus the coupled acceptance.
 - No shared/API or vendor need, and no W/L/S path was touched.
+
+## R16 evidence wording correction (added with R18)
+
+In the R16 O7P trace, sample 4 is **not** a retained actual point. The original harness kept only its floor/feet/eye block reads (block 212,205, dirt/air/air). "Moved at least 0.8 blocks" is inferred from the thrown stationary check.
+
+The offline O7P control (`tests/ordinary-safety-staging.test.ts`) puts a reconstructed position (212.45, 205.55) inside that recorded block. Its assertion now reads "the reconstructed counterexample step (sample 4 placed inside its recorded block 212,205; not a retained actual point) moved". Since `24c1fc4` every settle sample, including a failing one, is retained. The original failed reports are not relabeled.
+
+# P-SAFETY-R18 — remaining ordinary water/mob staging (worker P)
+
+- Parent `740de23` (R17 role). Source commit `050d03e666f9895aae57cd276dc589a002c75132`; this role update is a separate commit.
+- `git diff 740de23 050d03e`: 4 files, +243/−7, SHA-256 `496251da05f1468fca59e6611ead6d380a681e25bb31e5079ecf3d876def7a22`.
+- Changed paths:
+  - `scripts/ordinary-goal-live-check.ts` (+54/−5)
+  - `tests/ordinary-safety-staging.test.ts` (2 lines)
+  - new `tests/ordinary-safety-r18.test.ts` (+91)
+  - new `tests/ordinary-far-route-geometry.test.ts` (+96)
+- No application source, dist, contract or config changed.
+- I did not touch `scripts/lib/ordinary-safety-oracles.ts`. W holds the narrow `serverHeldGear` exception there. My R16 negative case `unparsed component body fails closed` in `tests/ordinary-safety-staging.test.ts` must be reconciled to accept structurally valid damaged gear only after root approves and imports W's exact parser source. I left it unchanged.
+
+Evidence was read only, from:
+- 261 `2026-10-09T01-45-54-344Z-ordinary-goals` (SHA-256 `59ec08d6…023eb`);
+- 262 `2026-10-09T01-45-54-736Z-26.2-ordinary-goals` (SHA-256 `e0bde872…edf5ed6`);
+- their `run-safety-ordinary` and mob-case `events.jsonl`.
+
+The harness and staging test bytes on the canonical `3913fb1` equal `740de23`.
+
+## O7F: the far-cue staging passes, but no owned motion can begin from the staged point
+
+### Actual sequence (both releases)
+
+- The fresh far cue and hidden-owner observation now pass. 261: teleport 484045; dashboard 484210 shows actionable `east`; snapshot 484272.
+- "follow me" is admitted (261 goal-de389ae3aa70, epoch 5; anchor 218.5,-56,200.5, radius 128). Route-3 is authorized for the owner source.
+- The planner plans maintain `near_target owner 3` with `seek_owner`/`follow_entity`/`move_near`. Jev chooses `seek_owner` three times.
+- Each window fails within 24–30 ms with `unobserved_terrain`:
+  - rays 5/5 unobserved, `commandsIssued 0`, `movedBlocks 0`;
+  - route state `authorized`, `legsUsed 0`;
+  - cue `east`, precision `chunk`.
+- The task ends `per_target_retries_exhausted`; the planner replans and the goal ends `cannot_execute` (261).
+- 262 is identical (goal-d7c37dbcee35). Its planner replan was still running when the harness's 20 s motion wait expired.
+
+### Cause: staging geometry
+
+- The bot was staged at `LAYOUT.water.bot`, 5 blocks from the east edge of the 4-block-high O7W dirt platform. The ground beyond the edge is 4 blocks below and hidden by the platform edge.
+- The real route runner only walks observed safe frontiers, with a conservative drop of at most 3. `classifyBlocker` honestly reports `unobserved_terrain`, and no owned motion can begin.
+- This is neither an application nor a privacy defect.
+- A counted route leg begins only when the ORIGINAL 128 admission bound limits progress (`boundLimited`). Inside the declared footprint that never happens, so the old precondition `leg_active && legsUsed >= 1` was unreachable under the required original radius.
+
+### Correction
+
+- O7F teleports the bot (recorded intervention) to `LAYOUT.safety.farStart` (201.5,-56,200.5). This is the west end of the platform, north of the pool. Its dirt/air/air is verified with every water geometry.
+- The precondition is now all of:
+  - the current owner-route authorization (`authorized` or `leg_active`) of THIS goal;
+  - the actual active `seek_owner` lease, with at least 0.6 server motion (unchanged `ownedMotion`);
+  - a fresh actionable east cue.
+- The route state, legs and distance are recorded.
+- Unchanged:
+  - privacy checks before and after;
+  - cue withdrawal while water safety holds;
+  - the strict stationary settle;
+  - no refill of route legs, distance or time;
+  - the scene-margin guard and explicit stop.
+
+### Control (`tests/ordinary-far-route-geometry.test.ts`)
+
+Real `PerceptionService`, `LocatorService` (actual `tracked_waypoint` chunk 21,12 owner statement), `RouteController` and `runRoute`, over the declared platform/pool geometry in absolute coordinates. The move adapter only records.
+
+| Start | Result |
+| --- | --- |
+| Actual R18 start | `failed/unobserved_terrain`, 0 moves, legs 0 — reproduces both journals |
+| `farStart` | first owned waypoint 223.5,-56,196.5, east on the dry platform, outside the pool, inside the original bound; legs 0 |
+
+Pre-fix, `farStart` did not exist and the second case fails.
+
+## O8N
+
+### 262: the owner could never regenerate
+
+- Owner 19.0 health with foodLevel 17 on all 24 reads over 12 s (my R16 diagnostic readback).
+- Vanilla natural regeneration needs food ≥ 18, so the bounded wait could never succeed.
+- Food 17 implies several healed hearts earlier in the shared run; the fixed `resetScene` and `prepareExtendedSafetyGeometry` no longer drop the owner.
+- Established exposure: each recorded AI zombie outlived the CLI that staged it, with FixtureOwner the only player in the scene:
+  - 262 O8M zombie: CLI shutdown 408046 → removal 411848;
+  - 262 O8D zombie: 438369 → 442381;
+  - 261: 406750 → 410558 and 438199 → 442310.
+- Individual owner hits were not journaled, so the exact damage events remain unproven.
+
+### 261: the natural wolf wandered out of view
+
+- Full stable health and strict staging identities passed (staged 514846).
+- After the window the natural wolf had wandered to 218.33,-60,194.70 (RCON). The post-window CLI snapshot showed only the owner and the cow, so "actual CLI LOS/visible target correlation missing".
+- The real `PerceptionService` over the scene's standard oak trunk (208,-60..-58,202) shows the wolf genuinely occluded there and visible at its staged position. This is legitimate natural behavior, not an app or visibility defect.
+
+### Corrections
+
+| Change | Detail |
+| --- | --- |
+| `freshCli` | Removes recorded scene actors (existing strict identity cleanup) BEFORE quitting the CLI that staged them. |
+| `recordControlCondition` | Read-only bot/owner Health/foodLevel at every CLI replacement and extended geometry, so future damage is attributable. |
+| `fullStableHealth` | Refuses at once, with the reason, when a below-full control player's food is < 18. No healing or feeding; the 20/20 two-read stability and the original staged equality are unchanged. |
+| `currentMobIdentity` | Post-window only. Re-runs the strict identity on fresh facts every 500 ms, bounded to 10 s, solely for the LOS-correlation failure. UUID, species, health, hazard and other failures throw at once; an actor never seen again fails. Staging keeps the single strict identity. Neutral actors stay natural AI (no NoAI). |
+
+### Controls (`tests/ordinary-safety-r18.test.ts`)
+
+- The actual 262 replies (19 / food 17) give the immediate, reasoned refusal using read-only commands. Food 18 still allows the natural wait to 20/20.
+- The real perception occlusion control for the 261 wolf (and visible cow).
+- The bounded fresh-identity retry, never-visible and identity-failure cases.
+- Source wiring: cleanup before `quit`, the O7F start before the owner teleport, `ownedMotion(seek_owner)` still required, no NoAI.
+
+Pre-fix: 4 of 7 R18 controls fail as intended. The 3 that pass reproduce the actual cause (R18 platform start, wolf occlusion) or the unchanged food ≥ 18 behavior.
+
+## Checks (Node 24 PATH; logs `var/native-checks/p-r18/`)
+
+| Check | Exit | Log SHA-256 |
+| --- | --- | --- |
+| R18 controls on the pre-fix harness (4 fail as intended) | 1 | `bc05f10c49be24e58336e93a2a5d30426688c0f72ad1d98b0d4291308a9f95c3` |
+| `npm run typecheck` | 0 | `54f8c884c94b75895a95d9205c411167bfd4a94fd36c0a921ae8313e715fd7f8` |
+| `npm run build` | 0 | `1537c3e259c4849c097c4c340708415b7d230f36bcf2a1dfee6410196b294715` |
+| `npm test` (1436/1436) | 0 | `07c31b09060c88b0769d5e57927424de6082ec0cb6154bfa001df69e3cac5cc1` |
+| Focused ordinary harness/oracle/R18 tests (48/48) | 0 | `2f51ec62fd57ee007e8ba01075d3beb5a2c879a497a0ee56ea224e8da8bb431d` |
+| Doctor 26.1.2 config (read-only) | 0 | `f124ed40f629fe491809411ea8deaa861eee8a3f684e6fb6f7ff26fb217d67e7` |
+| Doctor 26.2 config | 0 | `d27f3a898c2054f976071fc265709d6bc9bcf85f6cd3ee01379c392bf8a49292` |
+| Canonical `3913fb1` + R17 source + R18 (temp detached worktree, removed): typecheck | 0 | `e3b0c442…b855` (empty output) |
+| Same: full suite (1586/1586) | 0 | `a8146fc494cda86e8de4287a048550597ee3ce45c56c5a67bc0de5af5cdf4899` |
+
+## Limitations
+
+- No live run. Root must rerun all nine ordinary water/mob cases on both releases.
+- **O7F:** whether real Jev/seek walk east far enough before the water trigger depends on actual timing. The scene-margin guard still stops before x 223.
+- **O8N 262:** the cleanup ordering removes the proven post-CLI exposure. Damage while the bot is present (e.g. a zombie re-targeting the owner during O8M) is not prevented. A depleted owner food state now refuses honestly instead of waiting.
+- **O8N 261:** a natural actor can stay out of sight for more than 10 s, which is an honest failure.
+- **O8D:** needs W's approved parser and is unchanged here.
