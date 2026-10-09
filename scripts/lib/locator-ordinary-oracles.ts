@@ -1,4 +1,5 @@
 // Dedicated ordinary locator harness evidence oracles. No I/O or gameplay.
+import { createHash } from 'node:crypto';
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 export type Point = { x: number; y: number; z: number };
 export const eventMs = (e: Row): number => Date.parse(String(e.t));
@@ -205,7 +206,84 @@ export function visibleOwnerConsistency(s: Row, witnesses: readonly ObserverSamp
   return fail(mismatch ? 'visible_owner_position_disagrees_with_bracket' : 'visible_owner_independent_bracket_missing');
 }
 
-export interface PrivacyMatch { path: string; value: string; reason: string; evidence?: HistoryProof; visibility?: VisibleOwnerProof }
+export interface PrivacyMatch { path: string; value: string; reason: string; evidence?: HistoryProof; visibility?: VisibleOwnerProof; producer?: FrontierHandleProof }
+
+/**
+ * L-H12: the application's OWN journal row for this exact planner prompt. The
+ * planner records `planner_turn_started.promptDigest = sha256(prompt).slice(0, 12)`
+ * over exactly the stdin text (src/planner/codex-planner.ts), with the
+ * observation's snapshotId/takenAtMs and the goal/connection epochs. Only a row
+ * whose digest equals the captured text binds; the snapshot scope is then
+ * validated by modelObservationBinding (latest such row at or before the prompt).
+ */
+export function plannerPromptBinding(text: string, observation: Row, events: readonly Row[], context: { runId: string; atMs: number; connectionEpoch: number }): ModelObservationBinding | undefined {
+  const digest = createHash('sha256').update(text).digest('hex').slice(0, 12);
+  const rows = events.filter((e) => e.type === 'planner_turn_started' && e.promptDigest === digest);
+  return rows.length > 0 ? modelObservationBinding(observation, rows, { source: 'planner_prompt', ...context }) : undefined;
+}
+
+/**
+ * Producer of every observation handle (src/perception/perception.ts nextHandle):
+ * ONE per-perception integer counter, `counter = (counter % 999_999) + 1`,
+ * rendered `${prefix}-${counter}` and shared by blk/grp/drp/ent/frt; frontier
+ * handles are allocated in production order (`cells.map`, at most 8 cells from
+ * findFrontiers) and rendered verbatim, in that order, by the planner
+ * renderObservation (`handle: f.handle`). The Jev context renders only a frontier
+ * COUNT. No coordinate is an input of a handle; coordinates are in `.at`.
+ */
+export const FRONTIER_HANDLE = /^frt-([1-9][0-9]{0,5})$/;
+const OTHER_HANDLE = /^(?:blk|grp|drp|ent)-([1-9][0-9]{0,5})$/;
+const HANDLE_COUNTER_MAX = 999_999;
+const FRONTIER_PRODUCER_MAX = 8;
+export interface FrontierHandleProof { requestId: string; snapshotId: string; takenAtMs: number; subject: string; goalEpoch: number; connectionEpoch: number; first: number; count: number }
+
+/**
+ * L-H12: frontier handles of a journal-bound planner observation are opaque
+ * counter identities when, and only when, the whole rendered list carries the
+ * producer's invariants: exact `frt-<n>` schema (1..999999, no padding), a
+ * consecutive counter run in rendered order (with the counter wrap), at most 8
+ * entries each with a point `.at`, numbers not reused by any other handle of the
+ * same observation, and the prompt's goal/snapshot/epoch scope equal to the
+ * application journal row bound by the exact prompt digest; the observation's
+ * dimension must equal an INDEPENDENT journal dimension (`journalDimension`, the
+ * caller's last connection_ready at or before the prompt; never the model text).
+ * Any deviation proves nothing (every handle stays scanned). Returns the exact
+ * handle per index.
+ */
+export function frontierHandleProof(input: Row, binding: ModelObservationBinding | undefined, context: { runId: string; connectionEpoch: number; journalDimension?: string }): { proof?: FrontierHandleProof; handles: Map<number, string>; reason?: string } {
+  const none = (reason: string) => ({ handles: new Map<number, string>(), reason });
+  const obs = input.observation;
+  if (!binding || !obs || typeof obs !== 'object') return none('no journal-bound planner observation');
+  const j = binding.journal;
+  // The prompt's planning subject must be the journal row's: an admitted goal (goalId) or a preparing intent (intentId = subject).
+  const g = input.goal;
+  const subject = g?.status === 'admitted' && typeof g.goalId === 'string' && j.goalId === g.goalId && j.subject === g.goalId ? g.goalId
+    : g?.status === 'preparing' && typeof g.intentId === 'string' && j.intentId === g.intentId && j.subject === g.intentId && j.goalId === undefined ? g.intentId
+      : undefined;
+  if (j.type !== 'planner_turn_started' || j.run !== context.runId || !subject) return none('journal row is not this run/subject planner turn');
+  if (obs.snapshotId !== binding.snapshotId || obs.takenAtMs !== binding.takenAtMs || obs.goalEpoch !== binding.goalEpoch || obs.connectionEpoch !== binding.connectionEpoch || binding.connectionEpoch !== context.connectionEpoch || typeof obs.dimension !== 'string' || typeof context.journalDimension !== 'string' || dim(obs.dimension) !== dim(context.journalDimension)) return none('observation scope differs from the bound journal row');
+  const list = obs.frontiers;
+  if (!Array.isArray(list) || list.length === 0 || list.length > FRONTIER_PRODUCER_MAX) return none('frontier list outside the producer bound');
+  const numbers: number[] = [];
+  for (const f of list) {
+    const m = f && typeof f === 'object' && typeof f.handle === 'string' ? FRONTIER_HANDLE.exec(f.handle) : null;
+    if (!m || !point(f.at)) return none('frontier entry is not a producer-shaped handle with a point');
+    const n = Number(m[1]);
+    if (n > HANDLE_COUNTER_MAX) return none('frontier handle beyond the counter range');
+    numbers.push(n);
+  }
+  for (let i = 1; i < numbers.length; i += 1) if (numbers[i] !== (numbers[i - 1]! % HANDLE_COUNTER_MAX) + 1) return none('frontier handles are not one consecutive counter run in rendered order');
+  const others = new Set<number>();
+  for (const key of ['blocks', 'entities', 'drops', 'groups'] as const) {
+    for (const t of Array.isArray(obs[key]) ? obs[key] : []) {
+      const m = t && typeof t.handle === 'string' ? OTHER_HANDLE.exec(t.handle) : null;
+      if (m) others.add(Number(m[1]));
+    }
+  }
+  if (numbers.some((n) => others.has(n))) return none('a frontier counter value is reused by another handle (one shared counter)');
+  const handles = new Map<number, string>(list.map((f: Row, i: number) => [i, f.handle as string]));
+  return { handles, proof: { requestId: binding.requestId, snapshotId: binding.snapshotId, takenAtMs: binding.takenAtMs, subject, goalEpoch: binding.goalEpoch, connectionEpoch: binding.connectionEpoch, first: numbers[0]!, count: numbers.length } };
+}
 export function parsePlannerInput(text: string): Row {
   const line = text.split('\n').find((l) => l.startsWith('{'));
   if (!line) throw new Error('planner input JSON is missing');
@@ -213,9 +291,11 @@ export function parsePlannerInput(text: string): Row {
 }
 
 /** Keep the old numeric match strength, but authorize each occurrence with its exact field/point provenance. */
-export function privacyOracle(input: Row, context: { runId: string; atMs: number; owner: Point; bot: Point; ownerIdentity: OwnerIdentity; connectionEpoch: number; dimension: string; history: readonly HistoryProof[]; visibility?: VisibleOwnerProof }): { findings: PrivacyMatch[]; allowed: PrivacyMatch[] } {
+export function privacyOracle(input: Row, context: { runId: string; atMs: number; owner: Point; bot: Point; ownerIdentity: OwnerIdentity; connectionEpoch: number; dimension: string; history: readonly HistoryProof[]; visibility?: VisibleOwnerProof; promptBinding?: ModelObservationBinding; journalDimension?: string }): { findings: PrivacyMatch[]; allowed: PrivacyMatch[] } {
   const findings: PrivacyMatch[] = [], allowed: PrivacyMatch[] = [];
   const obs = input.observation ?? input.state?.observation;
+  // L-H12: only a digest-bound planner prompt can prove producer-shaped frontier handles.
+  const frontier = frontierHandleProof(input, context.promptBinding, context);
   const v = context.visibility;
   const visible = v && obs?.owner?.visible === true && obs.snapshotId === v.snapshotId && obs.takenAtMs === v.takenAtMs && obs.connectionEpoch === v.connectionEpoch && obs.goalEpoch === v.goalEpoch && v.runId === context.runId && v.requestAtMs === context.atMs && v.connectionEpoch === context.connectionEpoch && v.dimension === dim(context.dimension) && v.ownerIdentity.name === context.ownerIdentity.name && v.ownerIdentity.uuid === context.ownerIdentity.uuid && point(obs.owner.at) && same(obs.owner.at, v.owner) ? v : undefined;
   const values = new Set<number>();
@@ -259,6 +339,13 @@ export function privacyOracle(input: Row, context: { runId: string; atMs: number
       if (localPath && parent && point(parent) && distance(parent, context.bot) <= 32.2 && distance(parent, context.owner) > 4.5 && (path.includes('.self.at.') ? same(parent, context.bot) : true)) allowed.push({ path, value: String(v), reason: 'current local point bounded by independently sampled bot position' });
       else findings.push({ path, value: String(v), reason: 'hidden current owner coordinate without field provenance' });
     } else if (typeof v === 'string') {
+      // L-H12: the exact producer-proven opaque handle at ITS OWN rendered index only (whole-string equality);
+      // its `.at` coordinates and every other field stay scanned.
+      const fh = /^observation\.frontiers\[(\d+)\]\.handle$/.exec(path);
+      if (fh && frontier.proof && frontier.handles.get(Number(fh[1])) === v) {
+        for (const m of v.matchAll(/(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])/g)) if (matches(Number(m[0]))) allowed.push({ path, value: m[0], reason: 'producer-proven opaque frontier handle (counter identity, not a coordinate)', producer: frontier.proof });
+        return;
+      }
       if (v.startsWith('{') || v.startsWith('[')) { try { visit(JSON.parse(v), `${path}.$json`, parent, key); return; } catch { /* scan text below */ } }
       for (const m of v.matchAll(/(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])/g)) if (matches(Number(m[0]))) findings.push({ path, value: m[0], reason: 'hidden current coordinate in model-visible text' });
     }

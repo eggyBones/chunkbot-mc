@@ -63,7 +63,7 @@ import { execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { insideBox, isEntryPoint, type Box } from './locator-live-check.ts';
 import type { FaultTurn } from './lib/fault-codex.ts';
-import { actionIntervals, modelObservationBinding, parseOwnerServerRead, parsePlannerInput, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, visibleOwnerConsistency, type ObserverSample } from './lib/locator-ordinary-oracles.ts';
+import { actionIntervals, modelObservationBinding, parseOwnerServerRead, parsePlannerInput, plannerPromptBinding, privacyOracle, reacquisitionProof, reconnectProblems, shutdownProblems, verifiedHistory, visibleOwnerConsistency, type ObserverSample } from './lib/locator-ordinary-oracles.ts';
 import { startVisibilityCapture } from './lib/locator-ordinary-visibility-capture.ts';
 import { captureStationaryPosition, originalPositionTarget, POSITION_SETTLE, type PlayerPositionRead, type PositionScope, type PositionTarget, type StationaryPositionProof } from './lib/locator-ordinary-origin.ts';
 
@@ -584,8 +584,10 @@ async function run(argv: readonly string[], lease: string): Promise<number> {
         if (!visibility) privacyFindings.push({ scenario, source, atMs, path: 'observation.owner', value: JSON.stringify(obs.owner), reason: consistency.errors.join('; '), snapshotId: obs.snapshotId, claimedTakenAtMs: obs.takenAtMs ?? null });
         else allowed.push({ source, atMs, path: 'observation.owner.at', reason: 'identified visible owner independently bracketed at observation time', visibility });
       } else hiddenRequests += 1;
+      // L-H12: the app's own journal row for THIS exact prompt text (promptDigest), never a label in the text.
+      const promptBinding = source === 'planner_prompt' ? plannerPromptBinding(text, obs, events(), { runId: basename(dirname(eventsPath)), atMs, connectionEpoch: ready.connectionEpoch }) : undefined;
       // A visibility flag never exempts the rest of the actual model-visible request.
-      const result = privacyOracle(input, { runId: basename(dirname(eventsPath)), atMs, owner: sample.owner ?? owner, bot: visibility?.bot ?? sample.bot, ownerIdentity, connectionEpoch: ready.connectionEpoch, dimension: obs.dimension, history, ...(visibility ? { visibility } : {}) });
+      const result = privacyOracle(input, { runId: basename(dirname(eventsPath)), atMs, owner: sample.owner ?? owner, bot: visibility?.bot ?? sample.bot, ownerIdentity, connectionEpoch: ready.connectionEpoch, dimension: obs.dimension, history, ...(visibility ? { visibility } : {}), ...(promptBinding ? { promptBinding } : {}), ...(typeof ready.info?.dimension === 'string' ? { journalDimension: ready.info.dimension } : {}) });
       for (const hit of result.findings) privacyFindings.push({ scenario, source, atMs, ...hit });
       for (const hit of result.allowed) allowed.push({ source, atMs, ...hit });
     };

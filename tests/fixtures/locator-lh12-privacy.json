@@ -1,0 +1,5349 @@
+{
+ "provenance": {
+  "task": "L-H12",
+  "scope": "Read-only retained 26.2 lease-50 O4 planner prompt reproduction; the report stays failed (overall exit 1), never retroactively accepted.",
+  "report": "/Users/jakewilcox/code/repos/minecraft-buddy/var/gameplay-fixes/acceptance-planner/var/live-check/2026-10-08T20-16-21-009Z-26.2-locator-ordinary/report.json",
+  "reportSha256": "efe14029db2d39087fa91b52c7d354415359da83643eea3b161c8dad1c5aa056",
+  "prompt": "/Users/jakewilcox/code/repos/minecraft-buddy/var/gameplay-fixes/acceptance-planner/var/live-check/2026-10-08T20-16-21-009Z-26.2-locator-ordinary/fault-planner/prompts/0003-1791490815854.txt",
+  "promptSha256": "7c1b09a4025d37da0aa99da8aa2ddff5bcdba639509566980c2d18cea424955d",
+  "events": "/Users/jakewilcox/code/repos/minecraft-buddy/var/gameplay-fixes/acceptance-planner/var/live-check/2026-10-08T20-16-21-009Z-26.2-locator-ordinary/data-ordinary/runs/run-771519e9dbb4/events.jsonl",
+  "eventsSha256": "d9007ad6f3bb00dc56044200dda47dc4dcc592cf67a4f2bcc0b1d47d6b4083c8",
+  "observations": "/Users/jakewilcox/code/repos/minecraft-buddy/var/gameplay-fixes/acceptance-planner/var/live-check/2026-10-08T20-16-21-009Z-26.2-locator-ordinary/observations.jsonl",
+  "observationsSha256": "7ffbfdc241bf8b3498a9400da5f0e280c331154f7352f031ea8bc67c2ea9f4a0",
+  "reportProvenance": {
+   "head": "dd0b5a86f822cb0c3f8cd7e47367e35320729f6c",
+   "dirtyPaths": 0,
+   "distCliSha256": "dfceac315e706c85c5babf0004773edb6c651001a397f4377120bfdbef2ed2b6",
+   "node": "v24.21.0"
+  },
+  "canonicalSource": "dd0b5a86f822cb0c3f8cd7e47367e35320729f6c",
+  "observationProjection": {
+   "snapshotFields": [
+    "id",
+    "connectionEpoch",
+    "goalEpoch",
+    "takenAtMs",
+    "dimension",
+    "self",
+    "owner",
+    "entities",
+    "remembered"
+   ],
+   "omittedRowFields": [
+    "dashboard"
+   ],
+   "invariant": "each projected row yields exactly the verifiedHistory proofs of the full retained line (checked at extraction and in the test)"
+  },
+  "selection": "events: every connection_ready plus planner_request/planner_turn_started of the prompt requestId; observations: exactly the journal lines (1-based numbers) the FIRST journal line (1-based) per remembered prompt entry whose current verifiedHistory proof satisfies the oracle predicate (anchorId, point, observed time within 1500 ms of atMs - ageSeconds*1000); the oracle itself uses only the first fitting proof in journal order; sample: the report sample nearest the prompt (harness rule)"
+ },
+ "prompt": {
+  "scenario": "O4",
+  "source": "planner_prompt",
+  "atMs": 1791490815854,
+  "text": "Planner input (JSON data; reply with one JSON object matching the schema):\n{\"kind\":\"chunkbot-planner-turn\",\"goal\":{\"goalId\":\"goal-ad3c5e163312\",\"status\":\"admitted\",\"origin\":\"owner\",\"ownerInstruction\":\"follow me\",\"ownerCoordinates\":[],\"turn\":1,\"maxTurns\":20,\"turnKind\":\"initial\"},\"accepted\":null,\"admission\":{\"capturedAtMs\":1791490815750,\"counts\":[{\"key\":\"minecraft:rotten_flesh\",\"count\":3}],\"detail\":\"server-synced player inventory at admission (1 item types)\"},\"counters\":{\"plannerTurns\":1,\"knowledgeRounds\":0,\"repairs\":0,\"retries\":0,\"questionRefusals\":0,\"replans\":0,\"windows\":0,\"tasksAdmitted\":0,\"preparationTurns\":0,\"lookaheads\":0},\"remaining\":{\"plannerTurns\":19,\"tasks\":64,\"replans\":8,\"deadlineMs\":1199946,\"windowSteps\":8},\"limits\":{\"travelRadius\":128,\"observationRadius\":32,\"planWindowSteps\":8,\"windowSteps\":8},\"priorResults\":[],\"feedback\":[],\"knowledge\":[],\"observation\":{\"snapshotId\":\"snap-6a57c1217564\",\"takenAtMs\":1791490815750,\"connectionEpoch\":1,\"goalEpoch\":7,\"dimension\":\"overworld\",\"self\":{\"at\":{\"x\":2000.5,\"y\":-60,\"z\":2000.5},\"health\":20,\"food\":20},\"inventory\":{\"source\":\"client_model\",\"items\":[{\"key\":\"minecraft:rotten_flesh\",\"count\":3}]},\"equipment\":{\"hand\":\"minecraft:rotten_flesh\",\"off_hand\":null,\"head\":null,\"torso\":null,\"legs\":null,\"feet\":null},\"owner\":{\"visible\":false},\"entities\":[],\"drops\":[{\"handle\":\"drp-2010\",\"key\":\"minecraft:rotten_flesh\",\"at\":{\"x\":2015.7,\"y\":-60,\"z\":2013.3},\"distance\":19.8,\"label\":\"x2\"},{\"handle\":\"drp-2011\",\"key\":\"minecraft:rotten_flesh\",\"at\":{\"x\":2021.9,\"y\":-60,\"z\":1984.6},\"distance\":26.6,\"label\":\"x2\"},{\"handle\":\"drp-2012\",\"key\":\"minecraft:rotten_flesh\",\"at\":{\"x\":2014.6,\"y\":-60,\"z\":2025.3},\"distance\":28.5,\"label\":\"x2\"},{\"handle\":\"drp-2013\",\"key\":\"minecraft:rotten_flesh\",\"at\":{\"x\":1973,\"y\":-60,\"z\":1987.8},\"distance\":30.3,\"label\":\"x3\"},{\"handle\":\"drp-2014\",\"key\":\"minecraft:rotten_flesh\",\"at\":{\"x\":1969.9,\"y\":-60,\"z\":2003.3},\"distance\":30.7,\"label\":\"x2\"}],\"blocks\":[{\"handle\":\"blk-2006\",\"key\":\"minecraft:grass_block\",\"at\":{\"x\":2000,\"y\":-61,\"z\":2000},\"distance\":2.1,\"inReach\":true},{\"handle\":\"blk-2007\",\"key\":\"minecraft:grass_block\",\"at\":{\"x\":2000,\"y\":-61,\"z\":2001},\"distance\":2.3,\"inReach\":true},{\"handle\":\"blk-2008\",\"key\":\"minecraft:grass_block\",\"at\":{\"x\":2001,\"y\":-61,\"z\":2000},\"distance\":2.3,\"inReach\":true},{\"handle\":\"blk-2009\",\"key\":\"minecraft:grass_block\",\"at\":{\"x\":2000,\"y\":-61,\"z\":1999},\"distance\":2.3,\"inReach\":true}],\"blocksOmitted\":0,\"blockSummary\":[{\"key\":\"minecraft:grass_block\",\"count\":358,\"nearest\":2.1}],\"frontiers\":[{\"handle\":\"frt-2015\",\"at\":{\"x\":1990.5,\"y\":-60,\"z\":1979.5},\"distance\":23.3,\"direction\":\"north_west\",\"visited\":false},{\"handle\":\"frt-2016\",\"at\":{\"x\":2006.5,\"y\":-60,\"z\":2022.5},\"distance\":22.8,\"direction\":\"south\",\"visited\":false},{\"handle\":\"frt-2017\",\"at\":{\"x\":2010.5,\"y\":-60,\"z\":1980.5},\"distance\":22.4,\"direction\":\"north_east\",\"visited\":false},{\"handle\":\"frt-2018\",\"at\":{\"x\":2022.5,\"y\":-60,\"z\":1996.5},\"distance\":22.4,\"direction\":\"east\",\"visited\":false},{\"handle\":\"frt-2019\",\"at\":{\"x\":1987.5,\"y\":-60,\"z\":2017.5},\"distance\":21.4,\"direction\":\"south_west\",\"visited\":false},{\"handle\":\"frt-2020\",\"at\":{\"x\":1998.5,\"y\":-60,\"z\":1979.5},\"distance\":21.1,\"direction\":\"north\",\"visited\":false},{\"handle\":\"frt-2021\",\"at\":{\"x\":1982.5,\"y\":-60,\"z\":1993.5},\"distance\":19.3,\"direction\":\"west\",\"visited\":false},{\"handle\":\"frt-2022\",\"at\":{\"x\":2009.5,\"y\":-60,\"z\":2017.5},\"distance\":19.2,\"direction\":\"south_east\",\"visited\":false}],\"groups\":[],\"remembered\":[{\"anchorId\":\"anchor-1\",\"label\":\"owner last seen\",\"at\":{\"x\":2301.5,\"y\":-60,\"z\":2043.5},\"dimension\":\"overworld\",\"ageSeconds\":143,\"source\":\"observed\"},{\"anchorId\":\"anchor-2\",\"label\":\"owner last seen\",\"at\":{\"x\":2297.5,\"y\":-60,\"z\":2042.5},\"dimension\":\"overworld\",\"ageSeconds\":142,\"source\":\"observed\"},{\"anchorId\":\"anchor-3\",\"label\":\"owner last seen\",\"at\":{\"x\":2293.5,\"y\":-60,\"z\":2043.5},\"dimension\":\"overworld\",\"ageSeconds\":141,\"source\":\"observed\"},{\"anchorId\":\"anchor-4\",\"label\":\"owner last seen\",\"at\":{\"x\":2289.5,\"y\":-60,\"z\":2042.5},\"dimension\":\"overworld\",\"ageSeconds\":140,\"source\":\"observed\"},{\"anchorId\":\"anchor-5\",\"label\":\"owner last seen\",\"at\":{\"x\":2285.5,\"y\":-60,\"z\":2043.5},\"dimension\":\"overworld\",\"ageSeconds\":139,\"source\":\"observed\"},{\"anchorId\":\"anchor-6\",\"label\":\"owner last seen\",\"at\":{\"x\":2281.5,\"y\":-60,\"z\":2042.5},\"dimension\":\"overworld\",\"ageSeconds\":138,\"source\":\"observed\"},{\"anchorId\":\"anchor-7\",\"label\":\"owner last seen\",\"at\":{\"x\":2277.5,\"y\":-60,\"z\":2043.5},\"dimension\":\"overworld\",\"ageSeconds\":137,\"source\":\"observed\"},{\"anchorId\":\"anchor-8\",\"label\":\"owner last seen\",\"at\":{\"x\":2273.5,\"y\":-60,\"z\":2042.5},\"dimension\":\"overworld\",\"ageSeconds\":136,\"source\":\"observed\"},{\"anchorId\":\"anchor-9\",\"label\":\"owner last seen\",\"at\":{\"x\":2269.5,\"y\":-60,\"z\":2043.5},\"dimension\":\"overworld\",\"ageSeconds\":134,\"source\":\"observed\"},{\"anchorId\":\"anchor-10\",\"label\":\"owner last seen\",\"at\":{\"x\":2265.5,\"y\":-60,\"z\":2042.5},\"dimension\":\"overworld\",\"ageSeconds\":133,\"source\":\"observed\"},{\"anchorId\":\"anchor-11\",\"label\":\"owner last seen\",\"at\":{\"x\":2261.5,\"y\":-60,\"z\":2043.5},\"dimension\":\"overworld\",\"ageSeconds\":132,\"source\":\"observed\"},{\"anchorId\":\"anchor-12\",\"label\":\"owner last seen\",\"at\":{\"x\":2257.5,\"y\":-60,\"z\":2042.5},\"dimension\":\"overworld\",\"ageSeconds\":131,\"source\":\"observed\"},{\"anchorId\":\"anchor-13\",\"label\":\"owner last seen\",\"at\":{\"x\":2253.5,\"y\":-60,\"z\":2043.5},\"dimension\":\"overworld\",\"ageSeconds\":130,\"source\":\"observed\"},{\"anchorId\":\"anchor-14\",\"label\":\"owner last seen\",\"at\":{\"x\":2249.5,\"y\":-60,\"z\":2042.5},\"dimension\":\"overworld\",\"ageSeconds\":129,\"source\":\"observed\"},{\"anchorId\":\"anchor-15\",\"label\":\"owner last seen\",\"at\":{\"x\":2245.5,\"y\":-60,\"z\":2043.5},\"dimension\":\"overworld\",\"ageSeconds\":128,\"source\":\"observed\"},{\"anchorId\":\"anchor-16\",\"label\":\"owner last seen\",\"at\":{\"x\":2241.5,\"y\":-60,\"z\":2042.5},\"dimension\":\"overworld\",\"ageSeconds\":127,\"source\":\"observed\"},{\"anchorId\":\"anchor-17\",\"label\":\"owner last seen\",\"at\":{\"x\":2311.5,\"y\":-60,\"z\":2062.5},\"dimension\":\"overworld\",\"ageSeconds\":100,\"source\":\"observed\"},{\"anchorId\":\"anchor-18\",\"label\":\"owner last seen\",\"at\":{\"x\":2291.5,\"y\":-60,\"z\":2137.5},\"dimension\":\"overworld\",\"ageSeconds\":79,\"source\":\"observed\"},{\"anchorId\":\"anchor-19\",\"label\":\"owner last seen\",\"at\":{\"x\":1821.5,\"y\":-60,\"z\":2121.5},\"dimension\":\"overworld\",\"ageSeconds\":4,\"source\":\"observed\"}],\"perception\":{\"radius\":32,\"truncated\":true,\"policy\":\"line of sight from eye, 2400 rays, see-through glass/panes/bars, entities/drops by LOS within radius\",\"travel\":{\"anchor\":{\"x\":2000.5,\"y\":-60,\"z\":2000.5},\"radius\":128,\"distanceFromAnchor\":0}}},\"route\":{\"authorized\":true,\"destinations\":[\"owner\",\"owner_destination\"],\"ownDeathAvailable\":false,\"state\":\"authorized\",\"progress\":{\"legsUsed\":0,\"maxLegs\":12,\"distanceUsed\":0,\"maxTotalDistance\":1024,\"remainingSeconds\":900,\"stalledLegs\":0,\"blocker\":null},\"admission\":{\"anchor\":{\"x\":2000.5,\"y\":-60,\"z\":2000.5},\"radius\":128}},\"locator\":{\"target\":\"owner\",\"actionable\":true,\"reason\":\"tracking\",\"direction\":\"north\",\"distanceBand\":\"far\",\"elevation\":\"unknown\",\"ageSeconds\":3,\"note\":\"owner locator cue north, distance far, height unknown (chunk precision); a direction cue, not visibility or arrival\"},\"mechanicsVersion\":\"26.2\",\"catalog\":{\"catalogVersion\":\"skills-25-2ec6edc5c0b4\",\"capabilities\":[{\"id\":\"move_near\",\"family\":\"movement\",\"purpose\":\"Walk to within a distance of a grounded target: a visible block/entity/drop/frontier handle, the visible owner, a remembered anchor, or owner-supplied coordinates.\",\"parameters\":[\"target:target_selector — {kind:\\\"handle\\\",snapshotId,handle} | {kind:\\\"owner\\\"} | {kind:\\\"anchor\\\",anchorId} | {kind:\\\"destination\\\",dimension,x,y,z}\",\"within?:number(1..32) — arrival distance in blocks\"],\"targets\":[\"block\",\"entity\",\"drop\",\"frontier\",\"owner\",\"remembered_anchor\",\"owner_destination\"],\"preconditions\":[\"target resolvable in the current connection and dimension\",\"destination inside the goal travel radius\",\"a safe walking path exists\"],\"effects\":[\"bot position changes; visited location recorded\"],\"supportedPredicates\":[\"near_target\",\"visited_location\"],\"limitations\":[\"never digs, places, pillars, parkours or sprints\",\"drops at most 3 blocks\",\"no-safe-path is reported instead of modifying terrain\",\"position is client physics corrected by the server\"]},{\"id\":\"follow_entity\",\"family\":\"movement\",\"purpose\":\"Stay near a visible moving entity (e.g. the owner) for a bounded time, re-pathing as it moves.\",\"parameters\":[\"target:target_selector — {kind:\\\"owner\\\"} or {kind:\\\"handle\\\",snapshotId,handle} of a visible entity\",\"within?:number(1..16) — follow distance\",\"durationMs?:integer(1000..120000) — how long to follow before returning\"],\"targets\":[\"entity\",\"owner\"],\"preconditions\":[\"target entity visible now\"],\"effects\":[\"bot keeps moving after the target\"],\"supportedPredicates\":[\"near_target\"],\"limitations\":[\"ends with target_lost when the target stays out of sight longer than the owner-loss window\",\"stable following is a local wait, not repeated inference\"]},{\"id\":\"explore_frontier\",\"family\":\"exploration\",\"purpose\":\"Walk to a visible, safely reachable frontier waypoint at the edge of current sight (inside the travel radius) and observe from there.\",\"parameters\":[\"frontier:handle — {snapshotId, handle} of a frt-* frontier from an observation\"],\"targets\":[\"frontier\"],\"preconditions\":[\"frontier from the current connection/dimension\",\"inside the goal travel radius\"],\"effects\":[\"bot moves; visited location recorded; a new observation is taken on arrival\"],\"supportedPredicates\":[\"visited_location\",\"near_target\"],\"limitations\":[\"frontiers come from loaded local geometry the bot can see, never from hidden-resource searches or the world seed\",\"resources may still be absent after exploring\"]},{\"id\":\"survey_surroundings\",\"family\":\"observation\",\"purpose\":\"Look around (turn through four directions) and take a fresh bounded observation of visible blocks, entities, drops and frontiers.\",\"parameters\":[],\"targets\":[\"none\"],\"preconditions\":[\"connected\"],\"effects\":[\"head turns; new observation snapshot and remembered anchors\"],\"supportedPredicates\":[\"entity_outcome\",\"block_state\"],\"limitations\":[\"line-of-sight sampling within the observation radius; small far objects can be missed between rays\"]},{\"id\":\"mine_block\",\"family\":\"resource\",\"purpose\":\"Break one visible block within reach, selecting a valid harvest tool from the inventory; reports server-confirmed break and the drops the server spawned (does not pick them up).\",\"parameters\":[\"target:handle — {snapshotId, handle} of a visible blk-* block\",\"allowNoDrop?:boolean — break even without a valid harvest tool (no drop), e.g. to clear an obstruction\"],\"targets\":[\"block\"],\"preconditions\":[\"block unchanged since observation and visible now\",\"within 4.5 blocks of the eye\",\"a valid harvest tool in inventory when the block requires one\",\"not the block supporting the bot and not next to liquid\"],\"effects\":[\"block removed (server-confirmed)\",\"drops spawned as item entities near the block\"],\"supportedPredicates\":[\"block_state\",\"inventory_delta\",\"inventory_amount\"],\"limitations\":[\"does not approach the block (use move_near)\",\"silk touch/fortune not modeled\",\"tool choice uses installed harvest data\"]},{\"id\":\"pickup_item\",\"family\":\"resource\",\"purpose\":\"Walk onto a visible dropped item stack and collect it; success only when the server reports the bot as collector.\",\"parameters\":[\"target:handle — {snapshotId, handle} of a visible drp-* dropped item\"],\"targets\":[\"drop\"],\"preconditions\":[\"drop still present\",\"inside the travel radius\",\"safe walking path\"],\"effects\":[\"item moves into the inventory (server collect packet + resync)\"],\"supportedPredicates\":[\"inventory_delta\",\"inventory_amount\"],\"limitations\":[\"an item collected by another player or merged/despawned is reported as such, not as success\",\"inventory must have room\"]},{\"id\":\"inspect_inventory\",\"family\":\"inventory\",\"purpose\":\"Read the inventory and equipment as confirmed by a server resync (not the optimistic client model).\",\"parameters\":[],\"targets\":[\"none\"],\"preconditions\":[\"connected; no other interface open\"],\"effects\":[\"none (observation only)\"],\"supportedPredicates\":[\"inventory_amount\",\"inventory_delta\",\"equipped\"],\"limitations\":[\"reports at most 41 stacks\"]},{\"id\":\"equip_item\",\"family\":\"inventory\",\"purpose\":\"Hold an inventory item in the main hand, or wear/hold it in an armor or off-hand slot.\",\"parameters\":[\"item:registry_key — item key present in the inventory\",\"slot:string[hand|off_hand|head|torso|legs|feet] — equipment slot\"],\"targets\":[\"inventory_item\"],\"preconditions\":[\"item in inventory\",\"armor slots accept only matching armor (server rule)\"],\"effects\":[\"item moves to the slot (server-confirmed)\"],\"supportedPredicates\":[\"equipped\"],\"limitations\":[\"uses window clicks; the server may reject an invalid slot, which is reported\"]},{\"id\":\"drop_item\",\"family\":\"transfer\",\"purpose\":\"Drop a number of an inventory item on the ground in front of the bot.\",\"parameters\":[\"item:registry_key — item key in the inventory\",\"count:integer(1..2304) — how many to drop\"],\"targets\":[\"inventory_item\"],\"preconditions\":[\"enough of the item in the inventory\"],\"effects\":[\"items leave the inventory and appear as dropped item entities near the bot\"],\"supportedPredicates\":[\"inventory_amount\"],\"limitations\":[\"dropping near a player is not proof they received it; receipt is claimed only from a server collect packet naming them\"]},{\"id\":\"craft_item\",\"family\":\"crafting\",\"purpose\":\"Craft an item from a version-correct crafting recipe using inventory ingredients, in the 2x2 inventory grid or at a visible crafting table within reach.\",\"parameters\":[\"output:registry_key — item to craft (see recipe knowledge)\",\"count:integer(1..576) — how many output items are wanted (rounded up to whole crafts)\",\"recipeId?:string — specific recipe id when several produce the output\",\"workstation?:handle — {snapshotId, handle} of a visible crafting_table for 3x3 recipes\"],\"targets\":[\"workstation\",\"inventory_item\"],\"preconditions\":[\"ingredients in inventory (tag ingredients accept any member)\",\"3x3 recipes need a visible crafting table within reach\",\"room for the output\"],\"effects\":[\"ingredients consumed and outputs added (server-confirmed counts)\"],\"supportedPredicates\":[\"crafting_result\",\"inventory_amount\",\"inventory_delta\"],\"limitations\":[\"does not gather ingredients or place a table\",\"special dynamic recipes (dyeing, fireworks, banner copy, repair) are not executed\",\"secondary workstation: a crafting table the task names, else any visible table within reach\"]},{\"id\":\"place_block\",\"family\":\"placement\",\"purpose\":\"Place a block item from the inventory against a visible face of a block within reach.\",\"parameters\":[\"item:registry_key — placeable item in the inventory\",\"against:handle — {snapshotId, handle} of the visible block to place against\",\"face:string[up|down|north|south|west|east] — face of that block to place on\"],\"targets\":[\"block\",\"inventory_item\"],\"preconditions\":[\"item in inventory\",\"face visible and within reach\",\"destination empty/replaceable and not occupied by the bot\"],\"effects\":[\"new block at the destination (server-confirmed); one item consumed\"],\"supportedPredicates\":[\"block_state\"],\"limitations\":[\"does not choose where a structure should go; the planner/decision picks the face\",\"directional state (stairs facing) follows the look direction\"]},{\"id\":\"interact_block\",\"family\":\"interaction\",\"purpose\":\"Right-click (use) a visible block within reach, optionally holding an item first (e.g. a lever, door, button, bone meal on a plant, a bucket on water).\",\"parameters\":[\"target:handle — {snapshotId, handle} of the visible block\",\"face?:string[up|down|north|south|west|east] — face to click (default: first visible)\",\"withItem?:registry_key — item to hold while using, or omit for the current hand\"],\"targets\":[\"block\"],\"preconditions\":[\"block visible and within reach\"],\"effects\":[\"whatever the game does for that block/item: state change, opened interface, inventory change\"],\"supportedPredicates\":[\"block_state\",\"inventory_amount\"],\"limitations\":[\"an opened interface is closed immediately (use container/furnace skills to operate it)\",\"reports no_observed_effect when the server shows no change\"]},{\"id\":\"use_held_item\",\"family\":\"interaction\",\"purpose\":\"Use (right-click in the air) an inventory item, e.g. eat food; optionally selects the item first.\",\"parameters\":[\"item?:registry_key — item to hold and use (default: current hand)\"],\"targets\":[\"inventory_item\"],\"preconditions\":[\"item in inventory; food requires hunger below full\"],\"effects\":[\"item consumed/used per game rules (server-confirmed food/health/inventory change)\"],\"supportedPredicates\":[\"inventory_amount\"],\"limitations\":[\"reports no_observed_effect when the server shows no change\"]},{\"id\":\"furnace_insert\",\"family\":\"processing\",\"purpose\":\"Put a number of an inventory item into the input or fuel slot of a visible furnace, blast furnace or smoker within reach.\",\"parameters\":[\"furnace:handle — {snapshotId, handle} of the visible furnace-type block\",\"slot:string[input|fuel] — which slot to fill\",\"item:registry_key — item to insert\",\"count:integer(1..64) — how many\"],\"targets\":[\"workstation\",\"inventory_item\"],\"preconditions\":[\"furnace visible and within reach\",\"fuel slot: item has a vanilla burn time\",\"input slot: a cooking recipe for this station accepts the item\",\"slot empty or holding the same item\"],\"effects\":[\"items move into the furnace slot (server-confirmed); processing starts when input and fuel are present\"],\"supportedPredicates\":[\"container_state\"],\"limitations\":[\"does not wait for processing (use furnace_wait)\"]},{\"id\":\"furnace_wait\",\"family\":\"processing\",\"purpose\":\"Stand at a loaded furnace with its interface open and wait (no inference) until the output slot holds a number of items, input/fuel runs out, or the wait limit passes.\",\"parameters\":[\"furnace:handle — {snapshotId, handle} of the furnace-type block\",\"untilOutputAtLeast:integer(1..64) — stop when the output slot has at least this many\",\"maxWaitMs?:integer(1000..590000) — wait limit\"],\"targets\":[\"workstation\"],\"preconditions\":[\"furnace visible and within reach\"],\"effects\":[\"none in the world (observation); processing is the furnace's own\"],\"supportedPredicates\":[\"container_state\",\"smelting_result\"],\"limitations\":[\"progress is observed only while the interface is open\",\"does not refill input or fuel\"]},{\"id\":\"furnace_take\",\"family\":\"processing\",\"purpose\":\"Take all items from the output (or input/fuel) slot of a visible furnace-type block into the inventory.\",\"parameters\":[\"furnace:handle — {snapshotId, handle} of the furnace-type block\",\"slot:string[output|input|fuel] — slot to empty\"],\"targets\":[\"workstation\"],\"preconditions\":[\"furnace visible and within reach\",\"slot not empty\",\"inventory has room\"],\"effects\":[\"items move to the inventory (server-confirmed)\"],\"supportedPredicates\":[\"smelting_result\",\"inventory_amount\",\"inventory_delta\"],\"limitations\":[\"takes the whole slot (shift-click)\"]},{\"id\":\"inspect_container\",\"family\":\"transfer\",\"purpose\":\"Open a visible container within reach, read its server-confirmed contents, and close it.\",\"parameters\":[\"container:handle — {snapshotId, handle} of the visible container block\"],\"targets\":[\"container\"],\"preconditions\":[\"container visible and within reach\",\"not blocked (e.g. a chest under a solid block does not open)\"],\"effects\":[\"none in the world\"],\"supportedPredicates\":[\"container_state\"],\"limitations\":[\"ender chest contents are per-player\"]},{\"id\":\"container_transfer\",\"family\":\"transfer\",\"purpose\":\"Deposit items from the inventory into, or withdraw items from, a visible container within reach.\",\"parameters\":[\"container:handle — {snapshotId, handle} of the visible container block\",\"direction:string[deposit|withdraw] — deposit or withdraw\",\"item:registry_key — item to move\",\"count:integer(1..1728) — how many\"],\"targets\":[\"container\",\"inventory_item\"],\"preconditions\":[\"container visible and within reach\",\"enough items at the source and room at the destination\"],\"effects\":[\"items move between inventory and container (server-confirmed counts)\"],\"supportedPredicates\":[\"container_state\",\"inventory_amount\"],\"limitations\":[\"moves whole/partial stacks with single clicks; hoppers and dispensers have few slots\"]},{\"id\":\"interact_entity\",\"family\":\"entity\",\"purpose\":\"Right-click a visible entity within reach, optionally holding an item first (e.g. shears on a sheep, a bucket on a cow, food on an animal).\",\"parameters\":[\"target:handle — {snapshotId, handle} of a visible ent-* entity\",\"withItem?:registry_key — item to hold while interacting\"],\"targets\":[\"entity\"],\"preconditions\":[\"entity visible and within 3 blocks\"],\"effects\":[\"whatever the game does: entity state change, dropped items, inventory change\"],\"supportedPredicates\":[\"entity_outcome\",\"inventory_amount\"],\"limitations\":[\"reports no_observed_effect when the server shows no change\",\"does not attack players or the owner\"]},{\"id\":\"attack_entity\",\"family\":\"entity\",\"purpose\":\"Attack a visible non-player entity within reach with the held item, up to a bounded number of hits, respecting attack cooldown.\",\"parameters\":[\"target:handle — {snapshotId, handle} of a visible ent-* entity\",\"maxHits?:integer(1..10) — maximum hits this action may deliver\"],\"targets\":[\"entity\"],\"preconditions\":[\"entity visible and within 3 blocks\",\"never players or the owner\"],\"effects\":[\"entity damaged; possibly defeated (server-confirmed)\"],\"supportedPredicates\":[\"entity_outcome\"],\"limitations\":[\"does not chase a target that is knocked out of reach\",\"defeat is claimed only from the server death status, never from disappearance\"]},{\"id\":\"escape_water\",\"family\":\"safety\",\"purpose\":\"Get out of deep water or lava: surface (held jump with open water above; toward a nearby open column under a ceiling), then swim to a visible dry exit.\",\"parameters\":[\"maxMs?:integer(1000..30000) — time bound in ms\"],\"targets\":[\"none\"],\"preconditions\":[\"the bot is submerged, swimming, or briefly body-clear over a deep fluid column (local estimate)\"],\"effects\":[\"the bot settles on dry ground or genuine shallow solid-supported wading after controls release\"],\"supportedPredicates\":[],\"limitations\":[\"no swimming under a solid ceiling beyond a few blocks\",\"no digging, placing, boats, potions or sprint-swimming\",\"fluid state is a local estimate; air is server metadata or unknown\"]},{\"id\":\"retreat_from_threat\",\"family\":\"safety\",\"purpose\":\"Move away from visible hostile threats along one conservative walking leg to a visible dry cell farther from every threat.\",\"parameters\":[\"maxMs?:integer(1000..30000) — time bound in ms\"],\"targets\":[\"none\"],\"preconditions\":[\"a visible active threat (code policy)\",\"an observed dry retreat cell inside the bounds\"],\"effects\":[\"separation from visible threats increases (client position)\"],\"supportedPredicates\":[],\"limitations\":[\"never digs, places, pillars, parkours or enters deep water/lava\",\"only visible threats are considered\",\"separation is measured on the client model\"]},{\"id\":\"defend_against_threat\",\"family\":\"safety\",\"purpose\":\"Defend against ONE supported visible hostile melee mob in reach with a verified sword/axe, armor and health; bounded attacks, no pursuit.\",\"parameters\":[\"target?:handle — {snapshotId, handle} of a visible supported hostile (goal use only)\",\"maxAttacks?:integer(1..10) — maximum attacks\"],\"targets\":[\"entity\"],\"preconditions\":[\"one supported adult melee hostile (zombie, husk, zombie villager, drowned without a ranged item, spider)\",\"verified stone-or-better sword/axe with durability, armor and health thresholds\",\"no creeper, ranged, group or provoked-neutral threat\"],\"effects\":[\"target damaged; possibly defeated (server-confirmed)\"],\"supportedPredicates\":[\"entity_outcome\"],\"limitations\":[\"never attacks players, the owner, passive or neutral mobs\",\"no pursuit beyond reach; a target out of sight is not a defeat\",\"readiness is rechecked before every attack and switches to retreat when it fails\"]},{\"id\":\"seek_owner\",\"family\":\"movement\",\"purpose\":\"Find and rejoin the owner when they are out of sight or beyond the travel radius (e.g. while following them or coming to them): walk toward the owner's server locator-bar direction through safe visible frontiers, detouring around observed obstacles within fixed bounds and beginning counted, code-au…\",\"parameters\":[\"within?:number(1..16) — stop distance from the VISIBLE owner (blocks)\",\"durationMs?:integer(1000..120000) — length of one seeking window before re-evaluating\"],\"targets\":[\"owner\"],\"preconditions\":[\"the task targets the owner\",\"owner not visible with a current locator cue (observation.locator.actionable), or visible beyond the travel bound with a route authorization\"],\"effects\":[\"bot walks toward the owner; may begin a counted route leg; arrival only near the visible owner\"],\"supportedPredicates\":[\"near_target\"],\"limitations\":[\"a locator cue is a coarse server direction, not visibility, a target or proof of arrival\",\"never digs, places, towers, parkours or opens doors; a detour around an observed wall/drop/lava/water is bounded, otherwise the specific obstacle is reported\",\"picks only dry-land waypoints and reports water_crossing when observed water blocks the way; swimming is not a supported route\",\"no cue while the owner crouches, is invisible, wears a head item, is out of locator range, the locator bar is disabled, or after a dimension change\",\"route legs, distance and time are capped by operator policy; plans cannot change them\"]},{\"id\":\"route_travel\",\"family\":\"movement\",\"purpose\":\"Travel toward a far code-owned destination — coordinates the owner typed, or (when authorized) the bot's own recorded death location — through safe visible frontiers and counted, code-authorized route legs beyond the travel radius.\",\"parameters\":[\"target?:target_selector — {kind:\\\"destination\\\",dimension,x,y,z} using coordinates the owner typed\",\"destination?:string[own_death] — a code-owned destination instead of coordinates\",\"within?:number(1..16) — arrival distance (blocks)\",\"durationMs?:integer(1000..120000) — length of one travel window before re-evaluating\"],\"targets\":[\"owner_destination\"],\"preconditions\":[\"destination in the current dimension\",\"a route authorization for legs beyond the travel radius\"],\"effects\":[\"bot walks toward the destination; may begin counted route legs; arrival verified from the bot position\"],\"supportedPredicates\":[\"near_target\",\"visited_location\"],\"limitations\":[\"arrival is the bot position near the destination; presence of items/players there is not verified\",\"never digs, places, towers, parkours or opens doors; walls, drops, lava and height differences are reported\",\"route legs, distance and time are capped by operator policy; plans cannot change them\"]}]}}\n"
+ },
+ "events": [
+  {
+   "t": "2026-10-08T20:16:22.711Z",
+   "run": "run-771519e9dbb4",
+   "type": "connection_ready",
+   "connectionEpoch": 1,
+   "info": {
+    "serverVersion": "26.2",
+    "protocolVersion": 776,
+    "dimension": "overworld",
+    "position": {
+     "x": 205.5,
+     "y": -60,
+     "z": 198.5
+    },
+    "gameMode": "survival",
+    "serverOnlineMode": false
+   }
+  },
+  {
+   "t": "2026-10-08T20:20:15.776Z",
+   "run": "run-771519e9dbb4",
+   "type": "planner_request",
+   "goalId": "goal-ad3c5e163312",
+   "requestId": "req-c94ff4fe815a",
+   "turn": 1,
+   "turnKind": "initial",
+   "snapshotId": "snap-6a57c1217564",
+   "counters": {
+    "plannerTurns": 1,
+    "knowledgeRounds": 0,
+    "repairs": 0,
+    "retries": 0,
+    "questionRefusals": 0,
+    "replans": 0,
+    "windows": 0,
+    "tasksAdmitted": 0,
+    "preparationTurns": 0,
+    "lookaheads": 0
+   }
+  },
+  {
+   "t": "2026-10-08T20:20:15.832Z",
+   "run": "run-771519e9dbb4",
+   "type": "planner_turn_started",
+   "requestId": "req-c94ff4fe815a",
+   "goalId": "goal-ad3c5e163312",
+   "subject": "goal-ad3c5e163312",
+   "subjectGoalEpoch": 7,
+   "goalEpoch": 7,
+   "connectionEpoch": 1,
+   "turn": 1,
+   "turnKind": "initial",
+   "authMode": "chatgpt",
+   "promptChars": 26630,
+   "promptDigest": "7c1b09a4025d",
+   "schemaDigest": "a70e2c3acf37",
+   "catalogVersion": "skills-25-2ec6edc5c0b4",
+   "snapshotId": "snap-6a57c1217564",
+   "snapshotTakenAtMs": 1791490815750,
+   "selectedModel": "gpt-6.1-sol",
+   "effort": "low"
+  },
+  {
+   "t": "2026-10-08T20:22:58.360Z",
+   "run": "run-771519e9dbb4",
+   "type": "connection_ready",
+   "connectionEpoch": 2,
+   "info": {
+    "serverVersion": "26.2",
+    "protocolVersion": 776,
+    "dimension": "overworld",
+    "position": {
+     "x": 2015.9,
+     "y": -60,
+     "z": 1997.5
+    },
+    "gameMode": "survival",
+    "serverOnlineMode": false
+   }
+  }
+ ],
+ "observations": [
+  {
+   "line": 6,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490671817,
+    "serverAtMs": 1791490671816,
+    "bot": {
+     "x": 2294.5470706229476,
+     "y": -60,
+     "z": 2044.4996864322343
+    },
+    "owner": {
+     "x": 2301.5,
+     "y": -60,
+     "z": 2043.5
+    },
+    "snapshot": {
+     "id": "snap-49a08d5e0d15",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490671817,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2294.5,
+       "y": -60,
+       "z": 2044.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2301.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "distance": 7
+     },
+     "entities": [
+      {
+       "handle": "ent-427",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "distance": 7,
+       "inReach": false,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-428",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2274,
+        "y": -60,
+        "z": 2023.6
+       },
+       "distance": 29.3,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490671834,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1",
+    "capture": {
+     "requestedAtMs": 1791490671817,
+     "receivedAtMs": 1791490671840,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2301.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490671815,
+      "toMs": 1791490671816,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2301.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2301.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490671860,
+      "toMs": 1791490671865,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2301.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2294.5470706229476,
+       "y": -60,
+       "z": 2044.4996864322343
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490671816,
+      "toMs": 1791490671817,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2294.5470706229476d, -60.0d, 2044.4996864322343d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2294.762929741875,
+       "y": -60,
+       "z": 2044.4996864322343
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490671865,
+      "toMs": 1791490671867,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2294.762929741875d, -60.0d, 2044.4996864322343d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 8,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490673926,
+    "serverAtMs": 1791490673925,
+    "bot": {
+     "x": 2299.5,
+     "y": -60,
+     "z": 2044.4996864322343
+    },
+    "owner": {
+     "x": 2297.5,
+     "y": -60,
+     "z": 2042.5
+    },
+    "snapshot": {
+     "id": "snap-fb56a967ce1b",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490673926,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2299.5,
+       "y": -60,
+       "z": 2044.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2297.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "distance": 2.8
+     },
+     "entities": [
+      {
+       "handle": "ent-477",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "distance": 2.8,
+       "inReach": true,
+       "label": "owner"
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490673925,
+     "receivedAtMs": 1791490673942,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2297.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490673923,
+      "toMs": 1791490673925,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2297.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2297.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490673946,
+      "toMs": 1791490673950,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2297.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2299.5,
+       "y": -60,
+       "z": 2044.4996864322343
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490673925,
+      "toMs": 1791490673925,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2299.5d, -60.0d, 2044.4996864322343d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2299.5,
+       "y": -60,
+       "z": 2044.4996864322343
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490673950,
+      "toMs": 1791490673952,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2299.5d, -60.0d, 2044.4996864322343d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 9,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490674957,
+    "serverAtMs": 1791490674955,
+    "bot": {
+     "x": 2297.6003990354257,
+     "y": -60,
+     "z": 2044.4996864322343
+    },
+    "owner": {
+     "x": 2293.5,
+     "y": -60,
+     "z": 2043.5
+    },
+    "snapshot": {
+     "id": "snap-5d2d7a7ee9ff",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490674957,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2297.4,
+       "y": -60,
+       "z": 2044.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2293.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "distance": 4
+     },
+     "entities": [
+      {
+       "handle": "ent-526",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "distance": 4,
+       "inReach": false,
+       "label": "owner"
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490674956,
+     "receivedAtMs": 1791490674978,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2293.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490674954,
+      "toMs": 1791490674955,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2293.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2293.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490675000,
+      "toMs": 1791490675002,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2293.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2297.6003990354257,
+       "y": -60,
+       "z": 2044.4996864322343
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490674955,
+      "toMs": 1791490674956,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2297.6003990354257d, -60.0d, 2044.4996864322343d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2297.1691098387323,
+       "y": -60,
+       "z": 2044.4996864322343
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490675002,
+      "toMs": 1791490675003,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2297.1691098387323d, -60.0d, 2044.4996864322343d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 10,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490676009,
+    "serverAtMs": 1791490676007,
+    "bot": {
+     "x": 2293.402482511085,
+     "y": -60,
+     "z": 2043.4888660574152
+    },
+    "owner": {
+     "x": 2289.5,
+     "y": -60,
+     "z": 2042.5
+    },
+    "snapshot": {
+     "id": "snap-5c91d83b0e8d",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490676009,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2293.4,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2289.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "distance": 4
+     },
+     "entities": [
+      {
+       "handle": "ent-539",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "distance": 4,
+       "inReach": false,
+       "label": "owner"
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490676008,
+     "receivedAtMs": 1791490676031,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2289.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490676006,
+      "toMs": 1791490676007,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2289.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2289.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490676051,
+      "toMs": 1791490676055,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2289.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2293.402482511085,
+       "y": -60,
+       "z": 2043.4888660574152
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490676007,
+      "toMs": 1791490676008,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2293.402482511085d, -60.0d, 2043.4888660574152d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2293.1873501680543,
+       "y": -60,
+       "z": 2043.4846896834417
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490676055,
+      "toMs": 1791490676057,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2293.1873501680543d, -60.0d, 2043.4846896834417d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 11,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490677064,
+    "serverAtMs": 1791490677063,
+    "bot": {
+     "x": 2289.087097463598,
+     "y": -60,
+     "z": 2043.4990567502784
+    },
+    "owner": {
+     "x": 2285.5,
+     "y": -60,
+     "z": 2043.5
+    },
+    "snapshot": {
+     "id": "snap-02c4282b0249",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490677064,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2289.1,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2285.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "distance": 3.6
+     },
+     "entities": [
+      {
+       "handle": "ent-553",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "distance": 3.6,
+       "inReach": false,
+       "label": "owner"
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490677064,
+     "receivedAtMs": 1791490677086,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2285.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490677062,
+      "toMs": 1791490677063,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2285.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2285.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490677103,
+      "toMs": 1791490677105,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2285.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2289.087097463598,
+       "y": -60,
+       "z": 2043.4990567502784
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490677063,
+      "toMs": 1791490677063,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2289.087097463598d, -60.0d, 2043.4990567502784d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2288.871240142873,
+       "y": -60,
+       "z": 2043.4993133134901
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490677105,
+      "toMs": 1791490677106,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2288.871240142873d, -60.0d, 2043.4993133134901d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 12,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490678111,
+    "serverAtMs": 1791490678110,
+    "bot": {
+     "x": 2284.9533334520397,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2281.5,
+     "y": -60,
+     "z": 2042.5
+    },
+    "snapshot": {
+     "id": "snap-67d3b75b09cd",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490678111,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2284.7,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2281.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "distance": 3.4
+     },
+     "entities": [
+      {
+       "handle": "ent-568",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "distance": 3.4,
+       "inReach": false,
+       "label": "owner"
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490678111,
+     "receivedAtMs": 1791490678134,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2281.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490678109,
+      "toMs": 1791490678110,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2281.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2281.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490678154,
+      "toMs": 1791490678157,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2281.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2284.9533334520397,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490678110,
+      "toMs": 1791490678111,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2284.9533334520397d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2284.7375195049126,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490678157,
+      "toMs": 1791490678158,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2284.7375195049126d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 13,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490679161,
+    "serverAtMs": 1791490679160,
+    "bot": {
+     "x": 2280.8957951046127,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2277.5,
+     "y": -60,
+     "z": 2043.5
+    },
+    "snapshot": {
+     "id": "snap-ab6ab0c55ce4",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490679161,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2280.9,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2277.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "distance": 3.4
+     },
+     "entities": [
+      {
+       "handle": "ent-583",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "distance": 3.4,
+       "inReach": false,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-584",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2258.4,
+        "y": -60,
+        "z": 2030.4
+       },
+       "distance": 26,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490679161,
+     "receivedAtMs": 1791490679183,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2277.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490679159,
+      "toMs": 1791490679160,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2277.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2277.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490679204,
+      "toMs": 1791490679205,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2277.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2280.8957951046127,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490679160,
+      "toMs": 1791490679161,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2280.8957951046127d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2280.6799606494883,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490679205,
+      "toMs": 1791490679206,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2280.6799606494883d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 14,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490680211,
+    "serverAtMs": 1791490680210,
+    "bot": {
+     "x": 2276.521685049788,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2273.5,
+     "y": -60,
+     "z": 2042.5
+    },
+    "snapshot": {
+     "id": "snap-ef14dd5953ad",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490680211,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2276.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2273.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "distance": 3.2
+     },
+     "entities": [
+      {
+       "handle": "ent-599",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "distance": 3.2,
+       "inReach": false,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-600",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2260.4,
+        "y": -60,
+        "z": 2032.4
+       },
+       "distance": 19.5,
+       "inReach": false
+      },
+      {
+       "handle": "ent-601",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2271.1,
+        "y": -60,
+        "z": 2012.9
+       },
+       "distance": 31,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490680211,
+     "receivedAtMs": 1791490680233,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2273.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490680209,
+      "toMs": 1791490680210,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2273.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2273.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490680255,
+      "toMs": 1791490680257,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2273.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2276.521685049788,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490680210,
+      "toMs": 1791490680210,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2276.521685049788d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2276.3058393972974,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490680257,
+      "toMs": 1791490680259,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2276.3058393972974d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 15,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490681264,
+    "serverAtMs": 1791490681263,
+    "bot": {
+     "x": 2272.6799606494883,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2269.5,
+     "y": -60,
+     "z": 2043.5
+    },
+    "snapshot": {
+     "id": "snap-0f482910f3f4",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490681264,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2272.7,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2269.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "distance": 3.2
+     },
+     "entities": [
+      {
+       "handle": "ent-616",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "distance": 3.2,
+       "inReach": false,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-617",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2262.5,
+        "y": -60,
+        "z": 2034.5
+       },
+       "distance": 13.6,
+       "inReach": false
+      },
+      {
+       "handle": "ent-618",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2271.1,
+        "y": -60,
+        "z": 2012.9
+       },
+       "distance": 30.6,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490681264,
+     "receivedAtMs": 1791490681287,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2269.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490681262,
+      "toMs": 1791490681263,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2269.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2269.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490681305,
+      "toMs": 1791490681309,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2269.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2272.6799606494883,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490681263,
+      "toMs": 1791490681264,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2272.6799606494883d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2272.4641149969975,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490681309,
+      "toMs": 1791490681310,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2272.4641149969975d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 16,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490682317,
+    "serverAtMs": 1791490682315,
+    "bot": {
+     "x": 2268.3058393972974,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2265.5,
+     "y": -60,
+     "z": 2042.5
+    },
+    "snapshot": {
+     "id": "snap-11a14abfa361",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490682317,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2268.3,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2265.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "distance": 3
+     },
+     "entities": [
+      {
+       "handle": "ent-633",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "distance": 3,
+       "inReach": true,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-634",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2264.2,
+        "y": -60,
+        "z": 2036.2
+       },
+       "distance": 8.4,
+       "inReach": false
+      },
+      {
+       "handle": "ent-635",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2271.1,
+        "y": -60,
+        "z": 2012.9
+       },
+       "distance": 30.7,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-10",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490682331,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490682316,
+     "receivedAtMs": 1791490682338,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2265.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490682314,
+      "toMs": 1791490682315,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2265.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2265.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490682360,
+      "toMs": 1791490682360,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2265.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2268.3058393972974,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490682315,
+      "toMs": 1791490682316,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2268.3058393972974d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2268.0899876310446,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490682360,
+      "toMs": 1791490682361,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2268.0899876310446d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 17,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490683365,
+    "serverAtMs": 1791490683364,
+    "bot": {
+     "x": 2264.2482632307447,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2261.5,
+     "y": -60,
+     "z": 2043.5
+    },
+    "snapshot": {
+     "id": "snap-9eb54732fb84",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490683365,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2264.2,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2261.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "distance": 2.7
+     },
+     "entities": [
+      {
+       "handle": "ent-650",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2261.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "distance": 2.7,
+       "inReach": true,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-651",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2264.2,
+        "y": -60,
+        "z": 2036.2
+       },
+       "distance": 7.3,
+       "inReach": false
+      },
+      {
+       "handle": "ent-652",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2271.1,
+        "y": -60,
+        "z": 2012.9
+       },
+       "distance": 31.3,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-10",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490682331,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-11",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2261.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490683379,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490683365,
+     "receivedAtMs": 1791490683385,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2261.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490683363,
+      "toMs": 1791490683364,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2261.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2261.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490683407,
+      "toMs": 1791490683408,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2261.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2264.2482632307447,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490683364,
+      "toMs": 1791490683365,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2264.2482632307447d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2264.0324081263775,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490683408,
+      "toMs": 1791490683409,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2264.0324081263775d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 18,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490684414,
+    "serverAtMs": 1791490684413,
+    "bot": {
+     "x": 2260.0899876310446,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2257.5,
+     "y": -60,
+     "z": 2042.5
+    },
+    "snapshot": {
+     "id": "snap-63d79b14fac3",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490684414,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2260.1,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2257.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "distance": 2.8
+     },
+     "entities": [
+      {
+       "handle": "ent-667",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2257.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "distance": 2.8,
+       "inReach": true,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-668",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2264.2,
+        "y": -60,
+        "z": 2036.2
+       },
+       "distance": 8.4,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-10",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490682331,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-11",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2261.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490683379,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-12",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2257.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490684429,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490684414,
+     "receivedAtMs": 1791490684436,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2257.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490684412,
+      "toMs": 1791490684413,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2257.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2257.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490684457,
+      "toMs": 1791490684458,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2257.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2260.0899876310446,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490684413,
+      "toMs": 1791490684414,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2260.0899876310446d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2259.8741325266774,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490684458,
+      "toMs": 1791490684459,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2259.8741325266774d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 19,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490685464,
+    "serverAtMs": 1791490685463,
+    "bot": {
+     "x": 2256.0324081263775,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2253.5,
+     "y": -60,
+     "z": 2043.5
+    },
+    "snapshot": {
+     "id": "snap-68da3eea207a",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490685464,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2256,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2253.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "distance": 2.5
+     },
+     "entities": [
+      {
+       "handle": "ent-683",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2253.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "distance": 2.5,
+       "inReach": true,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-684",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2263.4,
+        "y": -60,
+        "z": 2035.5
+       },
+       "distance": 10.9,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-10",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490682331,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-11",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2261.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490683379,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-12",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2257.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490684429,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-13",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2253.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490685480,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490685464,
+     "receivedAtMs": 1791490685487,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2253.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490685462,
+      "toMs": 1791490685463,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2253.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2253.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490685507,
+      "toMs": 1791490685508,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2253.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2256.0324081263775,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490685463,
+      "toMs": 1791490685464,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2256.0324081263775d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2255.5,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490685508,
+      "toMs": 1791490685509,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2255.5d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 20,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490686517,
+    "serverAtMs": 1791490686513,
+    "bot": {
+     "x": 2252.9533334520397,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2249.5,
+     "y": -60,
+     "z": 2042.5
+    },
+    "snapshot": {
+     "id": "snap-1496b58fbd7d",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490686517,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2253,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2249.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "distance": 3.6
+     },
+     "entities": [
+      {
+       "handle": "ent-699",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2249.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "distance": 3.6,
+       "inReach": false,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-700",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2261.3,
+        "y": -60,
+        "z": 2033.7
+       },
+       "distance": 12.8,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-10",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490682331,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-11",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2261.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490683379,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-12",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2257.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490684429,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-13",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2253.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490685480,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-14",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2249.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490686531,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490686516,
+     "receivedAtMs": 1791490686538,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2249.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490686512,
+      "toMs": 1791490686513,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2249.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2249.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490686559,
+      "toMs": 1791490686560,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2249.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2252.9533334520397,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490686513,
+      "toMs": 1791490686516,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2252.9533334520397d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2252.7375195049126,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490686560,
+      "toMs": 1791490686561,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2252.7375195049126d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 21,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490687567,
+    "serverAtMs": 1791490687565,
+    "bot": {
+     "x": 2248.8957951046127,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2245.5,
+     "y": -60,
+     "z": 2043.5
+    },
+    "snapshot": {
+     "id": "snap-34f53a765b6c",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490687567,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2248.9,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2245.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "distance": 3.4
+     },
+     "entities": [
+      {
+       "handle": "ent-714",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2245.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "distance": 3.4,
+       "inReach": false,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-715",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2258.9,
+        "y": -60,
+        "z": 2032.9
+       },
+       "distance": 14.6,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-10",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490682331,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-11",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2261.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490683379,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-12",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2257.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490684429,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-13",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2253.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490685480,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-14",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2249.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490686531,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-15",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2245.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490687582,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490687566,
+     "receivedAtMs": 1791490687589,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2245.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490687563,
+      "toMs": 1791490687565,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2245.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2245.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490687610,
+      "toMs": 1791490687611,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2245.5d, -60.0d, 2043.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2248.8957951046127,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490687565,
+      "toMs": 1791490687566,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2248.8957951046127d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2248.6799606494883,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490687611,
+      "toMs": 1791490687612,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2248.6799606494883d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 22,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490688618,
+    "serverAtMs": 1791490688616,
+    "bot": {
+     "x": 2244.521685049788,
+     "y": -60,
+     "z": 2043.4995698767018
+    },
+    "owner": {
+     "x": 2241.5,
+     "y": -60,
+     "z": 2042.5
+    },
+    "snapshot": {
+     "id": "snap-5aafaa65e2ca",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490688618,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2244.5,
+       "y": -60,
+       "z": 2043.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2241.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "distance": 3.2
+     },
+     "entities": [
+      {
+       "handle": "ent-729",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2241.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "distance": 3.2,
+       "inReach": false,
+       "label": "owner"
+      },
+      {
+       "handle": "ent-730",
+       "key": "minecraft:chicken",
+       "at": {
+        "x": 2258.9,
+        "y": -60,
+        "z": 2032.8
+       },
+       "distance": 17.9,
+       "inReach": false
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-10",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490682331,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-11",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2261.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490683379,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-12",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2257.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490684429,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-13",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2253.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490685480,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-14",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2249.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490686531,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-15",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2245.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490687582,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-16",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2241.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490688632,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1b",
+    "capture": {
+     "requestedAtMs": 1791490688617,
+     "receivedAtMs": 1791490688639,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2241.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490688615,
+      "toMs": 1791490688616,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2241.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2241.5,
+       "y": -60,
+       "z": 2042.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490688659,
+      "toMs": 1791490688660,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2241.5d, -60.0d, 2042.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2244.521685049788,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490688616,
+      "toMs": 1791490688617,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2244.521685049788d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2244.3058393972974,
+       "y": -60,
+       "z": 2043.4995698767018
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490688660,
+      "toMs": 1791490688660,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2244.3058393972974d, -60.0d, 2043.4995698767018d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 49,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490714959,
+    "serverAtMs": 1791490714958,
+    "bot": {
+     "x": 2303.5861674839025,
+     "y": -60,
+     "z": 2061.500398427494
+    },
+    "owner": {
+     "x": 2311.5,
+     "y": -60,
+     "z": 2062.5
+    },
+    "snapshot": {
+     "id": "snap-74654242f898",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490714959,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2303.6,
+       "y": -60,
+       "z": 2061.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2311.5,
+       "y": -60,
+       "z": 2062.5
+      },
+      "distance": 8
+     },
+     "entities": [
+      {
+       "handle": "ent-1193",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2311.5,
+        "y": -60,
+        "z": 2062.5
+       },
+       "distance": 8,
+       "inReach": false,
+       "label": "owner"
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-10",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490682331,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-11",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2261.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490683379,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-12",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2257.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490684429,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-13",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2253.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490685480,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-14",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2249.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490686531,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-15",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2245.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490687582,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-16",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2241.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490688725,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-17",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2311.5,
+        "y": -60,
+        "z": 2062.5
+       },
+       "observedAtMs": 1791490714980,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1c",
+    "capture": {
+     "requestedAtMs": 1791490714959,
+     "receivedAtMs": 1791490714989,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2311.5,
+       "y": -60,
+       "z": 2062.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490714956,
+      "toMs": 1791490714958,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2311.5d, -60.0d, 2062.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2311.5,
+       "y": -60,
+       "z": 2062.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490715002,
+      "toMs": 1791490715004,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2311.5d, -60.0d, 2062.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2303.5861674839025,
+       "y": -60,
+       "z": 2061.500398427494
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490714958,
+      "toMs": 1791490714959,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2303.5861674839025d, -60.0d, 2061.500398427494d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2303.8020266028298,
+       "y": -60,
+       "z": 2061.500398427494
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490715004,
+      "toMs": 1791490715005,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2303.8020266028298d, -60.0d, 2061.500398427494d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 70,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490736065,
+    "serverAtMs": 1791490736063,
+    "bot": {
+     "x": 2293.472506780338,
+     "y": -60,
+     "z": 2132.490360820079
+    },
+    "owner": {
+     "x": 2291.5,
+     "y": -60,
+     "z": 2137.5
+    },
+    "snapshot": {
+     "id": "snap-a42f11747713",
+     "connectionEpoch": 1,
+     "goalEpoch": 1,
+     "takenAtMs": 1791490736065,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 2293.5,
+       "y": -60,
+       "z": 2132.7
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 2291.5,
+       "y": -60,
+       "z": 2137.5
+      },
+      "distance": 5.2
+     },
+     "entities": [
+      {
+       "handle": "ent-1512",
+       "key": "minecraft:player",
+       "at": {
+        "x": 2291.5,
+        "y": -60,
+        "z": 2137.5
+       },
+       "distance": 5.2,
+       "inReach": false,
+       "label": "owner"
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-10",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490682331,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-11",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2261.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490683379,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-12",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2257.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490684429,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-13",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2253.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490685480,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-14",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2249.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490686531,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-15",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2245.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490687582,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-16",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2241.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490688725,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-17",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2311.5,
+        "y": -60,
+        "z": 2062.5
+       },
+       "observedAtMs": 1791490716074,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-18",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2291.5,
+        "y": -60,
+        "z": 2137.5
+       },
+       "observedAtMs": 1791490736084,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O1c",
+    "capture": {
+     "requestedAtMs": 1791490736065,
+     "receivedAtMs": 1791490736092,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2291.5,
+       "y": -60,
+       "z": 2137.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490736062,
+      "toMs": 1791490736063,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2291.5d, -60.0d, 2137.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 2291.5,
+       "y": -60,
+       "z": 2137.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490736107,
+      "toMs": 1791490736109,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [2291.5d, -60.0d, 2137.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2293.472506780338,
+       "y": -60,
+       "z": 2132.490360820079
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490736064,
+      "toMs": 1791490736064,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2293.472506780338d, -60.0d, 2132.490360820079d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 2293.478150377965,
+       "y": -60,
+       "z": 2132.9203199158787
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490736109,
+      "toMs": 1791490736109,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [2293.478150377965d, -60.0d, 2132.9203199158787d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  },
+  {
+   "line": 78,
+   "row": {
+    "runId": "run-771519e9dbb4",
+    "atMs": 1791490810429,
+    "serverAtMs": 1791490810427,
+    "bot": {
+     "x": 1823.5,
+     "y": -60,
+     "z": 2120.5
+    },
+    "owner": {
+     "x": 1821.5,
+     "y": -60,
+     "z": 2121.5
+    },
+    "snapshot": {
+     "id": "snap-8036ed4ef51b",
+     "connectionEpoch": 1,
+     "goalEpoch": 5,
+     "takenAtMs": 1791490810429,
+     "dimension": "overworld",
+     "self": {
+      "at": {
+       "x": 1823.5,
+       "y": -60,
+       "z": 2120.5
+      },
+      "health": 20,
+      "food": 20
+     },
+     "owner": {
+      "visible": true,
+      "at": {
+       "x": 1821.5,
+       "y": -60,
+       "z": 2121.5
+      },
+      "distance": 2.2
+     },
+     "entities": [
+      {
+       "handle": "ent-1975",
+       "key": "minecraft:player",
+       "at": {
+        "x": 1821.5,
+        "y": -60,
+        "z": 2121.5
+       },
+       "distance": 2.2,
+       "inReach": true,
+       "label": "owner"
+      }
+     ],
+     "remembered": [
+      {
+       "anchorId": "anchor-1",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2301.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490672891,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-2",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2297.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490673938,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-3",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2293.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490674972,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-4",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2289.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490676025,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-5",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2285.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490677079,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-6",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2281.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490678127,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-7",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2277.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490679176,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-8",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2273.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490680226,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-9",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2269.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490681280,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-10",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2265.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490682331,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-11",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2261.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490683379,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-12",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2257.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490684429,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-13",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2253.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490685480,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-14",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2249.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490686531,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-15",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2245.5,
+        "y": -60,
+        "z": 2043.5
+       },
+       "observedAtMs": 1791490687582,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-16",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2241.5,
+        "y": -60,
+        "z": 2042.5
+       },
+       "observedAtMs": 1791490688725,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-17",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2311.5,
+        "y": -60,
+        "z": 2062.5
+       },
+       "observedAtMs": 1791490716074,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-18",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 2291.5,
+        "y": -60,
+        "z": 2137.5
+       },
+       "observedAtMs": 1791490737132,
+       "source": "observed"
+      },
+      {
+       "anchorId": "anchor-19",
+       "label": "owner last seen",
+       "dimension": "overworld",
+       "at": {
+        "x": 1821.5,
+        "y": -60,
+        "z": 2121.5
+       },
+       "observedAtMs": 1791490810447,
+       "source": "observed"
+      }
+     ]
+    },
+    "scenario": "O3",
+    "capture": {
+     "requestedAtMs": 1791490810429,
+     "receivedAtMs": 1791490810452,
+     "runId": "run-771519e9dbb4",
+     "connectionEpochBefore": 1,
+     "connectionEpochAfter": 1,
+     "before": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 1821.5,
+       "y": -60,
+       "z": 2121.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490810426,
+      "toMs": 1791490810427,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [1821.5d, -60.0d, 2121.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "after": {
+      "name": "FixtureOwner",
+      "uuid": "7cc98d44-8921-3219-b297-26a9e2755460",
+      "at": {
+       "x": 1821.5,
+       "y": -60,
+       "z": 2121.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490810471,
+      "toMs": 1791490810473,
+      "replies": {
+       "position": "FixtureOwner has the following entity data: [1821.5d, -60.0d, 2121.5d]",
+       "uuid": "FixtureOwner has the following entity data: [I; 2093583684, -1994313191, -1298717015, -495627168]",
+       "dimension": "FixtureOwner has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botBefore": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 1823.5,
+       "y": -60,
+       "z": 2120.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490810427,
+      "toMs": 1791490810428,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [1823.5d, -60.0d, 2120.5d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     },
+     "botAfter": {
+      "name": "Chunkbot",
+      "uuid": "6cf15af8-bdbf-3b91-a72b-4f0aba5f3767",
+      "at": {
+       "x": 1823.5,
+       "y": -60,
+       "z": 2120.5
+      },
+      "dimension": "overworld",
+      "fromMs": 1791490810473,
+      "toMs": 1791490810476,
+      "replies": {
+       "position": "Chunkbot has the following entity data: [1823.5d, -60.0d, 2120.5d]",
+       "uuid": "Chunkbot has the following entity data: [I; 1827756792, -1111540847, -1490333942, -1168165017]",
+       "dimension": "Chunkbot has the following entity data: \"minecraft:overworld\""
+      }
+     }
+    }
+   }
+  }
+ ],
+ "sample": {
+  "scenario": "O4",
+  "atMs": 1791490815745,
+  "dtMs": 24,
+  "bot": {
+   "x": 2000.5,
+   "y": -60,
+   "z": 2000.5
+  },
+  "owner": {
+   "x": 2017.5,
+   "y": -60,
+   "z": 1737.5
+  },
+  "distance": 263.5
+ },
+ "ownerIdentity": {
+  "name": "FixtureOwner",
+  "uuid": "7cc98d44-8921-3219-b297-26a9e2755460"
+ },
+ "recorded": {
+  "findings": [
+   {
+    "scenario": "O4",
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.frontiers[1].handle",
+    "value": "2016",
+    "reason": "hidden current coordinate in model-visible text"
+   },
+   {
+    "scenario": "O4",
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.frontiers[2].handle",
+    "value": "2017",
+    "reason": "hidden current coordinate in model-visible text"
+   },
+   {
+    "scenario": "O4",
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.frontiers[3].handle",
+    "value": "2018",
+    "reason": "hidden current coordinate in model-visible text"
+   },
+   {
+    "scenario": "O4",
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.frontiers[4].handle",
+    "value": "2019",
+    "reason": "hidden current coordinate in model-visible text"
+   }
+  ],
+  "allowed": [
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.frontiers[4].at.z",
+    "value": "2017.5",
+    "reason": "current local point bounded by independently sampled bot position"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.frontiers[7].at.z",
+    "value": "2017.5",
+    "reason": "current local point bounded by independently sampled bot position"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[0]",
+    "value": "{\"x\":2301.5,\"y\":-60,\"z\":2043.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[1]",
+    "value": "{\"x\":2297.5,\"y\":-60,\"z\":2042.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[2]",
+    "value": "{\"x\":2293.5,\"y\":-60,\"z\":2043.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[3]",
+    "value": "{\"x\":2289.5,\"y\":-60,\"z\":2042.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[4]",
+    "value": "{\"x\":2285.5,\"y\":-60,\"z\":2043.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[5]",
+    "value": "{\"x\":2281.5,\"y\":-60,\"z\":2042.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[6]",
+    "value": "{\"x\":2277.5,\"y\":-60,\"z\":2043.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[7]",
+    "value": "{\"x\":2273.5,\"y\":-60,\"z\":2042.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[8]",
+    "value": "{\"x\":2269.5,\"y\":-60,\"z\":2043.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[9]",
+    "value": "{\"x\":2265.5,\"y\":-60,\"z\":2042.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[10]",
+    "value": "{\"x\":2261.5,\"y\":-60,\"z\":2043.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[11]",
+    "value": "{\"x\":2257.5,\"y\":-60,\"z\":2042.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[12]",
+    "value": "{\"x\":2253.5,\"y\":-60,\"z\":2043.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[13]",
+    "value": "{\"x\":2249.5,\"y\":-60,\"z\":2042.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[14]",
+    "value": "{\"x\":2245.5,\"y\":-60,\"z\":2043.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[15]",
+    "value": "{\"x\":2241.5,\"y\":-60,\"z\":2042.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[16]",
+    "value": "{\"x\":2311.5,\"y\":-60,\"z\":2062.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[17]",
+    "value": "{\"x\":2291.5,\"y\":-60,\"z\":2137.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   },
+   {
+    "source": "planner_prompt",
+    "atMs": 1791490815854,
+    "path": "observation.remembered[18]",
+    "value": "{\"x\":1821.5,\"y\":-60,\"z\":2121.5}",
+    "reason": "verified earlier visible owner history (not current presence)"
+   }
+  ],
+  "hiddenOwner": {
+   "x": 2017.5,
+   "y": -60,
+   "z": 1737.5
+  }
+ }
+}
