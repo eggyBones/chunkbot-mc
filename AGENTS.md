@@ -6,7 +6,7 @@ Read [agent-workflow.md](agent-workflow.md) before planning, implementing, fixin
 
 - Jake owns product direction.
 - Codex coordinates planning, worker prompts, supervision, review, and acceptance.
-- Native Codex workers perform the main implementation through a local DSH instance using Jake's personal ChatGPT account. Jake changed the development route on 2026-10-07 Arizona: use exactly `gpt-6.1-sol`, extra-high (`xhigh`) reasoning, and full permissions (`danger-full-access`, approval policy `never`). Verify the account, native backend, model catalog and effective turn settings before launching, as described in the workflow. Preserve the earlier Claude sessions and drafts.
+- Native Claude Opus 5.5 workers perform the main implementation through local DSH. Jake switched back to Opus on 2026-10-08 Arizona; verify the subscription, native SDK catalog resolving exactly `claude-opus-5-5[1m]`, session-local high effort and full permissions before launching. Preserve the Codex sessions, commits and drafts. The prior personal Codex `gpt-6.1-sol/xhigh/danger-full-access/never` route remains historical. This development change does not change the isolated gameplay planner.
 - Run independent authorized implementation assignments in parallel by default. Codex assigns disjoint ownership and, once Git is set up, separate branches/worktrees; coordinate shared files and fixture access as described in the workflow.
 - Implementation workers follow the worker-specific instructions and their assigned brief. They do not take over coordination or launch other workers.
 - A planning-only or documentation-only request does not authorize implementation, runtime setup, or roadmap work.
