@@ -54,7 +54,10 @@
 //             x 196..224, y -64..-24, z 190..224. Ambient/unknown occupants fail staging.
 //   players   Chunkbot and FixtureOwner: inventories cleared (bot: 8 bread given so survival
 //             upkeep never competes; O4 materials when provided), Chunkbot effects/gamemode,
-//             positions inside the area.
+//             positions inside the area. Every reset lifts BOTH players 30 blocks with a
+//             5 s slow_falling effect before any block fill, then places them on the ground
+//             and clears the owner's effects, so the harness never drops either player
+//             (R16: an elevated owner took 4-block fall damage when the platform was cleared).
 //             O7F additionally moves ONLY FixtureOwner to 350.5,-60,198.5 after loaded
 //             support/empty-body server proofs. No block footprint extension; bot stops
 //             before leaving the scene and owner returns while the goal is stopped.
@@ -90,7 +93,7 @@ import { parseTrialUuid, serverUnprovokedWolf } from '../src/safety/trial-arena.
 import { CLI, CliProcess } from './lib/cli-process.ts';
 import { rconCommand } from './lib/rcon.ts';
 import { SCENE } from './lib/scene.ts';
-import { distance, ownerStandingCommands, pendingRealTurn, timeOf, verifyFiniteEpisode, verifyHiddenOwner, verifyNoAttacks, verifyPlannerWaterRace, verifyPreemption, verifySafetyOwnership, verifySharedSafetyHistory } from './lib/ordinary-safety-oracles.ts';
+import { distance, foreignVisibleAfterResponse, freshFarCue, ownerStandingCommands, pendingRealTurn, postReleaseMotion, serverHeldGear, timeOf, verifyFiniteEpisode, verifyHiddenOwner, verifyNoAttacks, verifyPlannerWaterRace, verifyPreemption, verifySafetyOwnership, verifySharedSafetyHistory, type SettleSample } from './lib/ordinary-safety-oracles.ts';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Bot = ReturnType<typeof mineflayer.createBot>;
@@ -506,10 +509,14 @@ export class Harness {
     await this.setup(`forceload add ${x1} ${z1} ${x2} ${z2}`);
     await this.setup(`tp ${BOT} ${SCENE.start.x} ${SCENE.start.y + 30} ${SCENE.start.z}`);
     await this.setup(`effect give ${BOT} slow_falling 5 0 true`);
+    // The owned observer may stand on a removed platform (-56): lift it too, so
+    // clearing the scene never inflicts fall damage on a control player.
+    await this.setup(`tp ${OWNER} ${LAYOUT.ownerDefault.x} ${SCENE.start.y + 30} ${LAYOUT.ownerDefault.z}`);
+    await this.setup(`effect give ${OWNER} slow_falling 5 0 true`);
     await this.removeSceneActors();
     await this.noForeignSceneActors();
     for (const c of this.blockResetCommands()) await this.setup(c);
-    for (const c of [`clear ${BOT}`, `give ${BOT} minecraft:bread 8`, `clear ${OWNER}`, `effect clear ${BOT}`, `gamemode survival ${BOT}`, `tp ${BOT} ${SCENE.start.x} ${SCENE.start.y} ${SCENE.start.z} 0 0`, `tp ${OWNER} ${LAYOUT.ownerDefault.x} ${LAYOUT.ownerDefault.y} ${LAYOUT.ownerDefault.z} 0 0`]) await this.setup(c);
+    for (const c of [`clear ${BOT}`, `give ${BOT} minecraft:bread 8`, `clear ${OWNER}`, `effect clear ${BOT}`, `gamemode survival ${BOT}`, `tp ${BOT} ${SCENE.start.x} ${SCENE.start.y} ${SCENE.start.z} 0 0`, `tp ${OWNER} ${LAYOUT.ownerDefault.x} ${LAYOUT.ownerDefault.y} ${LAYOUT.ownerDefault.z} 0 0`, `effect clear ${OWNER}`]) await this.setup(c);
     await this.pause(1_500);
   }
   blockResetCommands(): string[] {
@@ -647,7 +654,8 @@ export class Harness {
     }
     await this.noForeignSceneActors();
   }
-  async mobIdentity(tag: string, key: string): Promise<{ uuid: string; entityId: number; position: V3; health: number }> {
+  /** `afterResponse` (verification only): see foreignVisibleAfterResponse; staging stays strict. */
+  async mobIdentity(tag: string, key: string, afterResponse?: { sinceMs: number; allowedHazards: string[]; allowedTargetIds: number[] }): Promise<{ uuid: string; entityId: number; position: V3; health: number; foreignVisible: Json[] }> {
     const actor = this.sceneActors.get(tag);
     check(actor, 'staging_unready: only this harness recorded actor can be inspected');
     const count = await this.read(`execute if entity @e[tag=${tag},type=${key},${ENTITY_BOX}]`);
@@ -659,11 +667,13 @@ export class Harness {
     check(raw, 'staging_unready: UUID/species absent from current observer packets');
     const s = await this.observe();
     check(s.entities.filter((e: Json) => e.key === key && distance(e.at, position) < 1).length === 1, 'staging_unready: actual CLI LOS/visible target correlation missing');
-    check(!s.entities.some((e: Json) => e.key !== 'minecraft:player' && ![...this.sceneActors.values()].some((a) => Object.values(this.owner!.entities).some((r) => r.uuid === a.uuid && `minecraft:${r.name}` === e.key && distance(r.position, e.at) < 1))), 'staging_unready: unexpected visible nonplayer group');
+    const unexpected = s.entities.filter((e: Json) => e.key !== 'minecraft:player' && ![...this.sceneActors.values()].some((a) => Object.values(this.owner!.entities).some((r) => r.uuid === a.uuid && `minecraft:${r.name}` === e.key && distance(r.position, e.at) < 1)));
+    check(unexpected.length === 0 || afterResponse, 'staging_unready: unexpected visible nonplayer group');
+    const foreignVisible = unexpected.length ? foreignVisibleAfterResponse(unexpected, this.events(), afterResponse!) : [];
     const reply = await this.read(`data get entity @e[tag=${tag},limit=1,${ENTITY_BOX}] Health`);
     const m = /has the following entity data: ([\d.]+)f$/.exec(reply.trim());
     check(m && Number(m[1]) > 0, 'staging_unready: current living mob health unreadable');
-    const result = { uuid: uuid!, entityId: raw.id, position, health: Number(m[1]) };
+    const result = { uuid: uuid!, entityId: raw.id, position, health: Number(m[1]), foreignVisible };
     this.safetySamples.push({ scenario: this.scenario, atMs: Date.now(), tag, key, identity: result });
     return result;
   }
@@ -720,19 +730,26 @@ export class Harness {
     return { close: async () => { closed = true; await done; }, assert: () => { if (failure) throw failure; } };
   }
 
-  async waterExitSettled(ev: string[]): Promise<void> {
-    const started = Date.now();
-    let samples = 0;
-    let previous: V3 | undefined;
+  /**
+   * Original 3 s / >= 4 sample server proof of dry stable support and full air
+   * after a water grant releases the actuator. Without `ordinary` (O7W, O7F)
+   * every step must stay settled. With `ordinary` (O7P/O7R: a still-admitted
+   * default-radius follow job) a step may move only while a fresh goal-owned
+   * movement action of that same goal/epoch is active (postReleaseMotion); dry
+   * support/air stays binding for every sample, which excludes water re-entry.
+   * Every sample, including a failing one, is retained before any verdict.
+   */
+  async waterExitSettled(ev: string[], ordinary?: { goalId: string; goalEpoch: number; episodeEnd: Json; excludedLeaseIds: number[] }): Promise<void> {
+    const started = this.now();
+    const samples: SettleSample[] = [];
     do {
+      const startedAtMs = this.now();
       const p = await this.position();
-      check(onWaterBank(p), `episode released before reaching a dry bank: ${JSON.stringify(p)}`);
       const x = Math.floor(p.x), z = Math.floor(p.z);
       const groundReply = await this.query(`execute if entity @a[name=${BOT},nbt={OnGround:1b},limit=1,${ENTITY_BOX}]`);
       const onGround = fixtureEntityTest(groundReply);
-      check(onGround !== null, `server ground reply unreadable: ${groundReply}`);
       const support: TrialWaterSupport = {
-        onGround,
+        onGround: onGround === true,
         floor: await this.blockIs({ x, y: -57, z }, 'minecraft:dirt') ? 'solid' : 'other',
         feet: await this.blockIs({ x, y: -56, z }, 'minecraft:air') ? 'air' : 'other',
         eye: await this.blockIs({ x, y: -55, z }, 'minecraft:air') ? 'air' : 'other',
@@ -740,15 +757,50 @@ export class Harness {
       const airReply = await this.query(`data get entity ${BOT} Air`);
       const airMatch = /(-?\d+)s\s*$/.exec(airReply);
       const air = airMatch ? Number(airMatch[1]) : null;
+      const sample = { startedAtMs, atMs: this.now(), p };
+      this.safetySamples.push({ scenario: this.scenario, atMs: sample.atMs, settleSample: { ...sample, support, air, groundReply: groundReply.slice(0, 80), ordinary: Boolean(ordinary) } });
+      ev.push(`settled server sample ${samples.length + 1}: ${JSON.stringify({ p, support, air })}`);
+      check(onGround !== null, `server ground reply unreadable: ${groundReply}`);
+      check(onWaterBank(p), `episode released before reaching a dry bank: ${JSON.stringify(p)}`);
       check(ordinaryDryBankSupport(p, support, air), `server confirms dry stable support/full air after release: ${JSON.stringify({ p, support, air })}`);
-      if (previous) check(Math.hypot(p.x-previous.x, p.z-previous.z) < 0.8, 'dry supported position stays settled after controls release');
-      ev.push(`settled server sample ${++samples}: ${JSON.stringify({ p, support, air })}`);
-      previous = p;
-      if (Date.now() - started >= 3_000 && samples >= 4) break;
-      await sleep(250);
+      const previous = samples.at(-1);
+      if (previous && !ordinary) check(Math.hypot(p.x-previous.p.x, p.z-previous.p.z) < 0.8, 'dry supported position stays settled after controls release');
+      samples.push(sample);
+      if (this.now() - started >= 3_000 && samples.length >= 4) break;
+      await this.pause(250);
     } while (true);
+    if (ordinary) {
+      const steps = postReleaseMotion(samples, this.events(), { ...ordinary, capabilities: ['follow_entity', 'move_near', 'seek_owner'] });
+      const moved = steps.filter((s) => s.actionId);
+      ev.push(`post-release steps: ${steps.length - moved.length} settled; ${moved.length} moved only under fresh goal-owned ${[...new Set(moved.map((s) => s.actionId))].join(', ') || 'none'} (dry support/air held in every sample)`);
+    }
     check(await this.health(BOT) > 0, 'bot survives the settled water exit');
-    ev.push(`server dry support retained ${Date.now()-started}ms after release over ${samples} samples`);
+    ev.push(`server dry support retained ${this.now()-started}ms after release over ${samples.length} samples`);
+  }
+
+  /**
+   * O8N readiness: BOTH control players at full health on two consecutive
+   * server reads >= 1 s apart. Natural regeneration may be awaited (bounded);
+   * the harness never heals, feeds or forces health. Food readbacks are
+   * diagnostics only.
+   */
+  async fullStableHealth(names: readonly string[], ev: string[], timeoutMs = 12_000): Promise<void> {
+    const deadline = this.now() + timeoutMs;
+    let firstFullAtMs: number | undefined;
+    let last: Record<string, number> = {};
+    while (this.now() <= deadline) {
+      last = {};
+      for (const name of names) last[name] = await this.health(name);
+      if (names.every((n) => last[n] === 20)) {
+        if (firstFullAtMs === undefined) firstFullAtMs = this.now();
+        else if (this.now() - firstFullAtMs >= 1_000) { ev.push(`PRECONDITION: full stable health ${JSON.stringify(last)} over ${this.now() - firstFullAtMs}ms (natural; never healed/fed)`); return; }
+      } else {
+        firstFullAtMs = undefined;
+        for (const name of names) if (last[name] !== 20) await this.read(`data get entity ${name} foodLevel`);
+      }
+      await this.pause(500);
+    }
+    throw new Error(`staging_unready: full stable control-player health required before the no-damage window: ${JSON.stringify(last)}`);
   }
 
   /** No owner goal/safety authority yet. Prove the actual zombie hurt the bot. */
@@ -786,7 +838,9 @@ export class Harness {
         const x = Math.floor(p.x), z = Math.floor(p.z);
         for (const [y, key] of [[-61, 'grass_block'], [-60, 'air'], [-59, 'air']] as const) check(fixtureBlockTest(await this.read(`execute if loaded ${x} ${y} ${z} if block ${x} ${y} ${z} minecraft:${key}`)) === true, 'staging_unready: current melee dry support/body unknown');
         const inventory = await this.read(`data get entity ${BOT} Inventory`);
-        check(/has the following entity data:/.test(inventory) && ['minecraft:iron_sword', 'minecraft:iron_helmet', 'minecraft:iron_chestplate'].every((key) => inventory.includes(`id: "${key}"`)), 'staging_unready: current server gear missing/unknown');
+        const equipment = await this.read(`data get entity ${BOT} equipment`);
+        const gear = serverHeldGear(inventory, equipment, await this.read(`data get entity ${BOT} SelectedItemSlot`));
+        check(gear && gear.mainHand === 'minecraft:iron_sword' && gear.head === 'minecraft:iron_helmet' && gear.chest === 'minecraft:iron_chestplate', 'staging_unready: current server gear missing/unknown');
         const snapshot = await this.observe();
         const status = this.dashboard();
         const prior = status.directive.goal;
@@ -801,10 +855,10 @@ export class Harness {
         if (!stillGrounded || distance(current, p) > 0.1 || distance(current, currentThreat) > 3.5 || this.now() - startedAtMs > 1_500 || !currentMeleeDamage(hit, self.id, threat.id, this.now()) || damage.findLast((d) => currentMeleeDamage(d, self.id, threat.id, this.now())) !== hit) { settled = undefined; return false; }
         if (!settled || settled.hit !== hit || distance(settled.position, current) > 0.1) settled = { since: this.now(), hit, position: current, samples: 1 };
         else settled.samples++;
-        const proof = { scenario: this.scenario, atMs: this.now(), defenseStaging: { uuid, selfId: self.id, threatId: threat.id, hitAtMs: hit.atMs, hitAgeMs: this.now()-hit.atMs, onGround: true, drySupport: true, currentEquipment: snapshot.equipment, serverInventory: inventory, meleeDistance, settledMs: this.now()-settled.since, samples: settled.samples } };
+        const proof = { scenario: this.scenario, atMs: this.now(), defenseStaging: { uuid, selfId: self.id, threatId: threat.id, hitAtMs: hit.atMs, hitAgeMs: this.now()-hit.atMs, onGround: true, drySupport: true, currentEquipment: snapshot.equipment, serverInventory: inventory, serverEquipment: equipment, serverGear: gear, meleeDistance, settledMs: this.now()-settled.since, samples: settled.samples } };
         this.safetySamples.push(proof);
         if (this.now()-settled.since < 250 || settled.samples < 2) return false;
-        ev.push(`PRECONDITION: server damage_event victim ${self.id}, cause ${threat.id}, tagged UUID ${uuid}, age ${this.now()-hit.atMs}ms, current RCON distance ${meleeDistance.toFixed(2)}, grounded dry support settled ${this.now()-settled.since}ms/${settled.samples} samples, current equipped gear; no goal/safety authority during staging`);
+        ev.push(`PRECONDITION: server damage_event victim ${self.id}, cause ${threat.id}, tagged UUID ${uuid}, age ${this.now()-hit.atMs}ms, current RCON distance ${meleeDistance.toFixed(2)}, grounded dry support settled ${this.now()-settled.since}ms/${settled.samples} samples, current server gear ${JSON.stringify(gear)}; no goal/safety authority during staging`);
         return true;
       }, 10_000);
     } finally { observer._client.removeListener('damage_event', onDamage); }
@@ -1299,11 +1353,13 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       check(episode.response === 'escape_water', 'only water escape response expected');
       return { atMs, episode };
     };
-    const waterFinished = async (episode: Json, ev: string[]) => {
+    // `ordinaryFollow`: the still-admitted follow job may resume through a fresh
+    // goal lease after release (O7P/O7R). O7F (cue withdrawn) stays strictly settled.
+    const waterFinished = async (episode: Json, ev: string[], ordinaryFollow?: { goalId: string; excludedLeaseIds: number[] }) => {
       const end = await h.waitEvent((e) => e.type === 'safety_episode_ended' && e.episodeId === episode.episodeId, 60_000, 'original finite water grant settlement');
       verifyFiniteEpisode(episode, end);
       check(['resolved', 'improved'].includes(end.outcome), `original episode must improve/resolve: ${end.outcome}`);
-      await h.waterExitSettled(ev);
+      await h.waterExitSettled(ev, ordinaryFollow ? { goalId: ordinaryFollow.goalId, goalEpoch: episode.suspended.goalEpoch, episodeEnd: end, excludedLeaseIds: ordinaryFollow.excludedLeaseIds } : undefined);
       check(!h.events().some((e) => e.type === 'safety_episode_started' && timeOf(e) > timeOf(end)), 'no replacement episode rescues premature release');
       return end;
     };
@@ -1328,7 +1384,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       await h.waitEvent((e) => e.type === 'planner_turn_completed' && e.requestId === pending!.requestId, 60_000, 'same actual planner completion');
       await h.waitForTruth('same actual raw planner response retained', async () => h.journal().some((e) => e.type === 'planner_proposal_raw' && e.requestId === pending!.requestId), 2_000);
       verifyPlannerWaterRace(h.events(), h.journal(), goal.goalId, pending!.requestId, episode, atMs);
-      const end = await waterFinished(episode, ev);
+      const end = await waterFinished(episode, ev, { goalId: goal.goalId, excludedLeaseIds: [] });
       h.noQuestions(goal.goalId, goal.from, ev);
       check(h.events().filter((e) => e.type === 'goal_admitted' && e.goalId === goal.goalId).length === 1 && !h.events().some((e) => e.type === 'goal_terminal' && e.goalId === goal.goalId && e.reason === 'outcome_verified'), 'planner-wait water never readmits/completes follow');
       ev.push(`actual request ${pending!.requestId}: start ${pending!.t}, intervention ${episode.t}, completion ${h.events().find((e) => e.type === 'planner_turn_completed' && e.requestId === pending!.requestId)!.t}; original episode ${end.outcome}`);
@@ -1347,7 +1403,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       const { episode } = await waterTrigger(goal.goalId);
       verifyPreemption(h.events(), episode, action, before.directive.goal.epoch);
       await h.waitForTruth('fresh active-work safety status', async () => Boolean(currentProtectedStatus(goal.goalId, episode)), 2_000);
-      const end = await waterFinished(episode, ev);
+      const end = await waterFinished(episode, ev, { goalId: goal.goalId, excludedLeaseIds: [action.leaseId] });
       // Same instruction; the owned owner's movement only tests continuation.
       // No replacement goal or fresh admission/grant is supplied here.
       const p = await h.position();
@@ -1365,12 +1421,24 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       const commands = ownerStandingCommands(LAYOUT.safety.farOwner, OWNER);
       for (const command of [commands.support, commands.feet, commands.head]) check(fixtureBlockTest(await h.read(command)) === true, 'staging_unready: additional OWNER-only point must be loaded, supported and air');
       check(fixtureEntityTest(await h.read(commands.occupants)) === false, 'staging_unready: additional OWNER-only body occupied/unknown');
+      const teleportStartedAtMs = Date.now();
       await h.triggerTeleport(OWNER, LAYOUT.safety.farOwner, 'approved owner-only far cue point; no block writes or bot travel outside scene');
       const guard = h.guardFarScene();
       try {
-        await h.waitForTruth('fresh actionable far owner cue', async () => h.dashboard().directive.autonomy?.locator?.actionable === true, 15_000);
         const ownerBefore = await h.entityPosition(OWNER);
-        const snapshot = await h.observe(); verifyHiddenOwner(snapshot, LAYOUT.safety.farOwner);
+        // R16: a cue/observation predating the client's processing of the owned
+        // teleport is not staging. Wait (bounded) for a post-teleport locator
+        // statement, a dashboard published after it and an observation taken
+        // after it with the owner no longer visible; the far point in ANY
+        // observation still fails immediately (freshFarCue -> verifyNoFarPoint).
+        let staged: Json | undefined;
+        await h.waitForTruth('fresh post-teleport far owner cue and hidden-owner observation', async () => {
+          const d = h.dashboard(), snapshot = await h.observe();
+          if (freshFarCue(h.events(), d, snapshot, teleportStartedAtMs, LAYOUT.safety.farOwner) !== 'ready') return false;
+          staged = { dashboard: d.publisher.publishedAtMs, locator: d.directive.autonomy.locator, snapshot: snapshot.id, takenAtMs: snapshot.takenAtMs };
+          return true;
+        }, 15_000);
+        ev.push(`PRECONDITION: owned teleport started ${teleportStartedAtMs}; fresh cue/hidden observation ${JSON.stringify(staged)}`);
         check(distance(ownerBefore, LAYOUT.safety.farOwner) < 0.1 && distance(await h.entityPosition(OWNER), LAYOUT.safety.farOwner) < 0.1, 'staging_unready: grounded owned far player readbacks must surround the actual observation');
         const origin = await h.position(), since = Date.now();
         const goal = await h.goal('follow me');
@@ -1433,8 +1501,9 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       const end = await h.waitEvent((e) => e.type === 'safety_episode_ended' && e.episodeId === ep.episodeId, 60_000, 'finite creeper response');
       verifyFiniteEpisode(ep, end); verifyNoAttacks(h.events(), since);
       check(['resolved', 'improved'].includes(end.outcome) && await h.health(BOT) > 0, 'bot survives original bounded retreat');
-      const current = await h.mobIdentity('og_o8c', 'minecraft:creeper');
+      const current = await h.mobIdentity('og_o8c', 'minecraft:creeper', { sinceMs: since, allowedHazards: ['creeper'], allowedTargetIds: [staged.entityId] });
       check(current.uuid === staged.uuid && distance(await h.position(), current.position) >= 4.5, 'same server creeper and safe final separation required');
+      if (current.foreignVisible.length) ev.push(`FOREIGN (recorded, outside the declared scene, never a hazard/target): ${JSON.stringify(current.foreignVisible)}`);
       await h.effectFreeCreeper('og_o8c'); await h.verifyDryMobGeometry();
       check(!h.events().some((e) => e.type === 'goal_terminal' && e.goalId === goal.goalId && e.reason === 'outcome_verified'), 'creeper safety does not complete follow');
       h.noQuestions(goal.goalId, goal.from, ev);
@@ -1446,6 +1515,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       await h.triggerTeleport(BOT, LAYOUT.safety.dryBot, 'original dry neutral-control origin');
       await h.triggerTeleport(OWNER, { x: 205.5, y: -60, z: 207.5 }, 'owned visible passive-control owner within follow radius');
       await h.armSafetyControl();
+      await h.fullStableHealth([BOT, OWNER], ev);
       for (const [kind, at, tag] of [['cow', LAYOUT.safety.cow, 'og_o8n_cow'], ['wolf', LAYOUT.safety.wolf, 'og_o8n_wolf']] as const) await h.setup(`summon ${kind} ${at.x} ${at.y} ${at.z} {PersistenceRequired:1b,Tags:["${tag}"]}`);
       await h.waitForTruth('both current tagged neutral/passive observer identities', async () => ['og_o8n_cow', 'og_o8n_wolf'].every((tag) => Object.values(h.owner!.entities).some((e) => e.uuid === h.sceneActors.get(tag)?.uuid)), 5_000);
       const cow = await h.mobIdentity('og_o8n_cow', 'minecraft:cow'), wolf = await h.mobIdentity('og_o8n_wolf', 'minecraft:wolf');
@@ -1464,7 +1534,9 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
         await h.waitEvent((e) => e.type === 'task_admitted' && e.goalId === goal.goalId, GOAL_TIMEOUT_MS, 'ordinary follow task');
         await sleep(4_000);
         await h.quiesce();
-        const nowCow = await h.mobIdentity('og_o8n_cow', 'minecraft:cow'), nowWolf = await h.mobIdentity('og_o8n_wolf', 'minecraft:wolf');
+        const after = { sinceMs: since, allowedHazards: [], allowedTargetIds: [] };
+        const nowCow = await h.mobIdentity('og_o8n_cow', 'minecraft:cow', after), nowWolf = await h.mobIdentity('og_o8n_wolf', 'minecraft:wolf', after);
+        for (const f of [...nowCow.foreignVisible, ...nowWolf.foreignVisible].slice(0, 4)) ev.push(`FOREIGN (recorded, outside the declared scene, never a hazard/target): ${JSON.stringify(f)}`);
         await h.unprovokedWolf('og_o8n_wolf'); await h.verifyDryMobGeometry();
         verifyNoAttacks(h.events(), since);
         check(h.events().filter((e) => e.type === 'safety_episode_started').length === episodes, 'unprovoked wolf/cow/owner never authorize a safety intervention');
