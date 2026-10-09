@@ -6,7 +6,7 @@ Chunkbot joins a Minecraft **Java Edition** server as its own player and accepts
 
 See [feature-plans.md](feature-plans.md) and [docs/v1-foundation-plan.md](docs/v1-foundation-plan.md) for scope.
 
-Chunkbot also has a local dashboard, smooth directive handoff, and optional persistent gameplay memory. These were implemented by three parallel native Claude Opus 5.5 workers through [the agent workflow](agent-workflow.md). Automatic progression, survival/death recovery, and live update management remain separate roadmap work.
+Chunkbot also has a local dashboard, smooth directive handoff, persistent gameplay memory, bounded survival support and item recovery, and player-like distant-owner navigation. Development uses native Claude Opus 5.5 workers through [the agent workflow](agent-workflow.md). The first gameplay upgrade focuses on commands, survival and recovery; idle gathering and building are disabled. Automatic release management remains separate roadmap work.
 
 ## Requirements
 
@@ -160,6 +160,14 @@ Only a bare `resume` is a control command; “resume mining” is an ordinary in
 
 Chunkbot rejects empty instructions and instructions longer than `chat.maxInstructionChars` (default 500) **before** touching the current goal. Unprefixed chat, other players, `/tellraw`, console `/say`, and Chunkbot's own messages are ignored. Their text is not stored.
 
+### Survival and recovery
+
+Jake's first gameplay-upgrade profile enables immediate safety and bounded survival support, with `autonomy.session.maxProgressionGoals: 0`. Chunkbot follows your commands and can eat, rest, maintain equipment and recover his own confirmed dropped items. He does not start unrelated gathering or building while idle. Automatic support needs an explicit world and bot scope, supplied by the profile's memory configuration.
+
+Immediate safety can interrupt ordinary work to escape water or avoid nearby hostile mobs. Defense requires current evidence of an engaged threat, sufficient health and serviceable equipment. After the danger clears, ordinary work is chosen again from the current world. Distant following uses visible information and the server's coarse locator hints, with bounded travel; unavailable hints do not expose hidden player coordinates.
+
+An interrupted command can continue within its original limits after safe recovery, through a newly admitted goal with a fresh inventory baseline. Recovery accepts evidence of Chunkbot's own incident and drops; uncertain or foreign items are refused. `!chunkbot stop` cancels work and pauses automatic support. `!chunkbot resume` clears that pause and reassesses current conditions. Logging out, reconnecting or restarting does not replay an old job or automatically join Minecraft.
+
 ### Dashboard
 
 Start the viewer in another terminal, using the same config and data directory as the app:
@@ -192,7 +200,7 @@ Add an explicit scope to your private config:
 
 Use ordinary goals such as “remember this spot as home,” “go home,” or “forget home.” The planner uses bounded, request-scoped references to saved locations. Chunkbot retains grounded places, verified construction progress and outcomes, historical container contents, and death incident evidence under the ignored data directory. It inspects a container again before using remembered contents; contradictory visible evidence revises memory. Unverified notes stay separate from confirmed facts.
 
-Saved facts survive restart. They do not resume actions, reconnect, clear pause, or perform automatic death recovery. `npm run chunkbot -- memory --config chunkbot.config.json` inspects the store without starting gameplay. Corrupt, incompatible or conflicting stores are reported and cannot be silently overwritten with empty memory.
+Saved facts survive restart. Memory alone does not resume actions, reconnect, clear pause, or perform death recovery; separately enabled survival support uses its scoped incident evidence. `npm run chunkbot -- memory --config chunkbot.config.json` inspects the store without starting gameplay. Corrupt, incompatible or conflicting stores are reported and cannot be silently overwritten with empty memory.
 
 ### Operator mechanic diagnostics (`/diag`)
 
@@ -263,7 +271,7 @@ Failure handling:
 - A different response model or provider, a cost above the ceiling, or input tokens above the bound disable Jev for the rest of the run.
 - Credits are never purchased automatically.
 
-- Being kicked, disconnected, killed, or moved to another dimension ends active goal ownership. Respawn, `/reconnect`, and restart start idle; goals never auto-resume.
+- Being kicked, disconnected, killed, or moved to another dimension ends active goal ownership. Reconnect and restart replay no goal. With scoped survival support enabled, an eligible interrupted command may be freshly admitted after verified safe recovery; it retains the original outcome and remaining limits.
 - `SIGINT`/`SIGTERM` (Ctrl-C), `/quit`, and end of terminal input cancel the goal, disconnect the bot, close evidence, and exit `0`. A second signal forces exit `130`.
 - Each run writes redacted, bounded evidence to `var/runs/<run-id>/events.jsonl` and `summary.json`. The newest 20 runs are kept. Secrets, rejected or unrelated chat text, and full UUIDs are not recorded.
 
