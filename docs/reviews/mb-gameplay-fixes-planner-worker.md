@@ -874,3 +874,94 @@ No inference was used in any test, and no fixture, RCON or provider access by me
 - **Final report not yet written:** the outcome rests on the journals.
 - **Driver still running:** later events (P5+) were not part of this analysis, and the run-61 world was not touched.
 - **Proposal effects unknown:** whether either guidance proposal changes real-model behaviour is unknown until root runs real acceptance.
+
+## P-PLAN-R20 continued — P10 missing-mechanic projection and P4 on 261 (worker P)
+
+Parent `939acd0cc0a4f3d997ce04e0853a4197a4e3a1ca`. This role update is a separate commit.
+
+- **Source/test commit:** `abfd5cb0a9601dd1b0fbfcbf58cfb6281148e3dc`.
+- **Changed paths:**
+  - `src/goals/public-text.ts` (+9/−3)
+  - `src/goals/goal-engine.ts` (+2/−2)
+  - new `tests/cannot-execute-mechanic.test.ts` (+89)
+- **Diff:** `git diff 939acd0 abfd5cb` SHA-256 `56184f64b90320e6e271eac78da682c3f10cd3bd310e34210d54c97a92be57ca`.
+
+### Evidence (read only)
+
+- `R19-planner-real-262.log` (SHA-256 `b2499fbc3fa97d4a505a7ba6d91250cd589e8a0903207c8fa1de3bce00f4e336`).
+- `R19-planner-real-261.log` (SHA-256 `f5fe0ad28a6c53099b46449e40c72fd61febc0bbdf3bbd241268c69116f57cf7`).
+- The 262 run journals `run-bfecf3f6d9a6` (hashes as above).
+
+### P10 trace (262, goal-3e279fd5e702), journal
+
+- **Turn 1:** `needs_information` with capability queries `enchanting` and `anvil`. `knowledge_answered` gives statuses `["unknown","unknown"]`. The code catalog's answer is "&lt;id&gt; is not an implemented capability".
+- **Turn 2:** accepted `cannot_execute`.
+  - Its `missing` text ends "(also missing: enchanting or anvil enchantment application)", and `missingCapabilities: []`.
+  - The planner listed its gap descriptively. `proposalFromWire` keeps only snake_case ids in `missingCapabilities` and folds descriptive entries into the internal `missing` prose.
+- **Projection:** the MB-PLAN-006 app-owned `publicBlocker` relays only code-id-shaped `missingCapabilities`. The owner-facing terminal was therefore exactly "the planner found no supported way to continue; planner turns 2 (knowledge 1, repairs 0, retries 0, replans 0), windows 0, tasks 0". The reason was silently lost.
+- **Comparison:** the passing R17 262 fault-Jev P10 and the 261 R20 P10 differ only because the model happened to list a code-id-shaped capability there (R17: `enchanting`).
+
+**Verdict:** a source projection defect. A code-verified fact was available but never projected. It is not an oracle bug.
+
+### Correction
+
+`publicBlocker` additionally names the capability ids that this goal (or its preparation draft) queried and that the CODE catalog answered `unknown`:
+
+> not implemented (checked against the capability catalog): enchanting, anvil
+
+- It is a code fact; the planner prose (`missing`, `verifiedProgress`) stays internal.
+- Only ids that are snake_case, pass the question detector and are not already listed are shown. They are deduplicated, capped at four, and fall within the existing 400-character clip.
+- Registered capabilities (status `known`) are never named.
+- Both cannot_execute paths are covered: the admitted goal and the preparation discard.
+
+### Control (`tests/cannot-execute-mechanic.test.ts`)
+
+Actual composition: the real GoalEngine, the real `proposalFromWire` and the real VersionKnowledge over the real registered catalog.
+
+The turn-2 raw wire is reconstructed. The real fold reproduces the journaled `missing` string exactly, and the test asserts that equality.
+
+**Fail-before (pre-fix source):** produces exactly the actual terminal detail. Four controls fail as intended; the late-ownership control passes both before and after.
+
+| Case | After the fix |
+| --- | --- |
+| Actual R20 sequence | Names `enchanting, anvil`; no prose relayed |
+| Registered `craft_item` queried | Not named |
+| No capability query | No clause |
+| Code-id `missingCapabilities` entries | Shown as before |
+| Bounds | At most four ids, duplicates merged |
+| Redaction | `can_you_enchant` and `let_me_know` (question-shaped) are never relayed |
+| Late ownership | A stop before the final turn publishes no capability blocker |
+
+**Limit:** if a planner states the gap only in prose and never queried a capability, nothing new is named. Relaying sanitized descriptive phrases would widen the coordinator's app-owned text boundary, so it is a root decision.
+
+### P4 on 261 (`R19-planner-real-261.log`), log only
+
+goal-388b88db4ec2 shows the same pattern as 262:
+- accepted possess ≥ 3 bread and near owner ≤ 3;
+- four empty chest inspections, then `repeated_without_progress`;
+- one explore toward the same north frontier, 0 drops, ending 24.33 from the owner;
+- turn 6 `cannot_execute`;
+- no question, inventory `{}`, the bread left in the world.
+
+The P4 diagnosis and proposals above apply unchanged: the quantity is impossible in the fixture; single-frontier persistence is under the current guidance; the north choice is uninformed. The "undefined" objective label appears there too and is fixed in `4950b55`. P10 passed on 261.
+
+### Checks (Node 24 PATH; logs `var/native-checks/p-r20b/`)
+
+| Check | Exit | Log SHA-256 |
+| --- | --- | --- |
+| P10 control on pre-fix source (4 fail as intended, late-ownership passes) | 1 | `3f87cacaf8788ca383b6fb527cb5605c99d43bb2b5b06396a2ac40a629d030c2` |
+| `npm run typecheck` | 0 | `54f8c884c94b75895a95d9205c411167bfd4a94fd36c0a921ae8313e715fd7f8` |
+| `npm run build` | 0 | `1537c3e259c4849c097c4c340708415b7d230f36bcf2a1dfee6410196b294715` |
+| `npm test` (1497/1497) | 0 | `6969d2fa602bcfc0c87e384649ee3cd1861d90d2f3796921d3369d90e4ca5b1f` |
+| Focused (P10 control, MB-PLAN-006, planner engine, P4 fixture; 51/51) | 0 | `ebe30a6b44dc81b6979febc1182d95b0ff8f161fa01d77ccb33572d430882958` |
+| Doctor 26.1.2 config (read-only) | 0 | `f124ed40f629fe491809411ea8deaa861eee8a3f684e6fb6f7ff26fb217d67e7` |
+| Doctor 26.2 config | 0 | `d27f3a898c2054f976071fc265709d6bc9bcf85f6cd3ee01379c392bf8a49292` |
+| Canonical `100ec816…` + `git diff 71b5880` (all R20 src/scripts, plus both new tests; temp detached worktree, removed): typecheck | 0 | `e3b0c442…b855` (empty output) |
+| Same: full suite (1647/1647) | 0 | `17605f4ab4b77dc2677ddfcb39c07991938bebed8ddb982ade31ddb61166578b` |
+
+No inference, fixture, RCON or provider access.
+
+### Remaining uncertain / model-dependent
+
+- **Live P10:** passes only when the model either queries the capability or lists it as a snake_case id. Both have been observed. Root's fresh real run decides.
+- **P4:** remains a fixture/guidance product decision (see the proposals above).
