@@ -5,14 +5,16 @@
 // (mine_block/move_near/pickup_item), candidate generator, executor and
 // TaskRuntime over a Mineflayer-shaped bot using the installed 26.1.2 registry.
 //
-// Installed vanilla ordering reproduced by the fake server (one tick): the
-// resync `window_items` and the barrier ack are sent while the server handles
-// this connection's packets; the item pickup happens later in the SAME tick's
-// entity phase, so `collect`, `entity_destroy` and `set_slot` arrive AFTER the
-// ack. That is exactly the actual 261 J2 round 6 (task-9117a8e2bdee): the
-// evaluation counted 2/3 logs, the next snapshot no longer had the drop, the
-// task ended blocked/no_candidates 60 ms after its own mining action, and the
-// server then held 3 logs (J4 consumed 3 oak_log, server-confirmed).
+// The fake server uses a faithful, plausible installed-production ordering (one
+// tick): the resync `window_items` and the barrier ack are sent while the server
+// handles this connection's packets, and the item pickup happens later in the
+// SAME tick's entity phase, so `collect`, `entity_destroy` and `set_slot` arrive
+// AFTER the ack. The actual packet times of that pickup were NOT journaled; this
+// ordering is not claimed to be the exact actual sequence. It reproduces the
+// observed stale-terminal condition of 261 J2 round 6 (task-9117a8e2bdee): the
+// evaluation counted 2/3 logs, the next snapshot no longer had the drop, the task
+// ended blocked/no_candidates 60 ms after its own mining action, and the server
+// later held 3 logs (J4 consumed 3 oak_log, server-confirmed).
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { sequentialIds, systemClock, type AdmittedTask, type DecisionPort } from '../src/contracts/index.ts';

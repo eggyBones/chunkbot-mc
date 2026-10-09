@@ -306,7 +306,9 @@ it('R16 O8D: worn armour is read from the installed `equipment` compound and the
     [R16_INVENTORY, R16_EQUIPMENT, 'Found no elements matching SelectedItemSlot', 'unreadable held slot'],
     [R16_INVENTORY, R16_EQUIPMENT, '4', 'sword not in the selected hotbar slot'],
     [R16_INVENTORY, 'Chunkbot has the following entity data: {head: {count: 1, id: "minecraft:iron_helmet"}}', '0', 'missing chestplate'],
-    [R16_INVENTORY, 'Chunkbot has the following entity data: {head: {components: {"minecraft:damage": 3}, count: 1, id: "minecraft:iron_helmet"}, chest: {count: 1, id: "minecraft:iron_chestplate"}}', '0', 'unparsed component body fails closed'],
+    // R18 + approved W-R11: structurally valid damaged (worn) gear parses; a malformed actual structure still fails closed.
+    [R16_INVENTORY, 'Chunkbot has the following entity data: {head: {components: {"minecraft:damage": 1}, count: 1, id: "minecraft:iron_helmet"}, chest: {components: {"minecraft:damage": 1', '0', 'actual R18 damaged equipment reply truncated inside a component fails closed'],
+    [R16_INVENTORY, 'Chunkbot has the following entity data: {head: {components: {"minecraft:damage": 1}, count: 1}, chest: {components: {"minecraft:damage": 1}, count: 1, id: "minecraft:iron_chestplate"}}', '0', 'damaged helmet stack without its own top-level id is not worn gear'],
   ] as const) {
     const g = serverHeldGear(inv, eq, sel.includes(' ') ? sel : `Chunkbot has the following entity data: ${sel}`);
     assert.ok(!g || g.mainHand !== 'minecraft:iron_sword' || g.head !== 'minecraft:iron_helmet' || g.chest !== 'minecraft:iron_chestplate', why);
@@ -486,4 +488,38 @@ it('R16 O8C: an out-of-scene foreign zombie_horse made visible by the retreat is
   assert.deepEqual((await run(actual, ctx)).foreignVisible.map((f) => f.key), ['minecraft:zombie_horse']);
   await assert.rejects(run([...actual.slice(0, 2), { ...o8cHorse, at: { x: 214.5, y: -60, z: 205.5 } }], ctx), /inside the declared scene/);
   await assert.rejects(run([{ key: 'minecraft:player', at: { x: 202.5, y: -60, z: 209.5 } }, o8cHorse], ctx), /actual CLI LOS\/visible target correlation missing/, 'same visible creeper still required');
+});
+
+// Actual R18 O8D replies (261 readbacks 1791510436544/436545; 262 436714/436715 identical):
+// the genuine staging hit left `components: {"minecraft:damage": 1}` on both worn stacks.
+const R18_EQUIPMENT = 'Chunkbot has the following entity data: {head: {components: {"minecraft:damage": 1}, count: 1, id: "minecraft:iron_helmet"}, chest: {components: {"minecraft:damage": 1}, count: 1, id: "minecraft:iron_chestplate"}}';
+
+it('R18 O8D: actual damaged worn gear passes the real melee staging readiness; every original guard still refuses', async () => {
+  const damaged = (io: { override: ((c: string) => string | undefined) | undefined }, extra?: (c: string) => string | undefined) => {
+    io.override = (c) => extra?.(c) ?? (c === 'data get entity Chunkbot equipment' ? R18_EQUIPMENT : undefined);
+  };
+  { const { h, io, summon } = meleeReplay(); damaged(io); const ev: string[] = [];
+    await h.stageMeleeEngagement(owned.tag, summon, ev);
+    assert.match(ev[0]!, /current server gear \{"mainHand":"minecraft:iron_sword","head":"minecraft:iron_helmet","chest":"minecraft:iron_chestplate","selectedSlot":0\}/);
+    const proof = h.safetySamples.filter((r) => r.defenseStaging).at(-1)!.defenseStaging;
+    assert.equal(proof.serverEquipment, R18_EQUIPMENT);
+    assert.ok(proof.settledMs >= 250 && proof.samples >= 2 && proof.hitAgeMs <= 6_000 && proof.meleeDistance <= 3.5);
+    assert.deepEqual(mutations(io), []); }
+  for (const kind of ['airborne','expired','foreign_damage','gear','ground_unknown','baby','floor','authority','health','malformed','selected'] as const) {
+    const { h, io, packets, summon } = meleeReplay();
+    damaged(io, (c) => kind === 'ground_unknown' && c.includes('OnGround') ? 'Unknown command'
+      : kind === 'baby' && c.endsWith(' IsBaby') ? 'Zombie has the following entity data: 1b'
+      : kind === 'health' && c === 'data get entity Chunkbot Health' ? 'Chunkbot has the following entity data: 13.5f'
+      : kind === 'malformed' && c === 'data get entity Chunkbot equipment' ? R18_EQUIPMENT.slice(0, -3)
+      : kind === 'selected' && c === 'data get entity Chunkbot SelectedItemSlot' ? 'Chunkbot has the following entity data: 1' : undefined);
+    if (kind === 'airborne') io.grounded = () => false;
+    if (kind === 'expired') io.grounded = () => io.time >= 16_200;
+    if (kind === 'foreign_damage') io.onSleep = () => packets.emit('damage_event', { entityId: 4, sourceCauseId: 10 });
+    if (kind === 'gear') h.observe = async () => ({ equipment: {}, entities: [{ key: owned.key, at: owned.at }] });
+    if (kind === 'floor') io.blocks.set('205,-61,205', 'water');
+    if (kind === 'authority') h.dashboard = () => ({ directive: { goal: { id: 'old' }, pause: { paused: true }, safety: { authority: 'owner_goal', state: 'responding' } } });
+    const trigger = kind === 'foreign_damage' ? async () => { await summon(); io.time += 6_001; } : summon;
+    await assert.rejects(h.stageMeleeEngagement(owned.tag, trigger, []), kind);
+    assert.ok(io.time <= 26_001, kind); assert.deepEqual(mutations(io), [], kind); assert.equal(packets.listenerCount('damage_event'), 0, kind);
+  }
 });
