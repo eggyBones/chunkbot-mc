@@ -141,6 +141,50 @@ describe('safety skills over the installed physics (client-physics evidence)', (
     await rt.service.close();
   });
 
+  it('W-R10 (R16 O7P/O7R boundary): after release, a resumed ordinary lease moves freely on dry support; re-entering deep water is preempted by a NEW finite grant for the same goal', async () => {
+    const sc = scene();
+    let auth = ownerAuthority();
+    const rt = runtime(sc.session, () => auth);
+    rt.service.start();
+    // First, the ordinary follow lease that water preempts (as in O7R).
+    const original = rt.leases.acquire({ kind: 'goal', goalEpoch: 2, goalId: 'goal-0001', taskId: 'task-0001' });
+    rt.service.tick();
+    assert.equal(original.revocation, 'safety_preempt');
+    assert.ok(await until(() => rt.service.episodes().length === 1 && rt.service.hold() === null, 25_000), 'first episode released');
+    const first = rt.service.episodes()[0]!;
+    assert.equal(first.outcome, 'resolved', first.detail);
+    assert.ok(hasSafeFluidSupport(rt.reader.self()!.fluid), 'released on stable solid support');
+    // The resumed ordinary task gets a FRESH lease and moves AWAY from the pool on dry ground
+    // (R16: lease goal:N acquired ~0.4 s after release, owner >3 blocks away).
+    const resumed = rt.leases.acquire({ kind: 'goal', goalEpoch: 2, goalId: 'goal-0001', taskId: 'task-0001' });
+    const act = new Actuator(sc.session, resumed, clock);
+    const p0 = { ...sc.bot.entity.position };
+    const away = { x: p0.x + (p0.x - 0.5), z: p0.z + (p0.z - 0.5) };
+    await act.look(Math.atan2(-(away.x - p0.x), -(away.z - p0.z)), 0);
+    act.setControl('forward', true);
+    await new Promise((r) => setTimeout(r, 900));
+    const p1 = sc.bot.entity.position;
+    assert.ok(Math.hypot(p1.x - p0.x, p1.z - p0.z) > 0.8, 'ordinary movement after release is not suppressed (the stationary oracle is not a safety property)');
+    assert.equal(resumed.revocation, undefined, 'no preemption while the body stays on dry support');
+    assert.equal(rt.service.counters.episodes, 1, 'no new episode on dry ground');
+    assert.equal(rt.service.hold(), null, 'dispatch is not held');
+    assert.ok(hasSafeFluidSupport(rt.reader.self()!.fluid), 'still dry, grounded');
+    // If resumed motion nevertheless re-enters the pool, survival keeps priority:
+    // the resumed lease is preempted and a NEW finite grant protects the same goal.
+    const q = sc.bot.entity.position;
+    await act.look(Math.atan2(-(0.5 - q.x), -(0.5 - q.z)), 0);
+    assert.ok(await until(() => resumed.revocation !== undefined, 15_000), 'walking back into deep water is caught');
+    assert.equal(resumed.revocation, 'safety_preempt');
+    assert.ok(await until(() => rt.service.episodes().length === 2 && rt.service.hold() === null, 25_000), 'second episode released');
+    const second = rt.service.episodes()[1]!;
+    assert.notEqual(second.grantId, first.grantId, 'fresh finite grant, not a revived one');
+    assert.equal(second.outcome, 'resolved', second.detail);
+    assert.equal(rt.service.counters.episodes, 2, 'cumulative episode history retained');
+    assert.ok(hasSafeFluidSupport(rt.reader.self()!.fluid));
+    auth = { ...auth, basis: 'none' };
+    await rt.service.close();
+  });
+
   it('explicit stop mid-escape clears controls immediately and the body is left to physics (no hidden buoyancy loop)', async () => {
     const sc = scene();
     let auth = ownerAuthority();
