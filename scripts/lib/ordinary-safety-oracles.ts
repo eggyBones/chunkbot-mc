@@ -146,35 +146,187 @@ export function verifySharedSafetyHistory(samples: Row[], cases: string[]): void
 
 /**
  * Current server-held melee gear from the INSTALLED 26.1.x/26.2 player NBT
- * (verified in both server jars and the R16 replies): `Inventory` holds only
+ * (verified in both server jars and the R16/R18 replies): `Inventory` holds only
  * main/hotbar slots; worn armour/off hand live in the `equipment` compound
- * (EquipmentSlot names head/chest/legs/feet/offhand); the held item is the
- * Inventory entry at `SelectedItemSlot`. Any unreadable or ambiguous reply is
- * null (never readiness). A pre-1.21.5 `Slot: 103b` armour entry is NOT worn gear.
+ * (EquipmentSlot names head/chest/legs/feet/offhand/mainhand/body/saddle); the
+ * held item is the Inventory entry at `SelectedItemSlot`.
+ *
+ * W-R11: the replies are parsed STRUCTURALLY (bounded SNBT subset), so routine
+ * wear such as `components: {"minecraft:damage": 1}` (actual R18 O8D) keeps the
+ * stack's known identity. Identity is ONLY the stack's own top-level `id`; a
+ * nested `id`/`Slot` inside components is never a stack identity or a slot.
+ * Any unreadable, malformed, truncated, duplicated-key, misnested or
+ * ambiguous reply is null (never readiness). A pre-1.21.5 `Slot: 103b` armour
+ * entry in Inventory is carried, NOT worn gear; offhand is never chest armour.
+ * Readiness policy is unchanged: callers still require the exact ids.
  */
 export function serverHeldGear(inventory: string, equipment: string, selected: string): { mainHand: string | null; head: string | null; chest: string | null; selectedSlot: number } | null {
-  const inv = /has the following entity data: (\[.*\])$/.exec(inventory.trim())?.[1];
-  const eq = /has the following entity data: (\{.*\})$/.exec(equipment.trim())?.[1];
-  const sel = /has the following entity data: (\d+)$/.exec(selected.trim())?.[1];
+  const inv = gearReplyBody(inventory);
+  const eq = gearReplyBody(equipment);
+  const sel = gearReplyBody(selected);
   if (inv === undefined || eq === undefined || sel === undefined) return null;
+  // SelectedItemSlot is an Int: exactly one plain decimal literal 0..8.
+  if (!/^\d$/.test(sel)) return null;
   const selectedSlot = Number(sel);
-  if (!Number.isInteger(selectedSlot) || selectedSlot < 0 || selectedSlot > 8) return null;
+  if (selectedSlot > 8) return null;
+  const invTree = parseGearSnbt(inv);
+  const eqTree = parseGearSnbt(eq);
+  if (!invTree || invTree.t !== 'list' || !eqTree || eqTree.t !== 'compound') return null;
   let mainHand: string | null = null;
-  for (const entry of inv.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g) ?? []) {
-    const slot = /(?:^\{|, )Slot: (-?\d+)b(?:,|\})/.exec(entry)?.[1];
-    const id = /(?:^\{|, )id: "([^"]+)"/.exec(entry)?.[1];
-    if (slot === undefined || !id) return null;
-    if (Number(slot) === selectedSlot) { if (mainHand !== null) return null; mainHand = id; }
+  for (const entry of invTree.v) {
+    if (entry.t !== 'compound') return null;
+    const stack = gearStack(entry, false, true);
+    const slot = entry.v.get('Slot');
+    if (!stack || !slot || slot.t !== 'num' || slot.suffix !== 'b' || !Number.isInteger(slot.v) || slot.v < -128 || slot.v > 127) return null;
+    if (slot.v === selectedSlot) {
+      if (mainHand !== null) return null; // two stacks claim the held slot
+      mainHand = stack;
+    }
   }
-  const worn = (slot: string): string | null | undefined => {
-    const all = [...eq.matchAll(new RegExp(`(?:^\\{|, )${slot}: \\{([^{}]*)\\}`, 'g'))];
-    if (all.length > 1) return undefined;
-    if (all.length === 0) return null;
-    return /(?:^|, )id: "([^"]+)"/.exec(all[0]![1]!)?.[1] ?? undefined;
+  for (const key of eqTree.v.keys()) if (!GEAR_EQUIPMENT_SLOTS.has(key)) return null;
+  const worn = (key: string): string | null | undefined => {
+    const node = eqTree.v.get(key);
+    if (node === undefined) return null;
+    if (node.t !== 'compound') return undefined;
+    return gearStack(node, GEAR_WORN_ARMOUR.has(key), false) ?? undefined;
   };
+  for (const key of eqTree.v.keys()) if (worn(key) === undefined) return null; // every present slot must be a well-formed stack
   const head = worn('head'), chest = worn('chest');
   if (head === undefined || chest === undefined) return null;
   return { mainHand, head, chest, selectedSlot };
+}
+
+// ---- private bounded SNBT subset for serverHeldGear (W-R11)
+
+const GEAR_EQUIPMENT_SLOTS = new Set(['mainhand', 'offhand', 'feet', 'legs', 'chest', 'head', 'body', 'saddle']);
+const GEAR_WORN_ARMOUR = new Set(['head', 'chest', 'legs', 'feet']);
+const GEAR_MAX_CHARS = 16_384;
+const GEAR_MAX_DEPTH = 12;
+const GEAR_MAX_NODES = 2_048;
+
+type GearNode =
+  | { t: 'compound'; v: Map<string, GearNode> }
+  | { t: 'list'; v: GearNode[] }
+  | { t: 'str'; v: string }
+  | { t: 'num'; v: number; suffix: string };
+
+/** The data after the exact `<name> has the following entity data: ` prefix, else undefined. */
+function gearReplyBody(reply: string): string | undefined {
+  const m = /^\S+ has the following entity data: ([\s\S]*)$/.exec(reply.trim());
+  return m && m[1]!.length > 0 && m[1]!.length <= GEAR_MAX_CHARS ? m[1] : undefined;
+}
+
+/**
+ * Top-level item-stack identity: own `id` (namespaced string) and integer
+ * `count`; a worn armour piece must be exactly 1. A stack carries only `id`,
+ * `count`, optional `components` (and `Slot` for Inventory entries): any other
+ * top-level key (e.g. a misnested `chest` stack) is malformed.
+ */
+function gearStack(node: Extract<GearNode, { t: 'compound' }>, armour: boolean, inventoryEntry: boolean): string | undefined {
+  for (const k of node.v.keys()) if (k !== 'id' && k !== 'count' && k !== 'components' && !(inventoryEntry && k === 'Slot')) return undefined;
+  const id = node.v.get('id');
+  const count = node.v.get('count');
+  if (!id || id.t !== 'str' || !/^[a-z0-9_.-]+:[a-z0-9_./-]+$/.test(id.v)) return undefined;
+  if (!count || count.t !== 'num' || (count.suffix !== '' && count.suffix !== 'b' && count.suffix !== 's') || !Number.isInteger(count.v) || count.v < 1 || count.v > 99) return undefined;
+  const components = node.v.get('components');
+  if (components !== undefined && components.t !== 'compound') return undefined;
+  if (armour && count.v !== 1) return undefined; // a worn armour piece is a single item
+  return id.v;
+}
+
+/** Strict recursive-descent parse of the printed SNBT subset; null on any malformation, duplicate key or bound. */
+function parseGearSnbt(text: string): GearNode | null {
+  let i = 0;
+  let nodes = 0;
+  const ws = () => { while (i < text.length && (text[i] === ' ' || text[i] === '\n' || text[i] === '\t' || text[i] === '\r')) i += 1; };
+  const fail = (): never => { throw new Error('gear_snbt'); };
+  const quoted = (): string => {
+    const q = text[i];
+    if (q !== '"' && q !== "'") fail();
+    i += 1;
+    let out = '';
+    while (true) {
+      if (i >= text.length) fail();
+      const c = text[i]!;
+      if (c === '\\') {
+        const n = text[i + 1];
+        if (n !== '\\' && n !== '"' && n !== "'") fail();
+        out += n; i += 2; continue;
+      }
+      if (c === q) { i += 1; return out; }
+      out += c; i += 1;
+    }
+  };
+  const key = (): string => {
+    ws();
+    if (text[i] === '"' || text[i] === "'") return quoted();
+    const m = /^[A-Za-z0-9_.+-]+/.exec(text.slice(i));
+    if (!m) fail();
+    i += m![0].length;
+    return m![0];
+  };
+  const value = (depth: number): GearNode => {
+    if (depth > GEAR_MAX_DEPTH || ++nodes > GEAR_MAX_NODES) fail();
+    ws();
+    const c = text[i];
+    if (c === '{') {
+      i += 1;
+      const v = new Map<string, GearNode>();
+      ws();
+      if (text[i] === '}') { i += 1; return { t: 'compound', v }; }
+      while (true) {
+        const k = key();
+        ws();
+        if (text[i] !== ':') fail();
+        i += 1;
+        if (v.has(k)) fail(); // duplicate/doubled field
+        v.set(k, value(depth + 1));
+        ws();
+        if (text[i] === ',') { i += 1; continue; }
+        if (text[i] === '}') { i += 1; return { t: 'compound', v }; }
+        fail();
+      }
+    }
+    if (c === '[') {
+      i += 1;
+      ws();
+      const typed = /^([BIL]);/.exec(text.slice(i));
+      if (typed) i += 2;
+      const v: GearNode[] = [];
+      ws();
+      if (text[i] === ']') { i += 1; return { t: 'list', v }; }
+      while (true) {
+        const item = value(depth + 1);
+        if (typed && item.t !== 'num') fail();
+        v.push(item);
+        ws();
+        if (text[i] === ',') { i += 1; continue; }
+        if (text[i] === ']') { i += 1; return { t: 'list', v }; }
+        fail();
+      }
+    }
+    if (c === '"' || c === "'") return { t: 'str', v: quoted() };
+    const m = /^(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)([bBsSlLfFdD]?)(?=[\s,}\]]|$)/.exec(text.slice(i));
+    if (m) {
+      i += m[0].length;
+      const v = Number(m[1]);
+      if (!Number.isFinite(v)) fail();
+      return { t: 'num', v, suffix: m[2]!.toLowerCase() };
+    }
+    if (text.startsWith('true', i) || text.startsWith('false', i)) {
+      const b = text.startsWith('true', i);
+      i += b ? 4 : 5;
+      return { t: 'num', v: b ? 1 : 0, suffix: 'b' };
+    }
+    return fail();
+  };
+  try {
+    const root = value(0);
+    ws();
+    return i === text.length ? root : null; // trailing text / extra closers
+  } catch {
+    return null;
+  }
 }
 
 /** One post-release server sample (RCON position read bracket). */
