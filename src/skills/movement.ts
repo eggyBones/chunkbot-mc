@@ -394,6 +394,13 @@ export const followEntity: SkillDefinition<{ target: MoveTarget; within: number;
   },
 };
 
+/** Inside the goal's ORIGINAL admission bound (never a route leg); without an admission proof, the plain anchor bound. */
+function withinAdmission(perception: ExecuteContext['services']['perception'], at: Vec): boolean {
+  const a = perception.admissionBounds();
+  if (!a) return perception.withinTravel(at); // no admission proof: no route leg can apply either
+  return Math.hypot(at.x - a.anchor.x, at.z - a.anchor.z) <= a.radius;
+}
+
 export const exploreFrontier: SkillDefinition<{ frontier: { snapshotId: string; handle: string } }> = {
   descriptor: {
     id: 'explore_frontier',
@@ -412,7 +419,9 @@ export const exploreFrontier: SkillDefinition<{ frontier: { snapshotId: string; 
   params: z.object({ frontier: HandleRefSchema }).strict(),
   resolve(ctx) {
     const scope = targetScope(ctx);
-    const list = ctx.snapshot.frontiers.filter((f) => ctx.services.perception.withinTravel(f.at) && scope.allows(f.handle));
+    // P-PLAN-R17: undirected exploration is bounded by the ORIGINAL admission
+    // anchor/radius; an owner-route leg is owner-directed authority only.
+    const list = ctx.snapshot.frontiers.filter((f) => withinAdmission(ctx.services.perception, f.at) && scope.allows(f.handle));
     if (scope.named && list.length === 0) return { drafts: [], unavailable: [namedTargetUnavailable(scope, 'frontier')] };
     if (list.length === 0) {
       return { drafts: [], unavailable: [{ reason: 'no_frontier', detail: 'no safe visible frontier inside the travel radius', evidence: { travel: json(ctx.snapshot.perception?.travel ?? null) } }] };
@@ -426,6 +435,10 @@ export const exploreFrontier: SkillDefinition<{ frontier: { snapshotId: string; 
     };
   },
   async execute(ctx, params) {
+    const rec = ctx.services.perception.resolve(params.frontier.snapshotId, params.frontier.handle);
+    if ('error' in rec) return precondition(rec.error, `frontier ${params.frontier.handle} cannot be resolved (${rec.error})`);
+    if (rec.target.kind !== 'frontier') return precondition('wrong_target_kind', `${params.frontier.handle} is not a frontier`);
+    if (!withinAdmission(ctx.services.perception, rec.target.at)) return precondition('outside_admission_bounds', 'exploration stays inside the original admission travel bound; an owner-route leg grants no exploration authority', { frontier: pos3(rec.target.at) });
     const before = ctx.services.perception.latest();
     const r = await moveNear.execute(ctx, { target: { kind: 'handle', ...params.frontier }, within: 2 });
     if (r.status !== 'succeeded') return r;
