@@ -622,7 +622,9 @@ async function main(): Promise<void> {
       for (const t of ordered.filter((e) => e.type === 'task_started')) {
         const term = ordered.find((e) => e.type === 'task_terminal' && e.taskId === t.taskId);
         const own = actions.filter((a) => a.taskId === t.taskId);
-        ev.push(`window ${windowOf(t) ?? '?'} task ${t.taskId} [${(t.allowedCapabilities ?? []).join(',')}] "${String(t.objective).slice(0, 100)}" => ${term ? `${term.status} (${term.reason})` : 'no terminal'}; actions: ${runs(own)}`);
+        // task_started carries the app-owned step label, not the planner objective (R20: "undefined").
+        const objective = ordered.find((e) => e.type === 'task_admitted' && e.taskId === t.taskId)?.objective ?? t.step ?? '';
+        ev.push(`window ${windowOf(t) ?? '?'} task ${t.taskId} [${(t.allowedCapabilities ?? []).join(',')}] "${String(objective).slice(0, 100)}" => ${term ? `${term.status} (${term.reason})` : 'no terminal'}; actions: ${runs(own)}`);
       }
       const explore = actions.find((a) => a.capability === 'explore_frontier' && a.status === 'succeeded');
       const preExplore = explore ? actions.filter((a) => at(a) < at(explore)) : actions;
