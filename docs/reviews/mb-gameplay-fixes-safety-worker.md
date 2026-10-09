@@ -4,7 +4,7 @@ Worker: native Claude Opus 5.5 (DSH `claude:claude-default`, `opus[1m]` → `cla
 
 ## Verdict
 
-**No owned product defect is established for O7P/O7R, O8D, O8C or O8N. No product source was changed.** O7P/O7R fail P's stationary post-release oracle. The bot was on server-verified dry, grounded support with full air throughout, and the first moved sample is the intended resumption of the same ordinary follow goal on a fresh lease. O8D, O8C and O8N refused in staging before admission, so no mob policy executed. One owned regression was added: `9e9b84c`, test-only. It locks the diagnosed post-release boundary.
+**No owned product defect is established for O7P/O7R, O8D, O8C or O8N. No product source was changed.** O7P/O7R fail P's stationary post-release oracle. Every logged sample shows server-verified dry, grounded support with full air. The unlogged failing sample passed the oracle's support checks before failing its distance check. The movement is the intended resumption of the same ordinary follow goal on a fresh lease. O8D, O8C and O8N refused in staging before admission, so no mob policy executed. One owned regression was added: `9e9b84c`, test-only. It locks the diagnosed post-release boundary.
 
 ## Evidence identity
 
@@ -15,7 +15,12 @@ Worker: native Claude Opus 5.5 (DSH `claude:claude-default`, `opus[1m]` → `cla
 | 261 `run-safety-ordinary` journal `data/runs/run-3dd2d4f6b02d/events.jsonl` | `4ba1643c30b94968a5a3d81b831cf988305ba85a4921f8685983dd04444de30c` |
 | 262 `run-safety-ordinary` journal `data/runs/run-405961ae54f2/events.jsonl` | `3d1b3c2ef439b4fd6d53a1e57b651debed822911ccf1a5d819056e17e4941c53` |
 
-Owned safety source at `63bde91` (`src/safety/*`, `src/contracts/safety.ts`, `src/skills/safety.ts`) is byte-identical to canonical `dd0b5a86`. Shared `conservativeMovements` in canonical `src/skills/navigation.ts:137` applies W's complete `applyDeepWaterAvoidance` (getBlock fence plus step hook) to every movement capability.
+The 14 safety paths common to W `63bde91` and canonical `dd0b5a86` are byte-identical (`cmp`):
+- `src/contracts/safety.ts`
+- `src/skills/safety.ts`
+- `src/safety/{adapter,dispositions,geometry,policy,service,tracker,trial-arena,trial-journal,trial-mobs,trial-rcon,trial-water,wiring}.ts`
+
+`src/safety/ordinary-trial.ts` is a legacy W-only file. It is deliberately absent from canonical, was not compared, and plays no part in this diagnosis. Shared `conservativeMovements` in canonical `src/skills/navigation.ts:137` applies W's complete `applyDeepWaterAvoidance` (getBlock fence plus step hook) to every movement capability.
 
 ## O7P / O7R — application vs. oracle
 
@@ -38,8 +43,12 @@ Actual frames (journal `t`, safety events):
 - In O7P the harness first waits for the actual planner completion, so the oracle's first sample is about 2–3.4 s after release. That coincides with the first ordinary action.
 - In O7R the oracle starts at release, while the suspended task resumes 1 ms later. Escape moved the bot to the bank, so the owner was already more than 3 blocks away. The resumed `follow_entity` lease is taken about 0.45 s later.
 - In every case the samples before the fresh lease are identical: stationary, grounded, solid floor, feet and eye in air, Air 300.
-- The failing sample came after the fresh lease. It passed the dry-bank and support/air checks and failed only on distance.
-- The visible moved samples (261 O7P sample 3 and 262 O7P sample 4: 0.63 blocks from the previous sample) are also server-dry and grounded.
+- The failing sample came after the fresh lease. Its failure message is the distance check. The oracle evaluates that check only after the same sample has passed the dry-bank and support/air checks.
+- The failing sample itself was not appended to the evidence. Its exact position and displacement are therefore not recorded, and I make no claim about them.
+- The last successfully logged samples are recorded:
+  - 261 O7P sample 3 and 262 O7P sample 4 moved 0.63 blocks from the previous sample;
+  - 261 O7R sample 3 moved 0.10 blocks.
+  These logged samples are server-dry and grounded with Air 300.
 
 The questions in the brief:
 - **Release on truly stable support:** yes. The escape returns success only when, with controls already released, the eyes are out, the column is dry (or genuine shallow wading), and client `onGround` plus `hasSafeFluidSupport` hold continuously for 1000 ms. A surface bob never enters that branch. The server samples corroborate this.
