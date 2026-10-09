@@ -27,11 +27,11 @@ describe('owner-typed coordinates', () => {
   it('parses bare and labelled triples from owner text only', () => {
     assert.deepEqual(parseOwnerCoordinates('meet me at 214 -60 214 please', 'instruction').map((c) => [c.x, c.y, c.z]), [[214, -60, 214]]);
     assert.deepEqual(parseOwnerCoordinates('go to x=10, y=64, z=-3', 'instruction').map((c) => [c.x, c.y, c.z]), [[10, 64, -3]]);
-    assert.deepEqual(parseOwnerCoordinates('(1.5, 70, 2.5)', 'answer').map((c) => [c.x, c.y, c.z]), [[1.5, 70, 2.5]]);
+    assert.deepEqual(parseOwnerCoordinates('(1.5, 70, 2.5)', 'instruction').map((c) => [c.x, c.y, c.z]), [[1.5, 70, 2.5]]);
     assert.deepEqual(parseOwnerCoordinates('get me 2 cobblestone and 3 logs', 'instruction'), [], 'quantities are not coordinates');
     assert.deepEqual(parseOwnerCoordinates('go to 1 999 1', 'instruction'), [], 'implausible y rejected');
-    const all = ownerCoordinates('go somewhere', [{ ref: 'q1', question: 'where?', answer: 'to 5 -60 7' }]);
-    assert.deepEqual(all.map((c) => [c.x, c.y, c.z, c.source]), [[5, -60, 7, 'answer']]);
+    const all = ownerCoordinates('go somewhere, to 5 -60 7');
+    assert.deepEqual(all.map((c) => [c.x, c.y, c.z, c.source]), [[5, -60, 7, 'instruction']]);
     assert.equal(matchesOwnerCoordinate({ x: 5.5, y: -60, z: 7.5 }, all), true, 'block centring tolerated');
     assert.equal(matchesOwnerCoordinate({ x: 6.1, y: -60, z: 7 }, all), false);
   });

@@ -91,19 +91,25 @@ describe('owner admission in the app', () => {
   });
 });
 
-describe('stop and clarification across surfaces', () => {
-  it('stop from chat cancels a planning goal; a stale answer does not revive it', async () => {
+describe('stop and no-question policy across surfaces (MB-PLAN-006)', () => {
+  it('a legacy clarification never reaches chat or terminal; stop from chat cancels; a stray answer does not revive it', async () => {
     const planner = new ScriptedPlanner();
-    const { app, game } = await readyApp(planner);
+    const { app, game, lines } = await readyApp(planner);
     game.chat({ kind: 'player', text: '!chunkbot make armor', ...OWNER });
     await until(() => planner.waiting === 1);
     planner.respond(clarify('Leather or iron?'));
-    await until(() => app.engine.status().goal?.state === 'awaiting_owner');
+    await until(() => planner.requests.length === 2);
+    assert.equal(planner.requests[1]?.turnKind, 'repair');
+    assert.notEqual(app.engine.status().goal?.state, 'awaiting_owner');
+    assert.ok(!lines.some((l) => /Leather or iron|Question q\d/.test(l)), 'terminal shows no question');
+    assert.ok(!game.replies.some((r) => /Leather or iron|Question q\d/.test(r)), 'chat shows no question');
     game.chat({ kind: 'player', text: '!chunkbot stop', ...OWNER });
     await until(() => app.engine.status().goal?.state === 'cancelled');
     await app.handleTerminalLine('answer q1 iron');
+    game.chat({ kind: 'player', text: '!chunkbot answer yes', ...OWNER });
+    await until(() => game.replies.some((r) => /Reply not applied/.test(r)));
     assert.equal(app.engine.status().goal?.state, 'cancelled');
-    assert.equal(planner.requests.length, 1);
+    assert.equal(planner.requests.length, 2);
   });
 
   it('terminal stop while idle reports nothing to stop', async () => {
@@ -157,7 +163,7 @@ describe('lifecycle', () => {
     assert.ok(lines.some((l) => /bot died; ending active goal ownership/.test(l)));
     await until(() => app.engine.status().goal?.terminal?.reason === 'death');
     game.emit({ type: 'respawn', connectionEpoch: 1, dimension: 'overworld' });
-    assert.ok(lines.some((l) => /respawned in overworld; idle \(goals never auto-resume\)/.test(l)));
+    assert.ok(lines.some((l) => /respawned in overworld; idle \(nothing to continue\)/.test(l)), "without a held job nothing continues");
     assert.equal(planner.requests.length, 1);
 
     await app.handleTerminalLine('collect wood');
@@ -179,6 +185,16 @@ describe('lifecycle', () => {
     assert.equal(game.state, 'ready');
     assert.equal(app.engine.status().goal?.state, 'failed', 'previous goal stays terminal; nothing resumes');
     assert.equal(planner.requests.length, 3);
+  });
+
+  it('control cleanup rejection is recorded and fails exit without skipping logout', async () => {
+    const { app, game, store } = makeApp(undefined, false, { closeControl: async () => { throw new Error('owned cleanup exceeded bound'); } });
+    const joining = app.connect(); game.completeJoin(); await joining;
+    assert.equal(await app.shutdown('operator_quit'), 1);
+    assert.equal(await app.closed, 1);
+    assert.deepEqual(game.disconnects, ['operator_stop']);
+    assert.equal(store.ofType('control_cleanup_failed').length, 1);
+    assert.equal(store.summary?.['shutdownReason'], 'operator_quit');
   });
 
   it('shutdown cancels the goal, disconnects the bot, closes evidence, and resolves closed', async () => {

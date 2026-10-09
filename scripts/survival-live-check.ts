@@ -30,30 +30,42 @@
 //   [--with-settings only]
 //   G1k keep_inventory=true death: retained inventory, no trip
 //   G3  Easy difficulty: eating completes ONLY at the admitted threshold
-//       (survival_state eat satisfied, food >= eatUntil); a necessary low-health
-//       eat runs through the allowance (check, reserve-before-dispatch); with
+//       (survival_state eat satisfied, food >= eatUntil); (b1) inside the eat
+//       cooldown, health <= restAtOrBelow with food < 18 gets a HEALTH-SUPPORT
+//       meal (not a blocked rest; trial 8e87ec3 finding T1); (b2) a necessary
+//       low-health eat (health <= lowHealth, staged by starving first and ONE
+//       computed damage) runs through the allowance (check, reserve-before-
+//       dispatch). Every decision records server health/food and cutoffs; with
 //       natural_health_regeneration verified TRUE rest must raise server health by >= 1;
 //       with it verified FALSE rest must end `no_regeneration` (bounded)
-//   G4  R8 OBSERVATION (no routine, no R8 claim): daytime set explicitly, bed
-//       use via interact_block; server respawn data recorded
-//   G4n R8 OBSERVATION: night set explicitly; server sleeping position, bed
-//       occupancy and daytime after 6 s recorded (sole-player only, never
-//       generalized to multiplayer)
+//       R4: staged inside verified glass walls/roof and a sea-lantern floor,
+//       within the existing scene clone. Existing occupants refuse staging;
+//       an intervening death fails immediately with its recorded cause.
+//   G4/G4n R8 bed observations: NOT RUN, always reported SKIPPED. Using a bed
+//       changes the fixture bot's respawn point (official 26.1.2/26.2 command
+//       reports include `spawnpoint`, but this harness has no verified way to
+//       restore the exact original respawn); R8/respawn restoration is
+//       unassigned. The leased default has NO bed interaction, NO respawn-point
+//       mutation and NO clock/time write.
 //
 //   npm run fixture -- status                     (fixture lease required)
 //   node scripts/survival-live-check.ts --fixture-lease <granted id> [--fixture 26.2] [--with-settings]
 //
 // OWNED WRITE FOOTPRINT (C6) — every block/entity write stays inside these:
 //   scene   x 196..224, y -61..-50, z 190..224 (blocks and item/xp entities)
+//           G3 enclosure only: x/z 196..214, y -61..-51 (glass + sea_lantern);
+//           no mob removal, and the SAME scene clone restores every block
 //   backup  x 196..224, y 200..211, z 190..224 (pre-trial scene copy; must be
 //           verified EMPTY before use, else the trial refuses to start;
 //           restored/cleared and re-verified at the end)
 //   forceload: only chunks this trial added are removed again
-//   bot: inventory/effects/position/health/food of the fixture bot only; G4/G4n
-//        may set its respawn point to the trial bed (recorded before/after)
-//   settings [--with-settings]: difficulty, gamerules keep_inventory and
-//        natural_health_regeneration, time of day — read first, restored in `finally`
-//        and re-verified; ANY failed restoration or verification fails the report
+//   bot: inventory/effects/position/health/food of the fixture bot only; NO bed
+//        interaction and NO respawn-point change (the bot respawns wherever its
+//        existing respawn point is; that point is only read)
+//   settings [--with-settings]: difficulty and gamerules keep_inventory and
+//        natural_health_regeneration — read first, restored in `finally` and
+//        re-verified; ANY failed restoration or verification fails the report.
+//        The world clock is only READ (C8 reply-form evidence), never set.
 //
 // Report: var/live-check/<stamp>[-26.2]-survival/report.json
 import { execFileSync } from 'node:child_process';
@@ -101,6 +113,33 @@ const BACKUP_Y = { y1: 200, y2: 211 };
 const ITEM_AREA = `x=${AREA.x1},y=${SCENE_Y.y1},z=${AREA.z1},dx=${AREA.x2 - AREA.x1},dy=${SCENE_Y.y2 - SCENE_Y.y1},dz=${AREA.z2 - AREA.z1}`;
 const SCENE_BOX = `${AREA.x1} ${SCENE_Y.y1} ${AREA.z1} ${AREA.x2} ${SCENE_Y.y2} ${AREA.z2}`;
 const BACKUP_BOX = `${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y2} ${AREA.z2}`;
+
+/** Bounded G3 enclosure: transparent walls/roof, lighted floor, entirely within the existing cloned scene.
+ * Exterior mobs are also outside the unchanged 8-block visible-threat guard from START. No mob removals.
+ */
+export const PHYSIOLOGY_ENCLOSURE = { x1: 196, y1: -61, z1: 196, x2: 214, y2: -51, z2: 214 } as const;
+export function physiologyEnclosurePlan(): { writes: string[]; probes: string[]; interior: string } {
+  const b = PHYSIOLOGY_ENCLOSURE;
+  check(b.x1 >= AREA.x1 && b.x2 <= AREA.x2 && b.z1 >= AREA.z1 && b.z2 <= AREA.z2 && b.y1 >= SCENE_Y.y1 && b.y2 <= SCENE_Y.y2, 'physiology enclosure outside the cloned scene');
+  return {
+    writes: [`fill ${b.x1} ${b.y1} ${b.z1} ${b.x2} ${b.y2} ${b.z2} glass hollow`, `fill ${b.x1} ${b.y1} ${b.z1} ${b.x2} ${b.y1} ${b.z2} sea_lantern`],
+    probes: [
+      `execute if block 205 -61 205 sea_lantern`, `execute if block 205 -51 205 glass`,
+      `execute if block 196 -60 205 glass`, `execute if block 214 -60 205 glass`,
+      `execute if block 205 -60 196 glass`, `execute if block 205 -60 214 glass`,
+      `execute if block 205 -60 205 air`, `execute if block 205 -59 205 air`,
+    ],
+    interior: `x=${b.x1 + 1},y=${b.y1 + 1},z=${b.z1 + 1},dx=${b.x2 - b.x1 - 2},dy=${b.y2 - b.y1 - 2},dz=${b.z2 - b.z1 - 2}`,
+  };
+}
+
+/** Pure staging assertion: even a completed automatic respawn cannot conceal an intervening death. */
+export function assertPhysiologyLife(expectedCaptureId: string | undefined, actual: { captureId?: string | undefined; life: string; health?: number | undefined; cause?: string | undefined }): void {
+  check(actual.captureId === expectedCaptureId && actual.life === 'alive' && actual.health !== undefined && actual.health > 0,
+    `physiology_staging_interrupted: life=${actual.life} health=${actual.health ?? 'unknown'} capture=${actual.captureId ?? 'none'} cause=${actual.cause ?? 'unknown'} (staged capture=${expectedCaptureId ?? 'none'})`);
+}
+
+export const physiologyEnclosureEmpty = (reply: string): boolean => /^Test failed(?:\. Count: 0)?$/.test(reply.trim());
 /** Unique per-run tag for foreign test piles (never matches another run's or harness's entities). */
 // MB-FLOW-003-C8: settings command names for 26.1.2 AND 26.2, checked against
 // the official server command reports (generated commands.json): gamerules are
@@ -110,11 +149,67 @@ const BACKUP_BOX = `${AREA.x1} ${BACKUP_Y.y1} ${AREA.z1} ${AREA.x2} ${BACKUP_Y.y
 const RULE_KEEP = 'keep_inventory';
 const RULE_REGEN = 'natural_health_regeneration';
 const TIME_QUERY = 'time query time';
-const RULE_REPLY = /currently set to: (\w+)/;
-const TIME_REPLY = /The time is (\d+)/;
+/** The overworld day timeline (26.1.2/26.2 `data/minecraft/timeline/day.json`: clock minecraft:overworld, period 24000). */
+const DAY_TIMELINE = 'minecraft:day';
+const DAY_QUERY = `time query ${DAY_TIMELINE}`;
 const DAY_TICKS = 24_000;
+
+// ---- MB-FLOW-003-C8: official reply forms (26.1.2 and 26.2 server.jar en_us.json; identical in both) ----
+//   commands.time.query.absolute  "Clock %s is at %s tick(s)"      (time query time; trial 2 got exactly this)
+//   commands.time.query           "The time is %s"                 (legacy form, still accepted)
+//   commands.time.query.timeline  "Timeline %s is at %s tick(s)"   (time query <timeline>)
+//   commands.time.set.absolute    "Set %s to %s tick(s)"           (time of <clock> set <time>)
+//   commands.time.set             "Set the time to %s"
+//   commands.gamerule.query       "Gamerule %s is currently set to: %s"
+//   commands.difficulty.query     "The difficulty is %s"
+/** `time query time` reply -> absolute clock ticks (and the clock id when stated). */
+export function parseClockReply(reply: string): { clock?: string; ticks: number } | undefined {
+  const abs = /^Clock (\S+) is at (\d+) tick\(s\)\s*$/.exec(reply.trim());
+  if (abs) return { clock: abs[1] as string, ticks: Number(abs[2]) };
+  const legacy = /^The time is (\d+)\s*$/.exec(reply.trim());
+  return legacy ? { ticks: Number(legacy[1]) } : undefined;
+}
+/** `time query <timeline>` reply -> position in that timeline (only for the named timeline). */
+export function parseTimelineReply(reply: string, timeline: string): number | undefined {
+  const m = /^Timeline (\S+) is at (\d+) tick\(s\)\s*$/.exec(reply.trim());
+  return m && m[1] === timeline ? Number(m[2]) : undefined;
+}
+/** `time [of <clock>] set` reply -> the ticks the server says it set (absolute form names the clock). */
+export function parseClockSetReply(reply: string): { clock?: string; ticks: number } | undefined {
+  const abs = /^Set (\S+) to (\d+) tick\(s\)\s*$/.exec(reply.trim());
+  if (abs) return { clock: abs[1] as string, ticks: Number(abs[2]) };
+  const plain = /^Set the time to (\d+)\s*$/.exec(reply.trim());
+  return plain ? { ticks: Number(plain[1]) } : undefined;
+}
+export function parseRuleReply(reply: string, rule: string): string | undefined {
+  const m = /^Gamerule (\S+) is currently set to: (\S+)\s*$/.exec(reply.trim());
+  return m && m[1] === rule ? (m[2] as string) : undefined;
+}
+export function parseDifficultyReply(reply: string): string | undefined {
+  return /^The difficulty is (\w+)\s*$/.exec(reply.trim())?.[1]?.toLowerCase();
+}
 const FOREIGN_TAG = `cbsurv_${Date.now().toString(36)}_${process.pid.toString(36)}`;
-const BED = { foot: { x: 208, y: -60, z: 208 }, head: { x: 208, y: -60, z: 209 } };
+/** Why the R8 bed observations are never run under the module lease (coordinator review). */
+const BED_SKIP_REASON = 'not run under this lease: bed interaction changes the fixture bot\'s respawn point and this harness cannot restore and verify the exact original respawn; R8 bed/respawn restoration is unassigned (no bed interaction, respawn-point mutation or clock write in the leased default)';
+/** Items whose server counts the C10 oracle compares (kit + foreign piles). */
+const TRACKED_ITEMS = ['bread', 'cobblestone', 'iron_pickaxe', 'diamond_sword', 'dirt'] as const;
+const LOST_KIT: Record<string, number> = { bread: 4, cobblestone: 20, iron_pickaxe: 1, diamond_sword: 1 };
+
+/**
+ * C10 truthfulness oracle (pure): the server inventory change since the
+ * pre-recovery baseline must equal what survival COUNTED as regained plus what
+ * it REPORTED as incidental during the attempt, key by key. Anything else is an
+ * unreported or misattributed effect.
+ */
+export function deltaMismatches(baseline: Record<string, number>, now: Record<string, number>, regained: Record<string, number>, incidental: Record<string, number>): string[] {
+  const out: string[] = [];
+  for (const k of new Set([...Object.keys(baseline), ...Object.keys(now)])) {
+    const delta = (now[k] ?? 0) - (baseline[k] ?? 0);
+    const explained = (regained[k] ?? 0) + (incidental[k] ?? 0);
+    if (delta !== explained) out.push(`${k}: server delta ${delta} != regained ${regained[k] ?? 0} + incidental ${incidental[k] ?? 0}`);
+  }
+  return out;
+}
 
 interface Result {
   id: string;
@@ -131,6 +226,8 @@ class Gate {
   readonly results: Result[] = [];
   readonly setup: Array<{ atMs: number; command: string; reply: string }> = [];
   readonly packets: Array<{ atMs: number; name: string; detail?: string }> = [];
+  /** Settings/clock/inventory observations that are not gate results (recorded in the report). */
+  readonly notes: string[] = [];
   readonly store = new MemoryRunStore();
   readonly game: MineflayerConnection;
   readonly runtime: SkillRuntime;
@@ -141,8 +238,25 @@ class Gate {
   readonly outcomes: SkillOutcome[] = [];
   epoch = 0;
   goalId = '';
+  /** Task-runtime low-health cutoff (config limits.lowHealth), for decision evidence. */
+  lowHealth = 0;
   /** The recovery proposal admitted in G2 (continued in G2b). */
   recovery: SurvivalProposal | undefined;
+  /**
+   * Evidence of one survival decision (G3 finding T1): the server health/food/saturation the decision used, its
+   * age, every cutoff it compared with, and any routine cooldown still running. Never derived from the decision.
+   */
+  decisionLine(label: string, d: ReturnType<SurvivalService['assess']>): string {
+    const v = this.survival.vitals(this.game.connectionEpoch);
+    const cfg = this.survival.config();
+    const st = this.survival.status(Date.now());
+    const cd = st.cooldowns.map((c) => `${c.routine}${c.key ? `:${c.key}` : ''} ${c.remainingS}s`).join(',') || 'none';
+    const what = d.kind === 'propose' ? `propose ${d.proposal.routine} priority=${d.proposal.priority} allowance=${d.proposal.lowHealthAllowance ? `${d.proposal.lowHealthAllowance.maxActions} actions` : 'none'} reason="${d.proposal.reason}"` : `${d.kind}${'routine' in d ? ` ${d.routine}` : ''} ${'reason' in d ? d.reason : ''}`;
+    return `${label}: ${what} | server health=${v?.health ?? 'unknown'} food=${v?.food ?? 'unknown'} saturation=${v?.saturation ?? 'unknown'} age=${v ? Date.now() - v.atMs : -1}ms | cutoffs lowHealth=${this.lowHealth} restAtOrBelow=${cfg?.health.restAtOrBelow} eatAtOrBelow=${cfg?.food.eatAtOrBelow} eatUntil=${cfg?.food.eatUntil} | cooldowns ${cd}`;
+  }
+
+  /** C10: RCON inventory immediately before the recovery admission (the delta oracle's baseline). */
+  baseline: Record<string, number> | undefined;
   private readonly password: string;
   private rconQueue: Promise<unknown> = Promise.resolve();
 
@@ -186,6 +300,7 @@ class Gate {
       latestSnapshot: () => this.runtime.perception.latest(),
     });
     check(survival, 'survival service could not be created');
+    this.lowHealth = config.limits.lowHealth;
     this.survival = survival;
     // Approved onBotCreated hook through the existing createBot seam: attach BEFORE login.
     this.game = new MineflayerConnection({
@@ -208,7 +323,21 @@ class Gate {
         const interesting = new Set(['death_combat_event', 'update_health', 'set_slot', 'window_items', 'respawn', 'collect', 'set_player_inventory']);
         bot._client.on('packet', (data: Json, meta: { name: string }) => {
           if (!interesting.has(meta.name)) return;
-          const detail = meta.name === 'update_health' ? `health=${String(data['health'])} food=${String(data['food'])}` : meta.name === 'set_slot' ? `w=${String(data['windowId'])} slot=${String(data['slot'])}` : undefined;
+          // C10: slot packets carry the server-stated item and count; collect packets their entity ids and count.
+          const item = (raw: unknown) => {
+            const it = raw as { itemCount?: number; itemId?: number } | undefined;
+            return it && it.itemCount ? `${this.survival.registry().nameOf(it.itemId as number) ?? `id${String(it.itemId)}`}x${it.itemCount}` : 'empty';
+          };
+          const detail =
+            meta.name === 'update_health'
+              ? `health=${String(data['health'])} food=${String(data['food'])}`
+              : meta.name === 'set_slot'
+                ? `w=${String(data['windowId'])} slot=${String(data['slot'])} ${item(data['item'])}`
+                : meta.name === 'collect'
+                  ? `entity=${String(data['collectedEntityId'])} collector=${String(data['collectorEntityId'])} count=${String(data['pickupItemCount'])}`
+                  : meta.name === 'window_items' && data['windowId'] === 0
+                    ? `w=0 nonEmpty=${(Array.isArray(data['items']) ? (data['items'] as unknown[]) : []).filter((x) => (x as { itemCount?: number })?.itemCount).map(item).join(',') || 'none'}`
+                    : undefined;
           this.packets.push({ atMs: Date.now(), name: meta.name, ...(detail ? { detail } : {}) });
           if (this.packets.length > 4_000) this.packets.splice(0, 1_000);
         });
@@ -288,13 +417,25 @@ class Gate {
     await sleep(1_500);
   }
 
-  async waitFor(what: string, cond: () => boolean | Promise<boolean>, ms = 10_000): Promise<void> {
+  async waitFor(what: string, cond: () => boolean | Promise<boolean>, ms = 10_000, stagingGuard?: () => void): Promise<void> {
     const until = Date.now() + ms;
     while (Date.now() < until) {
+      stagingGuard?.();
       if (await cond()) return;
       await sleep(200);
     }
-    throw new Error(`timed out waiting for ${what}`);
+    throw new Error(`${stagingGuard ? 'physiology_staging_failed: ' : ''}timed out waiting for ${what}`);
+  }
+
+  async enclosePhysiology(ev: string[]): Promise<void> {
+    const plan = physiologyEnclosurePlan();
+    for (const command of plan.writes) check(/^Successfully filled [1-9]\d* block\(s\)$/.test((await this.rcon(command)).trim()), `physiology_staging_failed: enclosure write failed (${command})`);
+    for (const command of plan.probes) check((await this.rcon(command)).trim() === 'Test passed', `physiology_staging_failed: enclosure verification failed (${command})`);
+    const occupants = await this.rcon(`execute if entity @e[type=!player,type=!item,type=!experience_orb,${plan.interior}]`);
+    check(physiologyEnclosureEmpty(occupants), `physiology_staging_failed: existing non-player entities inside the enclosure (${occupants}); no mobs are removed by this harness`);
+    const centered = await this.rcon(`execute positioned ${START.x} ${START.y} ${START.z} if entity @a[name=${BOT},distance=..0.5]`);
+    check(/^Test passed(?:\. Count: 1)?$/.test(centered.trim()), `physiology_staging_failed: bot is not at the enclosure center (${centered})`);
+    ev.push(`G3 enclosure verified: glass walls/roof, sea_lantern floor, ${JSON.stringify(PHYSIOLOGY_ENCLOSURE)} inside unchanged scene/clone restoration; no mob, clock, bed, respawn or additional gamerule mutation`);
   }
 
   /** Trial scene inside the owned footprint (blocks + item/xp entities only); the pre-trial copy is in the backup volume. */
@@ -373,6 +514,13 @@ class Gate {
     this.survival.onSupportTerminal({ proposalId: p.proposalId, goalId: this.goalId, goalEpoch: this.epoch, state: reason === 'outcome_verified' ? 'completed' : 'blocked', reason, detail: reason, counters: { plannerTurns: 0, tasksAdmitted: 1, replans: 0 }, endedAtMs: Date.now() });
   }
 
+  /** RCON `clear <bot> <item> 0` counts of every kit / foreign-pile item (read-only). */
+  async inventoryCounts(): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    for (const k of TRACKED_ITEMS) out[k] = await this.count(k);
+    return out;
+  }
+
   async count(item: string): Promise<number> {
     const r = await this.rcon(`clear ${BOT} minecraft:${item} 0`, false);
     const m = /Found (\d+) matching item/.exec(r);
@@ -382,6 +530,19 @@ class Gate {
   async lastDeathLocation(): Promise<string> {
     return this.rcon(`data get entity ${BOT} LastDeathLocation`, false);
   }
+}
+
+/** Survival's own accounting for the current episode, in RCON item names (no namespace). */
+function recoveryAccounting(g: Gate): { regained: Record<string, number>; duringAttempt: Record<string, number>; afterSync: Record<string, number> } {
+  const inc = g.survival.status(Date.now()).incidents.at(-1);
+  const bare = (k: string) => k.replace(/^minecraft:/, '');
+  const sum = (rows: Array<{ key?: string; count: number }>) => {
+    const out: Record<string, number> = {};
+    for (const r of rows) if (r.key) out[bare(r.key)] = (out[bare(r.key)] ?? 0) + r.count;
+    return out;
+  };
+  const incidental = inc?.incidental ?? [];
+  return { regained: sum(inc?.regained ?? []), duringAttempt: sum(incidental.filter((x) => x.source === 'unplanned_collect')), afterSync: sum(incidental.filter((x) => x.source === 'after_respawn_sync')) };
 }
 
 function readRconPassword(): string {
@@ -406,6 +567,10 @@ async function killWithKit(g: Gate, ev: string[]): Promise<{ captureId: string |
   await g.rcon(`kill ${BOT}`);
   await g.waitFor('respawn ready', () => g.survival.tracker.life === 'alive' && g.packets.slice(mark).some((p) => p.name === 'respawn'), 15_000);
   await sleep(1_000);
+  // C10 (read-only): where the bot respawned and what loose items lie around it there (passive pickup source).
+  ev.push(`respawned at (RCON): ${(await g.rcon(`data get entity ${BOT} Pos`, false)).slice(0, 160)}`);
+  ev.push(`item entities within 6 blocks of the respawn point (RCON, read-only): ${(await g.rcon(`execute as ${BOT} at @s if entity @e[type=item,distance=..6]`, false)).slice(0, 80)}`);
+  ev.push(`inventory right after respawn (RCON, before any recovery): ${JSON.stringify(await g.inventoryCounts())}`);
   // No spawnpoint change: return the respawned bot to the scene start (its own position only).
   await g.rcon(`tp ${BOT} ${START.x} ${START.y} ${START.z} 0 20`);
   await sleep(1_000);
@@ -429,21 +594,16 @@ function sceneChunks(): Array<{ cx: number; cz: number }> {
   return out;
 }
 
-/** A read-only settings query; the reply is RECORDED (C8) so a failed parse is diagnosable. */
-async function query(g: Gate, cmd: string, re: RegExp): Promise<string | undefined> {
-  return re.exec(await g.rcon(cmd))?.[1];
-}
-
-/** Time of day from the default clock's `time query time` (modulo one day, whatever the clock's absolute count). */
-async function timeOfDay(g: Gate): Promise<number | undefined> {
-  const t = await query(g, TIME_QUERY, TIME_REPLY);
-  return t === undefined ? undefined : Number(t) % DAY_TICKS;
+/** Absolute clock read (recorded) with its local receive time. */
+async function readClock(g: Gate): Promise<{ clock?: string; ticks: number; atMs: number } | undefined> {
+  const r = parseClockReply(await g.rcon(TIME_QUERY));
+  return r ? { ...r, atMs: Date.now() } : undefined;
 }
 
 async function run(outDir: string, withSettings: boolean): Promise<Json> {
   const g = new Gate(outDir);
   /** Settings to restore in `finally` (command, and how to verify it). */
-  const restore: Array<{ what: string; command: string; verify: () => Promise<boolean> }> = [];
+  const restore: Array<{ what: string; command: string | (() => string); verify: () => Promise<boolean> }> = [];
   const restoreChecks: RestoreCheck[] = [];
   const addedForceload: Array<{ cx: number; cz: number }> = [];
   let backupTaken = false;
@@ -496,16 +656,23 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
     });
 
     await g.gate('G2', 'C3 mixed piles: oversized pile, unrelated loot and a different-identity valuable are refused before collection', async (ev) => {
-      await g.rcon(`summon item ${DEATH_AT.x + 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:bread",count:64},PickupDelay:0s,Tags:["${FOREIGN_TAG}"]}`);
-      await g.rcon(`summon item ${DEATH_AT.x - 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:dirt",count:3},PickupDelay:0s,Tags:["${FOREIGN_TAG}"]}`);
-      await g.rcon(`summon item ${DEATH_AT.x} ${DEATH_AT.y} ${DEATH_AT.z - 4} {Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":1}}},PickupDelay:0s,Tags:["${FOREIGN_TAG}"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x + 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:bread",count:64},PickupDelay:0s,Tags:["${FOREIGN_TAG}","${FOREIGN_TAG}_bread"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x - 3} ${DEATH_AT.y} ${DEATH_AT.z + 3} {Item:{id:"minecraft:dirt",count:3},PickupDelay:0s,Tags:["${FOREIGN_TAG}","${FOREIGN_TAG}_dirt"]}`);
+      await g.rcon(`summon item ${DEATH_AT.x} ${DEATH_AT.y} ${DEATH_AT.z - 4} {Item:{id:"minecraft:diamond_sword",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":1}}},PickupDelay:0s,Tags:["${FOREIGN_TAG}","${FOREIGN_TAG}_sword"]}`);
       await sleep(1_500);
+      // C10: what the SERVER states for each pile (RCON entity data) and what the bot's packets state (tracker drop facts).
+      for (const pile of ['bread', 'dirt', 'sword']) ev.push(`foreign ${pile} pile (RCON entity data): ${(await g.rcon(`data get entity @e[type=item,tag=${FOREIGN_TAG}_${pile},limit=1,${ITEM_AREA}] Item`, false)).slice(0, 200)}`);
+      const drops = g.survival.tracker.dropStacks().filter((d) => d.atMs > 0);
+      ev.push(`server-stated drop stacks seen by the bot (packets): ${drops.map((d) => `#${d.entityId} ${d.key}x${d.count}${d.meta.digest ? ` ${d.meta.digest}` : ''}`).join(', ') || 'none'}`);
       await g.durable();
       ev.push(`durability before recovery: survival=${g.survival.durability()}`);
       const decision = g.survival.assess(g.assessInput());
       ev.push(`decision: ${decision.kind} ${decision.kind === 'propose' ? decision.proposal.routine : 'reason' in decision ? decision.reason : ''}`);
       check(decision.kind === 'propose' && decision.proposal.routine === 'death_recovery', 'recovery proposed');
       g.recovery = decision.proposal;
+      // C10 baseline: the server inventory right before the recovery admission (respawn-point pickups are already in it).
+      g.baseline = await g.inventoryCounts();
+      ev.push(`pre-recovery server inventory baseline (RCON): ${JSON.stringify(g.baseline)}`);
       g.admitProposal(decision.proposal);
       const before = g.survival.recoveryTarget({ goalEpoch: g.epoch, connectionEpoch: g.game.connectionEpoch, dimension: g.snapshot().dimension });
       ev.push(`authority before the attempt is durable: ${'error' in before ? before.error : 'authorized'}`);
@@ -523,11 +690,16 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         await sleep(300);
       }
       ev.push(`resolver refusals now: ${g.unavailable('recover_lost_items').join(' | ').slice(0, 600)}`);
-      const counts = { bread: await g.count('bread'), dirt: await g.count('dirt'), diamond_sword: await g.count('diamond_sword') };
+      const counts = await g.inventoryCounts();
       ev.push(`server inventory (RCON clear 0): ${JSON.stringify(counts)}`);
       ev.push(`foreign piles still on the ground (RCON): ${(await g.rcon(`execute if entity @e[type=item,tag=${FOREIGN_TAG},${ITEM_AREA}]`, false)).slice(0, 120)}`);
-      check(counts.dirt === 0, 'no unrelated dirt was collected');
-      check(counts.bread <= 4, 'the oversized 64-bread pile was not collected');
+      const acc = recoveryAccounting(g);
+      ev.push(`survival accounting: regained ${JSON.stringify(acc.regained)}; incidental during the attempt ${JSON.stringify(acc.duringAttempt)}; incidental after the respawn sync ${JSON.stringify(acc.afterSync)}`);
+      const base = g.baseline as Record<string, number>;
+      check((counts['dirt'] ?? 0) === (base['dirt'] ?? 0), 'no unrelated dirt was collected (server delta 0)');
+      check((counts['bread'] ?? 0) - (base['bread'] ?? 0) <= 4, 'the oversized 64-bread pile was not collected (bread delta <= the 4 lost)');
+      const mismatch = deltaMismatches(base, counts, acc.regained, acc.duringAttempt);
+      check(mismatch.length === 0, `every server inventory change is reported truthfully (regained or incidental): ${mismatch.join('; ')}`);
       const foreignSword = await g.rcon(`execute if entity @e[type=item,tag=${FOREIGN_TAG},nbt={Item:{id:"minecraft:diamond_sword"}},${ITEM_AREA}]`, false);
       ev.push(`foreign (wrong-identity) sword on the ground (RCON): ${foreignSword.slice(0, 80)}`);
       check(/passed/i.test(foreignSword), 'the wrong-identity foreign sword is still on the ground (not collected)');
@@ -553,8 +725,11 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       const recovered = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'death_recovery', expect: 'recovered' }, owner);
       const concluded = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'death_recovery', expect: 'concluded' }, owner);
       ev.push(`recovered: ${recovered.status} ${recovered.detail}; concluded: ${concluded.status} ${concluded.detail}`);
-      const counts = { bread: await g.count('bread'), cobblestone: await g.count('cobblestone'), iron_pickaxe: await g.count('iron_pickaxe'), diamond_sword: await g.count('diamond_sword') };
-      ev.push(`server inventory (RCON clear 0): ${JSON.stringify(counts)}`);
+      const counts = await g.inventoryCounts();
+      const base = g.baseline ?? {};
+      const acc = recoveryAccounting(g);
+      ev.push(`server inventory (RCON clear 0): ${JSON.stringify(counts)}; pre-recovery baseline ${JSON.stringify(base)}`);
+      ev.push(`survival accounting: regained ${JSON.stringify(acc.regained)}; incidental during the attempt ${JSON.stringify(acc.duringAttempt)}; incidental after the respawn sync ${JSON.stringify(acc.afterSync)}`);
       g.endSupport(g.recovery, recovered.status === 'satisfied' || concluded.status === 'satisfied' ? 'outcome_verified' : 'no_progress');
       const inc = g.survival.status(Date.now()).incidents.at(-1);
       ev.push(`episode: ${inc?.status} regained=${JSON.stringify(inc?.regained)} missing=${JSON.stringify(inc?.missing)}`);
@@ -567,30 +742,44 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
       check(lostSword.meta.metadata === 'server_slot' && lostSword.meta.digest, `the lost sword has no server identity metadata (${JSON.stringify(lostSword.meta)}) — identity-matched recovery unsupported, not a full recovery`);
       const heldSword = (g.survival.inventory(g.game.connectionEpoch)?.stacks ?? []).find((x) => x.key === 'minecraft:diamond_sword');
       ev.push(`held sword digest ${heldSword?.meta.digest ?? 'none'} vs lost ${lostSword.meta.digest}`);
-      check(counts.bread === 4 && counts.cobblestone === 20 && counts.iron_pickaxe === 1 && counts.diamond_sword === 1, `full recovery requires bread 4, cobblestone 20, iron_pickaxe 1, diamond_sword 1 on the server (got ${JSON.stringify(counts)}); a partial collection is NOT a full trial`);
+      const gained = Object.fromEntries(Object.keys(LOST_KIT).map((k) => [k, (counts[k] ?? 0) - (base[k] ?? 0)]));
+      const mismatch = deltaMismatches(base, counts, acc.regained, acc.duringAttempt);
+      check(mismatch.length === 0, `every server inventory change since the baseline is reported truthfully: ${mismatch.join('; ')}`);
+      check(Object.entries(LOST_KIT).every(([k, n]) => gained[k] === n && acc.regained[k] === n), `full recovery requires the server to gain exactly the lost kit since the pre-recovery baseline (bread 4, cobblestone 20, iron_pickaxe 1, diamond_sword 1; got ${JSON.stringify(gained)}, counted ${JSON.stringify(acc.regained)}); a partial collection is NOT a full trial`);
+      // The respawn-point pickups (if any) were reported as incidental, never retained/regained.
+      check(Object.keys(base).every((k) => (base[k] ?? 0) === (acc.afterSync[k] ?? 0)), `pre-recovery inventory equals the reported after-respawn-sync incidental effects (respawn sync was empty): baseline ${JSON.stringify(base)} vs reported ${JSON.stringify(acc.afterSync)}`);
       check(heldSword?.meta.digest === lostSword.meta.digest, 'the recovered sword is the lost one (same server identity digest)');
       check(recovered.status === 'satisfied' && inc?.status === 'recovered', `survival_state recovered satisfied and episode recovered (got ${recovered.status}/${inc?.status})`);
     });
 
     if (!withSettings) {
-      for (const [id, title] of [['G1k', 'keep_inventory death'], ['G3', 'food/health on Easy'], ['G4', 'R8 day bed observation'], ['G4n', 'R8 night bed observation']] as const) g.skip(id, title, 'requires --with-settings (difficulty, gamerules, time of day)');
+      for (const [id, title] of [['G1k', 'keep_inventory death'], ['G3', 'food/health on Easy']] as const) g.skip(id, title, 'requires --with-settings (difficulty, gamerules)');
     } else {
-      const difficulty = (await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase();
-      const keep = await query(g, `gamerule ${RULE_KEEP}`, RULE_REPLY);
-      const regen = await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY);
-      const day = await query(g, TIME_QUERY, TIME_REPLY);
-      check(difficulty && keep && regen && day, `could not read original settings (difficulty=${difficulty} ${RULE_KEEP}=${keep} ${RULE_REGEN}=${regen} time=${day}); nothing changed; replies: ${JSON.stringify(g.setup.slice(-4).map((r) => `${r.command} -> ${r.reply.slice(0, 120)}`))}`);
+      // C8: every original is read with the CURRENT official reply forms BEFORE any write; a failed read changes nothing.
+      const difficulty = parseDifficultyReply(await g.rcon('difficulty'));
+      const keep = parseRuleReply(await g.rcon(`gamerule ${RULE_KEEP}`), RULE_KEEP);
+      const regen = parseRuleReply(await g.rcon(`gamerule ${RULE_REGEN}`), RULE_REGEN);
+      const clock0 = await readClock(g);
+      await sleep(1_000);
+      const clock1 = await readClock(g);
+      const clockId = clock0?.clock ?? clock1?.clock;
+      check(difficulty && keep && regen && clock0 && clock1 && clockId, `could not read original settings (difficulty=${difficulty} ${RULE_KEEP}=${keep} ${RULE_REGEN}=${regen} clock=${clock0 ? `${clock0.clock ?? '?'}@${clock0.ticks}` : 'undefined'}); nothing changed; replies: ${JSON.stringify(g.setup.slice(-5).map((r) => `${r.command} -> ${r.reply.slice(0, 120)}`))}`);
+      // Measured clock rate (ticks per ms; 0 when the clock is paused or advance_time is off).
+      const original = { ticks: clock0.ticks, atMs: clock0.atMs, ticksPerMs: clock1.atMs > clock0.atMs ? Math.max(0, (clock1.ticks - clock0.ticks) / (clock1.atMs - clock0.atMs)) : 0 };
+      g.notes.push(`original settings: difficulty=${difficulty} ${RULE_KEEP}=${keep} ${RULE_REGEN}=${regen} clock ${clockId}=${clock0.ticks} (rate ${(original.ticksPerMs * 1000).toFixed(2)} ticks/s measured over ${clock1.atMs - clock0.atMs} ms)`);
+      // C8 evidence only: the day-timeline position is read too; no gate writes the clock, so nothing is restored for it.
+      const day = parseTimelineReply(await g.rcon(DAY_QUERY), DAY_TIMELINE);
+      g.notes.push(`day timeline ${DAY_TIMELINE}: ${day ?? 'unparsed'} (read only; the clock is never set by this harness)`);
       restore.push(
-        { what: 'difficulty', command: `difficulty ${difficulty}`, verify: async () => (await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase() === difficulty },
-        { what: RULE_KEEP, command: `gamerule ${RULE_KEEP} ${keep}`, verify: async () => (await query(g, `gamerule ${RULE_KEEP}`, RULE_REPLY)) === keep },
-        { what: RULE_REGEN, command: `gamerule ${RULE_REGEN} ${regen}`, verify: async () => (await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY)) === regen },
-        { what: 'time', command: `time set ${day}`, verify: async () => Math.abs(Number(await query(g, TIME_QUERY, TIME_REPLY)) - Number(day)) <= 100 },
+        { what: 'difficulty', command: `difficulty ${difficulty}`, verify: async () => parseDifficultyReply(await g.rcon('difficulty')) === difficulty },
+        { what: RULE_KEEP, command: `gamerule ${RULE_KEEP} ${keep}`, verify: async () => parseRuleReply(await g.rcon(`gamerule ${RULE_KEEP}`), RULE_KEEP) === keep },
+        { what: RULE_REGEN, command: `gamerule ${RULE_REGEN} ${regen}`, verify: async () => parseRuleReply(await g.rcon(`gamerule ${RULE_REGEN}`), RULE_REGEN) === regen },
       );
 
       await g.gate('G1k', 'keep_inventory death retains inventory (no trip)', async (ev) => {
         await g.scene();
         await g.rcon(`gamerule ${RULE_KEEP} true`);
-        check((await query(g, `gamerule ${RULE_KEEP}`, RULE_REPLY)) === 'true', `${RULE_KEEP} verified true for the trial`);
+        check(parseRuleReply(await g.rcon(`gamerule ${RULE_KEEP}`), RULE_KEEP) === 'true', `${RULE_KEEP} verified true for the trial`);
         const { factId } = await killWithKit(g, ev);
         const inc = g.survival.status(Date.now()).incidents.at(-1);
         ev.push(`incident ${factId}: ${inc?.status} missing=${JSON.stringify(inc?.missing)}`);
@@ -608,20 +797,28 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
 
       await g.gate('G3', 'Easy: eat to the admitted threshold; necessary low-health eat; verified regeneration on/off', async (ev) => {
         await g.scene();
+        await g.enclosePhysiology(ev);
+        const stagedCapture = g.survival.tracker.latest()?.captureId;
+        const sameLife = () => {
+          const latest = g.survival.tracker.latest();
+          assertPhysiologyLife(stagedCapture, { captureId: latest?.captureId, life: g.survival.tracker.life, health: g.survival.vitals(g.game.connectionEpoch)?.health, cause: latest?.cause.translationKey ?? latest?.cause.kind });
+        };
+        sameLife();
         await g.rcon('difficulty easy');
-        check((await query(g, 'difficulty', /The difficulty is (\w+)/))?.toLowerCase() === 'easy', 'difficulty verified easy');
+        check(parseDifficultyReply(await g.rcon('difficulty')) === 'easy', 'difficulty verified easy');
         await g.rcon(`gamerule ${RULE_REGEN} true`);
-        check((await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY)) === 'true', `${RULE_REGEN} verified true`);
+        check(parseRuleReply(await g.rcon(`gamerule ${RULE_REGEN}`), RULE_REGEN) === 'true', `${RULE_REGEN} verified true`);
         await g.rcon(`give ${BOT} minecraft:bread 12`);
         await g.rcon(`effect give ${BOT} minecraft:hunger 30 120 true`);
-        await g.waitFor('food at or below 10', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) <= 10, 40_000);
+        await g.waitFor('food at or below 10', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) <= 10, 40_000, sameLife);
         await g.rcon(`effect clear ${BOT} minecraft:hunger`);
         await sleep(500);
+        sameLife();
         // (a) ordinary eat: complete ONLY when survival_state eat is satisfied (food >= eatUntil).
         const cfg = g.survival.config();
         check(cfg, 'survival config');
         let d = g.survival.assess(g.assessInput());
-        ev.push(`food ${g.survival.vitals(g.game.connectionEpoch)?.food}: decision ${d.kind} ${d.kind === 'propose' ? d.proposal.routine : 'reason' in d ? d.reason : ''}`);
+        ev.push(g.decisionLine('(a) ordinary hunger decision', d));
         check(d.kind === 'propose' && d.proposal.routine === 'eat', 'eat proposed at low food');
         g.admitProposal(d.proposal);
         const owner = { goalId: g.goalId, goalEpoch: g.epoch };
@@ -634,14 +831,46 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         }
         g.endSupport(d.proposal, eatState.status === 'satisfied' ? 'outcome_verified' : 'no_progress');
         check(eatState.status === 'satisfied' && (g.survival.vitals(g.game.connectionEpoch)?.food ?? 0) >= cfg.food.eatUntil, `eat completed only at the admitted threshold (food >= ${cfg.food.eatUntil})`);
-        // (b) necessary low-health eat right after (the ordinary eat cooldown must NOT suppress it).
+        // (b1) HEALTH-SUPPORT meal inside the ordinary eat cooldown: the first trial's exact staging (damage, then
+        // hunger while regeneration runs; trial 8e87ec3 reached health 11.67 / food 17). Whatever health the server
+        // reaches, health <= restAtOrBelow with food < 18 needs a meal to regenerate; the cooldown must not block it.
         await g.rcon(`damage ${BOT} 13 minecraft:generic`);
-        await g.waitFor('health <= 8', () => (g.survival.vitals(g.game.connectionEpoch)?.health ?? 20) <= 8, 10_000);
+        await g.waitFor('health <= 8', () => (g.survival.vitals(g.game.connectionEpoch)?.health ?? 20) <= 8, 10_000, sameLife);
         await g.rcon(`effect give ${BOT} minecraft:hunger 10 60 true`);
-        await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 40_000);
+        await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 40_000, sameLife);
         await g.rcon(`effect clear ${BOT} minecraft:hunger`);
         d = g.survival.assess(g.assessInput());
-        ev.push(`low health decision: ${d.kind} ${d.kind === 'propose' ? `${d.proposal.routine} allowance=${JSON.stringify(d.proposal.lowHealthAllowance)}` : 'reason' in d ? d.reason : ''}`);
+        ev.push(g.decisionLine('(b1) health-support decision', d));
+        const v1 = g.survival.vitals(g.game.connectionEpoch);
+        check(v1 && v1.health <= cfg.health.restAtOrBelow && v1.food < 18, `staged precondition holds at the decision (server health ${v1?.health} <= ${cfg.health.restAtOrBelow}, food ${v1?.food} < 18)`);
+        check(d.kind === 'propose' && d.proposal.routine === 'eat', 'a health-support meal is proposed despite the ordinary eat cooldown (not blocked rest)');
+        g.admitProposal(d.proposal);
+        const supportOwner = { goalId: g.goalId, goalEpoch: g.epoch };
+        let supportState = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'eat', expect: 'satisfied' }, supportOwner);
+        for (let i = 0; i < 4 && supportState.status !== 'satisfied'; i += 1) {
+          const o = await g.act('eat_safe_food');
+          await sleep(600);
+          supportState = g.survival.evaluateSurvivalState({ predicate: 'survival_state', routine: 'eat', expect: 'satisfied' }, supportOwner);
+          ev.push(`health-support eat ${i + 1}: ${o?.status} ${o?.effect.slice(0, 120)}; server food ${g.survival.vitals(g.game.connectionEpoch)?.food}; eat state ${supportState.status}`);
+        }
+        g.endSupport(d.proposal, supportState.status === 'satisfied' ? 'outcome_verified' : 'no_progress');
+        check(supportState.status === 'satisfied', `the health-support meal reached the admitted threshold (food >= ${cfg.food.eatUntil})`);
+        // (b2) NECESSARY low-health eat with the narrow allowance (health <= lowHealth), again inside the cooldown.
+        // Staging that cannot drift: starve FIRST (food < 18 stops natural regeneration), then ONE computed damage to
+        // health 7, then decide immediately on the server values (no repeated or rescue damage).
+        await g.rcon(`effect give ${BOT} minecraft:hunger 10 60 true`);
+        await g.waitFor('food below 18', () => (g.survival.vitals(g.game.connectionEpoch)?.food ?? 20) < 18, 40_000, sameLife);
+        await g.rcon(`effect clear ${BOT} minecraft:hunger`);
+        await sleep(500);
+        sameLife();
+        const hBefore = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
+        check(hBefore > 7, `health ${hBefore} above the staged 7 before the single damage`);
+        await g.rcon(`damage ${BOT} ${Math.round((hBefore - 7) * 100) / 100} minecraft:generic`);
+        await g.waitFor('health <= lowHealth', () => (g.survival.vitals(g.game.connectionEpoch)?.health ?? 20) <= g.lowHealth, 10_000, sameLife);
+        d = g.survival.assess(g.assessInput());
+        ev.push(g.decisionLine('(b2) low-health decision', d));
+        const v2 = g.survival.vitals(g.game.connectionEpoch);
+        check(v2 && v2.health <= g.lowHealth && v2.food < 18, `staged precondition holds at the decision (server health ${v2?.health} <= lowHealth ${g.lowHealth}, food ${v2?.food} < 18)`);
         check(d.kind === 'propose' && d.proposal.routine === 'eat' && d.proposal.lowHealthAllowance, 'a necessary low-health eat with a narrow allowance is proposed despite the earlier eat cooldown');
         const grant = g.admitProposal(d.proposal);
         check(grant, 'grant issued once for the admitted support epoch');
@@ -678,62 +907,22 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         // (d) regeneration OFF (verified): bounded honest failure, no gain.
         await g.rcon(`damage ${BOT} 4 minecraft:generic`);
         await g.rcon(`gamerule ${RULE_REGEN} false`);
-        check((await query(g, `gamerule ${RULE_REGEN}`, RULE_REPLY)) === 'false', `${RULE_REGEN} verified false`);
+        check(parseRuleReply(await g.rcon(`gamerule ${RULE_REGEN}`), RULE_REGEN) === 'false', `${RULE_REGEN} verified false`);
         await sleep(500);
         const h2 = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
         const t0 = Date.now();
         g.admit(randomIds.next('goal'));
         const restOff = await g.act('rest_in_place', [], 20_000);
         const h3 = g.survival.vitals(g.game.connectionEpoch)?.health ?? 0;
+        sameLife();
         ev.push(`rest (regen verified off): ${restOff?.status} ${restOff?.reason ?? ''} after ${Date.now() - t0}ms; server health ${h2} -> ${h3}`);
         await g.rcon(`gamerule ${RULE_REGEN} ${regen}`);
         check(restOff?.status === 'failed' && restOff.reason === 'no_regeneration' && h3 <= h2 && Date.now() - t0 < 20_000, 'no regeneration ends honestly within the bounded window');
       });
 
-      await g.gate('G4', 'R8 OBSERVATION: daytime bed use; server respawn data recorded (no routine, no R8 claim)', async (ev) => {
-        await g.scene();
-        await g.rcon(`difficulty ${difficulty}`);
-        await g.rcon('time set 1000');
-        const t = await timeOfDay(g);
-        check(t !== undefined && t >= 0 && t < 12_000, `day established at trial start (time of day ${t})`);
-        await g.rcon(`setblock ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[facing=south,part=foot]`);
-        await g.rcon(`setblock ${BED.head.x} ${BED.head.y} ${BED.head.z} red_bed[facing=south,part=head]`);
-        await g.rcon(`tp ${BOT} 208.5 -60 206.5 0 40`);
-        await sleep(1_500);
-        ev.push(`respawn before: ${(await g.rcon(`data get entity ${BOT} respawn`, false)).slice(0, 200)}`);
-        g.admit(randomIds.next('goal'));
-        const used = await g.act('interact_block', ['minecraft:red_bed'], 15_000);
-        ev.push(`interact_block bed (day): ${used?.status} ${used?.reason ?? ''} ${used?.effect.slice(0, 200)}`);
-        await sleep(1_000);
-        const after = await g.rcon(`data get entity ${BOT} respawn`, false);
-        ev.push(`respawn after: ${after.slice(0, 200)}`);
-        const spawnSetToBed = new RegExp(`${BED.foot.x}, ${BED.foot.y}, ${BED.foot.z}|${BED.head.x}, ${BED.head.y}, ${BED.head.z}`).test(after);
-        ev.push(`OBSERVED: respawn point at the bed = ${spawnSetToBed} (observation only; R8 remains gated)`);
-        check(used, 'a bed candidate existed (bed visible and in reach)');
-      });
-
-      await g.gate('G4n', 'R8 OBSERVATION: night sleep, sole player (recorded, not generalized)', async (ev) => {
-        await g.scene();
-        await g.rcon(`setblock ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[facing=south,part=foot]`);
-        await g.rcon(`setblock ${BED.head.x} ${BED.head.y} ${BED.head.z} red_bed[facing=south,part=head]`);
-        await g.rcon('time set 13000');
-        const t = await timeOfDay(g);
-        check(t !== undefined && t >= 12_542 && t < 23_460, `night established at trial start (time of day ${t})`);
-        await g.rcon(`tp ${BOT} 208.5 -60 206.5 0 40`);
-        await sleep(1_500);
-        g.admit(randomIds.next('goal'));
-        const used = await g.act('interact_block', ['minecraft:red_bed'], 15_000);
-        ev.push(`interact_block bed (night): ${used?.status} ${used?.reason ?? ''} ${used?.effect.slice(0, 200)}`);
-        await sleep(1_000);
-        const sleeping = await g.rcon(`data get entity ${BOT} sleeping_pos`, false);
-        const occupied = /passed/i.test(await g.rcon(`execute if block ${BED.foot.x} ${BED.foot.y} ${BED.foot.z} red_bed[occupied=true]`, false));
-        ev.push(`OBSERVED: server sleeping_pos: ${sleeping.slice(0, 160)}; bed occupied=${occupied}`);
-        await sleep(6_000);
-        ev.push(`OBSERVED: time after ~7 s: ${(await g.rcon(TIME_QUERY, false)).slice(0, 80)}; players online: ${(await g.rcon('list', false)).slice(0, 120)}`);
-        ev.push('R8 sleep/spawn remains gated: these are sole-player observations, not a supported routine');
-        check(used, 'a bed candidate existed at night');
-      });
     }
+    // R8 bed observations are never part of the leased module run (with or without --with-settings).
+    for (const [id, title] of [['G4', 'R8 day bed observation'], ['G4n', 'R8 night bed observation']] as const) g.skip(id, title, BED_SKIP_REASON);
   } catch (error) {
     g.results.push({ id: 'SETUP', title: 'trial setup/preconditions', status: 'fail', evidence: [error instanceof Error ? error.message : String(error)] });
   } finally {
@@ -746,7 +935,12 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
         restoreChecks.push({ what, ok: false, detail: error instanceof Error ? error.message : String(error) });
       }
     };
-    for (const r of restore) await step(`setting ${r.what}`, async () => ((await g.rcon(r.command)) !== undefined && (await r.verify()) ? true : `not restored (${r.command})`));
+    for (const r of restore) {
+      await step(`setting ${r.what}`, async () => {
+        const command = typeof r.command === 'function' ? r.command() : r.command;
+        return (await g.rcon(command)) !== undefined && (await r.verify()) ? true : `not restored (${command})`;
+      });
+    }
     await step('foreign test piles removed', async () => {
       await g.rcon(`kill @e[type=item,tag=${FOREIGN_TAG},${ITEM_AREA}]`);
       return /failed|no entity|0/i.test(await g.rcon(`execute if entity @e[type=item,tag=${FOREIGN_TAG}]`, false)) || 'tagged piles remain';
@@ -797,6 +991,7 @@ async function run(outDir: string, withSettings: boolean): Promise<Json> {
     pass: counted.length > 0 && counted.every((r) => r.status === 'pass'),
     results: g.results,
     setup: g.setup,
+    notes: g.notes,
     packets: g.packets.slice(-600),
     outcomes: g.outcomes.map((o) => ({ capability: o.capability, status: o.status, reason: o.reason ?? null, confirmation: o.confirmation, effect: o.effect.slice(0, 300) })),
     survivalEvents: g.store.events.filter((e) => String(e.type).startsWith('survival_')).slice(-150),

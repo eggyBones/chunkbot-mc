@@ -57,7 +57,7 @@ describe('autonomy predicates on the planner wire', () => {
 });
 
 describe('automatic-goal context reaches the planner input', () => {
-  const request = (over: Partial<PlannerRequest> = {}): PlannerRequest => ({ requestId: 'req-0001', subject: { kind: 'goal', goalId: 'goal-0001', goalEpoch: 1 }, instruction: 'Automatic progression: assess and choose one milestone', turn: 1, maxTurns: 20, catalog: foundation, observation: null, clarifications: [], knowledge: [], ...over });
+  const request = (over: Partial<PlannerRequest> = {}): PlannerRequest => ({ requestId: 'req-0001', subject: { kind: 'goal', goalId: 'goal-0001', goalEpoch: 1 }, instruction: 'Automatic progression: assess and choose one milestone', turn: 1, maxTurns: 20, catalog: foundation, observation: null, knowledge: [], ...over });
   const doc = (r: PlannerRequest) => JSON.parse(renderRequest(r, 8).split('\n')[1]!) as Json;
   it('an owner goal is labelled owner; no autonomy/route/locator blocks', () => {
     const d = doc(request({ instruction: 'get me two cobblestone' }));

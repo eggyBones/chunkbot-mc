@@ -128,7 +128,8 @@ describe('wire -> PlannerProposal conversion', () => {
     assert.ok(cannot.disposition === 'cannot_execute');
     assert.deepEqual(cannot.missingCapabilities, ['fly_to']);
     assert.match(cannot.missing, /also missing: Elytra flight support/);
-    assert.throws(() => proposalFromWire({ ...base, disposition: 'needs_clarification', interpretation: 'x', question: 'which?', queries: [{ kind: 'item', key: 'x' }] }), /queries must be null/);
+    assert.throws(() => proposalFromWire({ ...base, disposition: 'needs_clarification', interpretation: 'x', question: 'which?', queries: [{ kind: 'item', key: 'x' }] }), /owner_question_refused/);
+    assert.throws(() => proposalFromWire({ ...base, disposition: 'cannot_execute', interpretation: 'x', missing: 'm', question: 'which?' }), /owner_question_refused/);
     assert.throws(() => proposalFromWire({ ...base, disposition: 'do_anything', interpretation: 'x' }), /disposition/);
   });
 });

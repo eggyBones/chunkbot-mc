@@ -133,6 +133,7 @@ export function fakeMineflayerBot(client: FakeClient, options: FakeBotOptions = 
   const events = new EventEmitter();
   const bot = {
     on: (name: string, fn: (...a: unknown[]) => void) => events.on(name, fn),
+    prependListener: (name: string, fn: (...a: unknown[]) => void) => events.prependListener(name, fn),
     off: (name: string, fn: (...a: unknown[]) => void) => events.off(name, fn),
     emit: (name: string, ...a: unknown[]) => events.emit(name, ...a),
     _client: client,

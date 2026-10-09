@@ -69,6 +69,7 @@ function groundLocation(ctx: ExecuteContext, memory: MemoryService, target: Move
         return { location: { dimension, at: { x: t.x, y: t.y, z: t.z } }, basis: `visible block minecraft:${t.name} at ${t.x},${t.y},${t.z} (line of sight now)`, key: `minecraft:${t.name}` };
       }
       if (t.kind === 'frontier') return { location: { dimension, at: pos3(t.at) }, basis: `observed frontier waypoint ${target.handle}` };
+      if (t.kind === 'group') return precondition('wrong_target_kind', `${target.handle} is a block group; name one of its blocks`);
       if (!services.perception.entityVisibleNow(t.entityId)) return precondition('target_not_visible', `${target.handle} is not visible now; its position is not used`);
       const e = bot.entities[t.entityId];
       if (!e?.position) return precondition('target_gone', `${target.handle} is no longer present`);
@@ -91,7 +92,8 @@ function groundLocation(ctx: ExecuteContext, memory: MemoryService, target: Move
     case 'destination': {
       if (target.dimension !== dimension) return precondition('dimension_mismatch', `coordinates are for ${target.dimension}, not ${dimension}`);
       const texts = memory.ownerTexts(goalIdOf(ctx)) ?? [];
-      const typed = texts.flatMap((t, i) => parseOwnerCoordinates(t, i === 0 ? 'instruction' : 'answer'));
+      // MB-PLAN-006: only the owner's instruction (there are no clarification answers).
+      const typed = texts.slice(0, 1).flatMap((t) => parseOwnerCoordinates(t, 'instruction'));
       const at = { x: target.x, y: target.y, z: target.z };
       if (!matchesOwnerCoordinate(at, typed)) return precondition('coordinates_not_owner_typed', `coordinates ${at.x} ${at.y} ${at.z} were not typed by the owner`);
       return { location: { dimension, at }, basis: `coordinates the owner typed (${at.x} ${at.y} ${at.z}); not observed` };

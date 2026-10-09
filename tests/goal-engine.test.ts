@@ -146,50 +146,74 @@ describe('replacement and stop', () => {
   });
 });
 
-describe('correlated clarification', () => {
-  it('waits for the owner, rejects stale references, and resumes planning with the answer', async () => {
+describe('no follow-up questions (MB-PLAN-006)', () => {
+  const noQuestionNotice = (notices: Array<{ text: string }>) => notices.filter((n) => /Question q\d|answer q\d|\?/.test(n.text));
+
+  it('refuses a legacy clarification with a counted repair, never asks, never waits, and blocks declaratively on exhaustion', async () => {
     const planner = new ScriptedPlanner();
-    const { engine, notices } = makeEngine({ planner });
+    const { engine, notices, store } = makeEngine({ planner });
     await engine.submit('make armor', OWNER);
-    await until(() => planner.waiting === 1);
-    planner.respond(clarify('Which material: leather or iron?'));
-    await until(() => engine.status().goal?.state === 'awaiting_owner');
-    assert.equal(engine.status().goal?.pendingClarification?.ref, 'q1');
-    assert.ok(notices.some((n) => n.text.includes('Question q1')));
-    assert.equal(planner.waiting, 0, 'no repeated inference while waiting');
-
-    assert.equal(engine.answer('iron', 'q7', 'chat').status, 'rejected');
-    assert.equal(engine.status().goal?.state, 'awaiting_owner');
-    assert.equal(engine.answer('  ', 'q1', 'chat').status, 'rejected');
-
-    const accepted = engine.answer('iron please', 'q1', 'chat');
-    assert.equal(accepted.status, 'accepted');
-    await until(() => planner.waiting === 1);
-    assert.deepEqual(planner.requests[1]?.clarifications, [{ ref: 'q1', question: 'Which material: leather or iron?', answer: 'iron please' }]);
-    assert.equal(planner.requests[1]?.turn, 2);
+    for (let i = 0; i < 3; i += 1) {
+      await until(() => planner.waiting === 1);
+      assert.notEqual(engine.status().goal?.state, 'awaiting_owner');
+      planner.respond(clarify('Which material: leather or iron?'));
+      if (i < 2) {
+        await until(() => planner.requests.length === i + 2);
+        const repair = planner.requests[i + 1]!;
+        assert.equal(repair.turnKind, 'repair');
+        assert.ok(repair.rejection?.problems.some((p) => p.startsWith('owner_question_refused')));
+      }
+    }
+    await until(() => engine.status().goal?.state === 'blocked');
+    const goal = engine.status().goal!;
+    assert.equal(goal.terminal?.reason, 'invalid_proposal');
+    assert.doesNotMatch(goal.terminal!.detail, /leather or iron/);
+    assert.match(goal.terminal!.detail, /does not ask follow-up questions/);
+    assert.equal(goal.pendingClarification, undefined);
+    assert.deepEqual({ refusals: goal.counters?.questionRefusals, repairs: goal.counters?.repairs, turns: goal.counters?.plannerTurns }, { refusals: 3, repairs: 2, turns: 3 });
+    assert.deepEqual(noQuestionNotice(notices), [], 'no owner-facing question or answer prompt');
+    assert.equal(store.ofType('clarification_requested').length, 0);
+    assert.equal(store.ofType('planner_question_refused').length, 3);
+    assert.equal(store.ofType('goal_state').some((e) => e['state'] === 'awaiting_owner'), false);
   });
 
-  it('never revives a stopped goal and rejects replies for a replaced goal', async () => {
+  it('refuses owner questions embedded in a blocker or interpretation (even without a question mark) and relays only the declarative repair', async () => {
     const planner = new ScriptedPlanner();
-    const { engine } = makeEngine({ planner });
+    const { engine, notices } = makeEngine({ planner });
+    await engine.submit('cut down that floating tree', OWNER);
+    await until(() => planner.waiting === 1);
+    planner.respond({ version: 1, disposition: 'cannot_execute', interpretation: 'Two trees are visible', missing: 'Please confirm which tree should be removed', missingCapabilities: [], verifiedProgress: '' });
+    await until(() => planner.requests.length === 2);
+    planner.respond({ version: 1, disposition: 'cannot_execute', interpretation: 'Let me know if you want the birch or the oak', missing: 'target', missingCapabilities: [], verifiedProgress: '' });
+    await until(() => planner.requests.length === 3);
+    planner.respond({ version: 1, disposition: 'cannot_execute', interpretation: 'Removing the floating birch tree is not possible here', missing: 'no floating tree is visible from the current position', missingCapabilities: [], verifiedProgress: '' });
+    await until(() => engine.status().goal?.state === 'blocked');
+    const goal = engine.status().goal!;
+    assert.equal(goal.terminal?.reason, 'cannot_execute');
+    assert.match(goal.terminal!.detail, /the planner found no supported way to continue/);
+    assert.doesNotMatch(goal.terminal!.detail, /floating/, 'planner prose is never relayed')
+    assert.equal(goal.counters?.questionRefusals, 2);
+    assert.ok(!notices.some((n) => /confirm which tree|Let me know/i.test(n.text)), 'raw planner questions never reach a notice');
+  });
+
+  it('retires an answer command: nothing is applied, revived, replaced or authorized', async () => {
+    const planner = new ScriptedPlanner();
+    const { engine, notices, store } = makeEngine({ planner });
     await engine.submit('goal A', OWNER);
     await until(() => planner.waiting === 1);
-    planner.respond(clarify('A?'));
-    await until(() => engine.status().goal?.state === 'awaiting_owner');
+    const before = engine.status().goal!;
+    const r = engine.answer('yes', 'q1', 'chat');
+    assert.equal(r.status, 'rejected');
+    assert.equal(r.status === 'rejected' && r.reason, 'no_pending_clarification');
+    assert.equal(engine.status().goal?.id, before.id);
+    assert.equal(engine.status().goal?.state, 'planning');
+    assert.equal(planner.requests.length, 1);
+    assert.ok(notices.some((n) => /Reply not applied: no question is pending/.test(n.text)));
+    assert.equal(store.ofType('answer_retired').length, 1);
     await engine.stop('owner_stop', 'chat');
-
-    const late = engine.answer('yes', 'q1', 'chat');
-    assert.equal(late.status === 'rejected' && late.reason, 'no_pending_clarification');
+    assert.equal(engine.answer('yes', undefined, 'chat').status, 'rejected');
     assert.equal(engine.status().goal?.state, 'cancelled');
     assert.equal(planner.requests.length, 1);
-
-    await engine.submit('goal B', OWNER);
-    await until(() => planner.waiting === 1);
-    planner.respond(clarify('B?'));
-    await until(() => engine.status().goal?.state === 'awaiting_owner');
-    const stale = engine.answer('yes', 'q1', 'chat');
-    assert.equal(stale.status === 'rejected' && stale.reason, 'stale_reference');
-    assert.equal(engine.status().goal?.pendingClarification?.ref, 'q2');
   });
 });
 
@@ -200,8 +224,6 @@ describe('lifecycle interruption', () => {
       const { engine } = makeEngine({ planner });
       await engine.submit('guard the door', OWNER);
       await until(() => planner.waiting === 1);
-      planner.respond(clarify('Which door?'));
-      await until(() => engine.status().goal?.state === 'awaiting_owner');
       await engine.endOwnership(reason, `lifecycle: ${reason}`);
       const ended = engine.status().goal;
       assert.equal(ended?.state, 'failed');
@@ -389,6 +411,45 @@ describe('proposal validation and limits', () => {
     planner.respond({ version: 1, disposition: 'cannot_execute', interpretation: 'travel to the moon', missing: 'Minecraft has no moon dimension to travel to', missingCapabilities: [], verifiedProgress: '' });
     await until(() => engine.status().goal?.state === 'blocked');
     assert.equal(engine.status().goal?.terminal?.reason, 'cannot_execute');
-    assert.match(engine.status().goal?.terminal?.detail ?? '', /no moon dimension/);
+    // MB-PLAN-006: the planner's prose stays internal; the owner sees an app-owned blocker.
+    assert.match(engine.status().goal?.terminal?.detail ?? '', /the planner found no supported way to continue/);
+    assert.doesNotMatch(engine.status().goal?.terminal?.detail ?? '', /moon/);
+  });
+});
+
+describe('immediate-safety authority (MB-FLOW-003-C11/C13 shared seam; coordinator decision 1)', () => {
+  it('owner goals are protected even while paused; stop without a newer owner goal is none; the stop hook already sees none', async () => {
+    const planner = new ScriptedPlanner();
+    const causes: Array<{ cause: string; basis: string }> = [];
+    let engineRef: { safetyAuthority(): { basis: string } } | undefined;
+    const { engine } = makeEngine({ planner, onSafetyAuthorityChanged: (cause) => causes.push({ cause, basis: engineRef!.safetyAuthority().basis }) });
+    engineRef = engine;
+    assert.equal(engine.safetyAuthority().basis, 'unpaused', 'idle and not paused');
+    await engine.submit('follow me', OWNER);
+    await until(() => planner.waiting === 1);
+    assert.equal(engine.safetyAuthority().basis, 'owner_goal');
+    await engine.stop('owner_stop', 'chat');
+    assert.equal(engine.safetyAuthority().basis, 'none', 'explicit stop: no idle motion');
+    const stopHook = causes.find((c) => c.cause === 'owner_stop');
+    assert.equal(stopHook?.basis, 'none', 'the stop hook runs after the synchronous revocation');
+    // A new manual owner goal while the automatic pause latch remains set is protected.
+    await engine.submit('come here', OWNER);
+    await until(() => planner.waiting === 1);
+    assert.equal(engine.status().latch.paused, true);
+    assert.equal(engine.safetyAuthority().basis, 'owner_goal');
+    assert.ok(causes.some((c) => c.cause === 'owner_goal_admitted' && c.basis === 'owner_goal'));
+    await engine.stop('owner_stop', 'chat');
+    engine.resume('chat');
+    assert.equal(engine.safetyAuthority().basis, 'unpaused');
+    assert.ok(causes.some((c) => c.cause === 'resume' && c.basis === 'unpaused'));
+  });
+
+  it('no authority when not connected or shutting down', async () => {
+    const h = makeEngine();
+    h.setReady(false);
+    assert.equal(h.engine.safetyAuthority().basis, 'none');
+    h.setReady(true);
+    await h.engine.shutdown();
+    assert.equal(h.engine.safetyAuthority().basis, 'none');
   });
 });

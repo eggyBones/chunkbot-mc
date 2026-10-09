@@ -65,6 +65,9 @@ export function snapshotSummary(s: ObservationSnapshot, level: 0 | 1 | 2 = 0): J
   const n = level === 0 ? { inv: 24, ent: 8, drop: 8, kinds: 14, rem: 4 } : level === 1 ? { inv: 12, ent: 4, drop: 4, kinds: 8, rem: 2 } : { inv: 6, ent: 2, drop: 2, kinds: 4, rem: 0 };
   return JSON.parse(JSON.stringify({
     snapshotId: s.id,
+    takenAtMs: s.takenAtMs,
+    connectionEpoch: s.connectionEpoch,
+    goalEpoch: s.goalEpoch,
     dimension: s.dimension,
     self: s.self,
     inventory: s.inventory.slice(0, n.inv).map((i) => `${i.key.replace('minecraft:', '')} x${i.count}`),

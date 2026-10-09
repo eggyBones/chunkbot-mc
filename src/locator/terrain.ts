@@ -11,7 +11,7 @@
 // specific local reason for the planner/owner from OBSERVED voxels only (the
 // current line-of-sight observation); the world view is consulted only for
 // chunk loadedness, never to name hidden terrain (MB-LOC-001-C5).
-import { findFrontiers, type FrontierCell } from '../perception/frontiers.ts';
+import { findFrontiers, isPassable, isStandable, type FrontierCell } from '../perception/frontiers.ts';
 import type { Vec, WorldView } from '../perception/visibility.ts';
 import { angleBetween } from './geometry.ts';
 
@@ -34,6 +34,22 @@ export interface FrontierChoice {
 export const MAX_FRONTIER_ANGLE = (3 * Math.PI) / 8;
 /** A frontier must make at least this much progress along the bearing. */
 export const MIN_FORWARD = 3;
+/**
+ * MB-LOC-002 bounded detour: widest deviation of a DETOUR frontier (112.5
+ * degrees: sideways along an obstacle, at most slightly backward). Detour
+ * frontiers are used only when no forward frontier exists AND an obstacle is
+ * observed across the bearing (see route-runner); they are the same safe local
+ * frontiers (standable, conservatively reachable, floor seen, inside the bound).
+ */
+export const MAX_DETOUR_ANGLE = (5 * Math.PI) / 8;
+/** A detour frontier must move at least this far sideways (blocks). */
+export const MIN_LATERAL = 3;
+/**
+ * Score penalty of a frontier near an already visited spot. MB-LOC-002: a small
+ * preference only, so a visited spot straight along the cue does not lose to an
+ * unvisited one 45 degrees off (the cue, not novelty, sets the direction).
+ */
+export const VISITED_PENALTY = 6;
 
 export interface FrontierQuery {
   world: WorldView;
@@ -66,10 +82,142 @@ export function rankFrontiers(cells: readonly FrontierCell[], q: Pick<FrontierQu
     if (angle > MAX_FRONTIER_ANGLE || forward < MIN_FORWARD) continue;
     const dy = c.at.y - Math.floor(q.self.y);
     const vertical = q.elevation === 'above' ? Math.max(0, dy) * 2 : q.elevation === 'below' ? Math.max(0, -dy) * 2 : 0;
-    const score = forward * Math.cos(angle) + vertical - (c.visited ? 12 : 0);
+    const score = forward * Math.cos(angle) + vertical - (c.visited ? VISITED_PENALTY : 0);
     out.push({ at: c.at, forward, angle, distance: c.distance, visited: c.visited, score });
   }
   return out.sort((a, b) => b.score - a.score);
+}
+
+/** Which side of the bearing a point lies on (+1 / -1; 0 on the line). */
+export function sideOf(bearingRad: number, self: Vec, at: Vec): 1 | -1 | 0 {
+  const cross = Math.cos(bearingRad) * (at.z - self.z) - Math.sin(bearingRad) * (at.x - self.x);
+  return cross > 1e-9 ? 1 : cross < -1e-9 ? -1 : 0;
+}
+
+export interface DetourChoice extends FrontierChoice {
+  /** Side of the bearing (+1/-1). */
+  side: 1 | -1;
+  /** Sideways distance from the bearing line through the bot (blocks). */
+  lateral: number;
+}
+
+/** A reachable standable cell (feet position, cell centre). */
+export interface ReachableCell {
+  at: Vec;
+  distance: number;
+  visited: boolean;
+}
+
+/**
+ * Every standable cell reachable from the bot by the SAME conservative moves as
+ * the frontier search (walk, step up 1 with head room, drop at most 3; no
+ * digging/placing), whose floor is currently SEEN, inside the active bound and
+ * the search radius. Unlike findFrontiers (one farthest cell per compass
+ * sector) it keeps every cell, so a detour can follow an obstacle instead of a
+ * sector's arbitrary farthest corner.
+ */
+export function reachableCells(world: WorldView, start: Vec, q: { radius: number; bounds: Bounds; floorSeen: (x: number, y: number, z: number) => boolean; visited: readonly Vec[]; maxNodes?: number; minDistance?: number }): ReachableCell[] {
+  const sx = Math.floor(start.x);
+  const sy = Math.floor(start.y);
+  const sz = Math.floor(start.z);
+  const key = (x: number, y: number, z: number) => `${x},${y},${z}`;
+  const seen = new Set<string>([key(sx, sy, sz)]);
+  const queue: Array<[number, number, number]> = [[sx, sy, sz]];
+  const out: ReachableCell[] = [];
+  const maxNodes = q.maxNodes ?? 12_000;
+  const r2 = q.radius * q.radius;
+  for (let explored = 0; queue.length > 0 && explored < maxNodes; explored += 1) {
+    const [x, y, z] = queue.shift() as [number, number, number];
+    for (const [nx, nz] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      const cx = x + nx;
+      const cz = z + nz;
+      if (world.blockAt(cx, y, cz) === null) continue;
+      let ny: number | undefined;
+      if (isStandable(world, cx, y, cz)) ny = y;
+      else if (isStandable(world, cx, y + 1, cz) && isPassable(world.blockAt(x, y + 2, z))) ny = y + 1;
+      else if (isPassable(world.blockAt(cx, y, cz)) && isPassable(world.blockAt(cx, y + 1, cz))) {
+        for (let drop = 1; drop <= 3; drop += 1) {
+          if (isStandable(world, cx, y - drop, cz)) {
+            ny = y - drop;
+            break;
+          }
+          if (!isPassable(world.blockAt(cx, y - drop, cz))) break;
+        }
+      }
+      if (ny === undefined) continue;
+      const k = key(cx, ny, cz);
+      if (seen.has(k)) continue;
+      const ddx = cx + 0.5 - start.x;
+      const ddz = cz + 0.5 - start.z;
+      if (ddx * ddx + ddz * ddz > r2) continue;
+      if (Math.hypot(cx + 0.5 - q.bounds.anchor.x, cz + 0.5 - q.bounds.anchor.z) > q.bounds.radius) continue;
+      seen.add(k);
+      queue.push([cx, ny, cz]);
+      const distance = Math.hypot(ddx, ny - start.y, ddz);
+      if (distance >= (q.minDistance ?? 4) && q.floorSeen(cx, ny - 1, cz)) {
+        const at = { x: cx + 0.5, y: ny, z: cz + 0.5 };
+        out.push({ at, distance, visited: q.visited.some((v) => Math.hypot(v.x - at.x, v.z - at.z) < 8) });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * MB-LOC-002: cells that go AROUND an obstacle (sideways along it, at most
+ * slightly backward), ranked to keep a committed side, then to get as far
+ * sideways as possible while giving up as little forward progress as possible.
+ * Forward frontiers (already admissible) are not repeated here.
+ */
+export function rankDetourFrontiers(cells: readonly ReachableCell[], q: Pick<FrontierQuery, 'self' | 'bearingRad' | 'exclude'> & { side?: 1 | -1 }): DetourChoice[] {
+  const out: DetourChoice[] = [];
+  const cos = Math.cos(q.bearingRad);
+  const sin = Math.sin(q.bearingRad);
+  for (const c of cells) {
+    if (q.exclude?.has(frontierKey(c.at))) continue;
+    const dx = c.at.x - q.self.x;
+    const dz = c.at.z - q.self.z;
+    const angle = angleBetween(Math.atan2(dz, dx), q.bearingRad);
+    const forward = dx * cos + dz * sin;
+    if (angle > MAX_DETOUR_ANGLE) continue;
+    if (angle <= MAX_FRONTIER_ANGLE && forward >= MIN_FORWARD) continue; // a forward frontier, not a detour
+    const lateral = Math.abs(cos * dz - sin * dx);
+    const side = sideOf(q.bearingRad, q.self, c.at);
+    if (lateral < MIN_LATERAL || side === 0) continue;
+    const score = lateral + 2 * Math.min(0, forward) + Math.max(0, forward) + (q.side !== undefined && side === q.side ? 30 : 0) - (c.visited ? VISITED_PENALTY : 0);
+    out.push({ at: c.at, forward, angle, distance: c.distance, visited: c.visited, score, side, lateral });
+  }
+  return out.sort((a, b) => b.score - a.score);
+}
+
+export function detourFrontiers(q: FrontierQuery & { side?: 1 | -1 }): DetourChoice[] {
+  const cells = reachableCells(q.world, q.self, { radius: q.radius, bounds: q.bounds, floorSeen: q.floorSeen, visited: q.visited, minDistance: 6, ...(q.maxNodes !== undefined ? { maxNodes: q.maxNodes } : {}) });
+  return rankDetourFrontiers(cells, q);
+}
+
+/**
+ * Whether a blocker report names an OBSERVED obstacle across the bearing that
+ * justifies a bounded detour (MB-LOC-002): an observed wall, drop, hazard or
+ * water. Unobserved/unloaded terrain, or a plain "no frontier", never does —
+ * the bot does not wander without observed geometry.
+ */
+export function detourJustified(report: BlockerReport): boolean {
+  switch (report.reason) {
+    case 'wall':
+    case 'cliff_drop':
+    case 'hazard_lava':
+    case 'water_crossing':
+      return true;
+    case 'vertical_separation':
+      return report.evidence.wallRays >= 3;
+    default:
+      return false;
+  }
 }
 
 export function frontiersToward(q: FrontierQuery): { choices: FrontierChoice[]; explored: number } {

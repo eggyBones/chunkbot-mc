@@ -21,6 +21,52 @@ function attached(opts: { selfId?: number } = {}) {
 }
 
 describe('survival tracker', () => {
+  it('S-C12-R4: packet-time collected facts survive destroy without becoming live authority; id reuse and connection/life changes clear them', () => {
+    const { p, t } = attached();
+    p.login();
+    p.spawnItem(68, slot('bread', 64));
+    p.collect(68, 64);
+    p.destroy(68);
+    assert.equal(t.dropStack(68), undefined);
+    const saved = t.collectedStack(68)!;
+    assert.equal(saved.key, 'minecraft:bread');
+    assert.equal(saved.count, 64);
+    saved.key = 'minecraft:dirt';
+    saved.meta.digest = 'changed';
+    assert.equal(t.collectedStack(68)?.key, 'minecraft:bread', 'callers receive independent copies');
+    assert.notEqual(t.collectedStack(68)?.meta.digest, 'changed');
+    p.spawnItemWithoutStack(68);
+    assert.equal(t.collectedStack(68), undefined, 'a reused id never inherits the previous collect');
+    assert.equal(t.dropStack(68), undefined);
+    p.collect(68, 1);
+    assert.equal(t.collectedStack(68), undefined, 'unknown stack remains unknown');
+    p.spawnOther(69);
+    p.collect(69, 1);
+    p.destroy(69);
+    assert.equal(t.collectedKind(69), 'non_item');
+    assert.equal(t.collectedStack(69), undefined);
+    p.spawnItem(70, slot('bread', 4));
+    p.collect(70, 4, 99);
+    p.destroy(70);
+    assert.equal(t.collectedStack(70), undefined, 'another collector does not create own-collect history');
+    p.spawnItem(71, slot('bread', 4));
+    p.collect(71, 4);
+    p.respawn();
+    assert.equal(t.collectedStack(71), undefined);
+    p.spawnItem(72, slot('bread', 4));
+    p.collect(72, 4);
+    p.login();
+    assert.equal(t.collectedStack(72), undefined);
+    for (let id = 100; id <= 356; id += 1) {
+      p.spawnItem(id, slot('bread', 1));
+      p.collect(id, 1);
+      p.destroy(id);
+    }
+    assert.equal(t.collectedStack(100), undefined, 'history is bounded to 256 recent entities');
+    assert.equal(t.collectedStack(356)?.count, 1);
+    t.attach(p.client, { connectionEpoch: 2, registry, now: () => 2_000, selfPosition: () => undefined });
+    assert.equal(t.collectedStack(356), undefined, 'replacement connection has no old packet facts');
+  });
   it('parses server slot metadata: damage patch, registry max durability, enchantments', () => {
     const { p, t } = attached();
     p.login();
@@ -169,5 +215,27 @@ describe('survival tracker', () => {
     assert.equal(classifyDeathMessage('{"translate":"death.attack.inFire","with":["bot"]}').hazard, 'fire');
     assert.equal(classifyDeathMessage({ text: '' }).kind, 'unknown');
     assert.equal(classifyDeathMessage({ translate: 'evil key; drop table' }).kind, 'unknown');
+  });
+
+  it('S-C12-R3: emits distinct stated-item and unknown own collects; known non-items and other collectors stay excluded', () => {
+    const { p, t, events } = attached();
+    p.login(42);
+    p.spawnItem(800, slot('bread', 4), { x: 10, y: 64, z: 11 });
+    p.collect(800, 4);
+    p.collect(801, 3); // no server announcement of any kind
+    p.spawnOther(802);
+    p.collect(802, 1);
+    p.collect(803, 4, 99);
+    const collects = events.filter((e) => e.type === 'own_item_collect' || e.type === 'own_unknown_collect');
+    assert.equal(collects.length, 2);
+    assert.equal(collects[0]?.type, 'own_item_collect');
+    assert.equal(collects[0]?.facts?.key, 'minecraft:bread');
+    assert.equal(collects[0]?.facts?.count, 4);
+    assert.deepEqual(collects[0]?.firstSeenAt, { x: 10, y: 64, z: 11 });
+    assert.deepEqual(collects[1], { type: 'own_unknown_collect', connectionEpoch: 1, entityId: 801, count: 3, facts: undefined, firstSeenAt: undefined, atMs: 1_000 });
+    assert.equal(t.collectedKind(801), 'unknown');
+    assert.equal(t.collectedKind(802), 'non_item');
+    p.destroy(800, 801, 802);
+    assert.equal(t.collectedKind(802), 'non_item', 'settlement still knows the server-announced kind after destroy');
   });
 });

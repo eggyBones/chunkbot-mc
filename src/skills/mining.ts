@@ -64,7 +64,8 @@ export const mineBlock: SkillDefinition<{ target: { snapshotId: string; handle: 
       const info = services.knowledge.blockInfo(key);
       if (!info?.diggable || (info.hardness ?? -1) < 0) continue;
       const drops = services.knowledge.blockDrops(key);
-      if (!scope.named && !blockMatchesHints(hit.block.name, hints.keys, drops, book)) continue;
+      if (!blockMatchesHints(hit.block.name, hints.keys, drops, book)) continue;
+      if (!blockMatchesHints(hit.block.name, hints.targetKeys ?? [], drops, book)) continue;
       if (!scope.named && hints.keys.length === 0 && info.boundingBox !== 'block') continue;
       if (scope.named && !scope.current.size) continue;
       const handle = services.perception.blockHandle(snapshot.id, hit.x, hit.y, hit.z);

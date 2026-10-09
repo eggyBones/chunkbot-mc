@@ -19,6 +19,8 @@ import type {
 } from '../src/contracts/index.ts';
 import { sequentialIds } from '../src/contracts/index.ts';
 import { DecisionError } from '../src/decision/errors.ts';
+import { bodyFor, requestBytes } from '../src/decision/context.ts';
+import { MAX_REQUEST_BYTES } from '../src/decision/pricing.ts';
 import { TaskRuntime, type TaskRuntimeDeps } from '../src/tasks/task-runtime.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 
@@ -165,6 +167,67 @@ class Harness {
 }
 
 const log = (h: string, x: number): Target => ({ handle: h, capability: 'mine_block', block: [x, 0, 0] });
+
+describe('task round observation metadata', () => {
+  it('keeps a mismatched snapshot epoch distinct from task ownership and cannot turn its choice into an action', async () => {
+    const h = new Harness();
+    h.world.set('blk-1', log('blk-1', 1));
+    const take = h.snapshot.bind(h);
+    h.snapshot = (epoch) => ({ ...take(epoch), goalEpoch: epoch + 1 });
+    const deps = h.deps();
+    const result = await new TaskRuntime({ ...deps, limits: { ...deps.limits, maxRounds: 1 } }).run(h.task());
+    assert.equal(result.reason, 'round_limit');
+    assert.equal(h.executed.length, 0);
+    assert.equal(h.store.ofType('task_choice_rejected').length, 1, 'existing candidate/goal fence remains effective');
+    const round = h.store.ofType('task_round')[0]!;
+    const observation = (h.decisions[0]!.state as Record<string, unknown>)['observation'] as Record<string, unknown>;
+    assert.equal(round['goalEpoch'], 3);
+    assert.equal(round['snapshotGoalEpoch'], 4);
+    assert.equal(observation['goalEpoch'], 4, 'observation metadata cannot be rewritten to match authority');
+  });
+
+  it('correlates the frozen model context and journal through all three actual fitting levels, without substituting a later execution snapshot', async () => {
+    let maxRequestBytes = MAX_REQUEST_BYTES;
+    for (const level of [0, 1, 2] as const) {
+      const h = new Harness();
+      h.connectionEpoch = 17;
+      h.world.set('blk-1', log('blk-1', 1));
+      const snapshots: ObservationSnapshot[] = [];
+      const take = h.snapshot.bind(h);
+      h.snapshot = (epoch) => {
+        const snapshot = { ...take(epoch), inventory: Array.from({ length: 30 }, (_, i) => ({ key: `minecraft:item_${i}`, count: i + 1 })), entities: Array.from({ length: 10 }, (_, i) => ({ handle: `ent-${i}`, key: 'minecraft:cow', at: { x: i, y: 0, z: 0 }, distance: i, label: 'visible cow' })) };
+        snapshots.push(snapshot);
+        return snapshot;
+      };
+      h.decide = async (req) => { h.t += 137; return h.choice(req, req.candidates[0]!.id); };
+      h.evaluate = () => ({ status: h.executed.length ? 'satisfied' : 'unsatisfied' });
+      const deps = h.deps();
+      const evaluate = deps.predicates.evaluate;
+      deps.predicates.evaluate = async (...args) => { h.t += 31; return evaluate(...args); };
+      const result = await new TaskRuntime({ ...deps, limits: { ...deps.limits, maxRequestBytes } }).run(h.task());
+      assert.equal(result.status, 'completed');
+      const req = h.decisions[0]!;
+      const observation = (bodyFor('typesafe/jev-1.13', req).state as Record<string, unknown>)['observation'] as Record<string, unknown>;
+      const round = h.store.ofType('task_round')[0]!;
+      const snapshot = snapshots.find((s) => s.id === req.snapshotId)!;
+      assert.ok(snapshot, 'the actual frozen request identifies its observation');
+      assert.equal((observation['inventory'] as unknown[]).length, [24, 12, 6][level]);
+      assert.equal(round['requestId'], req.requestId);
+      assert.equal(round['taskId'], req.taskId);
+      assert.equal(round['goalId'], req.goalId);
+      assert.equal(round['goalEpoch'], req.goalEpoch, 'existing task ownership remains explicit');
+      assert.deepEqual({ id: round['snapshotId'], time: round['snapshotTakenAtMs'], connection: round['connectionEpoch'], goal: round['snapshotGoalEpoch'] }, { id: snapshot.id, time: snapshot.takenAtMs, connection: snapshot.connectionEpoch, goal: snapshot.goalEpoch });
+      assert.deepEqual({ id: observation['snapshotId'], time: observation['takenAtMs'], connection: observation['connectionEpoch'], goal: observation['goalEpoch'] }, { id: snapshot.id, time: snapshot.takenAtMs, connection: snapshot.connectionEpoch, goal: snapshot.goalEpoch });
+      const dispatch = snapshots[snapshots.indexOf(snapshot) + 1]!;
+      assert.ok(dispatch, 'dispatch revalidates with a later observation');
+      assert.notEqual(round['snapshotId'], dispatch.id);
+      assert.notEqual(round['snapshotTakenAtMs'], dispatch.takenAtMs, 'fresh execution time does not relabel the frozen model request');
+      assert.ok(requestBytes('typesafe/jev-1.13', req) <= maxRequestBytes);
+      maxRequestBytes = requestBytes('typesafe/jev-1.13', req) - 1; // force the next real fitting level, without widening any ceiling
+    }
+    assert.equal(MAX_REQUEST_BYTES, 16_384);
+  });
+});
 
 describe('task runtime: completion only from verified predicates', () => {
   it('runs Jev-chosen actions until the code-evaluated predicate is satisfied; successes alone do not complete', async () => {
@@ -458,5 +521,122 @@ describe('task runtime: stable sustained waiting', () => {
     new TaskRuntime(h.deps());
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(h.decisions.length, 0);
+  });
+});
+
+
+describe('task runtime: immediate-safety hold seam (MB-FLOW-003-C11/C13 shared wiring)', () => {
+  class FakeSafety {
+    held: { reason: 'episode' | 'blocked'; detail: string; episodeId: string | null } | null = null;
+    waits = 0;
+    next: 'clear' | 'blocked' = 'clear';
+    hold() {
+      return this.held ? { ...this.held, response: null, hazards: [], sinceMs: 0 } : null;
+    }
+    async waitClear(_signal: AbortSignal) {
+      this.waits += 1;
+      await new Promise((r) => setTimeout(r, 5));
+      if (this.next === 'blocked') return { status: 'blocked' as const, waitedMs: 5, reason: 'no_exit', detail: 'no observed shore', hazards: [] };
+      this.held = null;
+      return { status: 'clear' as const, waitedMs: 5, episodes: 1 };
+    }
+  }
+
+  it('a hold beginning during predicate resync prevents candidate/model work and resumes from fresh health after clear', async () => {
+    const h = new Harness(), safety = new FakeSafety();
+    h.world.set('blk-1', log('blk-1', 1));
+    h.evaluate = () => ({ status: h.executed.length ? 'satisfied' : 'unsatisfied' });
+    const deps = h.deps({ safety }), evaluate = deps.predicates.evaluate;
+    let first = true;
+    deps.predicates.evaluate = async (...args) => {
+      if (first) { first = false; await Promise.resolve(); h.health = 6; safety.held = { reason: 'episode', detail: 'local safety preempted predicate wait', episodeId: 'se-0004' }; }
+      return evaluate(...args);
+    };
+    const waitClear = safety.waitClear.bind(safety);
+    safety.waitClear = async (signal) => {
+      assert.equal(h.generateCalls, 0); assert.equal(h.decisions.length, 0); assert.equal(h.executed.length, 0);
+      const result = await waitClear(signal); h.health = 20; return result;
+    };
+    const result = await new TaskRuntime(deps).run(h.task());
+    assert.equal(result.status, 'completed'); assert.equal(safety.waits, 1);
+    assert.equal(result.decisions, 1); assert.equal(result.actions, 1); assert.equal(result.rounds, 3);
+    const observation = (h.decisions[0]!.state as Record<string, unknown>)['observation'] as Record<string, unknown>;
+    assert.equal((observation['self'] as Record<string, unknown>)['health'], 20);
+    const events = h.store.events.map((e) => e.type);
+    assert.ok(events.indexOf('task_safety_clear') < events.indexOf('task_round'));
+  });
+
+  it('no candidate is dispatched and no Jev call is made while safety holds; work continues from fresh state when clear', async () => {
+    const h = new Harness();
+    h.world.set('blk-1', log('blk-1', 1));
+    const safety = new FakeSafety();
+    safety.held = { reason: 'episode', detail: 'escaping water', episodeId: 'se-0001' };
+    let mined = 0;
+    h.outcome = () => {
+      mined += 1;
+      return { status: 'succeeded', confirmation: 'server_packet' };
+    };
+    h.evaluate = () => ({ status: mined >= 1 ? 'satisfied' : 'unsatisfied' });
+    const r = await new TaskRuntime(h.deps({ safety })).run(h.task());
+    assert.equal(r.status, 'completed');
+    assert.equal(safety.waits, 1);
+    assert.equal(h.decisions.length, 1, 'Jev only after the hold cleared');
+    const events = h.store.events.map((e) => e['type']);
+    assert.ok(events.indexOf('task_safety_hold') < events.indexOf('task_safety_clear'));
+    assert.ok(events.indexOf('task_safety_clear') < events.indexOf('task_round'));
+  });
+
+  it('a safety blocker ends the task blocked/safety_blocked declaratively without dispatch', async () => {
+    const h = new Harness();
+    h.world.set('blk-1', log('blk-1', 1));
+    const safety = new FakeSafety();
+    safety.held = { reason: 'blocked', detail: 'submerged, no exit', episodeId: null };
+    safety.next = 'blocked';
+    const r = await new TaskRuntime(h.deps({ safety })).run(h.task());
+    assert.equal(r.status, 'blocked');
+    assert.equal(r.reason, 'safety_blocked');
+    assert.equal(h.decisions.length, 0);
+    assert.equal(h.executed.length, 0);
+  });
+
+  it('a hazard that begins while Jev decides defers the chosen action (nothing dispatched); the task continues after clear', async () => {
+    const h = new Harness();
+    h.world.set('blk-1', log('blk-1', 1));
+    const safety = new FakeSafety();
+    let first = true;
+    h.decide = async (req) => {
+      if (first) {
+        first = false;
+        safety.held = { reason: 'episode', detail: 'zombie close', episodeId: 'se-0002' };
+      }
+      return h.choice(req, req.candidates[0]!.id);
+    };
+    let mined = 0;
+    h.outcome = () => {
+      mined += 1;
+      return { status: 'succeeded', confirmation: 'server_packet' };
+    };
+    h.evaluate = () => ({ status: mined >= 1 ? 'satisfied' : 'unsatisfied' });
+    const r = await new TaskRuntime(h.deps({ safety })).run(h.task());
+    assert.equal(r.status, 'completed');
+    assert.equal(h.executed.length, 1, 'the deferred choice was never executed; one fresh dispatch after clear');
+    assert.ok(h.store.events.some((e) => e['type'] === 'task_choice_deferred'));
+  });
+  it('safety-owned time rejects ordinary motion receipts and the execution always disposes its observer', async () => {
+    const h = new Harness(), safety = new FakeSafety();
+    h.world.set('blk-1', log('blk-1', 1));
+    let publish: ((r: { atMs: number; netProgress: number; provenance: 'client_only' }) => void) | undefined;
+    let watched = 0, disposed = 0;
+    h.outcome = () => {
+      h.t += 31_000;
+      safety.held = { reason: 'episode', detail: 'safety owns control', episodeId: 'se-0003' };
+      publish?.({ atMs: h.t, netProgress: 10_000, provenance: 'client_only' });
+      return { status: 'partial', confirmation: 'client_only' };
+    };
+    const result = await new TaskRuntime(h.deps({ safety, motionProgress: { watch: (_task, _candidate, f) => { watched++; publish = f; return () => { disposed++; publish = undefined; }; } } })).run(h.task());
+    assert.equal(result.reason, 'no_progress'); assert.equal(safety.waits, 1);
+    assert.equal(h.decisions.length, 1); assert.equal(h.executed.length, 1);
+    assert.equal(watched, 1); assert.equal(disposed, 1);
+    assert.ok(!h.store.events.some((e) => e.type === 'task_motion_progress'));
   });
 });

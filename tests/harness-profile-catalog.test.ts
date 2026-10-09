@@ -12,6 +12,7 @@ import { SkillRuntime } from '../src/app/skill-runtime.ts';
 import { loadConfigFile } from '../src/config/load.ts';
 import { sequentialIds, systemClock } from '../src/contracts/index.ts';
 import { allSkills } from '../src/skills/index.ts';
+import { SAFETY_CAPABILITIES } from '../src/contracts/safety.ts';
 import { MemoryRunStore } from '../src/telemetry/run-store.ts';
 import { LOCATOR_SKILL_IDS, catalogProblems, expectedCapabilityIds, runProfile } from '../scripts/lib/profile-catalog.ts';
 
@@ -31,7 +32,7 @@ function composedNoAutonomyIds(configPath: string): string[] {
     store: new MemoryRunStore(),
     clock: systemClock,
     ids: sequentialIds(),
-    features: config.locator?.enabled === false ? {} : { locator: true },
+    features: { safety: true, ...(config.locator?.enabled === false ? {} : { locator: true }) },
   });
   return runtime.registry.catalog().capabilities.map((c) => c.id);
 }
@@ -44,16 +45,18 @@ describe('harness catalog expectations follow the registered profile (C9)', () =
       const expected = expectedCapabilityIds(runProfile(loadConfigFile(path).config, false));
       assert.deepEqual([...actual].sort(), [...expected].sort());
       for (const id of LOCATOR_SKILL_IDS) assert.ok(actual.includes(id), `${id} registered by the locator`);
-      assert.equal(actual.length, foundation.length + LOCATOR_SKILL_IDS.length);
+      assert.equal(actual.length, foundation.length + LOCATOR_SKILL_IDS.length + Object.values(SAFETY_CAPABILITIES).length);
       assert.notEqual(actual.length, foundation.length, 'the stale foundation-only count no longer describes a run');
       assert.deepEqual(catalogProblems({ skillsLineCount: actual.length, statusCount: actual.length, diagCount: actual.length, ids: actual }, expected), []);
     });
   }
 
-  it('the automatic fixture profile adds memory, construction and survival only when automatic work runs', () => {
+  it('the scoped fixture profile adds construction for owner goals with an explicit scope; survival only when automatic work runs', () => {
     const cfg = loadConfigFile(join(PROJECT_ROOT, 'config/examples/fixture-autonomy.json')).config;
-    assert.deepEqual(runProfile(cfg, true), { memory: true, locator: true, construction: true, survival: true });
-    assert.deepEqual(runProfile(cfg, false), { memory: true, locator: true, construction: false, survival: false });
+    assert.deepEqual(runProfile(cfg, true), { safety: true, memory: true, locator: true, construction: true, survival: true });
+    assert.deepEqual(runProfile(cfg, false), { safety: true, memory: true, locator: true, construction: true, survival: false });
+    const unscoped = loadConfigFile(join(PROJECT_ROOT, 'config/examples/fixture.json')).config;
+    assert.equal(runProfile(unscoped, true).construction, false, 'no scope is ever invented');
     const ids = expectedCapabilityIds(runProfile(cfg, true));
     for (const id of ['select_home_site', 'build_home', 'eat_safe_food', 'remember_location', 'seek_owner']) assert.ok(ids.includes(id), id);
   });
@@ -77,6 +80,6 @@ describe('harness catalog expectations follow the registered profile (C9)', () =
     const guard = src.indexOf("if (!results.find((r) => r.id === 'S0')?.pass)");
     const p1 = src.indexOf("await check('P1'");
     assert.ok(s0 > 0 && guard > s0 && p1 > guard, 'the S0 abort guard sits between S0 and every dependent scenario');
-    assert.ok(src.includes("process.exitCode = passed === results.length && !aborted ? 0 : 1;"), 'an aborted run exits non-zero');
+    assert.match(src, /process\.exitCode = passed === results\.length && !aborted && !interrupted && cleanup\.every\(\(s\) => s\.ok\) && cliRuns\.every/, 'abort, interruption or incomplete cleanup cannot pass');
   });
 });

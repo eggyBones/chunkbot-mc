@@ -64,6 +64,39 @@ describe('survival upkeep', () => {
     assert.equal(necessary?.priority, 'safety');
   });
 
+  it('G3 trial state (health 11.67, food 17, eat completed <60 s ago): the HEALTH-SUPPORT meal is proposed despite the ordinary eat cooldown; bounds kept', () => {
+    // Exact server values from report 2026-10-08T02-09-35-290Z-survival (update_health at +14.86 s and +17.21 s).
+    const h = harness();
+    h.packets.inventory({ 36: slot('bread', 6) });
+    h.packets.health(20, 10);
+    const first = propose(h) as SurvivalProposal;
+    assert.equal(first.routine, 'eat');
+    const a = admit(h, first);
+    h.packets.health(20, 20);
+    endSupport(h, a, first, 'outcome_verified');
+    h.clock.advance(6_000);
+    // Ordinary hunger inside the cooldown (healthy): still waits (cooldown preserved).
+    h.packets.health(20, 13);
+    assert.notEqual(propose(h)?.routine, 'eat', 'ordinary eat still waits out its cooldown');
+    // The trial's decision state: regeneration needs food >= 18, health at/below restAtOrBelow (12), above lowHealth (8).
+    h.packets.health(11.666666030883789, 17);
+    const d = h.service.assess(assessInput(h));
+    assert.equal(d.kind, 'propose', `expected the health-support meal, got ${JSON.stringify(d)}`);
+    const meal = (d as { proposal: SurvivalProposal }).proposal;
+    assert.equal(meal.routine, 'eat');
+    assert.equal(meal.lowHealthAllowance, undefined, 'no low-health allowance above lowHealth (allowance bounds unchanged)');
+    assert.match(meal.reason, /health 11\.\d+ needs food to regenerate/);
+    // Fresh threat and inventory checks still apply to that meal.
+    h.snap.value = snapshot({ entities: [{ handle: 'ent-1', key: 'minecraft:zombie', kind: 'hostile', at: { x: 3, y: 64, z: 0 }, distance: 3 } as never] });
+    const threatened = h.service.assess(assessInput(h));
+    assert.deepEqual(threatened.kind === 'blocked' ? [threatened.routine, threatened.reason] : threatened, ['eat', 'threat_nearby'], 'a visible hostile blocks eating in place for health support');
+    h.snap.value = undefined;
+    h.packets.inventory({});
+    const noFood = h.service.assess(assessInput(h));
+    // No owned safe food: nothing is eaten; the bounded resupply routine (get food) is proposed instead.
+    assert.equal(noFood.kind === 'propose' ? noFood.proposal.routine : noFood.kind, 'resupply');
+  });
+
   it('risky or precious food only: honest no_safe_food block, unchanged signature is not re-proposed', () => {
     const h = harness();
     h.packets.inventory({ 37: slot('rotten_flesh', 5), 38: slot('golden_apple', 1) });

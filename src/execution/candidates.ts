@@ -13,10 +13,11 @@ import {
   type IdSource,
   type ObservationSnapshot,
   type OutcomePredicate,
+  type RemovalCarry,
   type TaskSpec,
 } from '../contracts/index.ts';
 import type { GameSession } from '../game/connection.ts';
-import { admittedParameters } from '../skills/common.ts';
+import { admittedParameters, removalScopeAllows } from '../skills/common.ts';
 import type { SkillServices, TaskHints } from '../skills/definition.ts';
 import { boundJson } from './executor.ts';
 import type { SkillRegistry } from './registry.ts';
@@ -56,6 +57,12 @@ function walkPredicate(p: OutcomePredicate, hints: TaskHints): void {
     case 'entity_outcome':
       addSelector(p.target, hints);
       return;
+    case 'blocks_removed':
+      // The bound target scopes the work; the selector names what must go (and what drops may be wanted).
+      hints.keys.push(p.selector);
+      addSelector(p.target, hints);
+      if (p.target.kind === 'observed') (hints.removalHandles ??= []).push({ snapshotId: p.target.snapshotId, handle: p.target.handle });
+      return;
   }
 }
 
@@ -88,6 +95,8 @@ function addSelector(s: TaskSpec['targetSelectors'][number], hints: TaskHints): 
 export function taskHints(task: TaskSpec): TaskHints {
   const hints: TaskHints = { keys: [], handles: [], wantsOwner: false, anchors: [], destinations: [], priorResults: [], outputs: [], parameters: task.parameters ?? {}, memoryRefs: [] };
   for (const s of task.targetSelectors ?? []) addSelector(s, hints);
+  if (hints.handles.length) hints.primaryHandles = [...hints.handles];
+  hints.targetKeys = task.targetSelectors.filter((s) => s.kind === 'registry').map((s) => s.key);
   walkPredicate(task.completion, hints);
   hints.keys = [...new Set(hints.keys)];
   return hints;
@@ -129,7 +138,7 @@ export class TaskCandidateGenerator implements CandidateGenerator {
     this.deps = deps;
   }
 
-  generate(task: TaskSpec, snapshot: ObservationSnapshot): CandidateSet {
+  generate(task: TaskSpec, snapshot: ObservationSnapshot, destructiveScope?: readonly RemovalCarry[], requiresOwnerDirection = false): CandidateSet {
     const session = this.deps.session();
     const hints = taskHints(task);
     const candidates: ActionCandidate[] = [];
@@ -148,17 +157,21 @@ export class TaskCandidateGenerator implements CandidateGenerator {
       return { snapshotId: snapshot.id, handle: translated };
     };
     hints.handles = hints.handles.map(ground);
+    if (hints.primaryHandles) hints.primaryHandles = hints.primaryHandles.map(ground);
+    if (hints.removalHandles) hints.removalHandles = hints.removalHandles.map(ground);
     const parameters: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(hints.parameters)) {
       if (isHandleRef(value)) {
         const grounded = ground(value);
         parameters[key] = grounded;
         hints.handles.push(grounded);
+        (hints.primaryHandles ??= []).push(grounded);
       } else if (isKindHandleRef(value)) {
         // movement targets {kind:"handle",snapshotId,handle} follow the same authority rule
         const grounded = ground({ snapshotId: value.snapshotId, handle: value.handle });
         parameters[key] = { kind: 'handle', ...grounded };
         hints.handles.push(grounded);
+        (hints.primaryHandles ??= []).push(grounded);
       } else parameters[key] = value;
     }
     hints.parameters = parameters as TaskHints['parameters'];
@@ -167,6 +180,10 @@ export class TaskCandidateGenerator implements CandidateGenerator {
     const perCap = this.deps.maxPerCapability ?? 6;
     const maxTotal = this.deps.maxTotal ?? 32;
     for (const capability of task.allowedCapabilities) {
+      if (capability === 'explore_frontier' && (requiresOwnerDirection || hints.wantsOwner)) {
+        unavailable.push({ capability, reason: 'owner_direction_required', detail: 'owner seeking uses a fresh locator cue or visible owner through seek_owner; undirected exploration has no authority', evidence: {} });
+        continue;
+      }
       const def = this.deps.registry.get(capability);
       if (!def) {
         unavailable.push({ capability, reason: 'capability_not_implemented', detail: `${capability} is not a registered capability`, evidence: {} });
@@ -194,6 +211,10 @@ export class TaskCandidateGenerator implements CandidateGenerator {
         const parsed = def.params.safeParse(d.parameters);
         if (!parsed.success) return false;
         const data = parsed.data as Record<string, unknown>;
+        if (capability === 'mine_block' && destructiveScope !== undefined && !removalScopeAllows(this.deps.services, data['target'], destructiveScope, snapshot.dimension)) {
+          conflicts += 1;
+          return false;
+        }
         for (const [key, value] of Object.entries(admitted.values)) {
           if (canonical(data[key]) !== canonical(value)) {
             conflicts += 1;

@@ -174,7 +174,19 @@ export class CodexPlanner implements PlannerPort {
     const schema = this.schemaFor(request);
     const prompt = renderRequest(request, request.limits?.planWindowSteps ?? this.options.windowSteps);
     const journal = this.options.journal ?? this.options.store;
-    const base = { requestId: request.requestId, ...(request.subject.kind === 'goal' ? { goalId: request.subject.goalId } : { intentId: request.subject.intentId, generation: request.subject.generation }), subject: subjectRef(request.subject), turn: request.turn, turnKind: request.turnKind ?? 'initial' };
+    // Observation epochs describe the filtered snapshot, not the planning subject's
+    // authority. Preparation has no admitted goal epoch; an absent snapshot has
+    // no observation epoch, even when this turn plans for an admitted goal.
+    const base = {
+      requestId: request.requestId,
+      ...(request.subject.kind === 'goal' ? { goalId: request.subject.goalId } : { intentId: request.subject.intentId, generation: request.subject.generation }),
+      subject: subjectRef(request.subject),
+      subjectGoalEpoch: request.subject.kind === 'goal' ? request.subject.goalEpoch : null,
+      goalEpoch: request.observation?.goalEpoch ?? null,
+      connectionEpoch: request.observation?.connectionEpoch ?? null,
+      turn: request.turn,
+      turnKind: request.turnKind ?? 'initial',
+    };
     this.inFlight += 1;
     // MB-PLAN-002: re-verify the managed ChatGPT subscription login before EVERY turn
     // (a login changed after startup is caught before inference). Mode only, read-only.
@@ -192,8 +204,9 @@ export class CodexPlanner implements PlannerPort {
       throw new PlannerError('auth', auth.detail);
     }
     this.totals.turns += 1;
-    this.options.store.record({ type: 'planner_turn_started', ...base, authMode: auth.mode, promptChars: prompt.length, promptDigest: digest(prompt), schemaDigest: schema.digest, catalogVersion: request.catalog.catalogVersion, snapshotId: request.observation?.id ?? null, selectedModel: iso.model, effort: iso.effort });
+    this.options.store.record({ type: 'planner_turn_started', ...base, authMode: auth.mode, promptChars: prompt.length, promptDigest: digest(prompt), schemaDigest: schema.digest, catalogVersion: request.catalog.catalogVersion, snapshotId: request.observation?.id ?? null, snapshotTakenAtMs: request.observation?.takenAtMs ?? null, selectedModel: iso.model, effort: iso.effort });
     let turn: TurnResult;
+    const streamEvents = new Set<string>();
     try {
       turn = await runCodexTurn({
         command: iso.command,
@@ -205,6 +218,12 @@ export class CodexPlanner implements PlannerPort {
         signal,
         ...(this.options.table ? { table: this.options.table } : {}),
         onCleanup: (c) => this.options.store.record({ type: 'planner_process_cleanup', ...base, ...c }),
+        onEvent: (type) => {
+          if (!['turn.started', 'turn.completed'].includes(type) || streamEvents.has(type)) return;
+          streamEvents.add(type);
+          this.options.store.record({ type: type === 'turn.started' ? 'planner_stream_started' : 'planner_stream_completed', ...base });
+        },
+        onResponseStart: () => this.options.store.record({ type: 'planner_response_started', ...base }),
       });
     } catch (error) {
       this.totals.failedTurns += 1;

@@ -58,7 +58,6 @@ export async function runPlannerCheck(loaded: LoadedConfig, io: PlannerCheckIo):
     maxTurns: config.limits.plannerTurnsPerGoal,
     catalog,
     observation: null,
-    clarifications: [],
     knowledge: [],
     turnKind: 'initial',
     admission: { capturedAtMs: Date.now(), counts: [], detail: 'planner-check diagnostic: no game is connected; empty inventory assumed' },

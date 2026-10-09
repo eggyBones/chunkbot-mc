@@ -10,7 +10,7 @@ import type { AddressInfo } from 'node:net';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import type { ActionCandidate, DecisionRequest } from '../src/contracts/index.ts';
 import { isDecisionError } from '../src/decision/errors.ts';
-import { JevDecisionAdapter, type JevAdapterOptions } from '../src/decision/jev-adapter.ts';
+import { JevDecisionAdapter, MAX_RETAINED_GOALS, type JevAdapterOptions } from '../src/decision/jev-adapter.ts';
 import { JEV_CONTEXT_TOKENS, JEV_MAX_PRICE, PROMPT_USD_PER_TOKEN, maxAttemptChargeUsd } from '../src/decision/pricing.ts';
 
 const MAX = maxAttemptChargeUsd(); // full serving context x admitted prompt price
@@ -431,5 +431,47 @@ describe('Jev limits: attempts, spend cap, interval, one in flight', () => {
     const second = await failure(a.choose(request({ requestId: 'req-0002' }), new AbortController().signal));
     assert.equal(second.kind, 'busy');
     await failure(first);
+  });
+});
+
+describe('MB-FLOW-003-C12 per-goal budget retention through support-goal churn', () => {
+  const churn = async (a: JevDecisionAdapter, n: number) => {
+    for (let i = 0; i < n; i += 1) {
+      handlers.push(ok());
+      await a.choose(request({ goalId: `goal-sup${String(i).padStart(3, '0')}`, requestId: `req-c${i}` }), new AbortController().signal);
+    }
+  };
+
+  it('a retained (active/held) logical goal keeps its attempts after 40 other goals; an unretained one is evicted and would refill (control)', async () => {
+    const retained = adapter({ attemptsPerGoal: 2 }).a;
+    handlers.push(ok());
+    await retained.choose(request({ goalId: 'goal-owner1' }), new AbortController().signal);
+    retained.retainGoalBudget('goal-owner1', true);
+    await churn(retained, 40);
+    assert.equal(retained.attemptsForGoal('goal-owner1'), 1, 'count survived the churn');
+    handlers.push(ok(), ok());
+    await retained.choose(request({ goalId: 'goal-owner1', requestId: 'req-o2' }), new AbortController().signal);
+    const f = await failure(retained.choose(request({ goalId: 'goal-owner1', requestId: 'req-o3' }), new AbortController().signal));
+    assert.equal(f.kind, 'attempt_limit', 'the cumulative allowance is enforced across the churn');
+
+    const control = adapter({ attemptsPerGoal: 2 }).a;
+    handlers.push(ok());
+    await control.choose(request({ goalId: 'goal-owner1' }), new AbortController().signal);
+    await churn(control, 40);
+    assert.equal(control.attemptsForGoal('goal-owner1'), 0, 'without retention the entry was evicted (the bug this guards)');
+  });
+
+  it('retention is bounded (oldest released, recorded) and releasing restores normal eviction; spend reservations are unchanged', async () => {
+    const { a, store, spend } = adapter();
+    for (let i = 0; i < MAX_RETAINED_GOALS + 3; i += 1) a.retainGoalBudget(`goal-r${String(i).padStart(3, '0')}`, true);
+    assert.equal(a.retainedGoals().length, MAX_RETAINED_GOALS);
+    assert.ok(!a.retainedGoals().includes('goal-r000'));
+    assert.equal(store.ofType('jev_goal_budget_retention_released').length, 3);
+    a.retainGoalBudget('goal-r010', false);
+    assert.ok(!a.retainedGoals().includes('goal-r010'));
+    const before = spend.snapshot().remainingUsd;
+    handlers.push(ok());
+    await a.choose(request({ goalId: 'goal-r005' }), new AbortController().signal);
+    assert.ok(spend.snapshot().remainingUsd < before, 'the run SpendLedger still charges every attempt');
   });
 });

@@ -10,6 +10,7 @@
 // A9  survival code_task / revoke_unsafe through the same engine; the allowance is bound at admission
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { ownerQuestionIn } from '../src/goals/declarative.ts';
 import type { PlannerProposal, SurvivalProposal } from '../src/contracts/index.ts';
 import { until } from './helpers.ts';
 import { FakeSurvival, OWNER, autonomyHarness } from './autonomy-fakes.ts';
@@ -42,7 +43,7 @@ describe('A1 automatic progression starts through the single admission path', ()
     assert.equal(req.autonomy?.source.kind, 'progression');
     assert.match(req.instruction, /Automatic progression/);
     assert.doesNotMatch(req.instruction, /cobblestone|iron|stone pickaxe/i, 'no hardcoded milestone ladder');
-    assert.ok(req.autonomy?.rules.some((r) => /cannot ask the owner/.test(r)));
+    assert.ok(req.autonomy?.rules.some((r) => /never ask the owner questions/.test(r)));
     assert.equal(h.engine.status().goal?.source?.kind, 'progression');
     assert.equal(h.supervisor.status().session.completed, 1);
     assert.deepEqual(h.timers.delays(), [3_000], 'next assessment after a verified outcome');
@@ -229,7 +230,7 @@ describe('A7 bounded waiting', () => {
     assert.equal(h.timers.pending.size, 0);
   });
 
-  it('automatic goals never wait for an owner answer and refuse persistent outcomes', async () => {
+  it('automatic goals never wait for an owner answer (same MB-PLAN-006 counted refusal) and refuse persistent outcomes', async () => {
     let n = 0;
     const h = autonomyHarness(() => {
       n += 1;
@@ -238,8 +239,10 @@ describe('A7 bounded waiting', () => {
     await h.supervisor.assessNow();
     await until(() => h.engine.status().goal?.terminal !== undefined);
     const g = h.engine.status().goal!;
-    assert.equal(g.terminal?.reason, 'cannot_execute');
-    assert.match(g.terminal!.detail, /cannot wait for answers/);
+    assert.equal(g.terminal?.reason, 'invalid_proposal');
+    assert.match(g.terminal!.detail, /does not ask follow-up questions/);
+    assert.doesNotMatch(g.terminal!.detail, /which tree/);
+    assert.equal(g.counters?.questionRefusals, 2, 'both repair turns answered the same question (allowance exhausted)');
     assert.equal(h.planner.requests[1]!.turnKind, 'repair', 'the persistent outcome was rejected first');
   });
 });
@@ -291,6 +294,10 @@ describe('A9 survival support through the same engine', () => {
     await settle();
     assert.equal(h.supervisor.status().ownerIntent?.state, 'interrupted');
     assert.equal(h.supervisor.status().session.safetyRevocations, 1);
+    // MB-PLAN-006: the interruption notice is declarative (never asks the owner what to do).
+    const notice = h.notices.find((n) => /interrupted/.test(n))!;
+    assert.ok(notice, h.notices.join(' | '));
+    assert.equal(ownerQuestionIn(notice), undefined, notice);
     survival.decision = { kind: 'none', reason: 'safe now' };
     await h.supervisor.assessNow();
     assert.equal(h.automaticRequests().length, 0, 'unrelated progression waits for the owner');

@@ -12,13 +12,21 @@
 //     it is not used; we watch path_update/goal_reached and verify position.
 // Policy: no digging, no placing/scaffolding, no towers, no parkour, no sprint,
 // no door opening, drop at most 3 blocks, avoid fire/lava/magma/campfires/
-// berry bushes/powder snow/wither roses, water allowed but costed.
+// berry bushes/powder snow/wither roses, deep water refused, shallow wading allowed.
 import pathfinderPkg from 'mineflayer-pathfinder';
 import type { GameSession } from '../game/connection.ts';
-import type { Actuator } from '../execution/actuator.ts';
+import { observeActuatorMotion, type Actuator } from '../execution/actuator.ts';
 import type { Vec } from '../perception/visibility.ts';
+import { safetyWorld } from '../safety/adapter.ts';
+import type { SafetyBlockReader } from '../safety/geometry.ts';
+import { applyDeepWaterAvoidance } from './safety.ts';
 
 type Bot = GameSession['bot'];
+const navigationWorlds = new WeakMap<Bot, () => SafetyBlockReader | undefined>();
+/** Runtime installs its authoritative server/prediction-filtered world view. */
+export function bindNavigationWorld(bot: Bot, reader: () => SafetyBlockReader | undefined): void {
+  navigationWorlds.set(bot, reader);
+}
 const { Movements, goals } = pathfinderPkg as unknown as {
   Movements: new (bot: Bot) => Record<string, unknown> & { blocksToAvoid: Set<number>; scafoldingBlocks: number[] };
   goals: {
@@ -29,6 +37,29 @@ const { Movements, goals } = pathfinderPkg as unknown as {
   };
 };
 export { goals };
+
+/** Approach an exact position using the feet centers that the installed
+ * pathfinder actually walks to. Its GoalNear floors fractional targets and
+ * tests integer nodes; that can finish outside an exact admitted radius. */
+export class GoalNearPosition {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  private readonly range: number;
+  constructor(x: number, y: number, z: number, within: number) {
+    this.x = x; this.y = y; this.z = z;
+    // Routing stays inside the requested radius; arrival still checks the
+    // original unrounded predicate/parameter. Keep a margin for physical stop.
+    this.range = Math.max(Math.min(0.75, within), within - 0.5);
+  }
+  private distance(node: { x: number; y: number; z: number }): number {
+    return Math.hypot(this.x - (node.x + 0.5), this.y - node.y, this.z - (node.z + 0.5));
+  }
+  heuristic(node: { x: number; y: number; z: number }): number { return Math.max(0, this.distance(node) - this.range); }
+  isEnd(node: { x: number; y: number; z: number }): boolean { return this.distance(node) <= this.range; }
+  hasChanged(): boolean { return false; }
+  isValid(): boolean { return true; }
+}
 
 /**
  * Within `range` of a block but never standing on top of it (pathfinder's
@@ -97,6 +128,13 @@ export const NAVIGATION_POLICY = {
  */
 export function conservativeMovements(bot: Bot, bounds?: { anchor: Vec; radius: number }): { movements: unknown; verified: Record<string, unknown> } {
   const m = new Movements(bot);
+  // W's reviewed geometry policy is shared by EVERY movement capability,
+  // including locator legs and ordinary follow/navigation. The bot-only
+  // fallback is for standalone callers without a connection evidence journal.
+  const world = navigationWorlds.get(bot)?.() ?? safetyWorld({ bot } as GameSession);
+  // Step costs alone miss installed diagonal/drop liquid landings. Use W's
+  // complete instance policy, including its getBlock safety fence.
+  applyDeepWaterAvoidance(m, world);
   if (bounds) {
     (m as unknown as { exclusionAreasStep: Array<(b: { position: Vec }) => number> }).exclusionAreasStep.push((b: { position: Vec }) => (Math.hypot(b.position.x + 0.5 - bounds.anchor.x, b.position.z + 0.5 - bounds.anchor.z) > bounds.radius ? 100 : 0));
   }
@@ -197,6 +235,7 @@ export async function navigate(act: Actuator, options: NavigateOptions): Promise
   try {
     // The live travel guard runs before every success path, including "already there".
     if (outside()) return result('out_of_bounds');
+    observeActuatorMotion(act);
     if (options.arrived()) return result('arrived');
     act.setPathGoal(options.goal, options.dynamic ?? false);
     while (true) {
@@ -204,6 +243,7 @@ export async function navigate(act: Actuator, options: NavigateOptions): Promise
       if (outside()) return result('out_of_bounds');
       const abort = options.abortIf?.();
       if (abort) return result('stuck', abort);
+      observeActuatorMotion(act);
       const next = options.retarget?.();
       if (next !== undefined) {
         noPath = false;
@@ -215,6 +255,7 @@ export async function navigate(act: Actuator, options: NavigateOptions): Promise
         // settle briefly so a server position correction can show up
         await act.sleep(200);
         if (outside()) return result('out_of_bounds');
+        observeActuatorMotion(act);
         if (options.arrived()) return result('arrived');
       }
       const pos = bot.entity.position;

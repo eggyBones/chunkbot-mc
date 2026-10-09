@@ -11,7 +11,7 @@ export function autonomyStatusLines(s: AutonomyStatus, extra: { locator?: Locato
   const scope = s.scope ? `${s.scope.worldProfile}@r${s.scope.worldRevision}/${s.scope.botProfile}` : 'none';
   lines.push(`autonomy scope: ${scope}; durable state ${s.persistence.state} (rev ${s.persistence.revision}); stop latch ${s.latch.paused ? `PAUSED since ${s.latch.sinceMs ?? '?'} (${s.latch.source ?? 'stop'}; durable ${s.latch.durable})` : `clear (durable ${s.latch.durable})`}`);
   if (s.active) lines.push(`autonomy active: ${s.active.goalId} ${s.active.priority} (${s.active.source.kind}${s.active.source.kind === 'support' ? ` ${s.active.source.routine}` : ''})`);
-  if (s.ownerIntent) lines.push(`owner intent: ${s.ownerIntent.state} "${clip(s.ownerIntent.instruction, 80)}" — ${clip(s.ownerIntent.detail, 160)}${s.ownerIntent.requiresOwnerDecision ? ' (needs your decision; a new instruction replaces it; resume does not clear it)' : ''}`);
+  if (s.ownerIntent) lines.push(`owner intent: ${s.ownerIntent.state} "${clip(s.ownerIntent.instruction, 80)}" — ${clip(s.ownerIntent.detail, 160)}${s.ownerIntent.requiresOwnerDecision ? ' (held, not continued automatically; a new instruction replaces it; resume does not clear it)' : ' (held; continues when it is safe; stop cancels it)'}`);
   const sess = s.session;
   lines.push(`autonomy session: progression ${sess.progressionGoals}/${sess.limits.maxProgressionGoals}, support ${sess.supportGoals}/${sess.limits.maxSupportGoals}, automatic planner turns ${sess.plannerTurns}/${sess.limits.maxPlannerTurns}, completed ${sess.completed}, unproductive in a row ${sess.consecutiveUnproductive}, safety revocations ${sess.safetyRevocations}${s.nextAssessmentAtMs !== null ? `; next assessment at ${s.nextAssessmentAtMs}` : ''}`);
   if (s.blocker) lines.push(`autonomy blocker: ${s.blocker.code} — ${clip(s.blocker.detail, 200)}`);
@@ -26,8 +26,15 @@ export function autonomyStatusLines(s: AutonomyStatus, extra: { locator?: Locato
     for (const i of v.incidents.slice(0, 2)) lines.push(`death incident ${i.episodeId}: ${i.status}/${i.phase}; site ${i.site.source}${i.site.at ? ` ${Math.round(i.site.at.x)},${Math.round(i.site.at.y)},${Math.round(i.site.at.z)}` : ''}; missing ${i.missing.reduce((n, m) => n + m.count, 0)}, regained ${i.regained.reduce((n, m) => n + m.count, 0)}; attempts ${i.attempts.used}/${i.attempts.max}${i.blocker ? `; blocked ${i.blocker.reason}` : ''}`);
     for (const b of v.blocked.slice(0, 2)) lines.push(`survival blocked: ${b.routine} ${b.reason} — ${clip(b.detail, 140)}`);
   }
-  if (s.route) {
-    const r = s.route;
+  lines.push(...navigationStatusLines(s.route, extra));
+  return lines;
+}
+
+/** Ordinary manual route/locator status also works without a supervisor. */
+export function navigationStatusLines(route: AutonomyStatus['route'], extra: { locator?: LocatorHint | null; admission?: { anchor: { x: number; y: number; z: number }; radius: number } | null } = {}): string[] {
+  const lines: string[] = [];
+  if (route) {
+    const r = route;
     lines.push(`route: ${r.state} (${r.destinations.join('/')}); legs ${r.legsUsed}/${r.maxLegs}; moved ${Math.round(r.distanceUsed)}/${r.maxTotalDistance} blocks (corrections ${r.distanceSources.correctionCount}); ${Math.round(r.remainingMs / 1000)}s left${r.blocker ? `; blocker ${r.blocker.reason}` : ''}${extra.admission ? `; admission anchor ${Math.round(extra.admission.anchor.x)},${Math.round(extra.admission.anchor.y)},${Math.round(extra.admission.anchor.z)} r${extra.admission.radius} (unchanged)` : ''}`);
   }
   if (extra.locator) {

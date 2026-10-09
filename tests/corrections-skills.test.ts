@@ -209,7 +209,7 @@ describe('MB-SKL-006/007 follow uses only fresh visible positions and the travel
       { act: f.act as never, session: f.s.session, services: f.services, candidate: { timeoutMs: 5_000 } as never, owner: { kind: 'diagnostic', diagnosticId: 'd' }, progress: () => undefined },
       { target: { kind: 'handle', snapshotId: (f.s.perception.take(1) as ObservationSnapshot).id, handle: (f.s.perception.latest() as ObservationSnapshot).entities[0]?.handle as string }, within: 3, durationMs: 1_000 },
     );
-    assert.ok(f.goals.length >= 1 && f.goals[0]?.x === 6, `goal toward the visible owner (GoalNear floors): ${JSON.stringify(f.goals)}`);
+    assert.ok(f.goals.length >= 1 && f.goals[0]?.x === 6.5, `goal retains the exact visible owner position: ${JSON.stringify(f.goals)}`);
     assert.equal(typeof result.evidence?.['finalDistance'], 'number');
   });
 

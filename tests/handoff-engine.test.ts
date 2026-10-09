@@ -9,7 +9,7 @@
 // H4 rapid A/B/C: one planner process at a time, only C is admitted, late
 //    replies are fenced; invalid/unconnected intake leaves everything intact.
 // H5 stop and lifecycle cancel both contexts; the stop latch stays set until resume.
-// H6 timeout/quota/auth/malformed/clarification before admission keep the old task.
+// H6 timeout/quota/auth/malformed/legacy-question before admission keep the old task.
 // Stale drafts are re-grounded against a fresh snapshot or repaired (counted).
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
@@ -84,7 +84,7 @@ describe('H1/H2 smooth handoff while following', () => {
     assert.equal(oldRun.task.signal.aborted, false, 'the admitted follow task keeps running during preparation');
     assert.equal(mid.goal?.instruction, 'follow me');
     assert.equal(mid.goal?.state, 'executing');
-    assert.equal(mid.task?.objective, 'stay near the owner');
+    assert.equal(mid.task?.objective, 'follow_entity until the bot is within 3 blocks of you', 'owner-visible step label is app-owned');
     assert.equal(mid.pending?.state, 'preparing');
     assert.equal(mid.pending?.plannerTurns, 1);
     assert.equal(h.tasks.runs.length, 1, 'nothing runs under pending ownership');
@@ -316,36 +316,36 @@ describe('H6 honest failures before admission keep the current task', () => {
     await h.engine.stop('owner_stop');
   });
 
-  it('a clarification for the new instruction is separate from the active goal, causes no repeated inference, and its answer continues the preparation', async () => {
+  it('MB-PLAN-006: a legacy clarification for the new instruction is a counted preparation repair; the active task continues, nothing is asked, and the repaired draft hands off', async () => {
     let turn = 0;
     const plan = finitePlan([task('chop oak', cobble(1))], cobble(1), false, 'chop oak');
     const h = await followingHarness({ 'get wood': () => (turn++ === 0 ? { kind: 'reply', proposal: clarify('Oak or birch?') } : { kind: 'reply', proposal: plan }) });
     h.tasks.behaviors.set('chop oak', holdUntilRevoked);
     await h.engine.submit('get wood', OWNER);
-    await until(() => h.engine.status().pending?.state === 'awaiting_owner');
-    const s = h.engine.status();
-    assert.equal(s.goal?.state, 'executing', 'the active goal keeps executing');
-    assert.equal(s.goal?.pendingClarification, undefined);
-    assert.equal(s.pending?.pendingClarification?.ref, 'q1');
-    assert.ok(h.notices.some((n) => /^Question q1: Oak or birch\? \(reply: answer q1 <reply>\) — about your new instruction; the current task continues meanwhile/.test(n.text)));
-    const before = h.planner.count;
-    await sleep(200);
-    assert.equal(h.planner.count, before, 'no repeated inference while waiting');
-    assert.equal(h.engine.answer('oak', 'q9', 'chat').status, 'rejected');
-    const a = h.engine.answer('oak', 'q1', 'chat');
-    assert.equal(a.status === 'accepted' && a.intentId, s.pending?.intentId);
     await until(() => h.engine.status().goal?.instruction === 'get wood' && h.tasks.runs.length === 2);
+    assert.ok(!h.notices.some((n) => /Question q\d|Oak or birch|answer q\d/.test(n.text)), 'no owner question');
     const goal = h.engine.status().goal!;
-    assert.equal(goal.counters?.clarifications, 1);
+    assert.equal(goal.counters?.questionRefusals, 1);
+    assert.equal(goal.counters?.repairs, 1);
     assert.equal(goal.counters?.preparationTurns, 2);
-    assert.equal(h.planner.requests.at(-1)?.turnKind, 'clarification');
-    assert.deepEqual(h.planner.requests.at(-1)?.clarifications, [{ ref: 'q1', question: 'Oak or birch?', answer: 'oak' }]);
+    assert.equal(h.planner.requests[2]?.turnKind, 'repair');
+    assert.ok(h.planner.requests[2]?.rejection?.problems.some((p) => p.startsWith('owner_question_refused')));
+    await h.engine.stop('owner_stop');
+  });
+
+  it('MB-PLAN-006: preparation questions until exhaustion discard the draft declaratively while the old task continues', async () => {
+    const h = await failing(() => ({ kind: 'reply', proposal: clarify('Oak or birch?') }));
+    assert.equal(h.planner.count, 4, 'initial + 2 repairs');
+    assert.match(h.notices.at(-1)!.text, /not started \(invalid_proposal\): the planner kept asking for an owner decision/);
+    assert.ok(!h.notices.some((n) => /Oak or birch/.test(n.text)));
+    assert.equal(h.engine.status().goal?.state, 'executing', 'the still-valid old task keeps running');
     await h.engine.stop('owner_stop');
   });
 
   it('cannot_execute: the exact reason is reported and the old task continues', async () => {
     const h = await failing(() => ({ kind: 'reply', proposal: { version: 1, disposition: 'cannot_execute', interpretation: 'fly', missing: 'there is no flying capability', missingCapabilities: [], verifiedProgress: '' } }));
-    assert.match(h.notices.at(-1)!.text, /not started \(cannot_execute\): there is no flying capability/);
+    assert.match(h.notices.at(-1)!.text, /not started \(cannot_execute\): the planner found no supported way to continue/);
+    assert.doesNotMatch(h.notices.at(-1)!.text, /flying/, 'planner prose stays internal (MB-PLAN-006)');
     await h.engine.stop('owner_stop');
   });
 });

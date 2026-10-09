@@ -119,6 +119,17 @@ function liveVm(): ViewModel {
 }
 
 describe('dashboard browser script under the strict CSP (C4)', () => {
+  it('renders safety response and historical epoch labels as text within the existing directive card', async () => {
+    const vm = liveVm();
+    vm.directive.safety = { title: 'Last known — Defending against an engaging threat', detail: '<unsafe> is text', note: 'Historical; not live · connection 1 · app state at 00:00:01 UTC', historical: true, tone: 'muted' };
+    const { all, violations } = await renderInFakeDom(vm);
+    assert.deepEqual(violations, []);
+    const card = all.find((e) => e.className === 'task historical')!;
+    assert.ok(card);
+    assert.match(text(card), /Last known — Defending/);
+    assert.match(text(card), /Historical; not live · connection 1/);
+    assert.ok(all.some((e) => e.textContent === '<unsafe> is text'), 'textContent cannot become markup');
+  });
   it('never sets an inline style attribute, on first render or refresh', async () => {
     const { violations } = await renderInFakeDom(liveVm());
     assert.deepEqual(violations, []);

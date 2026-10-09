@@ -82,7 +82,8 @@ export class ScriptedPlanner implements PlannerPort {
   }
 }
 
-export function clarify(question: string): PlannerProposal {
+/** A LEGACY (pre-MB-PLAN-006) clarification proposal: raw planner output that code must refuse (never a question to relay). */
+export function clarify(question: string): unknown {
   return { version: 1, disposition: 'needs_clarification', interpretation: 'needs a detail', question };
 }
 

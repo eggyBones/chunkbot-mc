@@ -24,6 +24,7 @@ import { StaticCapabilityRegistry } from '../src/goals/not-ready.ts';
 import { VersionKnowledge } from '../src/knowledge/knowledge.ts';
 import { PlannerError } from '../src/planner/errors.ts';
 import { ScriptedPlanner, makeEngine, tick, until } from './helpers.ts';
+import { FakeWorld } from './handoff-fakes.ts';
 
 const OWNER = { surface: 'chat', principal: 'owner' } as const;
 const FACTS = new VersionKnowledge({ version: '26.1.2' });
@@ -76,7 +77,7 @@ class FakeTasks implements TaskExecutionPort {
     const o = this.outcomes.shift() ?? {};
     if (o.reason === 'hold') await new Promise<void>((r) => t.signal.addEventListener('abort', () => r(), { once: true }));
     const status = t.signal.aborted ? 'cancelled' : (o.status ?? 'completed');
-    return { taskId: t.taskId, status, reason: o.reason ?? 'completion_verified', detail: 'fake', rounds: 1, decisions: 1, actions: 1, localContinuations: 0, feedback: { taskId: t.taskId, objective: t.spec.objective, status, reason: o.reason ?? 'completion_verified', detail: 'fake', unavailable: [], recentOutcomes: o.feedback?.recentOutcomes ?? [], exhaustedTargets: [], completion: null } };
+    return { taskId: t.taskId, status, reason: o.reason ?? 'completion_verified', detail: 'fake', rounds: 1, decisions: 1, actions: 1, localContinuations: 0, feedback: { taskId: t.taskId, objective: t.spec.objective, status, reason: o.reason ?? 'completion_verified', detail: 'fake', unavailable: o.feedback?.unavailable ?? [], recentOutcomes: o.feedback?.recentOutcomes ?? [], exhaustedTargets: [], completion: null } };
   }
 }
 
@@ -104,6 +105,57 @@ function harness(over: Parameters<typeof makeEngine>[0] = {}, limits: Partial<Re
 const req = (p: ScriptedPlanner, i: number): PlannerRequest => p.requests[i] as PlannerRequest;
 
 describe('rolling planner/task windows', () => {
+  it('N1-R4 replans beyond the shown-history window with the same bound outcome and fresh tasks, without repairs or rebinding', async () => {
+    const world = new FakeWorld();
+    const h = harness({ observation: world });
+    await h.engine.submit('Remove the visible target.', OWNER);
+    await until(() => h.planner.waiting === 1);
+    const first = req(h.planner, 0).observation!;
+    const outcome: OutcomePredicate = { predicate: 'blocks_removed', target: { kind: 'observed', snapshotId: first.id, handle: first.blocks[0]!.handle }, selector: 'minecraft:oak_log' };
+    for (let i = 0; i < 6; i += 1) {
+      await until(() => h.planner.requests.length === i + 1 && h.planner.waiting === 1);
+      const request = req(h.planner, i);
+      const fresh = request.observation!;
+      if (i > 0) assert.deepEqual(request.acceptedOutcome, { kind: 'finite', outcome });
+      const freshCompletion: OutcomePredicate = { ...outcome, target: { kind: 'observed', snapshotId: fresh.id, handle: fresh.blocks[0]!.handle } };
+      if (i === 5) h.outcomes.satisfied = true;
+      h.planner.respond(plan([task('Remove this freshly observed member.', freshCompletion)], outcome));
+    }
+    await until(() => h.engine.status().goal?.state === 'completed');
+    assert.equal(h.tasks.runs.length, 6);
+    assert.equal(h.outcomes.boundWith.length, 1, 'original outcome/baseline bind once');
+    assert.equal(h.engine.status().goal!.counters!.repairs, 0);
+    assert.equal(h.engine.status().goal!.counters!.replans, 5);
+    assert.ok(h.tasks.runs.every((t) => t.destructiveScope?.length === 0), 'missing capture cannot invent destructive authority');
+    assert.equal(h.store.ofType('planner_proposal_rejected').length, 0);
+  });
+  it('owner guidance loss produces one declarative blocker without unchanged-evidence replanning or questions', async () => {
+    const h = harness({ capabilities: new StaticCapabilityRegistry({ catalogVersion: 'owner-guidance', capabilities: ['follow_entity', 'seek_owner'].map((id) => ({ ...cap(id), family: 'movement', targets: ['owner'] })) }) });
+    h.tasks.outcomes = [{ status: 'blocked', reason: 'no_candidates', feedback: { unavailable: [{ capability: 'seek_owner', reason: 'no_locator_hint', detail: 'owner withdrew its waypoint', evidence: {} }] } as TaskResult['feedback'] }];
+    await h.engine.submit('Stay with the companion.', OWNER);
+    await until(() => h.planner.waiting === 1);
+    h.planner.respond(plan([task('Stay nearby.', near, { allowedCapabilities: ['follow_entity'], targetSelectors: [{ kind: 'owner' }] })], near, 'persistent'));
+    await until(() => h.engine.status().goal?.state === 'blocked');
+    assert.ok(h.tasks.runs[0]!.spec.allowedCapabilities.includes('seek_owner'));
+    assert.equal(h.planner.requests.length, 1);
+    assert.equal(h.engine.status().goal!.counters?.replans, 0);
+    assert.ok(h.notices.some((n) => n.text.includes('Owner guidance is unavailable (no_locator_hint)')));
+    assert.ok(!h.notices.some((n) => n.text.includes('?')));
+    assert.ok(h.store.events.some((e) => e['type'] === 'owner_guidance_blocked'));
+  });
+  it('a fresh actionable owner cue permits a counted replan instead of the lost-guidance blocker', async () => {
+    const hint: NonNullable<PlannerRequest['locator']> = { target: 'owner', source: 'server_locator_waypoint', actionable: true, reason: 'tracking', direction: 'east', distanceBand: 'unknown', elevation: 'unknown', precision: 'direction_only', ageMs: 0, expiresInMs: 600_000, connectionEpoch: 1, dimension: 'overworld', note: 'fresh code-owned cue' };
+    const h = harness({ locatorHint: () => hint });
+    h.tasks.outcomes = [{ status: 'blocked', reason: 'no_candidates', feedback: { unavailable: [{ capability: 'seek_owner', reason: 'no_locator_hint', detail: 'previous cue unavailable', evidence: {} }] } as TaskResult['feedback'] }];
+    await h.engine.submit('Stay with the companion.', OWNER);
+    await until(() => h.planner.waiting === 1);
+    h.planner.respond(plan([task('Stay nearby.', near, { allowedCapabilities: ['follow_entity'], targetSelectors: [{ kind: 'owner' }] })], near, 'persistent'));
+    await until(() => h.planner.requests.length === 2 && h.planner.waiting === 1);
+    assert.equal(h.planner.requests[1]!.turnKind, 'replan');
+    assert.equal(h.engine.status().goal!.counters?.replans, 1);
+    assert.ok(!h.store.events.some((e) => e['type'] === 'owner_guidance_blocked'));
+    await h.engine.stop();
+  });
   it('captures the ALL-item admission baseline before the first planner turn, binds the outcome to it once, and preserves counters/turn kinds across knowledge, windows and replans', async () => {
     const h = harness();
     await h.engine.submit('get me two cobblestone', OWNER);
@@ -122,14 +174,14 @@ describe('rolling planner/task windows', () => {
     assert.equal(r3.turnKind, 'replan');
     assert.deepEqual(r3.acceptedOutcome, { kind: 'finite', outcome: cobble });
     assert.equal(r3.outcomeStatus?.status, 'unsatisfied');
-    assert.deepEqual(r3.counters, { plannerTurns: 3, knowledgeRounds: 1, repairs: 0, retries: 0, clarifications: 0, replans: 1, windows: 1, tasksAdmitted: 1, preparationTurns: 0, lookaheads: 0 });
+    assert.deepEqual(r3.counters, { plannerTurns: 3, knowledgeRounds: 1, repairs: 0, retries: 0, questionRefusals: 0, replans: 1, windows: 1, tasksAdmitted: 1, preparationTurns: 0, lookaheads: 0 });
     assert.equal(h.engine.status().goal?.state, 'planning', 'a finished window is not goal completion');
     h.outcomes.satisfied = true;
     h.planner.respond(plan([task('mine more stone')]));
     await until(() => h.engine.status().goal?.state === 'completed');
     const g = h.engine.status().goal!;
     assert.equal(g.terminal?.reason, 'outcome_verified');
-    assert.deepEqual(g.counters, { plannerTurns: 3, knowledgeRounds: 1, repairs: 0, retries: 0, clarifications: 0, replans: 1, windows: 2, tasksAdmitted: 2, preparationTurns: 0, lookaheads: 0 });
+    assert.deepEqual(g.counters, { plannerTurns: 3, knowledgeRounds: 1, repairs: 0, retries: 0, questionRefusals: 0, replans: 1, windows: 2, tasksAdmitted: 2, preparationTurns: 0, lookaheads: 0 });
     assert.equal(h.outcomes.boundWith.length, 1, 'bound once');
     assert.equal(h.log.filter((l) => l === 'baseline').length, 1);
   });

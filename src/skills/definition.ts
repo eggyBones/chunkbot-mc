@@ -45,6 +45,12 @@ export interface TaskHints {
   keys: string[];
   /** Observed handles named by target selectors. */
   handles: Array<{ snapshotId: string; handle: string }>;
+  /** Explicit task selectors/parameters, separate from completion discovery hints. */
+  primaryHandles?: Array<{ snapshotId: string; handle: string }>;
+  /** Explicit registry targets remain binding even when completion offers broader resource hints. */
+  targetKeys?: string[];
+  /** Removal completion targets form a work set, intersected with explicit targets. */
+  removalHandles?: Array<{ snapshotId: string; handle: string }>;
   wantsOwner: boolean;
   anchors: string[];
   destinations: Array<{ dimension: string; at: { x: number; y: number; z: number } }>;

@@ -24,10 +24,15 @@ export class LeaseRevokedError extends Error {
 export class LeaseBusyError extends Error {
   readonly holder: ExecutionOwner;
   constructor(holder: ExecutionOwner) {
-    super(`actuator lease is held by ${holder.kind === 'goal' ? `goal epoch ${holder.goalEpoch}` : `diagnostic ${holder.diagnosticId}`}`);
+    super(`actuator lease is held by ${ownerLabel(holder)}`);
     this.name = 'LeaseBusyError';
     this.holder = holder;
   }
+}
+
+/** Short evidence label of a lease owner. */
+export function ownerLabel(owner: ExecutionOwner): string {
+  return owner.kind === 'goal' ? `goal epoch ${owner.goalEpoch}` : owner.kind === 'diagnostic' ? `diagnostic ${owner.diagnosticId}` : `safety grant ${owner.grantId}`;
 }
 
 export interface ControlClearReport {
@@ -137,7 +142,7 @@ export class ActuatorLeases {
     }
     const lease = new Lease(this.nextId++, owner, this.hooks.connectionEpoch(), this.hooks);
     this.currentLease = lease;
-    this.hooks.record?.({ type: 'lease_acquired', leaseId: lease.id, owner: owner.kind === 'goal' ? `goal:${owner.goalEpoch}` : `diag:${owner.diagnosticId}` });
+    this.hooks.record?.({ type: 'lease_acquired', leaseId: lease.id, owner: owner.kind === 'goal' ? `goal:${owner.goalEpoch}` : owner.kind === 'diagnostic' ? `diag:${owner.diagnosticId}` : `safety:${owner.grantId}` });
     return lease;
   }
 
@@ -173,6 +178,20 @@ export class ActuatorLeases {
     this.lastReport = report;
     this.hooks.record?.({ type: 'lease_revoked', ...report });
     return report;
+  }
+
+  /**
+   * MB-FLOW-003-C11/C13 preemption: synchronously revokes the CURRENT lease
+   * unless it already belongs to a safety grant (reason `safety_preempt`). The
+   * owning goal is NOT ended: its running action returns cancelled and the task
+   * runtime re-observes after the safety hold clears.
+   */
+  preemptForSafety(reason: 'safety_preempt' = 'safety_preempt'): { revoked: boolean; holder: string | null; clearMs: number | null } {
+    const held = this.current;
+    if (!held) return { revoked: false, holder: null, clearMs: null };
+    if (held.owner.kind === 'safety') return { revoked: false, holder: ownerLabel(held.owner), clearMs: null };
+    const r = this.revoke(held, reason);
+    return { revoked: Boolean(r), holder: ownerLabel(held.owner), clearMs: r?.clearMs ?? null };
   }
 
   /** Revokes whatever lease is current. */

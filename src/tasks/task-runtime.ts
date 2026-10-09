@@ -1,8 +1,8 @@
 // Generic task runtime (MB-V1-03). One admitted TaskSpec at a time:
 //
 //   bind completion baseline -> loop {
-//     evaluate verified completion (code) -> done? / guards (ownership, no
-//     progress, low health) -> current filtered snapshot -> candidates from the
+//     evaluate verified completion (code) -> done? -> fresh filtered snapshot
+//     -> guards (ownership, no progress, low health) -> candidates from the
 //     REGISTERED resolvers of the task's allowed capabilities -> freeze a
 //     bounded option set + epochs -> one Jev choice (code-generated ID only) ->
 //     ownership check after the await -> revalidate the choice against a fresh
@@ -19,8 +19,9 @@
 //
 // Healthy sustained actions (a skill whose definition declares `sustained`,
 // e.g. following, furnace processing) are continued locally while their
-// window simply elapsed and an equivalent candidate still exists: stable
-// waiting triggers no repeated inference and is not counted as a stall.
+// window simply elapsed and an equivalent candidate still exists. Elapsed time
+// grants no progress: an unmet condition still needs outcome or owned motion
+// progress before the existing stall deadline. No repeated inference is needed.
 import type {
   ActionCandidate,
   AdmittedTask,
@@ -50,6 +51,9 @@ import type {
 import { buildState, describePredicate, requestBytes } from '../decision/context.ts';
 import { LIMIT_KINDS, NOT_READY_KINDS, isDecisionError } from '../decision/errors.ts';
 import { MAX_REQUEST_BYTES } from '../decision/pricing.ts';
+import { publicTaskLabel } from '../goals/public-text.ts';
+import type { SafetyPort } from '../contracts/safety.ts';
+import type { TaskMotionProgressPort } from './motion-progress.ts';
 
 /** Skill-owned continuation policy (see SkillDefinition.sustained). */
 export interface SustainPolicy {
@@ -57,7 +61,11 @@ export interface SustainPolicy {
   windowElapsed(outcome: SkillOutcome): boolean;
 }
 
-type ResolvedTarget = { kind: 'block'; x: number; y: number; z: number } | { kind: 'entity' | 'drop'; entityId: number } | { kind: 'frontier'; at: { x: number; y: number; z: number } };
+type ResolvedTarget =
+  | { kind: 'block'; x: number; y: number; z: number }
+  | { kind: 'entity' | 'drop'; entityId: number }
+  | { kind: 'frontier'; at: { x: number; y: number; z: number } }
+  | { kind: 'group'; class: string; members: ReadonlyArray<{ x: number; y: number; z: number }> };
 
 export interface TaskRuntimeDeps {
   perception: {
@@ -101,7 +109,24 @@ export interface TaskRuntimeDeps {
    * threshold change and never planner-granted.
    */
   lowHealthAllowance?: LowHealthAllowancePort;
+  /**
+   * MB-FLOW-003-C11/C13 shared seam: the consumer subset of the immediate-safety
+   * port (W's SafetyPort hold/waitClear; local, inference-free). While a hold is
+   * active no ordinary candidate is dispatched: the task waits (bounded) without
+   * inference, keeps its goal ownership/outcome/limits, and continues from a
+   * FRESH observation when clear; a declared safety blocker ends the task
+   * `blocked/safety_blocked` (one declarative blocker, no retry loop).
+   */
+  safety?: TaskSafetyGate;
+  /** Code-owned client motion receipts: only the stall guard, never completion or effect credit. */
+  motionProgress?: TaskMotionProgressPort;
 }
+
+/** Consumer subset of the reviewed immediate-safety contract (src/contracts/safety.ts SafetyPort). */
+export type TaskSafetyGate = Pick<SafetyPort, 'hold' | 'waitClear'>;
+
+/** Bound on one safety wait before ownership/currentness is re-checked. */
+const SAFETY_WAIT_SLICE_MS = 30_000;
 
 function guardSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -145,6 +170,8 @@ function progressFacts(e: PredicateEvaluation | null, out: number[] = []): numbe
     const v = e.evidence[k];
     out.push(typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN);
   }
+  const distance = e.evidence['distance'];
+  out.push(typeof distance === 'number' && Number.isFinite(distance) ? -distance : Number.NaN);
   for (const c of e.children ?? []) progressFacts(c, out);
   return out;
 }
@@ -179,7 +206,14 @@ export class TaskRuntime implements TaskExecutionPort {
       if ('error' in r) return `stale:${o['handle']}`;
       const t = r.target;
       const rest = Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'snapshotId' && k !== 'handle').map(([k, v]) => [k, this.identity(v)]));
-      const id = t.kind === 'block' ? `block:${t.x},${t.y},${t.z}` : t.kind === 'frontier' ? `frontier:${Math.round(t.at.x)},${Math.round(t.at.y)},${Math.round(t.at.z)}` : `entity:${t.entityId}`;
+      const id =
+        t.kind === 'block'
+          ? `block:${t.x},${t.y},${t.z}`
+          : t.kind === 'frontier'
+            ? `frontier:${Math.round(t.at.x)},${Math.round(t.at.y)},${Math.round(t.at.z)}`
+            : t.kind === 'group'
+              ? `group:${t.class}:${t.members.map((m) => `${m.x},${m.y},${m.z}`).sort()[0] ?? ''}`
+              : `entity:${t.entityId}`;
       return { ...rest, target: id };
     }
     return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, this.identity(v)]));
@@ -235,6 +269,17 @@ export class TaskRuntime implements TaskExecutionPort {
     const assertCurrent = () => {
       if (!task.isCurrent() || task.signal.aborted) throw new Revoked();
     };
+    const executeOwned = async (candidate: ActionCandidate, source: 'jev' | 'local_continuation', requestId?: string) => {
+      const unwatch = deps.motionProgress?.watch(task, candidate, (receipt) => {
+        if (!task.isCurrent() || task.signal.aborted || candidate.connectionEpoch !== deps.connectionEpoch() || deps.safety?.hold()) return;
+        if (receipt.provenance !== 'client_only' || !Number.isFinite(receipt.atMs) || !Number.isFinite(receipt.netProgress) || receipt.atMs <= lastProgressAt || receipt.atMs > clock.now()) return;
+        lastProgressAt = receipt.atMs; // actual useful sample time, never the end of a window
+        unproductive.clear();
+        emit('task_motion_progress', { actionId: candidate.id, capability: candidate.capability, sampledAtMs: receipt.atMs, netProgress: Math.round(receipt.netProgress * 10) / 10, provenance: receipt.provenance });
+      });
+      try { return await this.execute(task, candidate, source, recent, emit, requestId); }
+      finally { unwatch?.(); }
+    };
     const exhausted = () => [...failures.entries()].filter(([, n]) => n > deps.limits.perTargetRetries).map(([k]) => clip(k, 160));
     const finish = (status: TaskResultStatus, reason: string, detail: string): TaskResult => {
       const feedback: TaskFeedback = {
@@ -253,7 +298,8 @@ export class TaskRuntime implements TaskExecutionPort {
       return result;
     };
 
-    emit('task_started', { mode: task.mode, objective: clip(task.spec.objective, 300), allowedCapabilities: task.spec.allowedCapabilities, completion: describePredicate(task.spec.completion) });
+    // Terminal-visible: app-owned step label, never the planner's prose objective (MB-PLAN-006).
+    emit('task_started', { mode: task.mode, step: publicTaskLabel(task.spec), allowedCapabilities: task.spec.allowedCapabilities, completion: describePredicate(task.spec.completion) });
     try {
       assertCurrent();
       // Task-admission baselines (acquisition deltas are measured from here).
@@ -264,14 +310,24 @@ export class TaskRuntime implements TaskExecutionPort {
       while (true) {
         assertCurrent();
         if (rounds >= maxRounds) return finish('blocked', 'round_limit', `task used ${maxRounds} rounds without verified completion`);
+        // MB-FLOW-003-C11/C13: no ordinary dispatch while immediate safety holds control.
+        if (deps.safety?.hold()) {
+          const waited = await this.awaitSafety(task, emit, rounds);
+          if (waited.kind === 'blocked') return finish('blocked', 'safety_blocked', waited.detail);
+          lastProgressAt += waited.waitedMs; // the stall guard pauses while safety owned control
+          sustain = undefined; // a preempted sustained action is re-chosen from fresh state
+          continue;
+        }
         rounds += 1;
         // 1. Current filtered observation FIRST, so selector-based predicates see current visibility.
-        const snapshot = deps.perception.take(task.goalEpoch);
-        if (!snapshot) return finish('failed', 'not_connected', 'no observation: the game connection is not ready');
-        if (snapshot.connectionEpoch !== deps.connectionEpoch()) throw new Revoked();
+        const completionSnapshot = deps.perception.take(task.goalEpoch);
+        assertCurrent();
+        if (!completionSnapshot) return finish('failed', 'not_connected', 'no observation: the game connection is not ready');
+        if (completionSnapshot.connectionEpoch !== deps.connectionEpoch()) throw new Revoked();
         // 2. Verified completion, evaluated by code between actions.
         const evaluation = await deps.predicates.evaluate(bound, task.signal);
         assertCurrent();
+        if (completionSnapshot.connectionEpoch !== deps.connectionEpoch()) throw new Revoked();
         if (improved(completion, evaluation)) {
           lastProgressAt = clock.now();
           unproductive.clear();
@@ -280,9 +336,17 @@ export class TaskRuntime implements TaskExecutionPort {
         emit('task_completion', { round: rounds, status: evaluation.status, detail: clip(evaluation.detail, 300), evidence: evaluation.evidence as Record<string, JsonValue> });
         if (task.mode === 'complete' && evaluation.status === 'satisfied') return finish('completed', 'completion_verified', evaluation.detail);
         if (task.mode === 'maintain' && evaluation.status === 'satisfied') lastProgressAt = clock.now();
+        // Server-backed predicate evaluation may await a resync. Freeze guard,
+        // candidate and model state AFTER that await; never adopt a replacement
+        // connection or give the predicate's older visibility dispatch authority.
+        const snapshot = deps.perception.take(task.goalEpoch);
+        assertCurrent();
+        if (!snapshot) return finish('failed', 'not_connected', 'no observation: the game connection is not ready');
+        if (snapshot.connectionEpoch !== completionSnapshot.connectionEpoch || snapshot.connectionEpoch !== deps.connectionEpoch()) throw new Revoked();
+        if (deps.safety?.hold()) continue; // a hold that began during evaluation waits at the existing loop-top gate
         // 3. Guards: no meaningful progress on the unmet outcome within the window; low health.
         if (clock.now() - lastProgressAt > deps.limits.noProgressMs) {
-          return finish('blocked', 'no_progress', `no verified progress for ${Math.round((clock.now() - lastProgressAt) / 1000)}s (window ${Math.round(deps.limits.noProgressMs / 1000)}s); last completion check: ${evaluation.detail}`);
+          return finish('blocked', 'no_progress', `no outcome or owned-motion progress for ${Math.round((clock.now() - lastProgressAt) / 1000)}s (window ${Math.round(deps.limits.noProgressMs / 1000)}s); last completion check: ${evaluation.detail}`);
         }
         // MB-FLOW-003 narrow allowance: at the guard, only a survival-issued grant for THIS goal
         // epoch lets the round continue, and then only with its capabilities/items.
@@ -295,7 +359,7 @@ export class TaskRuntime implements TaskExecutionPort {
           emit('task_low_health_allowance', { round: rounds, health: snapshot.self.health, threshold: deps.limits.lowHealth, allowanceId: allowance.allowanceId, capabilities: [...allowance.capabilities], items: [...allowance.items], detail: allowance.detail });
         }
         // 4. Candidates from the registered resolvers of the allowed capabilities.
-        const generated = deps.candidates.generate(task.spec, snapshot);
+        const generated = deps.candidates.generate(task.spec, snapshot, task.destructiveScope, task.requiresOwnerDirection);
         const set = allowance?.allowed ? { ...generated, candidates: generated.candidates.filter((c) => withinAllowance(c, allowance.capabilities, allowance.items)) } : generated;
         lastUnavailable = set.unavailable;
         const excludedFailing = (c: ActionCandidate) => (failures.get(this.key(c)) ?? 0) > deps.limits.perTargetRetries;
@@ -317,12 +381,13 @@ export class TaskRuntime implements TaskExecutionPort {
           const want = this.key(sustain.candidate);
           const next = usable.find((c) => this.key(c) === want);
           if (next) {
+            if (deps.safety?.hold()) continue; // safety took control after observing: wait at the loop top
             // MB-FLOW-003-C2: a local continuation is a dispatch too — same allowance recheck/accounting as a Jev choice.
             const gate = this.allowanceGate(task, next, snapshot);
             if (!gate.ok) return finish('blocked', 'low_health', gate.detail);
             localContinuations += 1;
             emit('task_local_continuation', { round: rounds, actionId: next.id, capability: next.capability, continues: sustain.jevActionId, snapshotId: snapshot.id });
-            const outcome = await this.dispatchCounted(task, next, gate.allowanceId, () => this.execute(task, next, 'local_continuation', recent, emit));
+            const outcome = await this.dispatchCounted(task, next, gate.allowanceId, () => executeOwned(next, 'local_continuation'));
             actions += 1;
             sustain = this.afterOutcome(task, next, outcome, failures, succeeded, unproductive, sustain.jevActionId, () => (lastProgressAt = clock.now()));
             continue;
@@ -332,8 +397,29 @@ export class TaskRuntime implements TaskExecutionPort {
         }
 
         if (usable.length === 0) {
+          // P-TASK-R17: a terminal "nothing actionable" claim must rest on completion
+          // evidence no older than the observation that found nothing actionable. The
+          // evaluation above was answered before this snapshot (e.g. the server's
+          // inventory reply preceded an own pickup in the same tick, whose collect/
+          // destroy then removed the drop from view). One fresh code-evaluated read
+          // (correlated server resync): no action, no inference, no new round, no wait
+          // loop, no hidden lookup; ownership/connection/safety are re-checked after it.
+          const fresh = await deps.predicates.evaluate(bound, task.signal);
+          assertCurrent();
+          if (deps.connectionEpoch() !== snapshot.connectionEpoch) throw new Revoked();
+          if (improved(completion, fresh)) {
+            lastProgressAt = clock.now();
+            unproductive.clear();
+          }
+          completion = fresh;
+          emit('task_completion', { round: rounds, recheck: 'before_terminal', status: fresh.status, detail: clip(fresh.detail, 300), evidence: fresh.evidence as Record<string, JsonValue> });
+          if (deps.safety?.hold()) continue; // safety took control meanwhile: wait at the loop-top gate
+          if (fresh.status === 'satisfied') {
+            if (task.mode === 'complete') return finish('completed', 'completion_verified', fresh.detail);
+            continue; // maintain: the loop top holds the satisfied condition locally
+          }
           if (set.candidates.length > 0 && set.candidates.every(excludedFailing)) return finish('blocked', 'per_target_retries_exhausted', `all ${set.candidates.length} grounded option(s) failed more than ${deps.limits.perTargetRetries} retries`);
-          if (set.candidates.length > 0) return finish('blocked', 'repeated_without_progress', `the remaining ${set.candidates.length} grounded option(s) were already repeated without verified progress (or failed); last completion check: ${evaluation.detail}`);
+          if (set.candidates.length > 0) return finish('blocked', 'repeated_without_progress', `the remaining ${set.candidates.length} grounded option(s) were already repeated without verified progress (or failed); last completion check: ${fresh.detail}`);
           const why = set.unavailable.slice(0, 4).map((u) => `${u.capability}: ${u.reason}`).join('; ');
           return finish('blocked', 'no_candidates', `no allowed capability has a grounded option now${why ? ` (${why})` : ''}`);
         }
@@ -346,6 +432,9 @@ export class TaskRuntime implements TaskExecutionPort {
           round: rounds,
           requestId,
           snapshotId: snapshot.id,
+          snapshotTakenAtMs: snapshot.takenAtMs,
+          snapshotGoalEpoch: snapshot.goalEpoch,
+          connectionEpoch: snapshot.connectionEpoch,
           generated: set.candidates.length,
           offered: offered.map((c) => ({ id: c.id, capability: c.capability, description: clip(c.description, 120) })),
           excludedByRetries: set.candidates.length - usable.length,
@@ -393,13 +482,18 @@ export class TaskRuntime implements TaskExecutionPort {
           emit('task_choice_rejected', { round: rounds, requestId, candidateId: choice.candidateId, reason: 'choice is not an offered candidate of this frozen round' });
           continue;
         }
+        // A hazard (before any allowance reservation) that began while Jev was deciding wins: nothing is dispatched; the loop waits and re-observes.
+        if (deps.safety?.hold()) {
+          emit('task_choice_deferred', { round: rounds, requestId, candidateId: chosen.id, reason: 'immediate_safety_hold' });
+          continue;
+        }
         // 5. Revalidate against the CURRENT world through the same resolvers.
         const fresh = deps.perception.take(task.goalEpoch);
         if (!fresh || fresh.connectionEpoch !== chosen.connectionEpoch) throw new Revoked();
         // The allowance is re-checked (canonical recheck) against the FRESH snapshot after the Jev await, before dispatch.
         const gate = this.allowanceGate(task, chosen, fresh);
         if (!gate.ok) return finish('blocked', 'low_health', gate.detail);
-        const regen = deps.candidates.generate(task.spec, fresh);
+        const regen = deps.candidates.generate(task.spec, fresh, task.destructiveScope, task.requiresOwnerDirection);
         const want = this.key(chosen);
         if (!regen.candidates.some((c) => this.key(c) === want)) {
           const why = regen.unavailable.filter((u) => u.capability === chosen.capability).slice(0, 3);
@@ -408,7 +502,7 @@ export class TaskRuntime implements TaskExecutionPort {
           continue; // regenerate next round; nothing was executed
         }
         // 6. Execute the frozen candidate under the single actuator lease.
-        const outcome = await this.dispatchCounted(task, chosen, gate.allowanceId, () => this.execute(task, chosen, 'jev', recent, emit, requestId));
+        const outcome = await this.dispatchCounted(task, chosen, gate.allowanceId, () => executeOwned(chosen, 'jev', requestId));
         actions += 1;
         sustain = this.afterOutcome(task, chosen, outcome, failures, succeeded, unproductive, chosen.id, () => (lastProgressAt = clock.now()));
       }
@@ -416,6 +510,38 @@ export class TaskRuntime implements TaskExecutionPort {
       if (error instanceof Revoked || !task.isCurrent() || task.signal.aborted) return finish('cancelled', 'ownership_revoked', 'the owning goal was stopped, replaced or ended; no further action');
       const message = error instanceof Error ? error.message : String(error);
       return finish('failed', 'runtime_error', message);
+    }
+  }
+
+  /**
+   * Waits out an immediate-safety hold (no inference, no dispatch). Returns the
+   * time spent so the caller can pause its no-progress guard for it (limits and
+   * the goal deadline keep running), or a declared blocker. Revoked ownership
+   * throws.
+   */
+  private async awaitSafety(task: AdmittedTask, emit: (k: string, d: Record<string, unknown>) => void, round: number): Promise<{ kind: 'clear'; waitedMs: number } | { kind: 'blocked'; detail: string }> {
+    const gate = this.deps.safety;
+    const first = gate?.hold();
+    if (!gate || !first) return { kind: 'clear', waitedMs: 0 };
+    emit('task_safety_hold', { round, reason: first.reason, episodeId: first.episodeId, detail: clip(first.detail, 200) });
+    let waited = 0;
+    while (true) {
+      if (!task.isCurrent() || task.signal.aborted) throw new Revoked();
+      const r = await gate.waitClear(task.signal, SAFETY_WAIT_SLICE_MS);
+      waited += r.waitedMs;
+      if (!task.isCurrent() || task.signal.aborted) throw new Revoked();
+      if (r.status === 'blocked') {
+        emit('task_safety_blocked', { round, waitedMs: waited, reason: r.reason, detail: clip(r.detail, 200), hazards: r.hazards });
+        return { kind: 'blocked', detail: `immediate safety has no supported response (${r.reason}): ${clip(r.detail, 200)}` };
+      }
+      if (r.status === 'clear' || (r.status !== 'timeout' && !gate.hold())) {
+        emit('task_safety_clear', { round, waitedMs: waited });
+        return { kind: 'clear', waitedMs: waited };
+      }
+      if (r.status === 'aborted' && gate.hold()) {
+        // Safety authority ended while still held (e.g. explicit stop): the owning goal is revoked by the stop path.
+        throw new Revoked();
+      }
     }
   }
 
@@ -532,7 +658,7 @@ export class TaskRuntime implements TaskExecutionPort {
   }
 
   private async execute(task: AdmittedTask, c: ActionCandidate, via: TaskOutcomeSummary['via'], recent: TaskOutcomeSummary[], emit: (k: string, d: Record<string, unknown>) => void, requestId?: string): Promise<SkillOutcome> {
-    const owner = { kind: 'goal' as const, goalEpoch: task.goalEpoch, goalId: task.goalId, taskId: task.taskId };
+    const owner = { kind: 'goal' as const, goalEpoch: task.goalEpoch, goalId: task.goalId, taskId: task.taskId, ...(task.destructiveScope !== undefined ? { destructiveScope: task.destructiveScope } : {}), ...(task.requiresOwnerDirection ? { requiresOwnerDirection: true } : {}) };
     const outcome = await this.deps.executor.execute(c, task.signal, owner);
     // Outcome identity: only the dispatched action, owned by this goal/task/epochs, can advance anything.
     const matches =
@@ -579,7 +705,9 @@ export class TaskRuntime implements TaskExecutionPort {
       progressed();
     }
     if (windowElapsed) {
-      progressed(); // healthy intentional wait is not a stall
+      // Elapsed time is not progress on an unmet predicate. The loop records
+      // actual improvements and protects a satisfied maintained condition;
+      // stagnant finite or violated persistent work still has a stall bound.
       return { candidate: c, jevActionId };
     }
     return undefined;

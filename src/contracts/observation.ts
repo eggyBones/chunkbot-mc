@@ -48,6 +48,34 @@ export const FrontierSchema = z
   .strict();
 export type Frontier = z.infer<typeof FrontierSchema>;
 
+/**
+ * MB-PLAN-006 N-G3: one OBSERVED structure of a code-owned class (e.g. `tree`),
+ * segmented by its trunk: one 26-connected component of SEEN trunk voxels plus
+ * SEEN non-trunk voxels (e.g. leaves) whose UNIQUE nearest trunk it is, so
+ * touching canopies never merge two trees. Hidden members are never reported.
+ * `support` uses line-of-sight evidence only: `grounded` (the voxel below a
+ * lowest visible trunk voxel is SEEN and solid), `floating` (every lowest trunk
+ * voxel's bottom face is visible, i.e. open space beneath), else `unknown`.
+ * `truncated`: the group hit its member bound.
+ */
+export const BlockGroupSchema = z
+  .object({
+    handle: ObservationHandleSchema,
+    class: z.string().regex(/^[a-z_]{1,24}$/),
+    /** Visible member counts by registry key (bounded). */
+    keys: z.array(z.object({ key: RegistryKeySchema, count: z.number().int().positive() }).strict()).max(8),
+    members: z.number().int().positive(),
+    /** Nearest visible member. */
+    at: Vec3Schema,
+    distance: z.number().nonnegative(),
+    min: Vec3Schema,
+    max: Vec3Schema,
+    support: z.enum(['grounded', 'floating', 'unknown']),
+    truncated: z.boolean(),
+  })
+  .strict();
+export type BlockGroup = z.infer<typeof BlockGroupSchema>;
+
 export const ObservationSnapshotSchema = z
   .object({
     id: SnapshotIdSchema,
@@ -81,6 +109,8 @@ export const ObservationSnapshotSchema = z
       .max(BOUNDS.listMedium)
       .default([]),
     frontiers: z.array(FrontierSchema).max(BOUNDS.listSmall).default([]),
+    /** MB-PLAN-006: connected visible block groups (bounded; nearest first). Absent on older producers. */
+    groups: z.array(BlockGroupSchema).max(BOUNDS.listSmall).optional(),
     /** The perception policy and honest limits that produced this snapshot. */
     perception: z
       .object({

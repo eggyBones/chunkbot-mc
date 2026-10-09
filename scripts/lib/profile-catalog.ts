@@ -4,21 +4,25 @@
 //   foundation skill definitions (always)
 //   + memory skills when memory is configured and enabled
 //   + locator skills unless `locator.enabled: false`
-//   + home construction / survival skills only when automatic work is enabled
-//     (never with `run --no-autonomy` or the disabled-planner profile) and the
-//     config enables them with a durable scope.
+//   + home construction skills whenever an explicit durable scope is configured
+//     and the real planner runs (owner goals; independent of automatic work)
+//   + survival skills only when automatic work is enabled (never with
+//     `run --no-autonomy` or the disabled-planner profile) with a durable scope.
 // tests/harness-profile-catalog.test.ts proves the expectation against the
 // actual composed SkillRuntime registry for the fixture profiles.
 // Pure: no world, process or network access.
 import type { ChunkbotConfig } from '../../src/config/schema.ts';
 import { SURVIVAL_CAPABILITIES } from '../../src/contracts/survival.ts';
+import { SAFETY_CAPABILITIES } from '../../src/contracts/safety.ts';
 import { CONSTRUCTION_CAPABILITIES, MEMORY_CAPABILITIES } from '../../src/planner/wire.ts';
 import { allSkills } from '../../src/skills/index.ts';
+import { homeConstructionWanted } from '../../src/app/composition.ts';
 
 /** Locator skill ids (src/skills/locator.ts); registered whenever route legs are composed. */
 export const LOCATOR_SKILL_IDS = ['seek_owner', 'route_travel'] as const;
 
 export interface RunProfile {
+  safety?: boolean;
   memory: boolean;
   locator: boolean;
   construction: boolean;
@@ -30,9 +34,10 @@ export function runProfile(config: ChunkbotConfig, automatic: boolean): RunProfi
   const memory = Boolean(config.memory?.enabled);
   const scope = Boolean(config.autonomy?.scope) || memory;
   return {
+    safety: config.safety?.enabled !== false,
     memory,
     locator: config.locator?.enabled !== false,
-    construction: automatic && scope && config.autonomy?.home?.enabled !== false,
+    construction: scope && homeConstructionWanted(config),
     survival: automatic && scope && config.survival?.enabled !== false,
   };
 }
@@ -43,6 +48,7 @@ export function expectedCapabilityIds(profile: RunProfile): string[] {
     ...(profile.memory ? MEMORY_CAPABILITIES : []),
     ...(profile.construction ? CONSTRUCTION_CAPABILITIES : []),
     ...(profile.survival ? Object.values(SURVIVAL_CAPABILITIES) : []),
+    ...(profile.safety ? Object.values(SAFETY_CAPABILITIES) : []),
     ...(profile.locator ? LOCATOR_SKILL_IDS : []),
   ];
 }

@@ -27,6 +27,10 @@ import type {
 import type { GameSession } from '../game/connection.ts';
 import type { SkillServices } from '../skills/definition.ts';
 import { countMatching } from '../skills/common.ts';
+import { UNCONFIRMED_BLOCK } from '../perception/visibility.ts';
+import { groupIdentity, groupLineageScore, type GroupIdentity } from '../perception/perception.ts';
+import { outcomeAtoms, isCountAtom, segmentProgress } from '../goals/continuation.ts';
+import type { ContinuationCapture, ContinuationSegment, CountLineage, GoalOutcomeContract, RemovalCarry } from '../contracts/index.ts';
 import { correlatedResync } from './actuator.ts';
 import { inventoryFromConfirmed, type InventoryView } from './ledger.ts';
 import type { ActuatorLeases } from './lease.ts';
@@ -36,9 +40,22 @@ const itemLoader = createRequire(import.meta.url)('prismarine-item') as (registr
 
 interface Bound extends BoundPredicate {
   latched: Set<string>;
+  /**
+   * MB-PLAN-006 blocks_removed: member positions bound per predicate path
+   * ("x,y,z" -> key at binding), the bound area (for bounded growth) and why a
+   * binding failed. Never exposed to models.
+   */
+  removal?: Map<string, { members: Map<string, string>; identity?: GroupIdentity; issue?: string }>;
   /** Lifecycle interruptions recorded by the ledger when the baselines were bound. */
   lifecycleMark?: number;
   connectionEpoch?: number;
+  /**
+   * MB-FLOW-003-C12 continuation segment per count atom path (absent on a first
+   * segment): verified credit C and non-credit N of the previous interruption,
+   * fresh count F at this rebind, the own-incident returns at F, the effect
+   * credit carried for crafting/smelting.
+   */
+  segments?: Map<string, ContinuationSegment>;
 }
 
 type Ev = PredicateEvaluation['evidence'];
@@ -57,6 +74,12 @@ export interface PredicateDeps {
   structures?: { evaluateStructure(expect: 'site_approved' | 'enclosed' | 'complete'): PredicateEvaluation };
   /** MB-FLOW-003 (optional): survival routine conditions; absent => unknown. */
   survival?: SurvivalPredicatePort;
+  /**
+   * MB-FLOW-003-C12 (optional): server-attributed own-incident returns
+   * (regained + retained) matching a selector, or null when attribution is not
+   * established (the count then stays unknown). Absent: no incident lineage.
+   */
+  incidentReturns?: (incidentId: string, selector: string) => number | null;
 }
 
 /** Baseline key of the memory write sequence captured when a memory_state predicate is bound. */
@@ -139,9 +162,11 @@ export class PredicateEngine implements PredicateEvaluator {
     // A goal outcome bound later measures acquisition from the ADMISSION counts.
     const inv = admission ? undefined : await this.inventory(signal);
     const fromAdmission = admission?.counts ? new Map(Object.entries(admission.counts)) : undefined;
-    const visit = (p: OutcomePredicate) => {
-      if (p.predicate === 'all' || p.predicate === 'any') p.of.forEach(visit);
-      else if (p.predicate === 'not') visit(p.of);
+    const removal: NonNullable<Bound['removal']> = new Map();
+    const visit = (p: OutcomePredicate, path = 'root') => {
+      if (p.predicate === 'all' || p.predicate === 'any') p.of.forEach((c, i) => visit(c, `${path}.${i}`));
+      else if (p.predicate === 'not') visit(p.of, `${path}.0`);
+      else if (p.predicate === 'blocks_removed') removal.set(path, this.bindRemoval(p));
       else if (p.predicate === 'inventory_delta' || (p.predicate === 'inventory_amount' && p.mode === 'collect_additional')) {
         const counts = admission ? fromAdmission : inv?.counts;
         baselines[`inv:${p.selector}`] = counts ? countMatching(counts, p.selector, this.deps.services) : Number.NaN;
@@ -157,6 +182,7 @@ export class PredicateEngine implements PredicateEvaluator {
       boundAtMs: admission ? admission.capturedAtMs : this.deps.services.clock.now(),
       baselines,
       latched: new Set(),
+      ...(removal.size > 0 ? { removal } : {}),
       lifecycleMark: admission?.lifecycleMark ?? this.deps.services.ledger.invalidations.length,
       ...(admission ? (admission.connectionEpoch !== undefined ? { connectionEpoch: admission.connectionEpoch } : {}) : s ? { connectionEpoch: s.connectionEpoch } : {}),
       ...(owner ? { owner: { goalId: owner.goalId, goalEpoch: owner.goalEpoch } } : {}),
@@ -199,6 +225,21 @@ export class PredicateEngine implements PredicateEvaluator {
         if (p.predicate === 'inventory_amount' && p.mode === 'possess') {
           return result(now >= p.atLeast ? 'satisfied' : 'unsatisfied', `holds ${now}/${p.atLeast} ${p.selector}`, ev);
         }
+        const seg = bound.segments?.get(path);
+        if (seg) {
+          // MB-FLOW-003-C12 continuation segment: restored own credit + genuinely new acquisition.
+          const interruptedC = (bound.lifecycleMark !== undefined && services.ledger.invalidations.length !== bound.lifecycleMark) || (bound.connectionEpoch !== undefined && s?.connectionEpoch !== bound.connectionEpoch);
+          if (interruptedC) return result('unknown', 'a lifecycle interruption happened since this continuation was bound', { ...ev, lifecycleInterrupted: true });
+          if (bound.latched.has(path)) return result('satisfied', `milestone already reached before the interruption (${p.atLeast} ${p.selector}); later consumption allowed`, { ...ev, latched: true, continuation: true });
+          const returns = seg.incidentId ? (this.deps.incidentReturns?.(seg.incidentId, p.selector) ?? null) : 0;
+          if (returns === null) return result('unknown', 'own-incident return attribution is not established; returned belongings cannot be separated from new acquisition', { ...ev, continuation: true });
+          const consumed = p.predicate === 'inventory_delta' && p.mayBeConsumedLater ? this.consumedSince(p.selector, bound.boundAtMs) : 0;
+          const r = segmentProgress({ ...seg, incident: seg.incidentId !== null }, { count: now, returns, consumed });
+          Object.assign(ev, { continuation: true, restoredCredit: r.restored, newSinceContinuation: r.acquiredNew, priorCredit: seg.credited, freshAtContinuation: seg.fresh, ownReturns: returns, acquired: r.progress });
+          const okC = r.progress >= p.atLeast;
+          if (okC && p.predicate === 'inventory_delta' && p.mayBeConsumedLater) bound.latched.add(path);
+          return result(okC ? 'satisfied' : 'unsatisfied', `acquired ${r.progress}/${p.atLeast} ${p.selector} (restored ${r.restored} of ${seg.credited} earlier credit, ${r.acquiredNew} new since continuing)`, ev);
+        }
         const baseline = bound.baselines[`inv:${p.selector}`];
         if (baseline === undefined || Number.isNaN(baseline)) return result('unknown', 'baseline was not bound from a server-confirmed inventory', ev);
         const interrupted = (bound.lifecycleMark !== undefined && services.ledger.invalidations.length !== bound.lifecycleMark) || (bound.connectionEpoch !== undefined && s?.connectionEpoch !== bound.connectionEpoch);
@@ -229,11 +270,10 @@ export class PredicateEngine implements PredicateEvaluator {
       case 'crafting_result':
       case 'smelting_result': {
         const kind = p.predicate === 'crafting_result' ? 'crafted' : 'smelted_collected';
-        const n = services.ledger
-          .since(bound.boundAtMs)
-          .filter((e) => e.kind === kind && (e as { output: string }).output === p.output)
-          .reduce((sum, e) => sum + (e as { count: number }).count, 0);
-        return result(n >= p.atLeast ? 'satisfied' : 'unsatisfied', `${n}/${p.atLeast} ${p.output} ${kind === 'crafted' ? 'crafted' : 'collected from a furnace'} (skill-confirmed) since admission`, { confirmed: n });
+        // MB-FLOW-003-C12: code-verified effect credit of earlier segments is preserved (never a claim of present inventory).
+        const carried = bound.segments?.get(path)?.credited ?? 0;
+        const n = carried + this.effectSince(kind, p.output, bound.boundAtMs);
+        return result(n >= p.atLeast ? 'satisfied' : 'unsatisfied', `${n}/${p.atLeast} ${p.output} ${kind === 'crafted' ? 'crafted' : 'collected from a furnace'} (skill-confirmed) since admission${carried ? ` (${carried} before the interruption)` : ''}`, { confirmed: n, ...(carried ? { carriedEffect: carried } : {}) });
       }
       case 'near_target':
       case 'visited_location': {
@@ -320,7 +360,8 @@ export class PredicateEngine implements PredicateEvaluator {
           return result(visible ? 'satisfied' : 'unsatisfied', visible ? 'owner visible now' : 'owner not visible now', { visible });
         }
         if (p.target.kind !== 'observed') return result('unknown', `entity outcomes need an observed entity handle, not ${p.target.kind}`);
-        const rec = services.perception.resolve(p.target.snapshotId, p.target.handle);
+        // Identity survives snapshot eviction (same connection/dimension; cleared on lifecycle).
+        const rec = services.perception.identity(p.target.snapshotId, p.target.handle);
         if ('error' in rec || rec.target.kind !== 'entity') return result('unknown', `entity handle cannot be resolved (${'error' in rec ? rec.error : rec.target.kind})`);
         const id = rec.target.entityId;
         if (p.outcome === 'observed_present') {
@@ -332,6 +373,8 @@ export class PredicateEngine implements PredicateEvaluator {
         const gone = !s.bot.entities[id];
         return result(gone ? 'unknown' : 'unsatisfied', gone ? 'entity is gone but no death status was observed; not counted as defeated' : 'entity still present', { entityId: id, gone });
       }
+      case 'blocks_removed':
+        return this.evalRemoval(p, bound, path, s);
       case 'structure_state': {
         const structures = this.deps.structures;
         if (!structures) return result('unknown', 'home construction is not installed in this run (autonomy home disabled or no durable scope)');
@@ -355,6 +398,217 @@ export class PredicateEngine implements PredicateEvaluator {
     }
   }
 
+  /** MB-PLAN-006: bind the observed target's member positions matching the selector (code-only; no model data). */
+  private bindRemoval(p: Extract<OutcomePredicate, { predicate: 'blocks_removed' }>): NonNullable<Bound['removal']> extends Map<string, infer V> ? V : never {
+    const { services } = this.deps;
+    const members = new Map<string, string>();
+    if (p.target.kind !== 'observed') return { members, issue: `blocks_removed needs an observed group or block handle, not ${p.target.kind}` };
+    const rec = services.perception.identity(p.target.snapshotId, p.target.handle);
+    if ('error' in rec) return { members, issue: `target ${p.target.handle} cannot be resolved at binding (${rec.error})` };
+    const matches = (name: string) => this.keyMatches(p.selector, `minecraft:${name}`);
+    const t = rec.target;
+    if (t.kind === 'block') {
+      if (matches(t.name)) members.set(`${t.x},${t.y},${t.z}`, `minecraft:${t.name}`);
+      return members.size ? { members } : { members, issue: `${p.target.handle} is ${t.name}, not ${p.selector}` };
+    }
+    if (t.kind !== 'group') return { members, issue: `${p.target.handle} is a ${t.kind}, not a block group or block` };
+    for (const m of t.members) if (matches(m.name)) members.set(`${m.x},${m.y},${m.z}`, `minecraft:${m.name}`);
+    // Semantic component identity: observed members (incl. non-selector anchors such as leaves), trunk bbox, other observed trunks.
+    const identity = groupIdentity(t);
+    return members.size ? { members, identity } : { members, identity, issue: `group ${p.target.handle} has no visible ${p.selector} member` };
+  }
+
+  private consumedSince(selector: string, sinceMs: number): number {
+    const { services } = this.deps;
+    return services.ledger
+      .since(sinceMs)
+      .filter((e) => e.kind === 'consumed' && (selector.startsWith('#') ? services.knowledge.recipes?.matches(selector, e.item) : e.item === selector))
+      .reduce((n, e) => n + (e as { count: number }).count, 0);
+  }
+
+  private effectSince(kind: 'crafted' | 'smelted_collected', output: string, sinceMs: number): number {
+    return this.deps.services.ledger
+      .since(sinceMs)
+      .filter((e) => e.kind === kind && (e as { output: string }).output === output)
+      .reduce((sum, e) => sum + (e as { count: number }).count, 0);
+  }
+
+  /**
+   * MB-FLOW-003-C12: synchronous capture at an interruption (called in the
+   * revocation's synchronous prefix, BEFORE lifecycle invalidation clears the
+   * ledger): effect credit and consumption per count path, latches, the bound
+   * removal positions/identity, and the current segments.
+   */
+  captureContinuation(boundIn: BoundPredicate): ContinuationCapture {
+    const bound = boundIn as Bound;
+    const out: ContinuationCapture = { effect: {}, consumed: {}, latched: [...(bound.latched ?? [])], removal: [], segments: Object.fromEntries(bound.segments ?? []), boundAtMs: bound.boundAtMs, baselines: { ...bound.baselines } };
+    const contract: GoalOutcomeContract = { kind: 'finite', outcome: bound.predicate };
+    for (const { path, atom } of outcomeAtoms(contract)) {
+      if (atom.predicate === 'crafting_result' || atom.predicate === 'smelting_result') {
+        const seg = bound.segments?.get(path);
+        out.effect[path] = (seg?.credited ?? 0) + this.effectSince(atom.predicate === 'crafting_result' ? 'crafted' : 'smelted_collected', atom.output, bound.boundAtMs);
+      } else if (atom.predicate === 'inventory_delta' && atom.mayBeConsumedLater) out.consumed[path] = this.consumedSince(atom.selector, bound.boundAtMs);
+      else if (atom.predicate === 'blocks_removed') {
+        const r = bound.removal?.get(path);
+        if (r && !r.issue) {
+          const s = this.deps.session();
+          out.removal.push({
+            path,
+            selector: atom.selector,
+            dimension: s ? String(s.bot.game.dimension) : '',
+            members: [...r.members.entries()].map(([k, key]) => {
+              const [x, y, z] = k.split(',').map(Number) as [number, number, number];
+              return { x, y, z, key };
+            }),
+            ...(r.identity
+              ? {
+                  identity: {
+                    class: r.identity.class,
+                    anchors: [...r.identity.anchors].slice(0, 1_024).map((k) => {
+                      const [x, y, z] = k.split(',').map(Number) as [number, number, number];
+                      return { x, y, z };
+                    }),
+                    others: [...r.identity.others].slice(0, 512).map((k) => {
+                      const [x, y, z] = k.split(',').map(Number) as [number, number, number];
+                      return { x, y, z };
+                    }),
+                    min: { ...r.identity.min },
+                    max: { ...r.identity.max },
+                  },
+                }
+              : {}),
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * MB-FLOW-003-C12: code-verified progress per count path for given held
+   * counts (server-confirmed now, or the packet-frozen last-alive counts at a
+   * death), using the capture's segment lineage and own-incident returns
+   * observed at that moment. Possession only; effect paths come from the
+   * capture. Null for a path whose evidence is missing.
+   */
+  progressAt(capture: ContinuationCapture, contract: GoalOutcomeContract, counts: Readonly<Record<string, number>>, returnsNow: (incidentId: string, selector: string) => number | null): Record<string, number | null> {
+    const out: Record<string, number | null> = {};
+    const map = new Map(Object.entries(counts));
+    for (const { path, atom } of outcomeAtoms(contract)) {
+      if (!isCountAtom(atom) || atom.predicate === 'crafting_result' || atom.predicate === 'smelting_result') continue;
+      const sel = atom.selector;
+      const now = countMatching(map, sel, this.deps.services);
+      const consumed = capture.consumed[path] ?? 0;
+      const seg = capture.segments[path];
+      if (!seg) {
+        const b0 = capture.baselines[`inv:${sel}`];
+        out[path] = b0 === undefined || Number.isNaN(b0) ? null : Math.max(0, now - b0 + consumed);
+        continue;
+      }
+      const returns = seg.incidentId ? returnsNow(seg.incidentId, sel) : 0;
+      if (returns === null) {
+        out[path] = null;
+        continue;
+      }
+      out[path] = segmentProgress({ ...seg, incident: seg.incidentId !== null }, { count: now, returns, consumed }).progress;
+    }
+    return out;
+  }
+
+  /**
+   * MB-FLOW-003-C12 continuation binding of the IMMUTABLE accepted outcome:
+   * count atoms continue their lineage from the checkpoint (fresh count F is
+   * CURRENT evidence for re-binding only, never a new acquisition baseline),
+   * latched milestones stay latched, blocks_removed re-binds its carried
+   * positions/identity (server facts are verified freshly), other atoms bind
+   * normally. The original admission counts remain the baselines' provenance.
+   */
+  async rebindContinuation(contract: GoalOutcomeContract, input: { counts: readonly CountLineage[]; removal: readonly RemovalCarry[]; fresh: InventoryBaseline; original: InventoryBaseline; owner: PredicateOwner; notBeforeMs?: number }, signal: AbortSignal): Promise<BoundPredicate> {
+    const root = contract.kind === 'finite' ? contract.outcome : contract.maintain;
+    const bound = (await this.bind(root, signal, input.original, input.owner)) as Bound;
+    const s = this.deps.session();
+    // Ledger entries of earlier segments are already in the carried credit: never count them twice.
+    (bound as { boundAtMs: number }).boundAtMs = Math.max(input.fresh.capturedAtMs, input.notBeforeMs ?? 0);
+    bound.lifecycleMark = input.fresh.lifecycleMark ?? this.deps.services.ledger.invalidations.length;
+    if (input.fresh.connectionEpoch !== undefined) bound.connectionEpoch = input.fresh.connectionEpoch;
+    else if (s) bound.connectionEpoch = s.connectionEpoch;
+    const fresh = new Map(Object.entries(input.fresh.counts ?? {}));
+    const segments = new Map<string, ContinuationSegment>();
+    for (const l of input.counts) {
+      if (l.latched) bound.latched.add(l.path);
+      if (l.credited === null) continue;
+      if (l.basis === 'effect') {
+        segments.set(l.path, { basis: 'effect', credited: l.credited, nonCredit: 0, fresh: 0, incidentId: null, returnsAtF: 0 });
+        continue;
+      }
+      const f = countMatching(fresh, l.selector, this.deps.services);
+      const returnsAtF = l.incidentId ? (this.deps.incidentReturns?.(l.incidentId, l.selector) ?? 0) : 0;
+      const held = l.heldAtInterruption ?? l.credited;
+      segments.set(l.path, { basis: 'possession', credited: l.credited, nonCredit: Math.max(0, held - l.credited), fresh: f, incidentId: l.incidentId, returnsAtF });
+    }
+    bound.segments = segments;
+    if (input.removal.length > 0) {
+      bound.removal ??= new Map();
+      for (const r of input.removal) {
+        bound.removal.set(r.path, {
+          members: new Map(r.members.map((m) => [`${m.x},${m.y},${m.z}`, m.key])),
+          ...(r.identity ? { identity: groupIdentity({ class: r.identity.class, trunk: r.identity.anchors, members: [], others: r.identity.others }) } : {}),
+        });
+        const id = bound.removal.get(r.path)!.identity;
+        if (id && r.identity) Object.assign(id, { min: { ...r.identity.min }, max: { ...r.identity.max } });
+      }
+    }
+    return bound;
+  }
+
+  private keyMatches(selector: string, key: string): boolean {
+    return selector.startsWith('#') ? Boolean(this.deps.services.knowledge.recipes?.matches(selector, key)) : key === selector;
+  }
+
+  /** Bound removal evaluation: every bound position must be server-stated free of a matching block. */
+  private evalRemoval(p: Extract<OutcomePredicate, { predicate: 'blocks_removed' }>, bound: Bound, path: string, s: GameSession | undefined): PredicateEvaluation {
+    const result = (status: PredicateEvaluation['status'], detail: string, evidence: Ev = {}): PredicateEvaluation => ({ status, predicate: 'blocks_removed', detail, evidence });
+    const b = bound.removal?.get(path);
+    if (!b) return result('unknown', 'no removal binding for this predicate');
+    if (b.issue) return result('unknown', b.issue);
+    if (!s) return result('unknown', 'not connected');
+    const { services } = this.deps;
+    const interrupted = (bound.lifecycleMark !== undefined && services.ledger.invalidations.length !== bound.lifecycleMark) || (bound.connectionEpoch !== undefined && s.connectionEpoch !== bound.connectionEpoch);
+    if (interrupted) return result('unknown', 'a lifecycle interruption happened since binding; the bound positions must be re-observed', { lifecycleInterrupted: true });
+    // Bounded growth (MB-PLAN-006): groups of the latest observation in the bound LINEAGE (trunk linked to
+    // an anchor incl. removed positions and observed leaves; inside the bounded trunk area; never another
+    // observed tree's trunk) add their matching members, and their trunks become anchors (incremental reveal).
+    if (b.identity && b.members.size < 256) {
+      const snap = services.perception.latest();
+      for (const g of snap?.groups ?? []) {
+        const target = services.perception.groupTarget(snap!.id, g.handle);
+        if (!target || groupLineageScore(b.identity, target) === 0) continue;
+        for (const t of target.trunk) if (b.identity.anchors.size < 1_024) b.identity.anchors.add(`${t.x},${t.y},${t.z}`);
+        for (const m of target.members) {
+          const k = `${m.x},${m.y},${m.z}`;
+          if (!b.members.has(k) && this.keyMatches(p.selector, `minecraft:${m.name}`) && b.members.size < 256) b.members.set(k, `minecraft:${m.name}`);
+        }
+      }
+    }
+    const ev = s.evidence as Partial<Pick<GameSession['evidence'], 'predictionPending'>>;
+    const world = services.perception.world();
+    let remaining = 0;
+    let removed = 0;
+    let unknown = 0;
+    for (const k of b.members.keys()) {
+      const [x, y, z] = k.split(',').map(Number) as [number, number, number];
+      const pending = typeof ev.predictionPending === 'function' ? ev.predictionPending(x, y, z) : true;
+      const cur = pending ? undefined : world?.blockAt(x, y, z);
+      if (!cur || cur.name === UNCONFIRMED_BLOCK) unknown += 1;
+      else if (this.keyMatches(p.selector, `minecraft:${cur.name}`)) remaining += 1;
+      else removed += 1;
+    }
+    const evidence: Ev = { bound: b.members.size, removed, remaining, unknown, selector: p.selector, source: 'server_world_state_no_pending_prediction' };
+    if (remaining > 0) return result('unsatisfied', `${removed}/${b.members.size} bound ${p.selector} positions removed; ${remaining} remain${unknown ? `, ${unknown} unknown` : ''}`, evidence);
+    if (unknown > 0) return result('unknown', `${removed}/${b.members.size} bound positions removed; ${unknown} cannot be confirmed now (unloaded or awaiting a server statement)`, evidence);
+    return result('satisfied', `all ${b.members.size} bound ${p.selector} positions of the target are removed (server world state)`, evidence);
+  }
+
   private position(sel: TargetSelector, s: GameSession, bound?: Bound): { at: { x: number; y: number; z: number }; label: string; remembered?: boolean } | { unknown: string } {
     const { services } = this.deps;
     switch (sel.kind) {
@@ -372,11 +626,17 @@ export class PredicateEngine implements PredicateEvaluator {
         return { at: owner.position, label: 'owner' };
       }
       case 'observed': {
-        const rec = services.perception.resolve(sel.snapshotId, sel.handle);
+        const rec = services.perception.identity(sel.snapshotId, sel.handle);
         if ('error' in rec) return { unknown: `handle ${sel.handle} cannot be resolved (${rec.error})` };
         const t = rec.target;
         if (t.kind === 'block') return { at: { x: t.x + 0.5, y: t.y, z: t.z + 0.5 }, label: `${t.name} ${sel.handle}` };
         if (t.kind === 'frontier') return { at: t.at, label: `frontier ${sel.handle}` };
+        if (t.kind === 'group') {
+          const me = s.bot.entity.position;
+          const m = [...t.members].sort((a, b) => Math.hypot(a.x + 0.5 - me.x, a.y - me.y, a.z + 0.5 - me.z) - Math.hypot(b.x + 0.5 - me.x, b.y - me.y, b.z + 0.5 - me.z))[0];
+          if (!m) return { unknown: `group ${sel.handle} has no members` };
+          return { at: { x: m.x + 0.5, y: m.y, z: m.z + 0.5 }, label: `${t.class} group ${sel.handle} (nearest observed member)` };
+        }
         // Entity positions only from current line of sight (never hidden protocol positions).
         if (!services.perception.entityVisibleNow(t.entityId)) return { unknown: `${sel.handle} is not visible now; its position is not reported` };
         const e = s.bot.entities[t.entityId];
@@ -403,7 +663,7 @@ export class PredicateEngine implements PredicateEvaluator {
           .sort((a, b) => a.distance - b.distance)[0];
         if (!match) return { unknown: `no visible ${sel.key} in the latest observation` };
         const rec = snap ? services.perception.resolve(snap.id, match.handle) : undefined;
-        if (rec && !('error' in rec) && rec.target.kind !== 'block' && rec.target.kind !== 'frontier') {
+        if (rec && !('error' in rec) && (rec.target.kind === 'entity' || rec.target.kind === 'drop')) {
           if (!services.perception.entityVisibleNow(rec.target.entityId)) return { unknown: `${match.key} ${match.handle} is not visible now` };
           const e = s.bot.entities[rec.target.entityId];
           if (e) return { at: e.position, label: `${match.key} ${match.handle}` };

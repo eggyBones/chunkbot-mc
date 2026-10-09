@@ -9,6 +9,7 @@
 //
 // None of these actuate, call a model or bypass the single admission path.
 import type { ActionCandidate } from '../contracts/action.ts';
+import type { ContinuationSurvivalPort } from '../contracts/continuation.ts';
 import type { MemoryScope } from '../contracts/memory.ts';
 import type { ObservationSnapshot } from '../contracts/observation.ts';
 import type { EvidenceEvent } from '../contracts/ports.ts';
@@ -32,6 +33,8 @@ export interface CreateSurvivalOptions {
   memory?: SurvivalMemoryPort;
   latestSnapshot?: () => ObservationSnapshot | undefined;
   farRoute?: () => string | undefined;
+  /** C12: this application session's id (stored checkpoint records from other sessions display as `restart_held`). */
+  sessionId?: string;
 }
 
 /** Builds and opens the service (synchronous load). Returns undefined when disabled or the version has no item data. */
@@ -52,6 +55,7 @@ export function createSurvivalService(o: CreateSurvivalOptions): SurvivalService
     ...(o.memory ? { memory: o.memory } : {}),
     ...(o.latestSnapshot ? { latestSnapshot: o.latestSnapshot } : {}),
     ...(o.farRoute ? { farRoute: o.farRoute } : {}),
+    ...(o.sessionId ? { sessionId: o.sessionId } : {}),
   });
   service.open();
   return service;
@@ -102,4 +106,13 @@ export function supportGoalSource(p: SurvivalProposal, sessionAttempt: number): 
 export function supportTaskSpec(p: SurvivalProposal): { spec: TaskSpec; mode: 'complete' | 'maintain' } | undefined {
   if (p.execution.kind !== 'code_task') return undefined;
   return { spec: { ...p.execution.spec, completion: p.execution.completion as TaskSpec['completion'] }, mode: p.execution.mode };
+}
+
+/**
+ * C12: the approved OPTIONAL ContinuationSurvivalPort (P 4409ba1) for P's
+ * engine. Undefined when survival is absent or disabled: P then holds lossy
+ * count atoms for provenance and continues groundable non-count jobs.
+ */
+export function continuationPort(service: SurvivalService | undefined): ContinuationSurvivalPort | undefined {
+  return service && service.enabled ? service : undefined;
 }

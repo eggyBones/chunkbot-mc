@@ -13,6 +13,7 @@
 // - Usage separates confirmed charges, retained (ambiguous) maxima, pending
 //   reservations and the local cap. Aggregates never grant spending allowance.
 import { z } from 'zod';
+import { SAFETY_AUTHORITY_BASES, SAFETY_RESPONSES } from './safety.ts';
 
 export const DASHBOARD_STATUS_SCHEMA = 'chunkbot.dashboard.status' as const;
 export const DASHBOARD_STATUS_VERSION = 1 as const;
@@ -288,6 +289,23 @@ export const AutonomySectionSchema = z
   .strict();
 export type DashboardAutonomy = z.infer<typeof AutonomySectionSchema>;
 
+/** Bounded code-owned safety summary; optional for older published files. */
+export const DashboardSafetySchema = z.object({
+  source: z.literal('app_state'),
+  observedAtMs: ms,
+  connectionEpoch: nonNegInt.nullable(),
+  enabled: z.boolean(),
+  state: z.enum(['disabled', 'no_authority', 'monitoring', 'responding', 'blocked']),
+  authority: z.enum(SAFETY_AUTHORITY_BASES),
+  response: z.enum(SAFETY_RESPONSES).nullable(),
+  reason: shortText.nullable(),
+  detail: text,
+  episodeId: shortText.nullable(),
+  suspendedGoalId: shortText.nullable(),
+  counters: z.object({ episodes: nonNegInt, preemptions: nonNegInt, retreats: nonNegInt, defenses: nonNegInt, attacksSent: nonNegInt, hitsConfirmed: nonNegInt, defeatsConfirmed: nonNegInt }).strict(),
+}).strict();
+export type DashboardSafety = z.infer<typeof DashboardSafetySchema>;
+
 export const DirectiveSectionSchema = z
   .object({
     /** Which authority currently owns control (automatic modes: MB-FLOW-001). */
@@ -298,6 +316,7 @@ export const DirectiveSectionSchema = z
     task: TaskSectionSchema,
     pending: PendingDirectiveSchema.optional(),
     survival: SurvivalSectionSchema.optional(),
+    safety: DashboardSafetySchema.optional(),
     autonomy: AutonomySectionSchema.optional(),
   })
   .strict();
@@ -428,6 +447,7 @@ export const IntegrationsSchema = z
     pause: z.boolean(),
     /** MB-FLOW-001 supervisor composed in this run (absent in older status files). */
     autonomy: z.boolean().optional(),
+    safety: z.boolean().optional(),
   })
   .strict();
 

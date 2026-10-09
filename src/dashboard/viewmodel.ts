@@ -246,6 +246,7 @@ export interface ViewModel {
     /** Raw bounded outcome contract, for an optional technical disclosure. */
     outcomeTechnical: string | null;
     survival: string | null;
+    safety: { title: string; detail: string; note: string; historical: boolean; tone: 'muted' | 'warn' | 'active' } | null;
     /** MB-FLOW-001 read-only automatic-work lines (null: not composed in this run). */
     autonomy: string[] | null;
     historical: boolean;
@@ -279,7 +280,8 @@ const PHASE_LABEL: Record<string, string> = {
   idle: 'Idle',
   planning: 'Planning',
   executing: 'Executing',
-  awaiting_owner: 'Waiting for your answer',
+  // MB-PLAN-006: a legacy state from older releases only; never a request for a reply.
+  awaiting_owner: 'Held (no reply is used)',
   stopping: 'Stopping',
   completed: 'Completed (verified)',
   cancelled: 'Cancelled',
@@ -345,6 +347,18 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
       : `Inventory unknown — ${contents.reason}`;
 
   const dir = s?.directive;
+  const safety = dir?.safety;
+  const safetyFresh = Boolean(safety && appLive && now >= safety.observedAtMs && now - safety.observedAtMs <= Math.max(1_500, (s?.publisher.heartbeatIntervalMs ?? 500) * 3) &&
+    (safety.connectionEpoch === null ? safety.state === 'disabled' || safety.state === 'no_authority' : s?.connection.state === 'ready' && safety.connectionEpoch === s.connection.epoch));
+  const safetyLabels = { disabled: 'Safety disabled', no_authority: 'Safety has no control authority', monitoring: 'Safety monitoring', responding: 'Safety responding', blocked: 'Safety response blocked' };
+  const responseLabels = { escape_water: 'Leaving unsafe water', retreat: 'Moving away from a threat', defend: 'Defending against an engaging threat' };
+  const safetyVM: ViewModel['directive']['safety'] = safety ? {
+    title: `${safetyFresh ? '' : 'Last known — '}${safety.response ? responseLabels[safety.response] : safetyLabels[safety.state]}`,
+    detail: `${safety.reason ? `${safety.reason.replace(/_/g, ' ')} — ` : ''}${safety.detail}`,
+    note: `${safetyFresh ? 'Current' : 'Historical; not live'} · ${safety.connectionEpoch === null ? 'connection not reported' : `connection ${safety.connectionEpoch}`} · app state at ${new Date(safety.observedAtMs).toISOString().slice(11, 19)} UTC`,
+    historical: !safetyFresh,
+    tone: !safetyFresh ? 'muted' : safety.state === 'blocked' ? 'warn' : safety.state === 'responding' ? 'active' : 'muted',
+  } : s?.integrations.safety ? { title: 'Safety state unavailable', detail: 'The safety service did not report a current summary.', note: 'No current reading', historical: true, tone: 'muted' } : null;
   const goal = dir?.goal;
   const phase = goal?.phase ?? 'idle';
   const details: Row[] = [];
@@ -369,7 +383,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
     ? [
         `Automatic work: ${au.mode.replace(/_/g, ' ')} — ${au.detail}`,
         `Stop latch: ${au.latch.paused ? `paused (${au.latch.source ?? 'stop'}; durable ${au.latch.durable}) — say resume to allow automatic work` : `clear (durable ${au.latch.durable})`}; scope ${au.scope ?? 'none'} (${au.persistence.state})`,
-        ...(au.ownerIntent ? [`Your ${au.ownerIntent.state.replace(/_/g, ' ')} instruction: "${au.ownerIntent.instruction}"${au.ownerIntent.requiresOwnerDecision ? ' — needs your decision (a new instruction replaces it)' : ''}`] : []),
+        ...(au.ownerIntent ? [`Your ${au.ownerIntent.state.replace(/_/g, ' ')} instruction: "${au.ownerIntent.instruction}"${au.ownerIntent.requiresOwnerDecision ? ' — held, not continued automatically (a new instruction replaces it)' : ' — held; continues when it is safe (stop cancels it)'}`] : []),
         `Session: progression ${au.session.progressionGoals}/${au.session.maxProgressionGoals}, support ${au.session.supportGoals}/${au.session.maxSupportGoals}, automatic planner turns ${au.session.plannerTurns}/${au.session.maxPlannerTurns}, verified ${au.session.completed}`,
         ...(au.blocker ? [`Waiting on: ${au.blocker.code.replace(/_/g, ' ')} — ${au.blocker.detail}`] : []),
         ...(au.home ? [`Home: ${au.home.state} at ${au.home.at.x} ${au.home.at.y} ${au.home.at.z} (${au.home.dimension}); own blocks ${au.home.ownConfirmed}/${au.home.cells}; ${au.home.verified ? `last check ${au.home.verified}` : 'not checked yet'}`] : []),
@@ -517,7 +531,8 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
       details,
       task: dir?.task.current ? { objective: dir.task.current.objective, detail: `${dir.task.current.mode} task · started ${new Date(dir.task.current.startedAtMs).toISOString().slice(11, 19)} UTC` } : null,
       lastTask: dir?.task.last ? `${dir.task.last.status} (${dir.task.last.reason.replace(/_/g, ' ')}) — ${dir.task.last.detail}` : null,
-      clarification: goal?.clarification ? `${goal.clarification.ref}: ${goal.clarification.question} — reply with "answer ${goal.clarification.ref} …"` : null,
+      // MB-PLAN-006: legacy question text (older releases) is never re-shown or answered.
+      clarification: null,
       pending: dir?.pending ? { instruction: dir.pending.instruction, state: dir.pending.state.replace(/_/g, ' '), detail: dir.pending.detail ?? 'Not started — the current directive continues until the switch.' } : null,
       pendingInstalled: Boolean(s?.integrations.handoff),
       outcomeTechnical: outcome?.technical ?? null,
@@ -529,6 +544,7 @@ export function buildViewModel(inp: ViewInputs): ViewModel {
             ? { text: `Automatic work paused${dir.pause.manualGoalsAllowed ? '; a manual goal can still execute' : ''} — ${dir.pause.reason}${dir.pause.sinceMs ? ` (since ${new Date(dir.pause.sinceMs).toISOString().slice(11, 19)} UTC)` : ''}`, tone: 'warn' }
             : null,
       survival: dir?.survival ? `${dir.survival.routine}: ${dir.survival.reason}${dir.survival.phase ? ` (${dir.survival.phase}${dir.survival.attempt !== undefined ? `, attempt ${dir.survival.attempt}` : ''})` : ''}` : null,
+      safety: safetyVM,
       autonomy: autonomyLines,
       historical: !appLive,
     },

@@ -15,7 +15,11 @@
 //      planner for THIS goal, remembered anchors that were shown, prior results
 //      the evidence ledger verified for this goal, and owner destinations whose
 //      coordinates the owner actually typed (an echoed label is not evidence);
-//   7. outcome semantics: a persistent outcome needs a task that maintains it.
+//   7. outcome semantics: a persistent outcome needs a task that maintains it;
+//   0. (MB-PLAN-006, before the schema) no owner question: the retired
+//      needs_clarification disposition, a `question` field or owner-facing text
+//      (interpretation, blocker, progress, task objectives) that asks the owner
+//      something is a `policy` rejection — counted repair, never relayed.
 // The accepted outcome's immutability across revisions is enforced by the
 // goal engine against the first admitted plan.
 import {
@@ -23,6 +27,7 @@ import {
   isPredicateWithinDepth,
   type CapabilityCatalog,
   type CapabilityRegistry,
+  type GoalOutcomeContract,
   type OutcomePredicate,
   type OwnerCoordinate,
   type ParameterSpec,
@@ -32,12 +37,14 @@ import {
   type TargetSelector,
   type TaskSpec,
 } from '../contracts/index.ts';
+import { ownerQuestionProblems } from './declarative.ts';
 import { scanForbidden } from './forbidden.ts';
 import { matchesOwnerCoordinate } from './owner-coordinates.ts';
+import { enableOwnerSeeking } from './owner-navigation.ts';
 
 export type ProposalCheck =
   | { ok: true; proposal: PlannerProposal }
-  | { ok: false; kind: 'forbidden' | 'schema' | 'semantic' | 'reference'; problems: string[] }
+  | { ok: false; kind: 'forbidden' | 'schema' | 'semantic' | 'reference' | 'policy'; problems: string[] }
   | { ok: false; kind: 'unknown_capabilities'; problems: string[]; capabilities: string[] };
 
 export interface ShownSnapshot {
@@ -53,6 +60,8 @@ export interface ProposalLimits {
 
 /** Evidence the planner was actually given for this goal (reference validation). */
 export interface ProposalContext {
+  /** Already validated and bound by this goal's code. Its exact identity outlives shown-history eviction; it grants no task reference authority. */
+  acceptedOutcome?: GoalOutcomeContract;
   /** Version registry facts; without them registry/recipe references cannot be verified and are rejected. */
   registry?: RegistryFacts;
   /** Snapshots shown to the planner for this goal, by id. */
@@ -78,6 +87,8 @@ export interface ProposalContext {
   route?: RouteProposalContext;
   /** Preparation drafts: no goal epoch/route authorization exists yet; route checks run after the real admission. */
   routeDeferred?: boolean;
+  /** MB-PLAN-006: the code-known owner/automatic instruction; only exact quoted echoes of it are exempt from the question check. */
+  ownerText?: string;
 }
 
 const MAX_PROBLEMS = 12;
@@ -204,6 +215,12 @@ class Checker {
         if (r && r.isItem(p.output) && !r.cookingOutput(p.output)) this.add(`${where}.output: no furnace-type recipe produces ${p.output} in ${r.version}`);
         return;
       }
+      case 'blocks_removed':
+        // MB-PLAN-006: removal of ONE observed target (a grp- block group or a blk- block) shown to the planner.
+        if (p.target.kind !== 'observed') this.add(`${where}.target: blocks_removed needs an observed block group (grp-) or block (blk-) handle`);
+        else if (!/^(grp|blk)-/.test(p.target.handle)) this.add(`${where}.target: ${p.target.handle} is not a block group or block handle`);
+        this.selector(p.target, `${where}.target`);
+        return this.anyKey(p.selector, `${where}.selector`);
       case 'entity_outcome':
         if (p.target.kind !== 'observed' && p.target.kind !== 'owner') this.add(`${where}.target: entity outcomes are evaluated only for an observed entity handle or the owner`);
         else if (p.target.kind === 'owner' && p.outcome === 'observed_defeated') this.add(`${where}: owner defeat is not an evaluated outcome`);
@@ -324,6 +341,8 @@ function canonical(v: unknown): string {
 export function checkProposal(raw: unknown, registry: CapabilityRegistry, limits: ProposalLimits, ctx: ProposalContext = {}): ProposalCheck {
   const forbidden = scanForbidden(raw);
   if (forbidden.length > 0) return { ok: false, kind: 'forbidden', problems: forbidden };
+  const questions = ownerQuestionProblems(raw, ctx.ownerText);
+  if (questions.length > 0) return { ok: false, kind: 'policy', problems: questions };
   const parsed = PlannerProposalSchema.safeParse(raw);
   if (!parsed.success) {
     return {
@@ -334,6 +353,13 @@ export function checkProposal(raw: unknown, registry: CapabilityRegistry, limits
   }
   const proposal = parsed.data;
   if (proposal.disposition !== 'plan') return { ok: true, proposal };
+
+  // N1-R4: the original outcome is a code-owned binding, not a new request
+  // to execute its old handle. Only that exact contract survives eviction;
+  // every new task selector, completion and parameter still uses shown refs.
+  if (ctx.acceptedOutcome && canonical(proposal.outcome) !== canonical(ctx.acceptedOutcome)) {
+    return { ok: false, kind: 'semantic', problems: ['the plan changes the accepted goal outcome; repeat acceptedOutcome exactly (a changed outcome needs a new owner instruction)'] };
+  }
 
   const problems: string[] = [];
   if (proposal.tasks.length > limits.planWindowSteps) {
@@ -361,8 +387,10 @@ export function checkProposal(raw: unknown, registry: CapabilityRegistry, limits
 
   // References: registry/recipes, shown handles/anchors, verified prior results, owner-typed coordinates.
   const c = new Checker(ctx);
-  c.predicate(outcomeRoot, 'outcome');
+  if (!ctx.acceptedOutcome) c.predicate(outcomeRoot, 'outcome');
   const catalog = registry.catalog();
+  const seekingProblems = enableOwnerSeeking(proposal.tasks, catalog);
+  if (seekingProblems.length > 0) return { ok: false, kind: 'semantic', problems: seekingProblems };
   proposal.tasks.forEach((t: TaskSpec, i) => {
     const where = `tasks[${i}]`;
     t.targetSelectors.forEach((s, j) => c.selector(s, `${where}.targetSelectors[${j}]`));

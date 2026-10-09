@@ -4,10 +4,12 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { describe, it } from 'node:test';
 import type { BotOptions } from 'mineflayer';
+import minecraftData from 'minecraft-data';
 import type { ChatEnvelope, GameLifecycleEvent } from '../src/contracts/index.ts';
 import { IdentityConflictError, MicrosoftSignInRequiredError } from '../src/game/auth.ts';
 import { MineflayerConnection, reasonText, type ConnectionOptions } from '../src/game/connection.ts';
 import { offlinePlayerUuid } from '../src/game/identity.ts';
+import type { PingResult } from '../src/game/ping.ts';
 import { tick, until } from './helpers.ts';
 
 class FakeClient extends EventEmitter {
@@ -115,6 +117,7 @@ describe('joining', () => {
     await assert.rejects(h.conn.connect(new AbortController().signal), /server reports 26\.2 \(protocol 776\)/);
     assert.equal(h.bots.length, 0);
     assert.equal(h.conn.state, 'ended');
+    assert.equal(h.conn.session(), undefined, 'a refused ping supplies no current session proof');
   });
 
   it('cancels joining on abort and closes the client', async () => {
@@ -144,6 +147,137 @@ describe('joining', () => {
     bot.username = 'FixtureOwner';
     bot.emit('login');
     await assert.rejects(ready, /owner's player name/);
+  });
+});
+
+describe('W-C13-R9 current ready server-reported session facts', () => {
+  // Real adapter and evidence installation; only the ping and physical bot
+  // are simulated. No fixture connection, protocol admission change or auth.
+  function reportedHarness(overrides: Partial<ConnectionOptions> = {}) {
+    const bots: FakeBot[] = [];
+    const h = harness({
+      createBot: (options) => {
+        const bot = new FakeBot();
+        bot.version = '26.1';
+        Object.assign(bot._client, { version: '26.1' });
+        Object.assign(bot, { registry: minecraftData(String(options.version)) });
+        bots.push(bot);
+        return bot as never;
+      },
+      ...overrides,
+    });
+    return { ...h, bots };
+  }
+
+  for (const [version, protocol] of [['26.1.2', 775], ['26.2', 776]] as const) it(`copies the actual ${version} ping pair only after ready, independently of normalized labels`, async () => {
+    const h = reportedHarness({ version, ping: async () => ({ version, protocol }) });
+    assert.equal(h.conn.session(), undefined);
+    const pending = h.conn.connect(new AbortController().signal);
+    await until(() => h.bots.length === 1);
+    assert.equal(h.conn.session(), undefined, 'successful ping alone is not a ready session');
+    h.bots[0]!.spawnInto();
+    await pending;
+    try {
+      const first = h.conn.session()!, second = h.conn.session()!;
+      assert.equal(first.bot, h.bots[0]);
+      assert.equal(first.connectionEpoch, 1);
+      assert.deepEqual(first.serverReported, { version, protocol });
+      assert.notEqual(first.serverReported, second.serverReported, 'consumers receive detached primitive copies');
+      assert.equal(first.bot.version, '26.1');
+      assert.equal(first.bot._client.version, '26.1');
+      h.bots[0]!._client.protocolVersion = 999;
+      assert.deepEqual(h.conn.session()!.serverReported, { version, protocol }, 'client protocol does not substitute for the checked ping');
+      assert.throws(() => Object.assign(first.serverReported!, { version: 'forged', protocol: 999 }), TypeError);
+      assert.deepEqual(h.conn.session()!.serverReported, { version, protocol });
+      assert.equal(h.conn.statusInfo().serverVersion, version, 'the adapter source was not mutated');
+    } finally { await h.conn.disconnect('operator_stop'); }
+    assert.equal(h.conn.session(), undefined);
+  });
+
+  it('preserves ambiguous reported names without upgrading them from config/protocol/library labels', async () => {
+    const h = reportedHarness({ ping: async () => ({ version: '26.1', protocol: 775 }) });
+    const pending = h.conn.connect(new AbortController().signal);
+    await until(() => h.bots.length === 1);
+    h.bots[0]!.version = '26.1.2';
+    Object.assign(h.bots[0]!._client, { version: '26.1.2' });
+    h.bots[0]!.spawnInto();
+    await pending;
+    try {
+      assert.deepEqual(h.conn.session()!.serverReported, { version: '26.1', protocol: 775 });
+      assert.notEqual(h.conn.session()!.serverReported!.version, '26.1.2', 'an ambiguous raw name is not exact-release proof');
+    } finally { await h.conn.disconnect('operator_stop'); }
+  });
+
+  it('a missing/failed ping or missing ready evidence yields no session proof', async () => {
+    const failed = reportedHarness({ ping: async () => { throw new Error('no status response'); } });
+    await assert.rejects(failed.conn.connect(new AbortController().signal), /server ping failed: no status response/);
+    assert.equal(failed.bots.length, 0);
+    assert.equal(failed.conn.session(), undefined);
+    const noEvidence = harness(); // old fake has library/config labels but no evidence registry
+    const pending = noEvidence.conn.connect(new AbortController().signal);
+    await until(() => noEvidence.bots.length === 1);
+    noEvidence.bots[0]!.spawnInto();
+    await pending;
+    assert.equal(noEvidence.conn.state, 'ready');
+    assert.equal(noEvidence.conn.session(), undefined);
+    await noEvidence.conn.disconnect('operator_stop');
+  });
+
+  it('a late ping from an aborted join cannot overwrite the replacement epoch', async () => {
+    const abandoned = Promise.withResolvers<PingResult>();
+    let pings = 0;
+    const h = reportedHarness({ ping: async () => ++pings === 1 ? abandoned.promise : { version: '26.1.2', protocol: 775 } });
+    const abort = new AbortController();
+    const first = h.conn.connect(abort.signal);
+    await until(() => pings === 1);
+    abort.abort();
+    await assert.rejects(first, /join cancelled by operator/);
+    assert.equal(h.conn.session(), undefined);
+    const replacement = h.conn.connect(new AbortController().signal);
+    await until(() => h.bots.length === 1);
+    h.bots[0]!.spawnInto();
+    await replacement;
+    try {
+      abandoned.resolve({ version: 'abandoned ambiguous label', protocol: 775 });
+      await tick(5);
+      assert.equal(h.conn.connectionEpoch, 2);
+      assert.equal(h.conn.session()!.connectionEpoch, 2);
+      assert.deepEqual(h.conn.session()!.serverReported, { version: '26.1.2', protocol: 775 });
+      assert.equal(h.bots.length, 1, 'abandoned ping cannot create a client');
+    } finally { await h.conn.disconnect('operator_stop'); }
+  });
+
+  it('stop and rejoin expose only the newly ready epoch and its newly checked report', async () => {
+    const rejoinPing = Promise.withResolvers<PingResult>();
+    let pings = 0;
+    const h = reportedHarness({ ping: async () => ++pings === 1 ? { version: '26.1.2', protocol: 775 } : rejoinPing.promise });
+    const first = h.conn.connect(new AbortController().signal);
+    await until(() => h.bots.length === 1);
+    const oldBot = h.bots[0]!;
+    oldBot.spawnInto();
+    await first;
+    const oldSession = h.conn.session()!;
+    await h.conn.disconnect('operator_stop');
+    assert.equal(h.conn.session(), undefined);
+    const second = h.conn.connect(new AbortController().signal);
+    await until(() => pings === 2);
+    assert.equal(h.conn.session(), undefined, 'old report does not escape during the next ping');
+    rejoinPing.resolve({ version: 'new ambiguous server name', protocol: 775 });
+    await until(() => h.bots.length === 2);
+    assert.equal(h.conn.session(), undefined, 'the new ping does not authorize a session before spawn');
+    h.bots[1]!.spawnInto();
+    await second;
+    try {
+      oldBot.emit('spawn'); oldBot._client.emit('end', 'stale socket');
+      assert.equal(h.conn.state, 'ready');
+      assert.equal(h.conn.session()!.connectionEpoch, 2);
+      assert.notEqual(oldSession.connectionEpoch, h.conn.session()!.connectionEpoch);
+      assert.equal(h.conn.session()!.bot, h.bots[1]);
+      assert.deepEqual(oldSession.serverReported, { version: '26.1.2', protocol: 775 });
+      assert.deepEqual(h.conn.session()!.serverReported, { version: 'new ambiguous server name', protocol: 775 });
+      assert.equal(h.events.filter((e) => e.type === 'ready').length, 2);
+    } finally { await h.conn.disconnect('operator_stop'); }
+    assert.equal(h.conn.session(), undefined);
   });
 });
 

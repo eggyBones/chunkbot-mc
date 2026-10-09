@@ -15,6 +15,7 @@ import { createInterface } from 'node:readline';
 import { ConfigError, configPathFrom, loadConfigFile, type LoadedConfig } from './config/load.ts';
 import { LOCAL_COMPAT_PROFILE, PINNED_PACKAGES, installedPackageVersion, resolveVersionProfile, supportLevel } from './config/versions.ts';
 import { randomIds, systemClock } from './contracts/index.ts';
+import { homeConstructionWanted } from './app/composition.ts';
 import { ChunkbotApp } from './app/app.ts';
 import { DiagnosticConsole } from './app/diagnostics.ts';
 import { SkillRuntime } from './app/skill-runtime.ts';
@@ -36,9 +37,10 @@ import { runPlannerCheck } from './planner/planner-check.ts';
 import { NotReadyPlanner } from './goals/not-ready.ts';
 import { PlannerJournal } from './telemetry/planner-journal.ts';
 import type { PlannerPort, RunStore } from './contracts/index.ts';
+import { continuationPort } from './survival/wiring.ts';
 import { createDashboardRuntime, type DashboardRuntime } from './dashboard/runtime.ts';
 import { VIEWER_USAGE, parseViewerArgs, runDashboardViewer } from './dashboard/viewer-command.ts';
-import { memorySummaryFrom, pauseFrom, pendingDirectiveFrom } from './app/status.ts';
+import { memorySummaryFrom, pauseFrom, pendingDirectiveFrom, safetyStatusLine } from './app/status.ts';
 import { inspectMemory, renderMemoryReport } from './memory/report.ts';
 import { memoryRoot } from './memory/service.ts';
 import { join } from 'node:path';
@@ -47,7 +49,7 @@ import { AutonomyControl } from './autonomy/control.ts';
 import { AutonomySupervisor } from './autonomy/supervisor.ts';
 import { recoveryAdmissionBarrier } from './autonomy/barrier.ts';
 import { resolveAutonomyScope, type ScopeResolution } from './autonomy/scope.ts';
-import { autonomyStatusChat, autonomyStatusLines } from './autonomy/status-text.ts';
+import { autonomyStatusChat, autonomyStatusLines, navigationStatusLines } from './autonomy/status-text.ts';
 import { JEV_CONTEXT_TOKENS, PROMPT_USD_PER_TOKEN } from './decision/pricing.ts';
 import { createHash } from 'node:crypto';
 
@@ -189,7 +191,10 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
   const { config } = loaded;
   const autonomyConfig = AutonomyConfigSchema.parse(config.autonomy ?? {});
   const autonomy = autonomyEnablement(loaded, options.autonomy === true);
-  const scopeResolution = autonomy.enabled ? autonomyScope(loaded) : undefined;
+  // Coordinator decision (MB-PLAN-006): home construction serves ordinary OWNER goals whenever an explicit
+  // durable world scope is configured, independently of automatic progression (never an invented scope).
+  const homeWanted = homeConstructionWanted(config);
+  const scopeResolution = autonomy.enabled || homeWanted ? autonomyScope(loaded) : undefined;
   const scope = scopeResolution?.scope;
   const fileStore = new FileRunStore({
     runsDir: loaded.runsDir,
@@ -247,9 +252,10 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
   const survivalWanted = autonomy.enabled && config.survival?.enabled !== false && !scopeResolution?.conflict;
   const runtime = new SkillRuntime({
     features: {
+      safety: true,
       ...(config.locator?.enabled === false ? {} : { locator: true }),
       ...(survivalWanted ? { survival: { config: config.survival, scope } } : {}),
-      ...(autonomy.enabled && autonomyConfig.home.enabled && scope ? { home: { control, interior: autonomyConfig.home.interior as 2 | 3, maxSiteDistance: autonomyConfig.home.maxSiteDistance } } : {}),
+      ...(homeWanted && scope && !scopeResolution?.conflict ? { home: { control, interior: autonomyConfig.home.interior as 2 | 3, maxSiteDistance: autonomyConfig.home.maxSiteDistance } } : {}),
     },
     config,
     session: () => game.session(),
@@ -264,6 +270,8 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     spendRemainingUsd: () => Math.round(spend.remainingUsd() * 1e6) / 1e6,
     emitTask: (kind, data) => out(`[task-json] ${JSON.stringify(redact({ kind, ...data }, { maxStringChars: 600, maxArrayItems: 32, maxDepth: 6 }))}`),
     dataDir: loaded.dataDir,
+    sessionId: store.runId,
+    safetyAuthority: () => appRef?.safetyAuthority() ?? { basis: 'none', detail: 'application not composed', connection: null, alive: false, goal: null, travel: null },
   });
   runtimeRef = runtime;
   const memory = runtime.memory;
@@ -316,6 +324,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
     planner: () => codex,
     pending: () => pendingDirectiveFrom(appRef?.engine.status()),
     pause: () => pauseFrom(appRef?.engine.status()),
+    ...(runtime.safety ? { safety: () => runtime.safety!.status(systemClock.now()) } : {}),
     // MB-FLOW-001/003/LOC-001 read-only status (no controls).
     autonomy: () => {
       if (!supervisor) return undefined;
@@ -352,6 +361,12 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
       const lines = [`network: ${codecSummary(game.codecHealth())} (version support: ${supportLevel(config.minecraft.version) ?? 'unsupported'})`];
       if (dashboard) lines.push(dashboard.statusLine());
       if (memory) lines.push(...memory.statusLines());
+      if (runtime.safety) {
+        const s = runtime.safety.status(systemClock.now());
+        lines.push(safetyStatusLine(s));
+      }
+      const navigation = runtime.routeView(appRef?.engine.currentEpoch ?? 0);
+      lines.push(...navigationStatusLines(navigation?.status ?? null, { locator: runtime.locator?.ownerHint() ?? null, admission: navigation?.admission ?? null }));
       if (codex) {
         const t = codex.totals;
         const cov = (known: number) => (known === t.completedTurns ? '' : ` [reported for ${known}/${t.completedTurns} completed turns]`);
@@ -367,6 +382,9 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
         supervisor?.onLifecycle(event);
       },
       cancelControl: (reason) => diagnostics?.cancel(reason) ?? false,
+      closeControl: () => runtime.closeSafety(),
+      onSafetyAuthorityChanged: (cause) => runtime.safety?.onAuthorityChanged(cause),
+      travelBounds: () => runtime.perception.travelBounds(),
       onGoalAdmitted: (admission) => {
         runtime.onGoalAdmitted(admission);
         supervisor?.onGoalAdmitted(admission);
@@ -377,7 +395,6 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
       },
       onLatchChanged: (latch, cause) => supervisor?.onLatchChanged(latch, cause),
       onPreparationDiscarded: (p) => supervisor?.onPreparationDiscarded(p),
-      onOwnerCoordinates: (e) => runtime.onOwnerCoordinates(e),
       ...(runtime.routes ? { routeView: (goalEpoch: number) => runtime.routeView(goalEpoch) } : {}),
       ...(runtime.locator ? { locatorHint: () => runtime.locator?.ownerHint() } : {}),
       installed: { structures: Boolean(runtime.home), survival: Boolean(runtime.survival) },
@@ -398,12 +415,28 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
         const s = supervisor.status();
         const epoch = appRef?.engine.currentEpoch;
         const view = epoch !== undefined ? runtime.routeView(epoch) : undefined;
-        return { lines: autonomyStatusLines(s, { locator: runtime.locator?.ownerHint() ?? null, admission: view?.admission ?? null }), chat: autonomyStatusChat(s), automatic: s.mode !== 'disabled' && s.mode !== 'scope_blocked' };
+        return { lines: autonomyStatusLines(s, { admission: view?.admission ?? null }).filter((line) => !line.startsWith('route: ') && !line.startsWith('locator: ')), chat: autonomyStatusChat(s), automatic: s.mode !== 'disabled' && s.mode !== 'scope_blocked' };
       },
       diagnostic: (args) => diagnostics!.handle(args),
+      // MB-FLOW-003-C12 same-session continuation of held owner jobs. In memory and independent of
+      // memory/autonomy/survival configuration; the survival port is attached when S's service provides it.
+      continuation: {
+        sessionId: store.runId,
+        ...(continuationPort(runtime.survival) ? { survival: continuationPort(runtime.survival)! } : {}),
+        captureAnchor: (goalEpoch) => runtime.continuationAnchor(goalEpoch),
+        captureRoute: (goalEpoch) => runtime.continuationRoute(goalEpoch),
+        isAlive: () => (game.statusInfo().health ?? 0) > 0,
+        currentDimension: () => {
+          const d = game.statusInfo().dimension;
+          return d === undefined ? undefined : String(d);
+        },
+        matches: (selector, key) => (selector.startsWith('#') ? Boolean(runtime.knowledge.recipes?.matches(selector, key)) : selector === key),
+      },
+      decisionBudget: decision,
     },
   });
   appRef = app;
+  runtime.startSafety();
   supervisor = new AutonomySupervisor({
     engine: app.engine,
     control,
@@ -497,7 +530,7 @@ async function commandRun(loaded: LoadedConfig, noTerminal: boolean, noAutonomy:
   let rl: ReturnType<typeof createInterface> | undefined;
   if (!noTerminal) {
     rl = createInterface({ input: process.stdin, terminal: false });
-    out('[chunkbot] terminal ready: type instructions, stop, status, answer [qN] <reply>, or /help');
+    out('[chunkbot] terminal ready: type instructions, stop, resume, status, or /help');
     rl.on('line', (line) => {
       void app.handleTerminalLine(line);
     });
@@ -579,9 +612,10 @@ function commandCatalog(configPath: string, json: boolean): void {
   const registry = new SkillRegistry(allSkills());
   const catalog = registry.catalog();
   if (json) {
+    err('foundation catalog only; use /diag catalog in a run for its configured locator, safety, survival, memory and construction capabilities');
     out(JSON.stringify(catalog, null, 2));
   } else {
-    out(`catalog ${catalog.catalogVersion} (${catalog.capabilities.length} capabilities, generated from registered skill definitions; version ${version})`);
+    out(`foundation catalog ${catalog.catalogVersion} (${catalog.capabilities.length} capabilities, generated from foundation skill definitions; version ${version}; /diag catalog shows configured run capabilities)`);
     for (const c of catalog.capabilities) {
       out(`- ${c.id} [${c.family}] ${c.purpose}`);
       out(`    params: ${c.parameters.map((p) => `${p.name}${p.required ? '' : '?'}:${p.type}`).join(', ') || '(none)'}; predicates: ${c.supportedPredicates.join(', ') || '(none)'}`);

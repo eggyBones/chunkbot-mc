@@ -209,6 +209,36 @@ interface Trial {
   decisions: Json[];
 }
 
+/**
+ * J1 start (R19). The original 214.5,-60,196.5 looks at the chest (203,-60,207)
+ * DIAGONALLY through the scene oak trunk (208,-60..-58,202): every historical J1
+ * began with no visible chest (explore-only first round) and the old passes
+ * depended on exploration revealing it. 214.5,-60,200.5 is inside the original
+ * scene, 13.1 blocks from the chest centre (a real walk) and sees the chest past
+ * the trunk with margin (tests/jev-j1-visibility.test.ts, real perception).
+ */
+const J1_START = { x: 214.5, y: -60, z: 200.5 } as const;
+
+/** Bounded fresh pre-admission proof through the actual CLI perception (/diag observe). */
+async function j1VisibleChestReadiness(sinceMs: number, timeoutMs = 10_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let last = 'no observation';
+  while (Date.now() < deadline) {
+    const from = chunkbot.length;
+    chunkbot.send('/diag observe');
+    const line = await chunkbot.waitSince(/^\[diag-json\] \{"kind":"observe"/, from, 5_000);
+    const snap = JSON.parse(line.slice('[diag-json] '.length)).snapshot as Json | null;
+    const self = snap?.self?.at as { x: number; y: number; z: number } | undefined;
+    const chest = (snap?.blocks as Json[] | undefined)?.find((b) => b.key === 'minecraft:chest' && b.at?.x === SCENE.chest.x && b.at?.y === SCENE.chest.y && b.at?.z === SCENE.chest.z);
+    last = JSON.stringify({ takenAtMs: snap?.takenAtMs ?? null, self: self ?? null, chest: chest ? { handle: chest.handle, distance: chest.distance } : null });
+    if (snap && Number(snap.takenAtMs) >= sinceMs && self && Math.hypot(self.x - J1_START.x, self.z - J1_START.z) <= 0.5 && Math.abs(self.y - J1_START.y) <= 0.1 && chest && Number(chest.distance) > 3) {
+      return `PRECONDITION: fresh CLI observation ${snap.id} at ${snap.takenAtMs} (teleport ${sinceMs}): self ${JSON.stringify(self)}; scene chest visible as ${chest.handle} at ${chest.distance} blocks (> 3, a real walk)`;
+    }
+    await sleep(250);
+  }
+  throw new Error(`J1 staging_unready: the declared visible chest was not proven visible from the declared start by a fresh CLI observation: ${last}`);
+}
+
 /** Admits one operator task diagnostic and waits for its terminal result. */
 async function runTask(name: string, spec: Json, opts: { maintain?: boolean; timeoutMs?: number; during?: (from: number) => Promise<void> } = {}): Promise<Trial> {
   const from = chunkbot.length;
@@ -345,8 +375,13 @@ async function main(): Promise<void> {
 
     // ------------------------------------------------------------ movement
     await check('J1', 'movement task: Jev chooses among move/explore options; near_target verified; RCON position near the chest', async (ev, trials) => {
-      await setup('tp Chunkbot 214.5 -60 196.5 0 0');
+      await setup(`tp Chunkbot ${J1_START.x} ${J1_START.y} ${J1_START.z} 0 0`);
+      const tpAtMs = Date.now();
       await sleep(1_000);
+      // R19: the task says "the chest you can see", so its visibility is a staged
+      // precondition, proven before admission by the actual CLI perception
+      // (operator-only diagnostic output; nothing here reaches a model).
+      ev.push(await j1VisibleChestReadiness(tpAtMs));
       const t = await runTask('move to the visible chest', {
         objective: 'Walk over to the chest you can see.',
         decisionInstruction: 'Choose the option that brings you next to the visible chest; avoid wandering elsewhere.',
@@ -356,6 +391,8 @@ async function main(): Promise<void> {
       });
       summarize(t, ev, trials);
       assertLinked(t);
+      const firstRound = t.events.find((e) => e.kind === 'task_round');
+      assert((firstRound?.offered as Json[] | undefined)?.some((o) => o.capability === 'move_near' && /minecraft:chest/.test(String(o.description))), 'the first round offered an approach to the visible chest (staged visibility held at task start)');
       assert(t.terminal.status === 'completed', `task ${t.terminal.status} (${t.terminal.reason})`);
       assert(t.terminal.decisions >= 1, 'at least one real Jev decision');
       const p = await serverPos();

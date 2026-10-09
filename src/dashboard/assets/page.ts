@@ -274,6 +274,7 @@ export const APP_JS = String.raw`
     if (d.clarification) kids.push(el('div', { cls: 'callout', text: 'Question for you — ' + d.clarification }));
     // P-C7: no claim about the owner's directive here; whether one is held, interrupted or absent is shown by the canonical owner-intent line below.
     if (d.survival) kids.push(el('div', { cls: 'callout', text: 'Survival routine — ' + d.survival }));
+    if (d.safety) kids.push(el('div', { cls: 'task' + (d.safety.historical ? ' historical' : '') }, [el('div', { cls: 'lab t-' + d.safety.tone, text: d.safety.title }), el('div', { cls: 'note', text: d.safety.detail }), el('div', { cls: 'note', text: d.safety.note })]));
     if (d.autonomy) {
       var auKids = [el('div', { cls: 'lab t-muted', text: 'Automatic work (read-only)' })];
       for (var ai = 0; ai < d.autonomy.length; ai++) auKids.push(el('div', { cls: 'note', text: d.autonomy[ai] }));

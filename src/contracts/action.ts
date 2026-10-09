@@ -77,7 +77,7 @@ export const SkillOutcomeSchema = z
   .object({
     actionId: ActionIdSchema,
     /** `goal`: executed for an admitted goal/task. `diagnostic`: operator-issued mechanic diagnostic. */
-    owner: z.enum(['goal', 'diagnostic']).default('goal'),
+    owner: z.enum(['goal', 'diagnostic', 'safety']).default('goal'),
     /** Present for goal-owned actions. */
     goalId: GoalIdSchema.optional(),
     taskId: TaskIdSchema.optional(),

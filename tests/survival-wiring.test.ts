@@ -6,7 +6,9 @@ import { after, describe, it } from 'node:test';
 import type { ActionCandidate } from '../src/contracts/action.ts';
 import { TaskSpecSchema } from '../src/contracts/task.ts';
 import { minecraftDataRegistry } from '../src/survival/registry.ts';
-import { allowedUnderAllowance, createSurvivalService, librarySeed, supportGoalSource, supportTaskSpec } from '../src/survival/wiring.ts';
+import { allowedUnderAllowance, continuationPort, createSurvivalService, librarySeed, supportGoalSource, supportTaskSpec } from '../src/survival/wiring.ts';
+import type { ContinuationSurvivalPort } from '../src/contracts/continuation.ts';
+import type { SurvivalService } from '../src/survival/service.ts';
 import { assessInput, cleanupRoots, harness, slot, tempRoot } from './survival-helpers.ts';
 
 after(cleanupRoots);
@@ -48,6 +50,18 @@ describe('survival wiring', () => {
     void scoped?.close();
   });
 
+  it('C12: createSurvivalService passes the application sessionId through (own-session checkpoint records keep their state)', async () => {
+    const base = { minecraftVersion: '26.1.2', limits: { lowHealth: 8, travelRadius: 128 }, now: () => 1_000 };
+    const dataDir = tempRoot();
+    const scope = { worldProfile: 'w', worldRevision: 1, botProfile: 'b' };
+    const s = createSurvivalService({ ...base, survival: {}, scope, dataDir, sessionId: 'run-s1' });
+    assert.ok(s);
+    const counters = { plannerTurns: 1, knowledgeRounds: 0, repairs: 0, retries: 0, clarifications: 0, replans: 0, windows: 1, tasksAdmitted: 1, preparationTurns: 0, lookaheads: 0 };
+    s.persistCheckpoint({ version: 1, goalId: 'goal-wire1', sessionId: 'run-s1', connectionEpoch: 1, dimension: 'overworld', instruction: 'x', publicOutcome: 'x', outcome: { kind: 'persistent', maintain: { predicate: 'near_target', target: { kind: 'owner' }, within: 4 } }, outcomeCanonical: 'x', admissionBaseline: { capturedAtMs: 1, counts: null, detail: 'x' }, anchor: null, counters: counters as never, caps: { plannerTurns: 20, tasks: 64, replans: 8 }, admittedTasks: 1, deadlineAtMs: 5_000, grounding: [], counts: [], removal: [], route: null, verifiedEffects: [], continuations: { used: 0, max: 2 }, interruptions: [{ reason: 'death', atMs: 1, epoch: 1 }], state: 'held', stateReason: 'waiting:recovery_open', stateAtMs: 1 });
+    assert.equal(s.status(2).checkpoints?.[0]?.state, 'held');
+    await s.close();
+  });
+
   it('library seed is labeled with unknown metadata', () => {
     const seed = librarySeed({ inventory: { slots: [null, { name: 'bread', count: 2 }] }, quickBarSlot: 1, health: 20, food: 18 });
     assert.deepEqual(seed.stacks, [{ slot: 1, key: 'minecraft:bread', count: 2, meta: { metadata: 'unknown' } }]);
@@ -59,5 +73,21 @@ describe('survival wiring', () => {
     assert.equal(a?.maxDurability('minecraft:iron_pickaxe'), 250);
     assert.equal(b?.food('minecraft:bread')?.foodPoints, 5);
     assert.equal(a?.food('minecraft:iron_pickaxe'), undefined);
+  });
+
+  it('C12: continuationPort exposes the approved port only when survival is enabled (type pinned to P 4409ba1)', async () => {
+    // Compile-time: the service structurally satisfies the exact common contract.
+    const pinned: (s: SurvivalService) => ContinuationSurvivalPort = (s) => s;
+    void pinned;
+    const base = { minecraftVersion: '26.1.2', limits: { lowHealth: 8, travelRadius: 128 }, now: () => 1_000 };
+    assert.equal(continuationPort(undefined), undefined);
+    assert.equal(continuationPort(createSurvivalService({ ...base, survival: { enabled: false }, scope: undefined, dataDir: undefined })), undefined);
+    const s = createSurvivalService({ ...base, survival: {}, scope: undefined, dataDir: undefined });
+    const port = continuationPort(s);
+    assert.ok(port);
+    assert.equal(port.frozenInventory(1), null);
+    assert.equal(port.incidentReturns('dcap-1-1'), null);
+    assert.deepEqual(Object.keys(port.continuationGate(1_000)), ['kind', 'reason', 'detail'], 'no tracker attached yet: a finite wait, never a throw');
+    await s?.close();
   });
 });

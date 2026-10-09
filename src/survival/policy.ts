@@ -18,6 +18,8 @@ import {
   type SurvivalStatePredicate,
   type TrackedStack,
   type Vitals,
+  manifestRemaining,
+  manifestSought,
 } from '../contracts/survival.ts';
 import { visibleThreat } from './allowance.ts';
 import { siteIsHazard } from './death-cause.ts';
@@ -112,7 +114,8 @@ export function evalEat(ctx: PolicyContext): RoutineEval {
   if (foods.length === 0) return blocked('eat', `eat:none:${v.food}`, 'no_safe_food', `food ${v.food}/20 and no suitable owned food (risky and precious foods are never eaten automatically)`);
   if (ctx.snapshot) {
     const threat = visibleThreat(ctx.snapshot, ctx.cfg.lowHealthAllowance.threatRadius);
-    if (threat && v.health <= ctx.lowHealth) return blocked('eat', `eat:threat:${threat.key}:${Math.round(threat.distance)}`, 'threat_nearby', `visible ${threat.key} ${threat.distance} blocks away at low health; eating here is unsafe and no escape capability is supported`, true);
+    // Eating in place is unsafe near a visible hostile at low health AND for a health-support meal (it may run inside the ordinary cooldown).
+    if (threat && (v.health <= ctx.lowHealth || healthNeedsFood)) return blocked('eat', `eat:threat:${threat.key}:${Math.round(threat.distance)}`, 'threat_nearby', `visible ${threat.key} ${threat.distance} blocks away at health ${v.health}; eating here is unsafe and no escape capability is supported`, true);
   }
   const low = v.health <= ctx.lowHealth;
   const priority: SurvivalPriority = low || v.food <= 6 ? 'safety' : 'support';
@@ -239,9 +242,9 @@ export function evalRecovery(ctx: PolicyContext): RoutineEval {
     if (!imp.improved) return blocked('death_recovery', sig(`prep:${prep.armorPoints}:${prep.routePolicy}:${Math.floor(self.x / 16)},${Math.floor(self.z / 16)}`), 'no_material_improvement', `attempt ${used + 1} needs a materially better preparation or route: ${imp.why}`);
   }
   const sought = new Map<string, number>();
-  for (const m of e.manifest?.missing ?? []) if (m.state === 'missing' && m.count > 0) sought.set(m.key, m.count);
+  for (const m of e.manifest?.missing ?? []) if (manifestSought(m)) sought.set(m.key, manifestRemaining(m));
   if (sought.size === 0) return conclude(e.regained.length ? 'recovered' : 'no_loss', 'nothing_sought', 'nothing remains to recover');
-  const valuables = (e.manifest?.missing ?? []).filter((m) => m.state === 'missing' && m.valuable).map((m) => strip(m.key));
+  const valuables = (e.manifest?.missing ?? []).filter((m) => manifestSought(m) && m.valuable).map((m) => strip(m.key));
   const dir = compass(self, site.at);
   const signature = sig(`attempt:${used + 1}:${prep.armorPoints}:${prep.routePolicy}`);
   const facts = [
@@ -252,7 +255,10 @@ export function evalRecovery(ctx: PolicyContext): RoutineEval {
     `attempt ${used + 1} of ${e.maxAttempts}; episode budget left: ${rem.plannerTurns} planner turns, ${rem.tasks} tasks`,
     ...(e.manifest?.partial ? ['the loss manifest is partial (some pre-death or fresh inventory evidence was unavailable)'] : []),
   ];
-  const instruction = `Automatic support routine (not an owner request): recover my own belongings lost at death incident ${e.originalIncidentFactId ?? e.episodeId}, about ${d} blocks ${dir}. Use go_to_death_site, then recover_lost_items to pick up only the matching visible drops near the site; finish when survival_state death_recovery is concluded.`;
+  const travel = routePolicy === 'local'
+    ? 'Use go_to_death_site within its local goal travel bound'
+    : 'Use the separately registered route_travel with destination own_death under its code-owned route legs and cumulative limits; go_to_death_site remains local only and is unnecessary at route arrival';
+  const instruction = `Automatic support routine (not an owner request): recover my own belongings lost at death incident ${e.originalIncidentFactId ?? e.episodeId}, about ${d} blocks ${dir}. ${travel}, then recover_lost_items to pick up only the matching visible drops near the site; finish when survival_state death_recovery is concluded.`;
   return {
     routine: 'death_recovery',
     need: true,
@@ -270,7 +276,7 @@ export function evalRecovery(ctx: PolicyContext): RoutineEval {
         context: {
           routine: 'death_recovery',
           facts,
-          suggestedCapabilities: [SURVIVAL_CAPABILITIES.goToDeathSite, SURVIVAL_CAPABILITIES.recoverLostItems],
+          suggestedCapabilities: [...(routePolicy === 'local' ? [] : ['route_travel']), SURVIVAL_CAPABILITIES.goToDeathSite, SURVIVAL_CAPABILITIES.recoverLostItems],
           rules: [
             'pick up only drops offered by recover_lost_items (scoped to the death site and the missing items); never sweep other loot',
             'items may have despawned, burned or been taken: never promise their return, an exact despawn time or experience restoration',

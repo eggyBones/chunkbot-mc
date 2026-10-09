@@ -56,7 +56,18 @@ export const GoalRecordSchema = z
         knowledgeRounds: z.number().int().nonnegative(),
         repairs: z.number().int().nonnegative(),
         retries: z.number().int().nonnegative(),
-        clarifications: z.number().int().nonnegative(),
+        /**
+         * MB-PLAN-006: proposals refused because they asked the owner a question.
+         * Absent in records written before MB-PLAN-006: parsed as 0 (no refusal
+         * mechanism existed), never relabeled from `clarifications`.
+         */
+        questionRefusals: z.number().int().nonnegative().default(0),
+        /**
+         * LEGACY, history-only: owner clarification turns counted by releases
+         * before MB-PLAN-006 (they were part of plannerTurns). Preserved as written
+         * in old evidence; the current engine never writes it.
+         */
+        clarifications: z.number().int().nonnegative().optional(),
         replans: z.number().int().nonnegative(),
         windows: z.number().int().nonnegative(),
         tasksAdmitted: z.number().int().nonnegative(),
@@ -68,6 +79,10 @@ export const GoalRecordSchema = z
     interpretation: z.string().max(BOUNDS.text).optional(),
     /** Bounded rendering of the accepted goal outcome contract (code evaluates it). */
     outcome: z.string().max(BOUNDS.text).optional(),
+    /**
+     * LEGACY (pre-MB-PLAN-006 records only). The goal engine never sets it: Chunkbot
+     * asks no follow-up questions. Kept optional so old evidence still parses.
+     */
     pendingClarification: ClarificationRequestSchema.optional(),
     terminal: z
       .object({
@@ -78,6 +93,11 @@ export const GoalRecordSchema = z
       .strict()
       .optional(),
     progress: z.string().max(BOUNDS.text).default(''),
+    /**
+     * MB-FLOW-003-C12: present on a CONTINUATION admission of the same logical
+     * goal (same id, fresh epoch). `number` is 1-based within `max`.
+     */
+    continuation: z.object({ number: z.number().int().min(1), max: z.number().int().min(1), after: z.string().regex(/^[a-z_]{1,48}$/) }).strict().optional(),
   })
   .strict();
 export type GoalRecord = z.infer<typeof GoalRecordSchema>;

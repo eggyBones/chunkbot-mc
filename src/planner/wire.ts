@@ -28,9 +28,11 @@ import {
   type TaskSpec,
 } from '../contracts/index.ts';
 import { scanForbidden } from '../goals/forbidden.ts';
+import { ownerQuestionProblems } from '../goals/declarative.ts';
 import { SURVIVAL_CAPABILITIES, SURVIVAL_ROUTINES } from '../contracts/survival.ts';
 
-export const DISPOSITIONS = ['plan', 'needs_information', 'needs_clarification', 'cannot_execute'] as const;
+/** MB-PLAN-006: there is no owner-question disposition (Chunkbot never asks follow-up questions). */
+export const DISPOSITIONS = ['plan', 'needs_information', 'cannot_execute'] as const;
 
 /** Wire fields each predicate kind uses (mirrors the contract's AtomicPredicateSchema). */
 export const PREDICATE_FIELDS = {
@@ -44,6 +46,8 @@ export const PREDICATE_FIELDS = {
   crafting_result: ['output', 'atLeast'],
   smelting_result: ['output', 'atLeast'],
   entity_outcome: ['target', 'outcome'],
+  /** MB-PLAN-006: removal of one observed block group / block. */
+  blocks_removed: ['target', 'selector'],
   /** MB-MEM-001 (offered only when memory capabilities are installed). */
   memory_state: ['label', 'expect'],
   /** MB-FLOW-001 (offered only when home construction capabilities are installed). */
@@ -147,6 +151,7 @@ export function plannerOutputSchema(catalog: CapabilityCatalog): Record<string, 
       obj({ predicate: one('container_state'), target: targetRef, selector: key, atLeast: count }),
       obj({ predicate: { type: 'string', enum: ['crafting_result', 'smelting_result'] }, output: key, atLeast: count }),
       obj({ predicate: one('entity_outcome'), target: targetRef, outcome: { type: 'string', enum: ['observed_defeated', 'observed_present'] } }),
+      obj({ predicate: one('blocks_removed'), target: targetRef, selector: key }),
       ...(memory ? [obj({ predicate: one('memory_state'), label: str, expect: { type: 'string', enum: ['recorded', 'noted', 'forgotten'] } })] : []),
       ...(construction ? [obj({ predicate: one('structure_state'), structure: one('home'), expect: { type: 'string', enum: ['site_approved', 'enclosed', 'complete'] } })] : []),
       ...(survival ? [obj({ predicate: one('survival_state'), routine: { type: 'string', enum: [...SURVIVAL_ROUTINES] }, expect: { type: 'string', enum: ['recovered', 'concluded', 'satisfied'] } })] : []),
@@ -174,12 +179,11 @@ export function plannerOutputSchema(catalog: CapabilityCatalog): Record<string, 
       tasks: { type: 'array', items: { $ref: '#/$defs/task' } },
       morePlanningNeeded: { type: 'boolean' },
       queries: { type: 'array', items: { $ref: '#/$defs/query' } },
-      question: nullable(str),
       missing: nullable(str),
       missingCapabilities: { type: 'array', items: str },
       verifiedProgress: nullable(str),
     },
-    required: ['disposition', 'interpretation', 'outcome', 'tasks', 'morePlanningNeeded', 'queries', 'question', 'missing', 'missingCapabilities', 'verifiedProgress'],
+    required: ['disposition', 'interpretation', 'outcome', 'tasks', 'morePlanningNeeded', 'queries', 'missing', 'missingCapabilities', 'verifiedProgress'],
     $defs: { vec, target, predicate, task, query },
   };
 }
@@ -352,6 +356,8 @@ export function proposalFromWire(raw: unknown): PlannerProposal {
   if (!isObj(raw)) throw new WireError(['the final message is not a JSON object']);
   const forbidden = scanForbidden(raw);
   if (forbidden.length > 0) throw new WireError(forbidden);
+  // MB-PLAN-006: a legacy/off-schema owner question is a counted policy repair, never a question to relay.
+  if (raw['disposition'] === 'needs_clarification' || (raw['question'] !== undefined && raw['question'] !== null)) throw new WireError(ownerQuestionProblems({ ...raw, question: typeof raw['question'] === 'string' ? raw['question'] : 'question' }));
   const disposition = raw['disposition'] as (typeof DISPOSITIONS)[number];
   if (!DISPOSITIONS.includes(disposition)) throw new WireError([`disposition ${JSON.stringify(raw['disposition'])} is not one of ${DISPOSITIONS.join(', ')}`]);
   const interpretation = raw['interpretation'];
@@ -364,7 +370,7 @@ export function proposalFromWire(raw: unknown): PlannerProposal {
   switch (disposition) {
     case 'plan': {
       // verifiedProgress is the planner's own note; only cannot_execute reports it (code evidence is authoritative).
-      mustBeEmpty(['queries', 'question', 'missing', 'missingCapabilities']);
+      mustBeEmpty(['queries', 'missing', 'missingCapabilities']);
       const o = raw['outcome'];
       let outcome: unknown;
       if (!isObj(o)) problems.push('outcome is required for a plan');
@@ -380,18 +386,14 @@ export function proposalFromWire(raw: unknown): PlannerProposal {
     // Non-plan dispositions never cause actions: fields that only a plan uses
     // (outcome, tasks) are ignored rather than rejected.
     case 'needs_information': {
-      mustBeEmpty(['question', 'missing']);
+      mustBeEmpty(['missing']);
       const queries = Array.isArray(raw['queries']) ? raw['queries'].map((q, i) => queryFromWire(q, `queries[${i}]`, problems)) : [];
       if (queries.length === 0) problems.push('needs_information needs at least one query');
       out = { ...base, disposition, queries };
       break;
     }
-    case 'needs_clarification':
-      mustBeEmpty(['queries', 'missing']);
-      out = { ...base, disposition, question: raw['question'] };
-      break;
     case 'cannot_execute': {
-      mustBeEmpty(['queries', 'question']);
+      mustBeEmpty(['queries']);
       // missingCapabilities lists capability IDS; descriptive entries are folded into `missing` (text).
       const listed = Array.isArray(raw['missingCapabilities']) ? raw['missingCapabilities'].filter((x): x is string => typeof x === 'string') : [];
       const ids = listed.filter((x) => /^[a-z][a-z0-9_]{1,63}$/.test(x)).slice(0, 8);

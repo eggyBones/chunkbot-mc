@@ -13,6 +13,7 @@
 // on the operator log and never break the application.
 import type { DashboardMemorySummary, DashboardPause, DashboardPendingDirective } from '../contracts/dashboard.ts';
 import type { EvidenceEvent, Readiness, RunStore } from '../contracts/index.ts';
+import type { SafetyStatus } from '../contracts/safety.ts';
 import type { EngineStatus } from '../goals/goal-engine.ts';
 import type { AutonomyView, SurvivalSummary } from './directive.ts';
 import { dashboardPaths, type DashboardPaths } from './files.ts';
@@ -38,6 +39,8 @@ export interface DashboardRuntimeDeps {
   pending?: () => DashboardPendingDirective | undefined;
   memory?: () => DashboardMemorySummary | undefined;
   survival?: () => SurvivalSummary | undefined;
+  /** Immediate safety service status; read only, independent of memory/autonomy. */
+  safety?: () => SafetyStatus | undefined;
   /** Pause latch (automatic work paused; manual goals may still execute). */
   pause?: () => DashboardPause | undefined;
   /** MB-FLOW-001 read-only supervisor status. */
@@ -95,6 +98,7 @@ export function createDashboardRuntime(deps: DashboardRuntimeDeps): DashboardRun
     ...(deps.pending ? { pending: deps.pending } : {}),
     ...(deps.memory ? { memory: deps.memory } : {}),
     ...(deps.survival ? { survival: deps.survival } : {}),
+    ...(deps.safety ? { safety: deps.safety } : {}),
     ...(deps.pause ? { pause: deps.pause } : {}),
     ...(deps.autonomy ? { autonomy: deps.autonomy } : {}),
     ...(history ? { usageSink: history } : {}),

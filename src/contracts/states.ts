@@ -20,6 +20,7 @@ export const CONNECTION_END_REASONS = [
 export const ConnectionEndReasonSchema = z.enum(CONNECTION_END_REASONS);
 export type ConnectionEndReason = z.infer<typeof ConnectionEndReasonSchema>;
 
+/** `awaiting_owner` is LEGACY (pre-MB-PLAN-006 evidence); the goal engine never enters it — Chunkbot asks no follow-up questions. */
 export const ACTIVE_GOAL_STATES = ['planning', 'awaiting_owner', 'executing', 'stopping'] as const;
 export const TERMINAL_GOAL_STATES = ['completed', 'cancelled', 'blocked', 'failed'] as const;
 export const GOAL_STATES = ['idle', ...ACTIVE_GOAL_STATES, ...TERMINAL_GOAL_STATES] as const;
