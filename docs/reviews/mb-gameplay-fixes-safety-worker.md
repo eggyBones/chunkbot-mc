@@ -209,3 +209,123 @@ Root imports only the correction diff `6bf3a75..98322f8`.
 - This is an offline representation proof from exact retained replies. No server re-read, world, provider or combat evidence exists for the corrected staging, and O8D's defense outcome remains unproven until the coordinator reruns it.
 - The SNBT subset covers the printed shapes of these three `data get` replies, not every SNBT form. Unsupported forms fail closed to `null`, which yields staging-unready, never a pass.
 - The expected failure of P's old line-309 case is separate from these focused checks and needs P's reconciliation after root approves this source.
+
+# W-R12 — persistent maintenance selection vs. actual R19 26.1.2 P6 (worker W)
+
+Worker: native Claude Opus 5.5 (DSH, high), same worktree. New branch `chunkbot/gameplay-safety-r12` was created with `git switch -c` from root-reviewed `100ec81604f44ca867c48306fba4e0b1c3e80b6a`; the old branch `chunkbot/gameplay-safety` (`0a7f947`) is preserved. Temporary ownership: `src/tasks/task-runtime.ts`, the new `tests/persistent-maintenance-selection.test.ts` and this document. No world, RCON, fixture, provider, credential or root-copy mutation. Root artifacts were read only.
+
+## Verdict
+
+**An owned runtime efficiency defect was established, and a generic correction was made.** Following itself was good: server distance 2.2, the goal still active and no planner turns. The original quiet gate failed because the runtime offered, for a persistent maintain task, the sustained `follow_entity` next to the finite `move_near` on every violation round. Jev legitimately chose the one-off each time. Each choice ended on arrival, so every owner step needed a new request. The P6 oracle is not wrong: stable following is designed to be a local wait (`follow_entity` limitation: "stable following is a local wait, not repeated inference").
+
+## Evidence identity (read only)
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `acceptance-native/var/live-check/2026-10-09T02-33-38-033Z-planner-jev-real/report.json` | `13260e76e41113ee8596176b1046042dc5a1295a72554698bca9bd67edcc1073` |
+| same dir `run-planner-jev-real.log` | `376bbacbd522ac48fcb995ce3e6e0458111bccb91693836491adbf29848ed1f5` |
+| run journal `acceptance-native/var/runs/run-43de6c6a40fc/events.jsonl` | `0909e0da399f357a4f7d8e604501cd580050a808d9f73bc6181a9efdfd036f43` |
+| run planner journal `.../run-43de6c6a40fc/planner.jsonl` | `8b0a95fe52f4bde110a5c26202b64458f4b2caeec36d05a9281d91996f796498` |
+| `codex/R19-planner-real-261.log` (P6 FAIL) | `f5fe0ad28a6c53099b46449e40c72fd61febc0bbdf3bbd241268c69116f57cf7` |
+| `codex/R19-planner-real-262.log` (P6 PASS) | `b2499fbc3fa97d4a505a7ba6d91250cd589e8a0903207c8fa1de3bce00f4e336` |
+
+## Actual trace (261 P6, goal-b65c8f2fbb3f, task-631733828d2a, mode maintain)
+
+The accepted TaskSpec (planner `req-39e8640f6055`) had:
+- `allowedCapabilities` `[follow_entity, move_near, seek_owner]`;
+- `parameters` `{within: 3}`;
+- completion `near_target owner within 3`;
+- the instruction "Follow the visible owner within 3 blocks … Maintain quietly when already near."
+
+| Round | Distance | Offered (frozen) | Jev choice (p) | Result |
+| --- | --- | --- | --- | --- |
+| 1 | 4.5 | follow_entity, move_near; seek_owner:owner_visible | move_near (0.70) | arrived 2.42, hold |
+| 2 | 5.2 | same | move_near (0.84) | arrived 2.24, hold |
+| 3 | 4.5 | same | move_near (0.82) | arrived 2.42, hold |
+| 4 | 4.3 | same | move_near (0.90) | arrived 2.24, hold |
+| 5 | 3.0 | follow_entity only (move_near:no_grounded_destination) | follow_entity (1.0) | followed 15.5 s until stop, cancelled owner_stop |
+
+Totals: 5 Jev requests and 0 local continuations in ~32 s, against the gate of at most 3. 262 P6 had Jev choose follow first: 1 request, 1 local continuation, pass. The extra requests are valid, safe one-off choices. They are explained by the option set, not by motion, survival or a Jev fault.
+
+## Correction (`84cf97a`, `src/tasks/task-runtime.ts` only)
+
+- **Scope:** `maintain` tasks only.
+- **Qualified option:** a usable option is preferred when all three hold:
+  1. its registered skill definition declares `sustained` (`deps.sustained`, which is the registry; no capability names in code);
+  2. it already passed the existing retry, repeat-without-progress and low-health allowance filtering;
+  3. its own last non-cancelled dispatch in this task, if any, ended in that policy's healthy window.
+- **Freezing:** when any qualified option exists, the bounded option set is frozen from that subset only.
+- **Fallbacks:**
+  - An option whose last dispatch ended unhealthily (failed, precondition, or partial without a window) is not preferred until it completes a healthy window itself. Until then the full valid set is offered.
+  - A cancellation (safety preempt, stop) neither declines nor requalifies an option.
+  - With no qualified option, the ordinary full set is offered.
+  - Finite tasks are unchanged.
+- **Unchanged:**
+  - There is still exactly one Jev choice per round.
+  - After the await: ownership, connection and safety checks, then revalidation against a fresh snapshot.
+  - Allowance gates and reservation, outcome identity, the no-progress guard, and safety hold clearing `sustain`.
+  - Local continuation only while an equivalent option exists.
+- **Journal:** `task_round` gains `sustainedPreference.deferred` (capabilities withheld). `truncated` now refers to the frozen pool, so a deferred one-off is not called truncation.
+- No contract, port, registry, prompt, GoalEngine, harness or enum change. Thresholds and budgets are unchanged.
+
+## Proof (`tests/persistent-maintenance-selection.test.ts`)
+
+**Composition.** Actual PerceptionService (offline-name owner policy), `SkillRegistry(allSkills + locatorSkills)`, TaskCandidateGenerator, PredicateEngine (its correlated inventory resync is answered by the fake server) and TaskRuntime, with the registry's own sustained policies and the actual fixture limits. The executor, the Jev port and time are scripted, so this is not movement physics. The fixture uses:
+- the verbatim P6 TaskSpec;
+- the P6 harness owner walk, translated by (−208, +60, −200): 8 steps × 4 s, stop at 32 s.
+
+The first test proves the composition yields the actual round-1 option list and distance: follow_entity, move_near, `seek_owner:owner_visible`, 4.5.
+
+**Fail-before** (baseline `100ec81` runtime, committed test): exit 1, 3/11 failing.
+- The P6 replay with the R19 one-off-preferring Jev gives `quiet maintenance: Jev 7` (0 continuations).
+- The unhealthy-end case fails, as does the safety case (follow is never chosen).
+
+**After:** 11/11.
+- P6 replay: exactly 1 request, frozen `[follow_entity]`, at least 1 local continuation, distance ≤ 3, `sustainedPreference.deferred [move_near]`, `truncated false`.
+
+**Adverse controls:**
+- follow-first Jev unchanged;
+- finite task still offers both options and may execute move_near;
+- maintain without a sustained option falls back to the ordinary set (every dispatch has a Jev choice);
+- an unhealthy follow end gives the full set next;
+- retries still exclude a thrice-failing follow;
+- a safety preempt gives hold, clear and a fresh request, with the preempted follow re-preferred and never continued across safety;
+- a low-health allowance granting only move_near is never widened;
+- a stop during the Jev await dispatches nothing;
+- an owner hidden during the await gives `task_choice_stale` and no follow.
+
+**Mutation check** (temporary, restored byte-identical):
+- applying the preference to all modes fails the finite control;
+- removing the decline fails the unhealthy-end control;
+- declining on cancel fails the safety control;
+- preferring over the unfiltered set is behaviourally equivalent, because every retry-excluded option has already been declined.
+
+## Commits
+
+| Commit | Parent | Paths |
+| --- | --- | --- |
+| `84cf97a0a43b862388d30e1e72cba33e46ca76b7` | `100ec81604f44ca867c48306fba4e0b1c3e80b6a` | `src/tasks/task-runtime.ts` (+27/−3), `tests/persistent-maintenance-selection.test.ts` (+348) |
+| (this document) | `84cf97a…` | `docs/reviews/mb-gameplay-fixes-safety-worker.md` |
+
+- Source patch `git diff 100ec81 84cf97a | shasum -a 256`: `3494bb4ad5775ac668c4a50a01053dcfdc1b07cc2478d58eba8ed430e0aeecc6`.
+- File SHA-256: runtime `4e109cfd6437d68d1ef2594bae9cde4ba8b06df7f2e75419b1c334a888c5e48b`, test `e217b34ec13859cd7c0ef907eb6637fb78ab8aefd22a24e9d438829af808add6`.
+
+## Checks (Node 24.21.0, direct exits; logs in this worktree's ignored `var/w-r12/`)
+
+| Check | Exit | Log SHA-256 |
+| --- | --- | --- |
+| Focused fail-before (baseline runtime, committed test), 3/11 fail | 1 | `a3b9dd494f773c84a4904668261fa5f39dea3a73615568aa3b61dae0992ef102` |
+| Focused after, 11/11 | 0 | `1bb8ddd0941934557bafc42f3f4b4c767a110eada128e72902d2e24e56d98ea0` |
+| `npm run typecheck` | 0 | `54f8c884c94b75895a95d9205c411167bfd4a94fd36c0a921ae8313e715fd7f8` |
+| `npm run build` | 0 | `1537c3e259c4849c097c4c340708415b7d230f36bcf2a1dfee6410196b294715` |
+| `npm test`, 1649/1649 | 0 | `0561b3052fbe646aef2dc5224dad1d5b85d0c29975bbcc0a88fabf98e5de8764` |
+| `npm run doctor -- --config config/examples/fixture.json` | 0 | `47073e74c354fb9021bca0f04869aa05bd1bc17922e84978b9ac29244e3858b2` |
+| `npm run doctor -- --config config/examples/fixture-26.2.json` | 0 | `1eb8797260df04dda6fc1889fb892cf39a0d7ee0d902d48f3de065d519afcaa5` |
+
+The 26.2 doctor reported, read-only, a running fixture process (pid 69677, root's `var/fixture-26.2` server started Oct 7). I did not contact or change it.
+
+## Limitations
+
+- This is offline, inference-free evidence. The scripted executor stands in for actual pathfinding; I claim no world or Jev proof. The original R19 261 P6 failure stays failed. The fix is unaccepted until root reviews it and reruns actual P6 (and P4/P10 and the handoff checks as affected) on both fixtures.
+- A healthy sustained window that does not advance an unmet maintained condition is still bounded only by the existing no-progress guard (blocked `no_progress`, then planner feedback). In a maintain task that also allows a finite alternative, Jev can no longer pick that alternative while the sustained option stays qualified. For the current sustained skills (follow_entity, seek_owner, route_travel, rest_in_place, furnace_wait) the healthy window is their intended waiting. An unhealthy end restores the full set.
+- Decline is per task and keyed by the option's world identity at dispatch. A new task starts fresh.
