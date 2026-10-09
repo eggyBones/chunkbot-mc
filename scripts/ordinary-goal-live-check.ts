@@ -138,7 +138,10 @@ export const LAYOUT = {
     stone: { x1: 210, x2: 213, z1: 193, z2: 195, y: -60 },
   },
   water: { platform: { x1: 200, x2: 223, z1: 194, z2: 219, y1: -60, y2: -57 }, pool: { x1: 204, x2: 210, z1: 203, z2: 209 }, bot: { x: 218.5, y: -56, z: 200.5 }, owner: { x: 218.5, y: -56, z: 198.5 }, submerged: { x: 207.5, y: -60, z: 206.5 } },
-  safety: { farOwner: { x: 350.5, y: -60, z: 198.5 }, eastOwner: { x: 221.5, y: -56, z: 204.5 }, dryBot: { x: 205.5, y: -60, z: 205.5 }, creeper: { x: 210.5, y: -60, z: 205.5 }, cow: { x: 207.5, y: -60, z: 206.5 }, wolf: { x: 203.5, y: -60, z: 205.5 } },
+  // farStart (R18): west end of the 4-block-high platform, north of the pool. From
+  // water.bot the platform's east edge is a 4-block cliff (unobserved below), so
+  // no safe frontier toward the east cue exists and no owned motion can begin.
+  safety: { farOwner: { x: 350.5, y: -60, z: 198.5 }, farStart: { x: 201.5, y: -56, z: 200.5 }, eastOwner: { x: 221.5, y: -56, z: 204.5 }, dryBot: { x: 205.5, y: -60, z: 205.5 }, creeper: { x: 210.5, y: -60, z: 205.5 }, cow: { x: 207.5, y: -60, z: 206.5 }, wolf: { x: 203.5, y: -60, z: 205.5 } },
 } as const;
 
 /** RCON entity truth: an unreadable/error reply never proves absence. */
@@ -607,6 +610,7 @@ export class Harness {
   async prepareExtendedSafetyGeometry(kind: 'water' | 'dry'): Promise<void> {
     const trial = this.extendedSafetyCases.get(this.scenario);
     check(trial && trial.geometryVerifiedAtMs === undefined, 'geometry belongs to the current single case attempt');
+    await this.recordControlCondition('before extended geometry');
     await this.resetScene();
     if (kind === 'water') { await this.waterScene(); await this.verifyWaterGeometry(); }
     else await this.verifyDryMobGeometry();
@@ -633,7 +637,7 @@ export class Harness {
     for (const x of [pool.x1, 207, pool.x2]) for (const z of [pool.z1, 206, pool.z2]) for (const y of [p.y1, p.y2]) {
       check(fixtureBlockTest(await this.read(`execute if loaded ${x} ${y} ${z} if block ${x} ${y} ${z} minecraft:water`)) === true, 'staging_unready: original deep pool geometry unverified');
     }
-    for (const at of [LAYOUT.water.bot, LAYOUT.water.owner, LAYOUT.safety.eastOwner, { x: 211.5, y: -56, z: 206.5 }, { x: 203.5, y: -56, z: 206.5 }]) {
+    for (const at of [LAYOUT.water.bot, LAYOUT.water.owner, LAYOUT.safety.eastOwner, LAYOUT.safety.farStart, { x: 211.5, y: -56, z: 206.5 }, { x: 203.5, y: -56, z: 206.5 }]) {
       const x = Math.floor(at.x), z = Math.floor(at.z);
       for (const [y, key] of [[-57, 'dirt'], [-56, 'air'], [-55, 'air']] as const) check(fixtureBlockTest(await this.read(`execute if loaded ${x} ${y} ${z} if block ${x} ${y} ${z} minecraft:${key}`)) === true, 'staging_unready: dry supported bank/corridor unverified');
     }
@@ -796,11 +800,43 @@ export class Harness {
         else if (this.now() - firstFullAtMs >= 1_000) { ev.push(`PRECONDITION: full stable health ${JSON.stringify(last)} over ${this.now() - firstFullAtMs}ms (natural; never healed/fed)`); return; }
       } else {
         firstFullAtMs = undefined;
-        for (const name of names) if (last[name] !== 20) await this.read(`data get entity ${name} foodLevel`);
+        for (const name of names) {
+          if (last[name] === 20) continue;
+          // Vanilla FoodData: natural regeneration needs foodLevel >= 18 (fast regen needs 20).
+          // R18 262: the owner stayed at 19 with food 17, so the wait could never succeed.
+          const food = /has the following entity data: (\d+)$/.exec((await this.read(`data get entity ${name} foodLevel`)).trim())?.[1];
+          if (food !== undefined && Number(food) < 18) throw new Error(`staging_unready: full stable control-player health required before the no-damage window: ${JSON.stringify(last)}; ${name} food ${food} < 18 makes natural regeneration impossible (never healed/fed)`);
+        }
       }
       await this.pause(500);
     }
     throw new Error(`staging_unready: full stable control-player health required before the no-damage window: ${JSON.stringify(last)}`);
+  }
+
+  /**
+   * Read-only control-player condition (health/food) at case boundaries: the
+   * owner is never healed or fed, so earlier exposure must be attributable.
+   */
+  async recordControlCondition(label: string): Promise<void> {
+    for (const name of [BOT, OWNER]) for (const field of ['Health', 'foodLevel']) await this.read(`data get entity ${name} ${field}`).catch((error: unknown) => this.readbacks.push({ scenario: this.scenario, atMs: this.now(), command: `${label}: ${name} ${field}`, reply: String(error) }));
+  }
+
+  /**
+   * Post-window neutral identity (O8N verification): natural AI actors may wander
+   * out of the bot's line of sight (R18 261: the wolf walked behind the scene's
+   * oak trunk). Re-observe on fresh facts for a bounded time; every other identity,
+   * health and UUID check fails at once, and an actor never seen again fails.
+   */
+  async currentMobIdentity(tag: string, key: string, afterResponse: { sinceMs: number; allowedHazards: string[]; allowedTargetIds: number[] }, timeoutMs = 10_000): ReturnType<Harness['mobIdentity']> {
+    const deadline = this.now() + timeoutMs;
+    for (;;) {
+      try { return await this.mobIdentity(tag, key, afterResponse); }
+      catch (error) {
+        if (!(error instanceof Error && /actual CLI LOS\/visible target correlation missing/.test(error.message)) || this.now() >= deadline) throw error;
+        this.safetySamples.push({ scenario: this.scenario, atMs: this.now(), awaitingVisibility: { tag, key } });
+        await this.pause(500);
+      }
+    }
   }
 
   /** No owner goal/safety authority yet. Prove the actual zombie hurt the bot. */
@@ -1064,6 +1100,10 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
   const freshCli = async (label: string, freshScope = true, plain = false) => {
     if (h.cli) {
       await h.quiesce();
+      // R18: a recorded AI actor (e.g. the O8M/O8D zombie) must not outlive the bot
+      // it was staged against; with the bot gone the owner is its only target.
+      await h.removeKnownSceneActors();
+      await h.recordControlCondition('before CLI replacement');
       await h.setup(`clear ${BOT}`); await h.setup(`effect clear ${BOT}`);
       check(/\[\]$/.test((await h.query(`data get entity ${BOT} Inventory`)).trim()), 'empty online inventory before CLI replacement');
       check(/\[\]$|Found no elements matching/i.test(await h.query(`data get entity ${BOT} active_effects`)), 'empty online effects before CLI replacement');
@@ -1421,6 +1461,11 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
       const commands = ownerStandingCommands(LAYOUT.safety.farOwner, OWNER);
       for (const command of [commands.support, commands.feet, commands.head]) check(fixtureBlockTest(await h.read(command)) === true, 'staging_unready: additional OWNER-only point must be loaded, supported and air');
       check(fixtureEntityTest(await h.read(commands.occupants)) === false, 'staging_unready: additional OWNER-only body occupied/unknown');
+      // R18: from water.bot the platform's east edge is a 4-block cliff and the
+      // ground beyond is unobserved, so the real route runner has no safe
+      // frontier toward the east cue (actual seek_owner: unobserved_terrain,
+      // 0 moves). The verified west platform end gives an observed dry walk east.
+      await h.triggerTeleport(BOT, LAYOUT.safety.farStart, 'far-route start: verified west platform end with an observed dry walk toward the east cue');
       const teleportStartedAtMs = Date.now();
       await h.triggerTeleport(OWNER, LAYOUT.safety.farOwner, 'approved owner-only far cue point; no block writes or bot travel outside scene');
       const guard = h.guardFarScene();
@@ -1444,7 +1489,11 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
         const goal = await h.goal('follow me');
         const action = await h.ownedMotion(goal.goalId, origin, since, ['seek_owner']);
         const before = h.dashboard(), route = before.directive.autonomy?.route;
-        check(route?.state === 'leg_active' && route.legsUsed >= 1 && before.directive.autonomy.locator.actionable && before.directive.autonomy.locator.direction?.includes('east'), 'actual current counted route leg toward a fresh coarse east cue');
+        // A counted leg begins only when the ORIGINAL 128 bound limits progress, which
+        // the declared footprint cannot reach: the precondition is the current owner
+        // route authorization of THIS goal plus the actual active seek_owner motion.
+        check(before.directive.goal?.id === goal.goalId && (route?.state === 'authorized' || route?.state === 'leg_active') && before.directive.autonomy.locator.actionable && before.directive.autonomy.locator.direction?.includes('east'), 'actual current owner route authorization with active seek_owner motion toward a fresh coarse east cue');
+        ev.push(`PRECONDITION: active ${action.capability}/${action.actionId}/lease${action.leaseId}; route ${route.state} legs ${route.legsUsed}/${route.maxLegs} distance ${route.distanceUsed}/${route.maxTotalDistance}`);
         verifyHiddenOwner(await h.observe(), LAYOUT.safety.farOwner);
         check(!h.events().some((e) => e.type === 'skill_outcome' && e.actionId === action.actionId), 'staging_unready: far route action must still be active');
         h.markExtendedSafetyStaged();
@@ -1535,7 +1584,7 @@ async function run(outDir: string, jevMode: 'real' | 'fault', only: Set<string> 
         await sleep(4_000);
         await h.quiesce();
         const after = { sinceMs: since, allowedHazards: [], allowedTargetIds: [] };
-        const nowCow = await h.mobIdentity('og_o8n_cow', 'minecraft:cow', after), nowWolf = await h.mobIdentity('og_o8n_wolf', 'minecraft:wolf', after);
+        const nowCow = await h.currentMobIdentity('og_o8n_cow', 'minecraft:cow', after), nowWolf = await h.currentMobIdentity('og_o8n_wolf', 'minecraft:wolf', after);
         for (const f of [...nowCow.foreignVisible, ...nowWolf.foreignVisible].slice(0, 4)) ev.push(`FOREIGN (recorded, outside the declared scene, never a hazard/target): ${JSON.stringify(f)}`);
         await h.unprovokedWolf('og_o8n_wolf'); await h.verifyDryMobGeometry();
         verifyNoAttacks(h.events(), since);
