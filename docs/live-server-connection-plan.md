@@ -1,5 +1,11 @@
 # Live server connection — eggyBot69
 
+## Current accepted local release — 2026-10-09 03:44 UTC
+
+Release `64e26096e0ef78d7595d1f5d0a1205fbecdba8f1` is registered with the existing Play controls from `var/releases/gameplay-20261008/clean-install`. Its scoped profile enables commands, survival and own-item recovery, with idle progression disabled. [Independent acceptance](reviews/mb-gameplay-fixes-coordinator.md) records both-version fixtures, real providers, launcher trial and immutable artifact checks. Previous public d348d58 remains preserved for rollback; the new commit has not been pushed publicly.
+
+Fresh read-only status proves the artifact digest, **bot not running**, and the read-only dashboard at http://127.0.0.1:7382/ (PID77594). No live join occurred during release preparation. Jake's latest logout still governs; Play or a fresh explicit join instruction starts the upgrade. Existing Microsoft cache, original config, live server, world and Prism client are unchanged. No automatic reconnect/update service exists. Development fixtures are stopped and all driver leases are released.
+
 Reported: 2026-10-06. Coordinator: Codex. Status: **Logged out at Jake's latest request; dashboard remains open with historical status.** Earlier successful join instructions below are historical. Native worker: `session-1d547f0f-eccd-4429-9b8e-56b4c91fe0fe`, completed/idle; full [worker brief](reviews/mb-server-001-worker-brief.md), [independent acceptance](reviews/mb-server-001-coordinator-review.md).
 
 ## Requested outcome and boundaries
