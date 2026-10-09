@@ -255,3 +255,181 @@ The temp worktree was removed with `git worktree remove --force` followed by `gi
   regeneration, O8N will still fail honestly, now with `foodLevel` diagnostics.
 - The O8C foreign-occupant scope needs Codex acceptance (see above).
 - No shared/API need is outstanding and no W policy change is proposed.
+
+## R16 oracle vs. W's proposal (read after `8f5e332`)
+
+W's final role document (`gameplay-safety/docs/reviews/mb-gameplay-fixes-safety-worker.md`) independently proposes the same O7P/O7R boundary that `24c1fc4` implements. It found no product defect and leaves `9e9b84c` as a test-only change.
+
+The proposal has three parts, all of which hold in `24c1fc4`:
+
+- **Dry, grounded support for every sample:** each sample must be dry, grounded, on a solid floor, with air at feet and eyes and Air 300, for at least 3 s.
+- **No new safety episode:** none may start after release.
+- **Motion only with a journaled fresh goal lease:** displacement is accepted only after a journaled post-release `lease_acquired goal:<epoch>`/`skill_started owner goal` for the same goal and epoch.
+
+`postReleaseMotion` is stricter than the proposal in three ways:
+
+- The moving action must have come through the ordinary task pipeline (`task_choice`/`task_local_continuation`).
+- It must be a movement capability.
+- It must stay within ordinary ground speed.
+
+The preempted lease and safety leases are excluded. O7W/O7F stay strictly stationary. No change was needed after reading W's document.
+
+# P-TASK-R17 and P-PLAN-R17 — same-session continuation (worker P)
+
+Parent `8f5e332` (R16 handoff). The source/test commits are separate:
+
+- `ad9bb97` — P-TASK-R17.
+- `2dbf3b4` — P-PLAN-R17 (HEAD before this role commit).
+
+`git diff 8f5e332 2dbf3b4`:
+- 5 files, +367/−3; SHA-256 `a62142c26496dd901bf9142b2a91561f74b05c0930e34e81fda7000b8ed76bc1`.
+- Source: `src/tasks/task-runtime.ts` +22/−1, `src/goals/goal-engine.ts` +11/−1, `src/skills/movement.ts` +14/−1.
+- Tests (new): `tests/task-terminal-freshness.test.ts` (+177), `tests/owner-direction-scope.test.ts` (+143).
+
+The three source files were byte-identical between `5c057ad` and the canonical `dd0b5a8` before these changes. No fixture, RCON, world, provider, key or live-control access was used.
+
+## P-TASK-R17 (261 J2): a terminal blocker issued on completion evidence older than the observation
+
+### Evidence
+
+- Report `a17de868…d502`.
+- Journal `run-aaafe95f16f2/events.jsonl`, SHA-256 `47470330486a30937ab1addfcb5ad8eadd0002c9489c5b5f151d865a3fc3346b`.
+- CLI log `run-jev-real.log`.
+
+### Timeline of task-9117a8e2bdee (milliseconds since 1791509000000)
+
+- Rounds 1–5 run normally:
+  - three server-confirmed breaks: drops 4079, 4080 and 4081;
+  - acquired count goes 0 → 0 → 1 → 2;
+  - one pickup choice went stale at 28421 (`no_visible_drop`) because the drop had already been auto-collected — 2/3 by 28491.
+- 32847 — the last `mine_block` succeeds:
+  - `serverDrops: [{entityId: 4081, oak_log, 1}]`, `autoCollected: []`, "not yet picked up";
+  - the skill sleeps 400 ms after the server block change, so the drop is about 450 ms old here.
+- 32890 — round 6 completion (server_sync) reports "acquired 2/3". The candidate observation that follows has no drop, no log and no destination.
+- 32909 — the task ends `blocked/no_candidates`, 62 ms after its own action. Total runtime was 14 s.
+- No setup command gives logs; the report's `setupCommands` contain only teleports for J2/J3. Yet J4 at 01:23:55.795, about 2.9 s later, "crafted 12 minecraft:oak_planks … consumed 3 oak_log" (server_sync). **The bot did hold all three logs.**
+
+### Why the snapshot lacked the drop
+
+- With the real PerceptionService, the drop is visible from the actual J2 position at every plausible drop height (offline probe, translated geometry). So at observation time the drop was gone from the client's entity table, not occluded.
+- Only a server destroy removes it, and the bot later held the item. That points to the bot's own pickup, roughly at the vanilla 10-tick pickup delay.
+- `PredicateEngine` takes the last `window_items` before the barrier ack (`correlatedResync`). The server answers the resync and the barrier while handling packets. The pickup happens later in the same tick's entity phase, so `collect`/`entity_destroy`/`set_slot` arrive after the ack.
+- Result: the evaluation said 2/3 and the later observation no longer showed the drop. The runtime then claimed "no grounded option".
+
+The exact packet timestamps were not journaled. The mechanism above is consistent with every recorded time. The round-4 stale choice at 28421 / 2/3 at 28491 shows the same race resolving the other way.
+
+### Classification
+
+This is a real application ordering defect in a terminal claim. It is not a perception, predicate or selection bug, and not a hidden-lookup need. The jev-live-check J2 expectation (completed, then RCON at least 3 logs and air) is correct and unchanged.
+
+### Correction
+
+Before any terminal "nothing actionable" blocker (`no_candidates`, `per_target_retries_exhausted`, `repeated_without_progress`), `TaskRuntime` performs one fresh code-evaluated completion read, which is a correlated server resync.
+
+What the read does not do:
+- no action, inference or new round;
+- no wait loop, timer or retry;
+- no hidden lookup.
+
+Fences after the read:
+- ownership and connection epoch are re-checked; revocation is cancelled;
+- a safety hold returns to the loop-top gate.
+
+Outcomes of the read:
+- satisfied in complete mode → `completed/completion_verified`;
+- satisfied in maintain mode → the ordinary local hold;
+- otherwise → the same honest blocker with the fresher evidence. `unknown` never completes.
+
+It emits `task_completion {recheck: 'before_terminal'}`. The original task/goal/candidate scope, cumulative caps, deadline, no-progress, epoch, lifecycle and cancel fences are unchanged.
+
+### Control (`tests/task-terminal-freshness.test.ts`)
+
+The test uses actual composition: real PerceptionService, ServerEvidence, PredicateEngine (resync plus barrier ack), the registered mine/move/pickup resolvers, TaskCandidateGenerator, SkillExecutorImpl and TaskRuntime over the installed 26.1.2 registry, with the actual J2 geometry and ids. The fake server emits `window_items` and the ack, then `collect`, `entity_destroy` and `set_slot` in the same tick.
+
+Fail-before (pre-fix source) reproduces the actual terminal detail exactly: `blocked/no_candidates … (mine_block: no_visible_target; move_near: no_grounded_destination; pickup_item: no_visible_drop)`.
+
+Cases after the fix:
+
+| Case | Result |
+| --- | --- |
+| Own drop collected in the same tick | completed 3/3; 0 decisions, 0 actions, 3 resyncs |
+| Genuinely absent drop | honest blocker after exactly one extra read; still 1 round |
+| Unanswered read | blocked; completion `unknown` |
+| Revoked during the read | cancelled |
+| Maintain mode | returns to the hold |
+
+## P-PLAN-R17 (262 P4): owner-direction scope applied to a whole mixed resource+delivery goal
+
+### Evidence
+
+- Report `bf3bdb3a…5313`; goal-2617b17b932f.
+- Immutable outcome `ALL(inventory_amount bread ≥3 possess, near_target owner ≤2)`.
+- Window 2 task-09e0f79c75df (`explore_frontier` → `visited_location frt-3301`) ended `blocked/no_candidates` with 0 decisions.
+- The final proposal reports that "code denied resource exploration because this goal has only owner-directed travel authority".
+
+### Cause
+
+`GoalEngine.runTask` set `requiresOwnerDirection` when **any** outcome atom targeted the owner. The candidate generator then refused `explore_frontier` (`owner_direction_required`), and the executor would do the same.
+
+That rule, introduced at `75a6631`, protects owner seeking. But it also stripped resource exploration from every multi-condition resource+delivery goal.
+
+### Correction
+
+**Per-task scope (`GoalEngine`).** Owner-direction-only scope is now decided per task from code-checked structure:
+- every task of an owner-only outcome (every atom targets the owner: follow / come with me);
+- any task whose own completion or selectors target the owner (the delivery leg, or a completion that includes the owner atom).
+
+This is not an intent classifier and adds no resource-specific path. The candidate seam's `hints.wantsOwner` and the executor seam are unchanged.
+
+**Exploration bound (`explore_frontier`).** Exploration is bounded by the ORIGINAL admission anchor/radius:
+- in the resolver;
+- at final execution, which returns `precondition_failed/outside_admission_bounds` before any navigation command.
+
+A live owner-route leg therefore never extends undirected exploration. Without an admission proof (operator diagnostic anchor), the plain anchor bound applies; no leg can apply there either.
+
+### Control (`tests/owner-direction-scope.test.ts`)
+
+Producer: the real GoalEngine window path (planner proposal, check, AdmittedTask). Consumer: the real `SkillRuntime` generator and executor with locator routes enabled.
+
+Fail-before reproduces:
+- `requiresOwnerDirection` true for the P4 search window;
+- `owner_direction_required` at execution.
+
+Cases after the fix:
+- **Resource search in the actual mixed outcome:** frontiers are offered only inside the original bound.
+- **Still owner-direction-only:**
+  - pure follow outcome;
+  - delivery task (completion near the owner);
+  - owner selector;
+  - task completion that includes the owner atom.
+- **Live owner leg:**
+  - it exposes frontiers beyond the original bound for owner-directed travel;
+  - none of those frontiers is offered to the resource search;
+  - executing one is refused `outside_admission_bounds` with zero client writes.
+
+## Checks (Node 24 PATH, exit codes captured directly; logs `var/native-checks/p-r17/`)
+
+| Check | Exit | Log SHA-256 |
+| --- | --- | --- |
+| P-TASK fail-before control on pre-fix source (5 fail, as intended) | 1 | `fe387df962b13af97b499fc81d003560b50adebb760366f62d8c8dc0c4f824ea` |
+| P-TASK control after fix (5/5) | 0 | `367df098b0ecd1d01b81f1c4ba0f3758019a61439177198b5a509fb583821c77` |
+| P-PLAN fail-before control on pre-fix source (2 fail, 1 control pass) | 1 | `154b94dbd9a319a09934a46c926a90f7667fbefa40815673930a1c8d57ff17ed` |
+| P-PLAN control after fix (3/3) | 0 | `85215cd2ec312c819bee0a81f1433ee87c94c72958739566f87cb62f9df8b906` |
+| `npm run typecheck` | 0 | `54f8c884c94b75895a95d9205c411167bfd4a94fd36c0a921ae8313e715fd7f8` |
+| `npm run build` | 0 | `1537c3e259c4849c097c4c340708415b7d230f36bcf2a1dfee6410196b294715` |
+| `npm test` (1429/1429) | 0 | `e2801606c97fa5e4c0a7a4336c36c229ced4f6bbc6dc75da339fef38e31ec558` |
+| Focused (task runtime, planner engine, gameplay integration, both new controls, R16 harness; 78/78) | 0 | `718bf5c9d61ba0216f3dbd41c605e8895d112e1647d3947659812188df45f8bf` |
+| Doctor 26.1.2 config (read-only, no connection) | 0 | `f124ed40f629fe491809411ea8deaa861eee8a3f684e6fb6f7ff26fb217d67e7` |
+| Doctor 26.2 config | 0 | `d27f3a898c2054f976071fc265709d6bc9bcf85f6cd3ee01379c392bf8a49292` |
+| Combined `dd0b5a8` + R16+R17 diff (temp detached worktree, since removed): typecheck | 0 | `e3b0c442…b855` (empty output) |
+| Combined: full suite (1545/1545 = 1530 + 7 R16 + 8 R17) | 0 | `59b82d19339452295dd83a49d754e52c417470b028833d03a798876d7f4ee2d4` |
+
+The pre-fix runs restored the exact pre-fix bytes of the three source files with `git checkout`, then copied the fixed files back. The fix bytes were verified by the subsequent passing runs and commits.
+
+## Limitations
+
+- **J2 packet timing:** packet-level times for the 4081 collect were not journaled. The mechanism rests on the recorded times, the installed resync/barrier semantics, the perception visibility probe and the J4 server-confirmed consumption.
+- **Effect of the correction:** it removes only the stale-evidence terminal claim. A drop that is genuinely occluded or not yet collected still yields the honest blocker; it is never a hidden lookup.
+- **P4 not re-run:** whether a re-run reaches bread depends on actual exploration revealing the occluded item within the ORIGINAL radius 128 and on real planner/Jev choices.
+- **What root must re-run:** real jev-live-check (both releases), planner-live-check with real and fault Jev, ordinary goals, handoff and locator, plus the coupled acceptance.
+- No shared/API or vendor need, and no W/L/S path was touched.
