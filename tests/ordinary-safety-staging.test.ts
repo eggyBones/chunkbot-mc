@@ -88,7 +88,7 @@ it('vanilla bare loaded/block success is distinct from counted entity truth and 
   assert.equal(fixtureEntityTest('Test passed'), null);
   for (const r of ['', 'Test passed. Count: 1', 'Unknown block', 'Error: Test passed', 'Test passed\nUnknown command']) assert.equal(fixtureBlockTest(r), null);
   const { h, io }=make(); await h.waterScene(); await h.verifyWaterGeometry();
-  assert.equal(h.readbacks.filter((r) => r.command.includes(' if block ')).length, 33);
+  assert.equal(h.readbacks.filter((r) => r.command.includes(' if block ')).length, 36, 'including the R18 far-route start');
   io.override = (c) => c.includes(' if block ') ? 'Unknown command' : undefined;
   await assert.rejects(h.verifyWaterGeometry(), /unverified/);
   await assert.rejects(h.verifyDryMobGeometry(), /unverified/);
@@ -352,7 +352,7 @@ const o7pCtx = { goalId: O7P_GOAL, goalEpoch: 1, episodeEnd: o7pEnd, excludedLea
 it('R16 O7P/O7R: post-release motion is accepted only under the fresh goal-owned follow lease, never as drift', () => {
   const steps = postReleaseMotion(o7pSamples, o7pEvents, o7pCtx);
   assert.deepEqual(steps.map((s) => s.actionId), [null, null, 'act-10d1ebc4774f']);
-  assert.ok(steps[2]!.displacement >= SETTLED_STEP, 'the actual failing step really moved');
+  assert.ok(steps[2]!.displacement >= SETTLED_STEP, 'the reconstructed counterexample step (sample 4 placed inside its recorded block 212,205; not a retained actual point) moved');
   const without = (pred: (e: Record<string, any>) => boolean) => o7pEvents.filter((e) => !pred(e));
   const replace = (actionId: string, fields: Record<string, unknown>) => o7pEvents.map((e) => (e as Record<string, unknown>).actionId === actionId || (e as Record<string, unknown>).candidateId === actionId ? { ...e, ...fields } : e);
   for (const [events, ctx, why] of [
