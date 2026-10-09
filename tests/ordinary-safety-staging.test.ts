@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { it } from 'node:test';
 import { Harness, LAYOUT, fixtureBlockTest, fixtureEntityTest, type OrdinaryHarnessIO } from '../scripts/ordinary-goal-live-check.ts';
+import { SETTLED_STEP, foreignVisibleAfterResponse, freshFarCue, postReleaseMotion, serverHeldGear } from '../scripts/lib/ordinary-safety-oracles.ts';
 
 type Actor = { tag: string; key: string; nbt: string; uuid: string; at: { x: number; y: number; z: number }; id: number };
 const owned: Actor = { tag: 'og_test', key: 'minecraft:zombie', nbt: '[I; 1, 2, 3, 4]', uuid: '00000001-0000-0002-0000-000300000004', at: { x: 208, y: -60, z: 205.5 }, id: 8 };
@@ -56,7 +57,10 @@ class Replay implements OrdinaryHarnessIO {
     if (c === 'data get entity Chunkbot Pos') return `Chunkbot has the following entity data: [${this.bot.x}d, ${this.bot.y}d, ${this.bot.z}d]`;
     if (c === 'data get entity Chunkbot Health') return 'Chunkbot has the following entity data: 18.0f';
     if (c === 'data get entity Chunkbot playerGameType') return 'Chunkbot has the following entity data: 0';
-    if (c === 'data get entity Chunkbot Inventory') return 'Chunkbot has the following entity data: [{Slot: 0b, id: "minecraft:iron_sword", count: 1}, {Slot: 103b, id: "minecraft:iron_helmet", count: 1}, {Slot: 102b, id: "minecraft:iron_chestplate", count: 1}]';
+    // ACTUAL installed 26.1.2/26.2 player NBT (R16 readbacks; server jars): armour is in `equipment`.
+    if (c === 'data get entity Chunkbot Inventory') return 'Chunkbot has the following entity data: [{count: 1, Slot: 0b, id: "minecraft:iron_sword"}]';
+    if (c === 'data get entity Chunkbot equipment') return 'Chunkbot has the following entity data: {head: {count: 1, id: "minecraft:iron_helmet"}, chest: {count: 1, id: "minecraft:iron_chestplate"}}';
+    if (c === 'data get entity Chunkbot SelectedItemSlot') return 'Chunkbot has the following entity data: 0';
     if (c.startsWith('kill @e')) { const a = this.selected(c); this.actors = this.actors.filter((b) => !a.includes(b)); return a.length ? 'Killed Zombie' : 'No entity was found'; }
     if (/^(fill|setblock) /.test(c)) {
       const a = c.split(' '), fill = a[0] === 'fill';
@@ -281,4 +285,205 @@ it('airborne, expired/unattributed damage, missing gear, unknown ground, baby, u
     await assert.rejects(h.stageMeleeEngagement(owned.tag,trigger,[]));
     assert.ok(io.time<=26_001); assert.deepEqual(mutations(io),[]); assert.equal(packets.listenerCount('damage_event'),0);
   }
+});
+
+// ---------------------------------------------------------------- P-SAFETY-R16 (actual R16 artifacts)
+// Replies, samples, events and snapshots below are copied from the immutable R16
+// reports 261 (2026-10-09T01-03-25-688Z) and 262 (2026-10-09T01-03-25-641Z)
+// unless a line says "synthetic"/"reconstructed".
+const t = (ms: number) => new Date(ms).toISOString();
+const R16_INVENTORY = 'Chunkbot has the following entity data: [{count: 1, Slot: 0b, id: "minecraft:iron_sword"}]';
+const R16_EQUIPMENT = 'Chunkbot has the following entity data: {head: {count: 1, id: "minecraft:iron_helmet"}, chest: {count: 1, id: "minecraft:iron_chestplate"}}';
+
+it('R16 O8D: worn armour is read from the installed `equipment` compound and the held sword from SelectedItemSlot', async () => {
+  assert.deepEqual(serverHeldGear(R16_INVENTORY, R16_EQUIPMENT, 'Chunkbot has the following entity data: 0'), { mainHand: 'minecraft:iron_sword', head: 'minecraft:iron_helmet', chest: 'minecraft:iron_chestplate', selectedSlot: 0 });
+  // Retained dashboard-check format (head + offhand) parses; offhand is not chest armour.
+  assert.deepEqual(serverHeldGear(R16_INVENTORY, 'DashProbe has the following entity data: {head: {count: 1, id: "minecraft:iron_helmet"}, offhand: {count: 1, id: "minecraft:shield"}}', 'X has the following entity data: 0')?.chest, null);
+  for (const [inv, eq, sel, why] of [
+    [R16_INVENTORY, 'Chunkbot has the following entity data: {}', '0', 'actual R16 Inventory alone is no armour proof'],
+    ['Chunkbot has the following entity data: [{Slot: 0b, id: "minecraft:iron_sword", count: 1}, {Slot: 103b, id: "minecraft:iron_helmet", count: 1}, {Slot: 102b, id: "minecraft:iron_chestplate", count: 1}]', 'Chunkbot has the following entity data: {}', '0', 'legacy armour slots are not installed worn gear'],
+    [R16_INVENTORY, 'Found no elements matching equipment', '0', 'unreadable equipment'],
+    [R16_INVENTORY, R16_EQUIPMENT, 'Found no elements matching SelectedItemSlot', 'unreadable held slot'],
+    [R16_INVENTORY, R16_EQUIPMENT, '4', 'sword not in the selected hotbar slot'],
+    [R16_INVENTORY, 'Chunkbot has the following entity data: {head: {count: 1, id: "minecraft:iron_helmet"}}', '0', 'missing chestplate'],
+    [R16_INVENTORY, 'Chunkbot has the following entity data: {head: {components: {"minecraft:damage": 3}, count: 1, id: "minecraft:iron_helmet"}, chest: {count: 1, id: "minecraft:iron_chestplate"}}', '0', 'unparsed component body fails closed'],
+  ] as const) {
+    const g = serverHeldGear(inv, eq, sel.includes(' ') ? sel : `Chunkbot has the following entity data: ${sel}`);
+    assert.ok(!g || g.mainHand !== 'minecraft:iron_sword' || g.head !== 'minecraft:iron_helmet' || g.chest !== 'minecraft:iron_chestplate', why);
+  }
+  for (const kind of ['legacy', 'chest', 'selected'] as const) {
+    const { h, io, summon } = meleeReplay();
+    io.override = (c) => kind === 'legacy' && c === 'data get entity Chunkbot equipment' ? 'Chunkbot has the following entity data: {}'
+      : kind === 'chest' && c === 'data get entity Chunkbot equipment' ? 'Chunkbot has the following entity data: {head: {count: 1, id: "minecraft:iron_helmet"}}'
+      : kind === 'selected' && c === 'data get entity Chunkbot SelectedItemSlot' ? 'Chunkbot has the following entity data: 3' : undefined;
+    await assert.rejects(h.stageMeleeEngagement(owned.tag, summon, []), /current server gear missing\/unknown/, kind);
+    assert.deepEqual(mutations(io), []);
+  }
+  const { h, summon } = meleeReplay(); const ev: string[] = [];
+  await h.stageMeleeEngagement(owned.tag, summon, ev);
+  assert.ok(['Inventory', 'equipment', 'SelectedItemSlot'].every((f) => h.readbacks.some((r) => r.command === `data get entity Chunkbot ${f}`)));
+  assert.match(ev[0]!, /current server gear \{"mainHand":"minecraft:iron_sword","head":"minecraft:iron_helmet","chest":"minecraft:iron_chestplate","selectedSlot":0\}/);
+  assert.equal(h.safetySamples.filter((r) => r.defenseStaging).at(-1)!.defenseStaging.serverEquipment, R16_EQUIPMENT);
+});
+
+// Actual 261 O7P release/resume events (goal-408d1d4a6689, epoch 1).
+const O7P_GOAL = 'goal-408d1d4a6689';
+const o7pEnd: Record<string, any> = { type: 'safety_episode_ended', t: t(1791507900844), episodeId: 'se-0513f935f8b3', grantId: 'sg-e78b4695b131', outcome: 'resolved' };
+const o7pEvents: Array<Record<string, any>> = [
+  { type: 'lease_acquired', t: t(1791507896457), leaseId: 1, owner: 'safety:sg-e78b4695b131' },
+  { type: 'skill_started', t: t(1791507896458), actionId: 'act-23ddb3973160', capability: 'escape_water', owner: 'safety', leaseId: 1 },
+  { type: 'skill_outcome', t: t(1791507900832), actionId: 'act-23ddb3973160', owner: 'safety', capability: 'escape_water', status: 'succeeded' },
+  { type: 'lease_revoked', t: t(1791507900834), leaseId: 1, reason: 'completed', clearedShared: true },
+  o7pEnd,
+  { type: 'task_choice', t: t(1791507904627), goalId: O7P_GOAL, goalEpoch: 1, candidateId: 'act-10d1ebc4774f', capability: 'follow_entity' },
+  { type: 'lease_acquired', t: t(1791507904647), leaseId: 2, owner: 'goal:1' },
+  { type: 'skill_started', t: t(1791507904647), actionId: 'act-10d1ebc4774f', capability: 'follow_entity', owner: 'goal', leaseId: 2 },
+  { type: 'skill_outcome', t: t(1791507905454), actionId: 'act-10d1ebc4774f', owner: 'goal', capability: 'follow_entity', status: 'cancelled' },
+];
+// Samples 1-3 actual; sample 4 reconstructed inside its recorded block 212,205 (the old harness never retained it).
+const o7pSamples = [
+  { startedAtMs: 1791507904383, atMs: 1791507904384, p: { x: 211.37076253738886, y: -56, z: 206.5 } },
+  { startedAtMs: 1791507904636, atMs: 1791507904637, p: { x: 211.37076253738886, y: -56, z: 206.5 } },
+  { startedAtMs: 1791507904890, atMs: 1791507904892, p: { x: 211.83992512456828, y: -56, z: 206.0841895500323 } },
+  { startedAtMs: 1791507905145, atMs: 1791507905147, p: { x: 212.45, y: -56, z: 205.55 } },
+];
+const o7pCtx = { goalId: O7P_GOAL, goalEpoch: 1, episodeEnd: o7pEnd, excludedLeaseIds: [] as number[], capabilities: ['follow_entity', 'move_near', 'seek_owner'] };
+
+it('R16 O7P/O7R: post-release motion is accepted only under the fresh goal-owned follow lease, never as drift', () => {
+  const steps = postReleaseMotion(o7pSamples, o7pEvents, o7pCtx);
+  assert.deepEqual(steps.map((s) => s.actionId), [null, null, 'act-10d1ebc4774f']);
+  assert.ok(steps[2]!.displacement >= SETTLED_STEP, 'the actual failing step really moved');
+  const without = (pred: (e: Record<string, any>) => boolean) => o7pEvents.filter((e) => !pred(e));
+  const replace = (actionId: string, fields: Record<string, unknown>) => o7pEvents.map((e) => (e as Record<string, unknown>).actionId === actionId || (e as Record<string, unknown>).candidateId === actionId ? { ...e, ...fields } : e);
+  for (const [events, ctx, why] of [
+    [without((e) => e.actionId === 'act-10d1ebc4774f'), o7pCtx, 'no goal action: drift'],
+    [without((e) => e.type === 'task_choice'), o7pCtx, 'not dispatched through the ordinary task pipeline'],
+    [o7pEvents.map((e) => e.type === 'lease_acquired' && e.leaseId === 2 ? { ...e, owner: 'goal:3' } : e), o7pCtx, 'lease of another epoch'],
+    [o7pEvents.map((e) => e.type === 'lease_acquired' && e.leaseId === 2 ? { ...e, owner: 'safety:sg-other' } : e), o7pCtx, 'a safety lease is never ordinary work'],
+    [replace('act-10d1ebc4774f', { t: t(1791507900000) }), o7pCtx, 'started before the release'],
+    [replace('act-10d1ebc4774f', { capability: 'attack_entity' }), o7pCtx, 'not a movement capability'],
+    [o7pEvents.map((e) => e.type === 'task_choice' ? { ...e, goalId: 'goal-other' } : e), o7pCtx, 'another goal'],
+    [o7pEvents.map((e) => e.type === 'skill_outcome' && e.actionId === 'act-10d1ebc4774f' ? { ...e, t: t(1791507904700) } : e), o7pCtx, 'action ended before the moving interval'],
+    [o7pEvents, { ...o7pCtx, excludedLeaseIds: [2] }, 'the preempted lease never resumes'],
+  ] as const) assert.throws(() => postReleaseMotion(o7pSamples, events, ctx), /stays settled/, why);
+  const teleported = o7pSamples.map((s, i) => i === 3 ? { ...s, p: { x: 216.5, y: -56, z: 202.5 } } : s);
+  assert.throws(() => postReleaseMotion(teleported, o7pEvents, o7pCtx), /exceeds ordinary grounded movement/);
+  assert.throws(() => postReleaseMotion(o7pSamples, o7pEvents, { ...o7pCtx, episodeEnd: { ...o7pEnd, type: 'safety_episode_started' } }), /actual episode release/);
+});
+
+async function settleReplay(positions: Array<{ x: number; z: number }>, opts: { feetWaterAt?: number; airborneAt?: number } = {}) {
+  const { h, io } = make(); await h.waterScene(); io.time = 1791507904383; // actual first-sample time
+  let call = 0;
+  io.override = (c) => {
+    if (c === 'data get entity Chunkbot Pos') { const p = positions[Math.min(call++, positions.length - 1)]!; return `Chunkbot has the following entity data: [${p.x}d, -56.0d, ${p.z}d]`; }
+    if (c === 'data get entity Chunkbot Air') return 'Chunkbot has the following entity data: 300s';
+    if (c.includes('OnGround')) return call - 1 === opts.airborneAt ? 'Test failed' : 'Test passed. Count: 1';
+    if (opts.feetWaterAt !== undefined && call - 1 === opts.feetWaterAt && / -56 \d+ minecraft:air$/.test(c)) return 'Test failed';
+    return undefined;
+  };
+  h.events = () => o7pEvents;
+  h.health = async () => 20;
+  return { h, io };
+}
+
+it('R16 O7P/O7R: actual harness settle keeps the 3 s dry-support proof; O7W stays strictly stationary on the same data', async () => {
+  const path = [...o7pSamples.map((s) => s.p)]; // after sample 4 the actual follow was cancelled: synthetic settled tail
+  const ordinary = { goalId: O7P_GOAL, goalEpoch: 1, episodeEnd: o7pEnd, excludedLeaseIds: [] as number[] };
+  { const { h, io } = await settleReplay(path); const ev: string[] = [];
+    await h.waterExitSettled(ev, ordinary);
+    assert.ok(io.time - 1791507904383 >= 3_000);
+    assert.match(ev.join('\n'), /moved only under fresh goal-owned act-10d1ebc4774f/);
+    assert.ok(h.safetySamples.filter((r) => r.settleSample).length >= 4); }
+  { const { h } = await settleReplay(path); const ev: string[] = [];
+    await assert.rejects(h.waterExitSettled(ev), /stays settled after controls release/, 'O7W/O7F strict mode remains binding');
+    assert.equal(h.safetySamples.filter((r) => r.settleSample).length, 4, 'the failing sample is now retained');
+    assert.match(ev.at(-1)!, /212\.45/); }
+  { const { h } = await settleReplay(path); h.events = () => o7pEvents.filter((e) => e.actionId !== 'act-10d1ebc4774f');
+    await assert.rejects(h.waterExitSettled([], ordinary), /no current goal-owned movement/); }
+  { const { h } = await settleReplay(path, { feetWaterAt: 3 });
+    await assert.rejects(h.waterExitSettled([], ordinary), /dry stable support/, 'water re-entry is never ordinary movement'); }
+  { const { h } = await settleReplay(path, { airborneAt: 2 });
+    await assert.rejects(h.waterExitSettled([], ordinary), /dry stable support/, 'ungrounded samples fail'); }
+  { const { h } = await settleReplay([...path.slice(0, 3), { x: 207.5, z: 206.5 }]);
+    await assert.rejects(h.waterExitSettled([], ordinary), /before reaching a dry bank/, 'pool position fails even under a goal action'); }
+});
+
+it('R16 O7F: a cue/observation predating the owned teleport is waiting, never staging or a privacy pass', () => {
+  const far = LAYOUT.safety.farOwner, tp = 1791507930358;
+  const change = { type: 'locator_owner_state', t: t(1791507930359), state: 'tracked:chunk', cause: 'owner_track' };
+  const old = { type: 'locator_owner_state', t: t(1791507891135), state: 'tracked:vec3i', cause: 'owner_track' };
+  const staleDash = { publisher: { publishedAtMs: 1791507930027 }, directive: { autonomy: { locator: { actionable: true, direction: 'north', distanceBand: 'close', ageMs: 459 } } } };
+  const staleSnap = { takenAtMs: 1791507930363, self: { at: { x: 218.5, y: -56, z: 200.5 } }, owner: { visible: true, at: { x: 218.5, y: -56, z: 198.5 }, distance: 2 }, entities: [{ key: 'minecraft:player', at: { x: 218.5, y: -56, z: 198.5 } }], perception: { travel: { anchor: { x: 218.5, y: -56, z: 200.5 }, radius: 128 } } };
+  assert.equal(freshFarCue([old, change], staleDash, staleSnap, tp, far), 'waiting', 'actual R16 inputs');
+  const freshDash = { publisher: { publishedAtMs: 1791507930527 }, directive: { autonomy: { locator: { actionable: true, direction: 'east', distanceBand: 'far', ageMs: 160 } } } };
+  // synthetic post-processing observation: bot coordinates/anchor and a relative direction remain; owner hidden.
+  const hidden = { ...staleSnap, takenAtMs: 1791507930600, owner: { visible: false }, entities: [] };
+  assert.equal(freshFarCue([old, change], freshDash, hidden, tp, far), 'ready');
+  assert.equal(freshFarCue([old], freshDash, hidden, tp, far), 'waiting', 'an earlier statement is not post-teleport');
+  assert.equal(freshFarCue([old, change], { ...freshDash, publisher: { publishedAtMs: 1791507930300 } }, hidden, tp, far), 'waiting', 'dashboard published before the change');
+  assert.equal(freshFarCue([old, change], { ...freshDash, directive: { autonomy: { locator: { ...freshDash.directive.autonomy.locator, direction: 'north' } } } }, hidden, tp, far), 'waiting');
+  assert.equal(freshFarCue([old, change], freshDash, { ...hidden, takenAtMs: 1791507930300 }, tp, far), 'waiting', 'observation before the change');
+  assert.equal(freshFarCue([old, change], freshDash, staleSnap, tp, far), 'waiting', 'client not yet updated');
+  assert.throws(() => freshFarCue([old, change], freshDash, { ...hidden, owner: { visible: false, distance: 132 } }, tp, far), /coordinates\/distance must be absent/);
+  assert.throws(() => freshFarCue([old, change], freshDash, { ...hidden, owner: { visible: false, at: far } }, tp, far), /must be absent|far-owner point/);
+  for (const leak of [{ ...staleSnap, owner: { visible: true, at: far, distance: 132 } }, { ...hidden, nested: { rounded: { x: 350, y: -60, z: 198 } } }]) {
+    assert.throws(() => freshFarCue([old], staleDash, leak, tp, far), /far-owner point/, 'far point fails even while waiting');
+  }
+});
+
+it('R16 O8N: every reset lifts the owner before any fill and grounds it after; natural full health is awaited, never forced', async () => {
+  const { h, io } = make(); h.scenario = 'O8C';
+  await h.resetScene();
+  const fill = io.calls.indexOf('fill 196 -60 190 224 -50 224 air');
+  const lift = io.calls.indexOf('tp FixtureOwner 202.5 -30 209.5');
+  const slow = io.calls.indexOf('effect give FixtureOwner slow_falling 5 0 true');
+  const ground = io.calls.indexOf('tp FixtureOwner 202.5 -60 209.5 0 0');
+  const clearFx = io.calls.indexOf('effect clear FixtureOwner');
+  assert.ok(lift > 0 && slow > lift && fill > slow && ground > fill && clearFx > ground, io.calls.join('\n'));
+  for (const c of mutations(io)) assert.ok(!/instant_health|regeneration|saturation|absorption|^give FixtureOwner|^effect give FixtureOwner (?!slow_falling 5 0 true$)/.test(c), c);
+  // Natural regeneration wait: owner 19 (actual R16 261) -> 20, stable over >= 1 s.
+  const readings: Record<string, number[]> = { Chunkbot: [20, 20, 20, 20, 20, 20], FixtureOwner: [19, 19, 20, 20, 20, 20] };
+  const w = make(); const ev: string[] = []; const before = mutations(w.io).length;
+  w.h.health = async (name: string) => readings[name]!.shift() ?? 20;
+  await w.h.fullStableHealth(['Chunkbot', 'FixtureOwner'], ev);
+  assert.match(ev[0]!, /full stable health .* \(natural; never healed\/fed\)/);
+  assert.equal(mutations(w.io).length, before, 'awaiting health never mutates the world or players');
+  assert.ok(w.h.readbacks.some((r) => r.command === 'data get entity FixtureOwner foodLevel'), 'diagnostic hunger readback while below full');
+  const stuck = make(); stuck.h.health = async (name: string) => name === 'FixtureOwner' ? 19 : 20;
+  await assert.rejects(stuck.h.fullStableHealth(['Chunkbot', 'FixtureOwner'], []), /full stable control-player health required.*"FixtureOwner":19/);
+  const flicker = make(); let n = 0; flicker.h.health = async () => (n++ % 3 === 2 ? 19 : 20);
+  await assert.rejects(flicker.h.fullStableHealth(['Chunkbot'], []), /full stable/, 'a dip resets the stability window');
+  const unread = make(); unread.h.health = async () => Number.NaN;
+  await assert.rejects(unread.h.fullStableHealth(['Chunkbot'], []), /full stable/);
+});
+
+// Actual 262 O8C post-retreat snapshot (taken 1791507933424) and episode.
+const o8cEpisode = [
+  { type: 'safety_episode_started', t: t(1791507931390), episodeId: 'se-ab58bf42a15d', response: 'retreat', hazards: ['creeper'], defense: { admitted: false, target: { entityId: 11434, key: 'minecraft:creeper', distance: 5 } } },
+  { type: 'safety_episode_ended', t: t(1791507933298), episodeId: 'se-ab58bf42a15d', response: 'retreat', outcome: 'resolved', hazardsBefore: ['creeper'], hazardsAfter: [] },
+];
+const o8cHorse = { handle: 'ent-282', key: 'minecraft:zombie_horse', at: { x: 168.1, y: -60, z: 201.1 }, distance: 29.7, inReach: false };
+
+it('R16 O8C: an out-of-scene foreign zombie_horse made visible by the retreat is recorded; involvement or in-scene presence still fails', async () => {
+  const ctx = { sinceMs: 1791507931386, allowedHazards: ['creeper'], allowedTargetIds: [11434] };
+  assert.deepEqual(foreignVisibleAfterResponse([o8cHorse], o8cEpisode, ctx), [{ key: 'minecraft:zombie_horse', at: o8cHorse.at, distance: 29.7 }]);
+  assert.throws(() => foreignVisibleAfterResponse([{ ...o8cHorse, at: { x: 200.5, y: -60, z: 201.1 } }], o8cEpisode, ctx), /inside the declared scene/);
+  assert.throws(() => foreignVisibleAfterResponse([{ ...o8cHorse, at: undefined }], o8cEpisode, ctx), /without a position/);
+  assert.throws(() => foreignVisibleAfterResponse([o8cHorse], [{ ...o8cEpisode[0]!, hazards: ['creeper', 'zombie_horse'] }], ctx), /unexpected safety hazard zombie_horse/);
+  assert.throws(() => foreignVisibleAfterResponse([o8cHorse], [{ ...o8cEpisode[0]!, defense: { target: { entityId: 11999 } } }], ctx), /unrecorded entity/);
+  assert.throws(() => foreignVisibleAfterResponse([], [o8cEpisode[0]!], { ...ctx, allowedHazards: [] }), /unexpected safety hazard creeper/, 'O8N: any episode hazard fails');
+  // Through the actual harness identity check.
+  const creeper = { tag: 'og_o8c', key: 'minecraft:creeper', nbt: '[I; -2083512439, 25446551, -1712917670, 389622150]', uuid: '83d01f89-0184-4897-99e6-f35a17392986', at: { x: 207.7745921081097, y: -60, z: 205.50000599211262 }, id: 11434 };
+  const run = async (snapshotEntities: Array<Record<string, unknown>>, after?: typeof ctx) => {
+    const { h, io } = make(); io.actors = [creeper]; h.sceneActors.set(creeper.tag, creeper); h.scenario = 'O8C';
+    h.owner = { entities: { 11434: { id: 11434, uuid: creeper.uuid, name: 'creeper', position: creeper.at } } } as unknown as NonNullable<Harness['owner']>;
+    h.observe = async () => ({ entities: snapshotEntities });
+    h.events = () => o8cEpisode;
+    return h.mobIdentity(creeper.tag, creeper.key, after);
+  };
+  const actual = [{ key: 'minecraft:player', at: { x: 202.5, y: -60, z: 209.5 } }, { key: 'minecraft:creeper', at: { x: 208.2, y: -60, z: 205.5 } }, o8cHorse];
+  await assert.rejects(run(actual), /staging_unready: unexpected visible nonplayer group/, 'staging readiness stays strict');
+  assert.deepEqual((await run(actual, ctx)).foreignVisible.map((f) => f.key), ['minecraft:zombie_horse']);
+  await assert.rejects(run([...actual.slice(0, 2), { ...o8cHorse, at: { x: 214.5, y: -60, z: 205.5 } }], ctx), /inside the declared scene/);
+  await assert.rejects(run([{ key: 'minecraft:player', at: { x: 202.5, y: -60, z: 209.5 } }, o8cHorse], ctx), /actual CLI LOS\/visible target correlation missing/, 'same visible creeper still required');
 });

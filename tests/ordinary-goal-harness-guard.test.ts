@@ -100,9 +100,30 @@ describe('ordinary-goal live harness guard', () => {
     assert.equal(ordinaryDryBankSupport(bank, { ...facts, feet: 'water' }, 300), false, 'this fixture requires dry shore, not a wading claim');
     assert.equal(ordinaryDryBankSupport(bank, { ...facts, eye: 'water' }, 300), false);
     for (const air of [null, 299, -1]) assert.equal(ordinaryDryBankSupport(bank, facts, air), false);
-    assert.match(source, /Date\.now\(\) - started >= 3_000 && samples >= 4/);
+    assert.match(source, /this\.now\(\) - started >= 3_000 && samples\.length >= 4/);
     assert.match(source, /nbt=\{OnGround:1b\}/);
     assert.match(source, /await h\.waterExitSettled\(ev\)/);
+  });
+
+  it('P-SAFETY-R16 corrections stay scoped: strict O7W/O7F settle, fresh O7F staging, strict mob staging, unchanged O8N equality', () => {
+    const body = (from: string, to: string) => source.slice(source.indexOf(from), source.indexOf(to, source.indexOf(from)));
+    const o7w = body("scenarioRun('O7W'", "for (const mode of [");
+    assert.match(o7w, /await h\.waterExitSettled\(ev\);/, 'O7W remains the strictly stationary no-memory/no-autonomy control');
+    const o7f = body("scenarioRun('O7F'", "scenarioRun('O8C'");
+    assert.match(o7f, /const end = await waterFinished\(episode, ev\);/, 'O7F (cue withdrawn) stays strictly settled');
+    assert.ok(o7f.indexOf('freshFarCue(') > 0 && o7f.indexOf('freshFarCue(') < o7f.indexOf("h.goal('follow me')"), 'fresh far cue staging precedes admission');
+    assert.ok(o7f.indexOf('const teleportStartedAtMs = Date.now();') < o7f.indexOf('await h.triggerTeleport(OWNER, LAYOUT.safety.farOwner'));
+    assert.ok(!/waitForTruth\('fresh actionable far owner cue'/.test(o7f), 'the stale-accepting cue predicate is gone');
+    for (const id of ['O7P', 'O7R']) assert.match(body(`scenarioRun('${id}'`, 'h.noQuestions('), /waterFinished\(episode, ev, \{ goalId: goal\.goalId, excludedLeaseIds: /);
+    const o8c = body("scenarioRun('O8C'", "scenarioRun('O8N'");
+    assert.match(o8c, /const staged = await h\.mobIdentity\('og_o8c', 'minecraft:creeper'\);/, 'creeper staging identity stays strict');
+    const o8n = body("scenarioRun('O8N'", "scenarioRun('RC1'");
+    assert.ok(o8n.indexOf('await h.fullStableHealth([BOT, OWNER], ev);') < o8n.indexOf('summon ${kind}'), 'natural health readiness precedes the actors');
+    assert.match(o8n, /const cow = await h\.mobIdentity\('og_o8n_cow', 'minecraft:cow'\), wolf = await h\.mobIdentity\('og_o8n_wolf', 'minecraft:wolf'\);/, 'neutral staging identity stays strict');
+    assert.match(o8n, /check\(health\.bot === 20 && health\.owner === 20, 'staging_unready: full stable control-player health required before the no-damage window'\);/);
+    assert.ok(!/(instant_health|regeneration|saturation)[^\n]*\$\{OWNER\}|\$\{OWNER\}[^\n]*(instant_health|regeneration|saturation)/.test(source), 'the owner is never healed or fed');
+    const reset = body('  async resetScene(): Promise<void> {', '  blockResetCommands(): string[] {');
+    assert.ok(reset.indexOf('effect give ${OWNER} slow_falling 5 0 true') < reset.indexOf('this.blockResetCommands()'), 'owner protection precedes every fill');
   });
 
   it('ordinary recovery oracle permits separate support and rejects authority refills or task replay', () => {
