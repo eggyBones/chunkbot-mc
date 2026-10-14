@@ -23,10 +23,10 @@ import type { BlueprintCell, HomeProject } from '../contracts/autonomy.ts';
 import type { JsonValue, PredicateEvaluation } from '../contracts/index.ts';
 import type { GameSession } from '../game/connection.ts';
 import { BLOCK_REACH, eyeOf, sessionWorld } from '../perception/perception.ts';
-import { faceNormal, visibleFaces, type FaceName } from '../perception/visibility.ts';
-import { aidCell, accepts, checkSite, entranceInterior, entranceOutside, findSites, judgeCells, verifyShelter, type CellVerdict, type Facing, type ShelterVerdict, type SiteProbe, type V3, type VoxelTruth } from '../autonomy/blueprint.ts';
+import { faceNormal, isFullCube, visibleFaces, type FaceName } from '../perception/visibility.ts';
+import { aidCell, accepts, canonicalProject, materialRequirements, checkSite, entranceInterior, entranceOutside, findSites, judgeCells, verifyShelter, type CellVerdict, type Facing, type ShelterVerdict, type SiteProbe, type V3, type VoxelTruth } from '../autonomy/blueprint.ts';
 import type { HomeProjectService } from '../autonomy/home.ts';
-import { clientCounts, ensureInHand, eyeDistanceToBlock, mk } from './common.ts';
+import { confirmInventory, clientCounts, ensureInHand, eyeDistanceToBlock, mk } from './common.ts';
 import { failed, precondition, type CandidateDraft, type SkillDefinition, type SkillServices, type Unavailable } from './definition.ts';
 import { goals, navigate } from './navigation.ts';
 import { occupyingEntity } from './placement.ts';
@@ -127,6 +127,9 @@ export class ShelterInspector {
   }
 
   inspect(project: HomeProject): { verdicts: CellVerdict[]; verdict: ShelterVerdict } {
+    if (!canonicalProject(project)) {
+      return { verdicts: [], verdict: { status: 'unknown', enclosed: 'unknown', satisfied: 0, total: project.cells.length, missing: 0, foreign: [], unknown: project.cells.length || 1, nextPhase: null, detail: 'stored project checklist differs from the canonical small_shelter_v1 blueprint; no construction or completion is admitted' } };
+    }
     const verdicts = judgeCells(project.cells, (p) => this.truth(p), this.inTag);
     return { verdicts, verdict: verifyShelter(project.cells, verdicts) };
   }
@@ -138,17 +141,19 @@ export class ShelterInspector {
 }
 
 /** Code evaluation of `structure_state` (structure: home). */
-export function evaluateStructure(home: HomeProjectService, inspector: ShelterInspector, session: () => GameSession | undefined, expect: 'site_approved' | 'enclosed' | 'complete'): PredicateEvaluation {
+export function evaluateStructure(home: HomeProjectService, inspector: ShelterInspector, session: () => GameSession | undefined, expect: 'site_approved' | 'enclosed' | 'complete', projectId?: string): PredicateEvaluation {
   const project = home.project();
   const out = (status: PredicateEvaluation['status'], detail: string, evidence: PredicateEvaluation['evidence'] = {}): PredicateEvaluation => ({ status, predicate: 'structure_state', detail, evidence });
   if (!project) return out(home.writable() ? 'unsatisfied' : 'unknown', home.writable() ? 'no home project is approved in this world profile' : 'home projects need a writable durable scope');
+  if (projectId && projectId !== project.id) return out('unsatisfied', `bound project ${projectId} is no longer the active home project`);
+  if (!canonicalProject(project)) return out('unknown', 'stored home blueprint is invalid');
   if (expect === 'site_approved') return out('satisfied', `home project ${project.id} approved at ${at3(project.origin)} (${project.dimension}), state ${project.state}`, { projectId: project.id, state: project.state });
   const s = session();
   if (!s) return out('unknown', 'not connected');
   if (String(s.bot.game.dimension) !== project.dimension) return out('unknown', `the home is in ${project.dimension}, the bot is in ${String(s.bot.game.dimension)}`);
   const { verdict } = inspector.inspect(project);
   const ev = { projectId: project.id, satisfied: verdict.satisfied, total: verdict.total, missing: verdict.missing, unknown: verdict.unknown, foreign: verdict.foreign.length };
-  void home.verified(verdict).catch(() => undefined);
+  void home.verified(verdict, project.id).catch(() => undefined);
   if (expect === 'enclosed') return out(verdict.enclosed === 'satisfied' ? 'satisfied' : verdict.enclosed === 'unknown' ? 'unknown' : 'unsatisfied', `enclosure ${verdict.enclosed}: ${verdict.detail}`, ev);
   return out(verdict.status === 'complete' ? 'satisfied' : verdict.status === 'unknown' ? 'unknown' : 'unsatisfied', verdict.detail, ev);
 }
@@ -163,7 +168,7 @@ function siteProbe(session: GameSession, services: SkillServices): SiteProbe {
       return b && b.name !== 'unconfirmed_prediction' ? mk(b.name) : undefined;
     },
     visible: (p) => services.perception.blockVisibleNow(p.x, p.y, p.z),
-    naturalGround: (k) => NATURAL_GROUND.test(k),
+    naturalGround: (k) => NATURAL_GROUND.test(k) && !/:(sand|red_sand|gravel|dirt_path|mud)$/.test(k),
   };
 }
 
@@ -247,6 +252,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
 
   const BuildParams = z
     .object({
+      projectId: z.string().optional(),
       action: z.enum(['place', 'remove_aid', 'reposition']).optional(),
       cell: z.number().int().min(0).max(255).optional(),
       item: z.string().regex(/^[a-z0-9_.-]+:[a-z0-9_./-]+$/).optional(),
@@ -265,7 +271,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
   const itemsFor = (cell: BlueprintCell, bot: Bot, material?: string): string[] => {
     const counts = clientCounts(bot);
     const keys = [...counts.keys()].filter((k) => (counts.get(k) ?? 0) > 0 && accepts(cell, k, inspector.inTag));
-    if (!material) return keys;
+    if (!material || !['wall', 'roof', 'aid'].includes(cell.role)) return keys;
     // An admitted (requested) material is binding: never substitute another one.
     return keys.filter((k) => (material.startsWith('#') ? inspector.inTag(material, k) : material === k));
   };
@@ -347,6 +353,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
   const plan = (session: GameSession, services: SkillServices, project: HomeProject, material?: string): { drafts: CandidateDraft[]; unavailable: Unavailable[]; verdict: ShelterVerdict } => {
     const bot = session.bot;
     const { verdicts, verdict } = inspector.inspect(project);
+    if (!canonicalProject(project)) return { drafts: [], unavailable: [{ reason: 'invalid_home_blueprint', detail: verdict.detail }], verdict };
     const drafts: CandidateDraft[] = [];
     const unavailable: Unavailable[] = [];
     if (verdict.foreign.length > 0) {
@@ -369,7 +376,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
         const sup = supportsFor(bot, session, services, dest)[0];
         if (!sup) continue;
         drafts.push({
-          parameters: { action: 'place', cell: v.index, item: items[0] as string, support: pj(sup.support), face: sup.face, ...(material ? { material } : {}) },
+          parameters: { projectId: project.id, action: 'place', cell: v.index, item: items[0] as string, support: pj(sup.support), face: sup.face, ...(material ? { material } : {}) },
           description: `${label}: place ${items[0]} at ${at3(dest)} (on the ${sup.face} face of ${at3(sup.support)})`,
           score: 20 - sup.distance,
         });
@@ -379,11 +386,11 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
       const missingItems = cells.filter((v) => itemsFor(v.cell, bot, material).length === 0);
       if (missingItems.length > 0) {
         const accept = [...new Set(missingItems.flatMap((v) => v.cell.accept))];
-        if (material) unavailable.push({ reason: 'requested_material_missing', detail: `the requested material ${material} is not in the inventory (or not accepted) for ${missingItems.length} ${missingItems[0]?.cell.role} cell(s); no other material is substituted`, evidence: { material, cells: missingItems.length } });
+        if (material && missingItems.some((v) => ['wall', 'roof', 'aid'].includes(v.cell.role))) unavailable.push({ reason: 'requested_material_missing', detail: `the requested material ${material} is not in the inventory (or not accepted) for ${missingItems.length} ${missingItems[0]?.cell.role} cell(s); no other material is substituted`, evidence: { material, cells: missingItems.length } });
         else unavailable.push({ reason: 'missing_building_material', detail: `${missingItems.length} ${missingItems[0]?.cell.role} cell(s) need one of ${accept.join(', ')} in the inventory`, evidence: { cells: missingItems.length, accept } });
       }
     };
-    const mat = material ? { material } : {};
+    const mat = { projectId: project.id, ...(material ? { material } : {}) };
     const reposition = (to: NonNullable<BuildP['to']>, why: string) => drafts.push({ parameters: { action: 'reposition', to, ...mat }, description: `move ${to.replace(/_/g, ' ')} (${why})`, score: 1 });
     const repositionNear = (cells: CellVerdict[], why: string): boolean => {
       for (const v of cells.slice(0, 4)) {
@@ -401,7 +408,10 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
     const roof = status('roof', 4);
     const hole = status('roof', 6);
     const furnish = verdicts.filter((v) => (v.cell.role === 'workstation' || v.cell.role === 'storage') && v.cell.phase === 7);
-    const stage = missingOf(w1).length
+    const table = verdicts.filter((v) => v.cell.accept.length === 1 && v.cell.accept[0] === 'minecraft:crafting_table');
+    const stage = missingOf(table).length
+      ? 'bootstrap'
+      : missingOf(w1).length
       ? 'wall1'
       : missingOf(w2).length
         ? 'wall2'
@@ -417,6 +427,13 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
                   ? 'inspect'
                   : 'done';
     switch (stage) {
+      case 'bootstrap': {
+        const cells = missingOf(table);
+        placeDrafts(cells, 'crafting table (unlock furnishing and tool recipes before enclosing the site)');
+        needItems(cells);
+        if (drafts.length === 0) repositionNear(cells, 'reach the approved crafting-table cell');
+        break;
+      }
       case 'wall1':
       case 'wall2': {
         const cells = missingOf(stage === 'wall1' ? w1 : w2);
@@ -466,7 +483,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
           reposition('inside', 'the construction aid is not visible within reach');
           break;
         }
-        drafts.push({ parameters: { action: 'remove_aid', cell: project.cells.indexOf(aid) }, description: `remove the bot's own construction aid ${id.key} at ${at3(aid.at)} (server-confirmed own placement, unchanged)`, score: 30 });
+        drafts.push({ parameters: { ...mat, action: 'remove_aid', cell: project.cells.indexOf(aid) }, description: `remove the bot's own construction aid ${id.key} at ${at3(aid.at)} (server-confirmed own placement, unchanged)`, score: 30 });
         break;
       }
       case 'hole': {
@@ -497,6 +514,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
         unavailable.push({ reason: 'structure_complete', detail: verdict.detail });
         break;
     }
+    if (unavailable.some((u) => u.reason === 'missing_building_material' || u.reason === 'requested_material_missing')) unavailable.push({ reason: 'home_prerequisites', detail: 'inspect_home reports fresh total deficits and version-correct recipes; gather/craft them through the generic catalog while retaining structure_state complete as the goal outcome', evidence: { projectId: project.id, requirements: JSON.parse(JSON.stringify(materialRequirements(verdicts, clientCounts(bot), inspector.inTag, material))) } });
     return { drafts: drafts.slice(0, 6), unavailable, verdict };
   };
 
@@ -551,6 +569,8 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
       const bot = session.bot;
       const project = home.project();
       if (!project) return precondition('no_home_project', 'no approved home project');
+      if (params.projectId !== project.id || !canonicalProject(project)) return precondition('project_changed', 'the candidate belongs to a different or invalid project');
+      act.fence();
       if (String(bot.game.dimension) !== project.dimension) return precondition('wrong_dimension', `the home is in ${project.dimension}`);
       if (bot.currentWindow) return precondition('interface_open', 'another interface is open');
       if (params.action === 'reposition' && params.to) {
@@ -610,7 +630,7 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
         if (after === id.key) return failed('server_rejected_break', 'the server kept the aid', {}, 'server_packet');
         services.ledger.add({ kind: 'block_changed', x: cell.at.x, y: cell.at.y, z: cell.at.z, from: id.key, to: after, atMs: change.atMs, actionId: ctx.candidate.id });
         ctx.progress({ aidRemoved: id.key, at: { ...cell.at } }, 'server_packet');
-        const durable = await home.checkpoint({ at: cell.at, to: 'minecraft:air', confirmedAtMs: change.atMs, capability: 'build_home' });
+        const durable = await home.checkpoint({ at: cell.at, to: 'minecraft:air', confirmedAtMs: change.atMs, capability: 'build_home', projectId: project.id });
         return { status: 'succeeded', effect: `removed the bot's own construction aid ${id.key} at ${at3(cell.at)} (server block change -> ${after})${durable ? '' : '; project checkpoint NOT durable'}`, confirmation: 'server_packet', evidence: { removed: id.key, at: { ...cell.at }, became: after, durable } };
       }
       // place
@@ -631,7 +651,8 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
       if (eyeDistanceToBlock(bot, params.support.x, params.support.y, params.support.z) > BLOCK_REACH) return precondition('out_of_reach', 'the support is out of reach');
       if (!visibleFaces(world, eyeOf(bot), params.support.x, params.support.y, params.support.z).includes(params.face)) return precondition('face_not_visible', `the ${params.face} face of the support is not visible`);
       const held = await ensureInHand(act, services, item);
-      if (!held.ok) return precondition('item_not_in_inventory', held.detail);
+      if (!held.ok || !held.confirmed) return precondition('item_not_in_inventory', held.detail);
+      act.fence();
       const startSeq = session.evidence.seq;
       await act.useOnBlock(params.support, params.face);
       let change: { stateId: number; atMs: number } | undefined;
@@ -652,13 +673,47 @@ export function constructionSkills(options: ConstructionOptions): SkillDefinitio
       services.ledger.add({ kind: 'block_changed', ...dest, from: mk(destBlock.name), to: placed, atMs: change.atMs, actionId: ctx.candidate.id });
       services.ledger.setResult(ctx.candidate.id, { dimension: String(bot.game.dimension), ...dest, key: placed });
       ctx.progress({ placed, at: dest, role: cell.role }, 'server_packet');
-      const durable = await home.checkpoint({ at: dest, to: placed, confirmedAtMs: change.atMs, capability: 'build_home' });
+      const durable = await home.checkpoint({ at: dest, to: placed, confirmedAtMs: change.atMs, capability: 'build_home', projectId: project.id });
       const evidence: Record<string, JsonValue> = { placed, at: dest, role: cell.role, phase: cell.phase, accepted: accepts(cell, placed, inspector.inTag), durable, priorResult: ctx.candidate.id };
       return { status: 'succeeded', effect: `placed ${placed} at ${at3(dest)} (${cell.role}, server block change)${durable ? '' : '; project checkpoint NOT durable'}`, confirmation: 'server_packet', evidence };
     },
   };
 
-  return [selectHomeSite, buildHome] as SkillDefinition[];
+  const InspectParams = z.object({ material: z.string().regex(/^#?[a-z0-9_.-]+:[a-z0-9_./-]+$/).optional(), projectId: z.string().optional() }).strict();
+  const inspectHome: SkillDefinition<z.infer<typeof InspectParams>> = {
+    descriptor: {
+      id: 'inspect_home', family: 'construction',
+      purpose: 'Freshly inspect the approved home and report full material deficits, current server inventory and exact-version crafting prerequisites. Use before gathering and after interruption; then generic mine/collect/craft skills supply build_home. A material task never completes the home goal.',
+      parameters: [{ name: 'material', type: 'registry_key', description: 'binding wall/roof material (furnishings keep their exact recipe output)', required: false }],
+      targets: ['none'], preconditions: ['approved project in the current dimension'], effects: ['fresh inspection and prerequisite feedback; no world change'],
+      supportedPredicates: ['structure_state'], timeoutMs: 5_000, cancellation: 'ownership fenced before inspection and persistence',
+      limitations: ['unknown cells require further visible inspection', 'recipes are facts, not a hidden acquisition script'], evidence: ['server inventory resync', 'current visible/confirmed project voxels'],
+    },
+    params: InspectParams,
+    resolve(ctx) {
+      const p = home.project();
+      if (!p || !canonicalProject(p)) return { drafts: [], unavailable: [{ reason: 'no_home_project', detail: 'select a valid observed vacant home site first' }] };
+      if (String(ctx.session.bot.game.dimension) !== p.dimension) return { drafts: [], unavailable: [{ reason: 'wrong_dimension', detail: `the home is in ${p.dimension}` }] };
+      const material = ctx.hints.parameters['material'];
+      return { drafts: [{ parameters: { projectId: p.id, ...(typeof material === 'string' ? { material } : {}) }, description: `inspect project ${p.id} and its complete material prerequisites` }] };
+    },
+    async execute(ctx, params) {
+      const p = home.project();
+      if (!p || p.id !== params.projectId || !canonicalProject(p)) return precondition('project_changed', 'home project identity changed');
+      if (String(ctx.session.bot.game.dimension) !== p.dimension) return precondition('wrong_dimension', `the home is in ${p.dimension}`);
+      const inventory = await confirmInventory(ctx.act, ctx.services);
+      ctx.act.fence();
+      if (!inventory) return failed('no_server_sync', 'home prerequisites require server-confirmed inventory');
+      const inspection = inspector.inspect(p);
+      const requirements = materialRequirements(inspection.verdicts, inventory.counts, inspector.inTag, params.material);
+      const recipes = requirements.filter((r) => r.missing > 0).flatMap((r) => r.accept.filter((k) => !k.startsWith('#')).slice(0, 8).flatMap((k) => (ctx.services.knowledge.recipes?.recipesFor(k) ?? []).filter((recipe) => recipe.family === 'crafting').slice(0, 2).map((recipe) => ({ output: k, count: r.missing, recipeId: recipe.id, yield: recipe.output.count, workstations: recipe.workstations, ingredients: recipe.ingredients.map((i) => ({ selector: i.spec.label, count: i.count * Math.ceil(r.missing / recipe.output.count) })) }))));
+      await home.verified(inspection.verdict, p.id);
+      ctx.act.fence();
+      return { status: 'succeeded', confirmation: 'server_sync', effect: `fresh home inspection: ${inspection.verdict.detail}; gather/craft the reported deficits with generic capabilities, then continue the SAME project`, evidence: { projectId: p.id, requirements: JSON.parse(JSON.stringify(requirements)), recipes: JSON.parse(JSON.stringify(recipes)), inventorySource: 'server_sync', inventoryAtMs: inventory.atMs, structure: inspection.verdict.status } };
+    },
+  };
+
+  return [selectHomeSite, inspectHome, buildHome] as SkillDefinition[];
 }
 
 void clip;

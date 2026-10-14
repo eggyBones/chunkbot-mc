@@ -24,6 +24,7 @@ import {
   type AutonomyScope,
 } from '../contracts/autonomy.ts';
 import { bodyChecksum } from '../memory/store.ts';
+import { canonicalProject } from './blueprint.ts';
 
 const FILE_RE = /^control-(\d{8})\.json$/;
 const TMP_RE = /^control-\d{8}\.json\.tmp-/;
@@ -157,6 +158,7 @@ export class ControlFileStore {
     if (typeof doc['checksum'] !== 'string' || doc['checksum'] !== bodyChecksum(doc['body'])) return { kind: 'corrupt', detail: 'checksum mismatch' };
     const file = AutonomyFileSchema.safeParse(doc);
     if (!file.success) return { kind: 'corrupt', detail: `schema: ${file.error.issues[0]?.message ?? 'invalid'}` };
+    if (file.data.body.home && !canonicalProject(file.data.body.home)) return { kind: 'corrupt', detail: 'home checklist differs from its canonical blueprint' };
     if (file.data.revision !== revision) return { kind: 'corrupt', detail: 'revision does not match the file name' };
     const s = file.data.body.scope;
     const want = this.options.scope;
@@ -196,6 +198,7 @@ export class ControlFileStore {
     let parsed: AutonomyBody;
     try {
       parsed = AutonomyBodySchema.parse(body);
+      if (parsed.home && !canonicalProject(parsed.home)) throw new Error('home checklist differs from its canonical blueprint');
     } catch (error) {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }

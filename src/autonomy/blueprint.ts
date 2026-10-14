@@ -124,6 +124,60 @@ export function cellKey(p: V3): string {
   return key(p);
 }
 
+/** Reject edited or damaged persisted checklists rather than certifying a smaller house. */
+export function canonicalProject(project: Pick<HomeProject, 'blueprint' | 'origin' | 'size' | 'entranceFacing' | 'cells'>): boolean {
+  const interior = project.size.outerX - 2;
+  if (project.blueprint !== 'small_shelter_v1' || (interior !== 2 && interior !== 3) || project.size.outerZ !== project.size.outerX || project.size.wallHeight !== 2) return false;
+  return JSON.stringify(project.cells) === JSON.stringify(smallShelterCells(project.origin, interior, project.entranceFacing));
+}
+
+export interface MaterialRequirement {
+  role: string;
+  count: number;
+  held: number;
+  missing: number;
+  unknownCells: number;
+  accept: string[];
+}
+
+/**
+ * Fresh construction demand. Inventory is allocated ONCE across roles, so the
+ * same stack cannot pay for both walls and roof. Unknown voxels are inspection
+ * needs, never invented missing blocks. No stored checkpoint is present stock.
+ */
+export function materialRequirements(verdicts: readonly CellVerdict[], inventory: ReadonlyMap<string, number>, inTag: (tag: string, key: string) => boolean, material?: string): MaterialRequirement[] {
+  const remaining = new Map(inventory);
+  const groups = new Map<string, MaterialRequirement>();
+  const needsRoof = verdicts.some((v) => v.cell.role === 'roof' && v.status === 'missing');
+  for (const v of verdicts) {
+    if (v.cell.role === 'entrance' || v.status === 'satisfied' || v.status === 'foreign') continue;
+    if (v.cell.role === 'aid' && (!needsRoof || v.key && accepts(v.cell, v.key, inTag))) continue;
+    const structural = ['wall', 'roof', 'aid'].includes(v.cell.role);
+    const accept = structural && material ? [material] : [...v.cell.accept];
+    const id = `${v.cell.role}|${accept.join(',')}`;
+    const g = groups.get(id) ?? { role: v.cell.role, count: 0, held: 0, missing: 0, unknownCells: 0, accept };
+    if (v.status === 'unknown') g.unknownCells += 1;
+    else {
+      g.count += 1;
+      const item = [...remaining].find(([k, n]) => n > 0 && accepts(v.cell, k, inTag) && (!structural || !material || (material.startsWith('#') ? inTag(material, k) : material === k)));
+      if (item) {
+        g.held += 1;
+        remaining.set(item[0], item[1] - 1);
+      } else g.missing += 1;
+    }
+    groups.set(id, g);
+  }
+  // The aid's final air state is satisfied, but its temporary block still needs
+  // one inventory item when construction reaches an unfinished roof.
+  const aid = verdicts.find((v) => v.cell.role === 'aid');
+  if (needsRoof && aid?.status === 'satisfied' && aid.key && AIRLIKE.test(aid.key)) {
+    const accept = material ? [material] : [...aid.cell.accept];
+    const item = [...remaining].find(([k, n]) => n > 0 && accepts(aid.cell, k, inTag) && (!material || (material.startsWith('#') ? inTag(material, k) : material === k)));
+    groups.set(`aid|${accept.join(',')}`, { role: 'aid', count: 1, held: item ? 1 : 0, missing: item ? 0 : 1, unknownCells: 0, accept });
+  }
+  return [...groups.values()];
+}
+
 // ---------------------------------------------------------------- verification
 
 /** What code knows about one voxel now. */

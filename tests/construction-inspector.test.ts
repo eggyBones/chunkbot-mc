@@ -128,7 +128,7 @@ describe('MB-FLOW-001-C3 ShelterInspector opacity and freshness', () => {
       if (c.role === 'workstation' || c.role === 'storage') e.world.set(c.at.x, c.at.y, c.at.z, c.accept[0]!.replace('minecraft:', ''));
     }
     e.visible = new Set(cells.map((c) => key(c.at.x, c.at.y, c.at.z)));
-    const project = { id: 'proj-test', origin, size: { outerX: 5, outerZ: 5, wallHeight: 2 }, entranceFacing: 'north', cells, dimension: 'overworld', checkpoints: [], state: 'building' } as unknown as HomeProject;
+    const project = { id: 'proj-test', blueprint: 'small_shelter_v1', origin, size: { outerX: 5, outerZ: 5, wallHeight: 2 }, entranceFacing: 'north', cells, dimension: 'overworld', checkpoints: [], state: 'building' } as unknown as HomeProject;
     const home = { project: () => project, writable: () => true, verified: async () => project } as never;
     const { session, services } = wire(e);
     const insp = new ShelterInspector(() => session, services);
@@ -141,11 +141,13 @@ describe('MB-FLOW-001-C3 ShelterInspector opacity and freshness', () => {
 
 describe('MB-FLOW-001-C4 build_home resolver: specific stand points and binding material', () => {
   const origin = { x: 12, y: 0, z: 12 };
-  const project = () => ({ id: 'proj-test', origin, size: { outerX: 5, outerZ: 5, wallHeight: 2 }, entranceFacing: 'north', cells: smallShelterCells(origin, 3, 'north'), dimension: 'overworld', checkpoints: [], state: 'approved' }) as unknown as HomeProject;
+  const project = () => ({ id: 'proj-test', blueprint: 'small_shelter_v1', origin, size: { outerX: 5, outerZ: 5, wallHeight: 2 }, entranceFacing: 'north', cells: smallShelterCells(origin, 3, 'north'), dimension: 'overworld', checkpoints: [], state: 'approved' }) as unknown as HomeProject;
   const spec: TaskSpec = { objective: 'build the home', decisionInstruction: 'build', allowedCapabilities: ['build_home'], targetSelectors: [], parameters: {}, completion: { predicate: 'structure_state', structure: 'home', expect: 'complete' } };
 
   function resolve(e: Env, parameters: Record<string, unknown> = {}) {
     const p = project();
+    const table = p.cells.find((c) => c.accept[0] === 'minecraft:crafting_table')!;
+    e.world.set(table.at.x, table.at.y, table.at.z, 'crafting_table');
     const home = { project: () => p, writable: () => true, verified: async () => p } as never;
     const { session, services } = wire(e);
     const insp = new ShelterInspector(() => session, services);
