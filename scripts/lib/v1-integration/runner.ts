@@ -26,8 +26,8 @@ export async function runScenarios(report: RunReport, scenarios: Scenario[], ope
       try {
         await session.stage(scenario);
         result.phase = 'staged'; result.stagedAtMs = Date.now(); checkpoint();
-        const evidence = await session.execute(scenario);
-        result.phase = 'executed'; result.executedAtMs = Date.now(); result.evidence = evidence; checkpoint();
+        const evidence = await session.execute(scenario, () => { result.phase = 'executed'; result.executedAtMs = Date.now(); checkpoint(); });
+        result.phase = 'executed'; result.executedAtMs ??= Date.now(); result.evidence = evidence; checkpoint();
         result.problems.push(...verifyEvidence(scenario, evidence));
         result.autonomous = !evidence.interventions.some((i) => i.kind !== 'setup');
         if (!result.problems.length) { result.phase = 'verified'; result.verifiedAtMs = Date.now(); }

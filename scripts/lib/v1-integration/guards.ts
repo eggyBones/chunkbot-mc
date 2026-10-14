@@ -21,6 +21,6 @@ export function verifyGrant(value: unknown, fixture: Fixture, leaseId: string, a
   const g = value as Partial<Grant> | null;
   if (!g || g.version !== 1 || g.leaseId !== leaseId || g.fixture !== fixture || g.realProviders !== true || !Number.isSafeInteger(g.expiresAtMs) || g.expiresAtMs! <= now) throw new Error('absent, expired or mismatched coordinator grant');
   if (!keyInjected) throw new Error('coordinator key injection is absent');
-  if (artifact.dirty || !artifact.distSha256 || !g.artifact || g.artifact.dirty || g.artifact.head !== artifact.head || g.artifact.sourceSha256 !== artifact.sourceSha256 || g.artifact.distSha256 !== artifact.distSha256) throw new Error('source/build do not match the clean frozen granted artifact');
+  if (artifact.dirty || !artifact.distSha256 || !g.artifact || g.artifact.dirty !== false || g.artifact.head !== artifact.head || g.artifact.sourceSha256 !== artifact.sourceSha256 || g.artifact.distSha256 !== artifact.distSha256) throw new Error('source/build do not match the clean frozen granted artifact');
   return g as Grant;
 }

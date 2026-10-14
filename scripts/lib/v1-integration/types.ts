@@ -10,8 +10,9 @@ export interface Scenario {
   instruction: string;
   supplies: Readonly<Record<string, number>>;
   outputs: Readonly<Record<string, number>>;
-  trigger?: 'planner' | 'decision' | 'movement' | 'mining' | 'crafting' | 'furnace' | 'disconnect' | 'restart' | 'remove_target';
+  trigger?: 'planner' | 'decision' | 'movement' | 'mining' | 'crafting' | 'furnace' | 'disconnect' | 'restart' | 'death' | 'remove_target';
   persistent?: boolean;
+  returnToOwner?: boolean;
 }
 export interface Artifact {
   head: string;
@@ -34,6 +35,12 @@ export interface PayloadCapture {
   goalId: string;
   atMs: number;
   body: string;
+  attempt?: number;
+}
+// Proposed coordinator-owned transport seam: bodies exclude auth/headers and
+// private reasoning. A missing reader means privacy is unverified, never safe.
+export interface ModelCaptureReader {
+  read(goalId: string): Promise<{ captures: PayloadCapture[]; complete: boolean }>;
 }
 export interface Evidence {
   goalId: string;
@@ -50,8 +57,9 @@ export interface Evidence {
   captures: PayloadCapture[];
   captureComplete: boolean;
   hiddenFacts: string[];
+  hiddenLocations?: Vec[];
   freshIdle?: { sinceMs: number; untilMs: number; events: Event[] };
-  stop?: { sentAtMs: number; activeAtMs: number; family: NonNullable<Scenario['trigger']> };
+  stop?: { sentAtMs: number; activeAtMs: number; family: NonNullable<Scenario['trigger']>; requestId?: string; actionId?: string };
 }
 export interface Result {
   id: string;
@@ -69,7 +77,7 @@ export interface Cleanup {
 }
 export interface Session {
   stage(scenario: Scenario): Promise<void>;
-  execute(scenario: Scenario): Promise<Evidence>;
+  execute(scenario: Scenario, onAdmitted?: () => void): Promise<Evidence>;
   close(): Promise<Cleanup>;
 }
 export interface RunReport {
@@ -78,6 +86,7 @@ export interface RunReport {
   fixture: Fixture;
   artifact: Artifact;
   leaseId: string | null;
+  scenarios: Scenario[];
   results: Result[];
   cleanup: Cleanup | null;
   acceptance: boolean;

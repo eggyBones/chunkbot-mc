@@ -14,13 +14,13 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   // string alone never grants a fixture password read, join or provider call.
   const options = parseOptions(argv);
   const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-  const composition = options.compositionFile ? JSON.parse(readFileSync(options.compositionFile, 'utf8')) as { instruction: string; outputs: Record<string, number> } : undefined;
+  const composition = options.compositionFile ? JSON.parse(readFileSync(options.compositionFile, 'utf8')) as { instruction: string; outputs: Record<string, number>; returnToOwner?: boolean } : undefined;
   const scenarios = selectScenarios(options.only, composition);
   const artifact = artifactAt(root);
   const grant = options.stage ? undefined : verifyGrant(JSON.parse(readFileSync(options.grantFile!, 'utf8')) as unknown, options.fixture, options.leaseId!, artifact, Date.now(), Boolean(process.env['OPENROUTER_API_KEY']));
   const dir = reportDirectory(root);
   const report: RunReport = {
-    version: 1, mode: options.stage ? 'preparation' : 'real', fixture: options.fixture, artifact, leaseId: grant?.leaseId ?? null,
+    version: 1, mode: options.stage ? 'preparation' : 'real', fixture: options.fixture, artifact, leaseId: grant?.leaseId ?? null, scenarios,
     results: scenarios.map((s) => ({ id: s.id, phase: 'planned', autonomous: false, problems: [] })), cleanup: null, acceptance: false,
     blockers: options.stage ? ['no world/provider scenarios executed; no fixture authority used', 'real frozen-artifact, subscription/Jev, server outcome and cleanup acceptance remains pending'] : [],
   };
@@ -28,8 +28,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   save();
   if (!options.stage) {
     // Dynamic import ONLY after the entire authority/artifact/key gate.
-    const { openOrdinarySession } = await import('./lib/v1-integration/ordinary.ts');
-    await runScenarios(report, scenarios, () => openOrdinarySession(root, dir, grant!), save);
+    await runScenarios(report, scenarios, async () => { const { openOrdinarySession } = await import('./lib/v1-integration/ordinary.ts'); return openOrdinarySession(root, dir, grant!); }, save);
   }
   process.stdout.write(`${options.stage ? 'PREPARED (unexecuted)' : 'RECORDED (coordinator review required)'} V1 integration: ${dir}\n`);
   return options.stage ? 0 : report.results.every((r) => r.phase === 'verified') && report.cleanup?.reconciled ? 0 : 1;

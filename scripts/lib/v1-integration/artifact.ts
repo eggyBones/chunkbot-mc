@@ -18,7 +18,7 @@ export function artifactAt(root: string): Artifact {
   const paths = [...new Set(git(['ls-files', '-co', '--exclude-standard', '-z']).split('\0').filter((p) => /^(src\/|scripts\/|tests\/|config\/|vendor\/|package(?:-lock)?\.json$|tsconfig.*\.json$)/.test(p)))];
   const walk = (dir: string): string[] => readdirSync(join(root, dir), { withFileTypes: true }).flatMap((p) => p.isDirectory() ? walk(`${dir}/${p.name}`) : [`${dir}/${p.name}`]);
   let distSha256: string | null = null;
-  try { const dist = walk('dist'); if (!dist.includes('dist/cli.js')) throw new Error('CLI missing'); distSha256 = digest(root, dist); }
+  try { if (!lstatSync(join(root, 'dist')).isDirectory()) throw new Error('dist must be an owned directory'); const dist = walk('dist'); if (!dist.includes('dist/cli.js')) throw new Error('CLI missing'); distSha256 = digest(root, dist); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   return { head: git(['rev-parse', 'HEAD']), dirty: git(['status', '--porcelain']).length > 0, sourceSha256: digest(root, paths), distSha256 };
 }

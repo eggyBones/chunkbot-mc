@@ -19,11 +19,12 @@ export const SCENARIOS: readonly Scenario[] = [
   })),
   { id: 'V1-DISCONNECT', criteria: ['V1-4'], family: 'lifecycle', instruction: 'Follow me', supplies: {}, outputs: {}, trigger: 'disconnect' },
   { id: 'V1-RESTART', criteria: ['V1-4'], family: 'lifecycle', instruction: 'Follow me', supplies: {}, outputs: {}, trigger: 'restart' },
-  { id: 'V1-PRIVACY', criteria: ['V1-4'], family: 'privacy', instruction: 'Find a diamond ore block', supplies: {}, outputs: {} },
+  { id: 'V1-DEATH', criteria: ['V1-4'], family: 'lifecycle', instruction: 'Follow me', supplies: {}, outputs: {}, trigger: 'death' },
+  { id: 'V1-PRIVACY', criteria: ['V1-4'], family: 'privacy', instruction: 'Find a diamond ore block', supplies: {}, outputs: {}, trigger: 'decision' },
 ];
 
-export function selectScenarios(ids?: string[], composition?: { instruction: string; outputs: Record<string, number> }): Scenario[] {
+export function selectScenarios(ids?: string[], composition?: { instruction: string; outputs: Record<string, number>; returnToOwner?: boolean }): Scenario[] {
   if (ids && (ids.length === 0 || new Set(ids).size !== ids.length || ids.some((id) => !SCENARIOS.some((s) => s.id === id)))) throw new Error('unknown, empty or duplicate scenario selection');
-  if (composition && (!composition.instruction.trim() || composition.instruction.length > 500 || Object.keys(composition.outputs).length < 2 || Object.entries(composition.outputs).some(([key, n]) => !/^minecraft:[a-z0-9_]+$/.test(key) || !Number.isSafeInteger(n) || n < 1 || n > 64))) throw new Error('composition requires an acceptance-selected instruction and at least two exact item outputs (1..64)');
-  return SCENARIOS.filter((s) => !ids || ids.includes(s.id)).map((s) => s.family === 'composition' && composition ? { ...s, ...composition } : s);
+  if (composition && (Object.keys(composition).some((key) => !['instruction', 'outputs', 'returnToOwner'].includes(key)) || typeof composition.instruction !== 'string' || !composition.instruction.trim() || composition.instruction.length > 500 || !composition.outputs || Array.isArray(composition.outputs) || typeof composition.outputs !== 'object' || Object.keys(composition.outputs).length < 2 || Object.entries(composition.outputs).some(([key, n]) => !/^minecraft:[a-z0-9_]+$/.test(key) || !Number.isSafeInteger(n) || n < 1 || n > 64) || (composition.returnToOwner !== undefined && typeof composition.returnToOwner !== 'boolean'))) throw new Error('composition requires only an acceptance-selected instruction, two exact item outputs (1..64), and optional returnToOwner boolean');
+  return SCENARIOS.filter((s) => !ids || ids.includes(s.id)).map((s) => s.family === 'composition' && composition ? { ...s, instruction: composition.instruction, outputs: composition.outputs, ...(composition.returnToOwner === undefined ? {} : { returnToOwner: composition.returnToOwner }) } : s);
 }
