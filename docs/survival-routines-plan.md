@@ -273,6 +273,6 @@ Status: **authorized / preparing; not accepted; no worker launched.** Jake start
 
 | Prepared lane | Existing scope | Ownership / dependency |
 | --- | --- | --- |
-| upkeep | MB-FLOW-003 remaining Routine policies R6/R7 | `src/survival/`, `src/skills/survival.ts`, `tests/survival-upkeep.test.ts`; Canonical shared survival contracts and single admission/executor remain integration-owned; preserve accepted recovery/continuation semantics. |
+| upkeep | MB-FLOW-003 remaining Routine policies R6/R7 | `src/survival/`, `src/skills/survival.ts`, `tests/survival-upkeep.test.ts`; Upkeep exclusively owns src/survival/ and src/skills/survival.ts; integration must not edit them. ALL common survival contracts and the single shared admission/executor are integration-owned. Preserve accepted recovery/continuation semantics. |
 
 Complete outcomes/exclusions, exact owned tests/paths and source/build/live boundaries are in [the preparation checkpoint](agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona) and the ignored per-lane briefs. No shared schema/predicate/CLI/composition edit is accepted by proposal alone. Dedicated local role review: `docs/reviews/mb-20261013-<suffix>-worker.md`; acceptance instead owns `docs/reviews/mb-v1-05-20261013.md`. Coordinator approval of exact contract/companion commits precedes cross-branch imports.

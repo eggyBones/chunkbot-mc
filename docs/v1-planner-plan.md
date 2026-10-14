@@ -198,7 +198,7 @@ Status: **authorized / preparing; not accepted; no worker launched.** Jake start
 
 | Prepared lane | Existing scope | Ownership / dependency |
 | --- | --- | --- |
-| home | MB-FLOW-001 A3/A6; MB-PLAN-006 full-house gathering | `src/skills/construction.ts`, `src/construction/materials.ts (new, if needed)`, `src/construction/project.ts (new adjunct only, if needed)`; Existing HomeProjectService and blueprint helpers in src/autonomy/home.ts and blueprint.ts are read-only here; progression owns them. Propose needed changes to that owner through the coordinator. Shared predicate/schema/catalog/composition changes go to integration; no duplicate project service or blueprint. |
+| home | MB-FLOW-001 A3/A6; MB-PLAN-006 full-house gathering | `src/autonomy/blueprint.ts`, `src/autonomy/home.ts`, `src/autonomy/store.ts`; HOME owns the canonical blueprint/HomeProjectService/project-store modules; extend these rather than duplicate them. Progression exclusively owns supervisor/scope/control/context/status-text/barrier.ts. ALL common contracts and shared predicates/catalog/composition go to integration; propose exact typed seam changes to the coordinator. |
 
 Complete outcomes/exclusions, exact owned tests/paths and source/build/live boundaries are in [the preparation checkpoint](agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona) and the ignored per-lane briefs. No shared schema/predicate/CLI/composition edit is accepted by proposal alone. Dedicated local role review: `docs/reviews/mb-20261013-<suffix>-worker.md`; acceptance instead owns `docs/reviews/mb-v1-05-20261013.md`. Coordinator approval of exact contract/companion commits precedes cross-branch imports.
 

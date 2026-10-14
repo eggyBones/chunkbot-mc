@@ -21,7 +21,7 @@ Jake starts these EXISTING planned scopes. Status is **authorized / preparing**,
 | integration | Single shared MB-FLOW/MB-OPS composition writer — [docs/companion-upgrades-plan.md](docs/companion-upgrades-plan.md) | authorized / preparing |
 | acceptance | MB-V1-05 V1-1 through V1-5 acceptance preparation — [docs/v1-integration-plan.md](docs/v1-integration-plan.md) | authorized / preparing |
 
-Nine new branches/worktrees use one focused coordination-docs base. See [scope/ownership checkpoint](docs/agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona). Shared contracts/integration have one writer; coordinator owns main integration, roadmap/supervision and manifests/lock/vendor approval. All 19 older worktrees remain preserved.
+Nine new branches/worktrees use one recorded coordination-docs base; the 2026-10-13 ownership/check-slot refinement is carried by a focused follow-up docs commit without resetting or recreating the prepared trees. NINE independent source/reasoning workers remain parallel; heavy local install/build/test jobs are capped at TWO with the shared ignored check-slots.py wrapper. See [scope/ownership checkpoint](docs/agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona). Shared contracts/integration have one writer; coordinator owns main integration, roadmap/supervision and manifests/lock/vendor approval. All 19 older worktrees remain preserved.
 
 ## V1 outcome
 
