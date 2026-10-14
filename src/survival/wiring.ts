@@ -18,6 +18,7 @@ import type { TaskSpec } from '../contracts/task.ts';
 import { mk } from './items.ts';
 import { minecraftDataRegistry } from './registry.ts';
 import { SurvivalService, survivalRoot, type SurvivalMemoryPort } from './service.ts';
+import type { UpkeepTaskContext } from './upkeep.ts';
 
 export interface CreateSurvivalOptions {
   /** `config.survival` block (undefined: survival disabled). */
@@ -32,6 +33,7 @@ export interface CreateSurvivalOptions {
   record?: (event: EvidenceEvent) => void;
   memory?: SurvivalMemoryPort;
   latestSnapshot?: () => ObservationSnapshot | undefined;
+  upkeepTaskContext?: () => UpkeepTaskContext | undefined;
   farRoute?: () => string | undefined;
   /** C12: this application session's id (stored checkpoint records from other sessions display as `restart_held`). */
   sessionId?: string;
@@ -54,6 +56,7 @@ export function createSurvivalService(o: CreateSurvivalOptions): SurvivalService
     ...(o.record ? { record: o.record } : {}),
     ...(o.memory ? { memory: o.memory } : {}),
     ...(o.latestSnapshot ? { latestSnapshot: o.latestSnapshot } : {}),
+    ...(o.upkeepTaskContext ? { upkeepTaskContext: o.upkeepTaskContext } : {}),
     ...(o.farRoute ? { farRoute: o.farRoute } : {}),
     ...(o.sessionId ? { sessionId: o.sessionId } : {}),
   });

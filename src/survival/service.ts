@@ -60,6 +60,7 @@ import { counts, safeFoods, sameDimension, sessionDimension, type SurvivalItemRe
 import { ROUTINE_ORDER, evalEat, evalInventoryRoom, evalRecovery, evalResupply, evalRest, evalToolUpkeep, freeSlots, reserveCount, wornTools, type DesignatedStorage, type PolicyContext, type RoutineEval } from './policy.ts';
 import { SurvivalFileStore, survivalScopeDirectory } from './store.ts';
 import { SurvivalTracker, type CapturedDeathRecord, type TrackerEvent } from './tracker.ts';
+import { freshTaskContext, type UpkeepTaskContext } from './upkeep.ts';
 
 /** Subset of MemoryService survival uses (designated storage, recovery updates). */
 export interface SurvivalMemoryPort {
@@ -93,6 +94,8 @@ export interface SurvivalServiceOptions {
   memory?: SurvivalMemoryPort;
   /** Latest filtered snapshot (predicate evaluation of the bounded site search). */
   latestSnapshot?: () => ObservationSnapshot | undefined;
+  /** Exact accepted-task facts supplied by shared composition; absent = no task-specific upkeep. */
+  upkeepTaskContext?: () => UpkeepTaskContext | undefined;
   /** Far own-death routing (locator route port integration); undefined: far recovery stays blocked. */
   farRoute?: () => string | undefined;
   /** Store test seams. */
