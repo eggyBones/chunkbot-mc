@@ -42,7 +42,7 @@ export type FailureCode =
   | 'artifact_invalid' | 'incompatible' | 'checkpoint_failed' | 'intent_failed'
   | 'cleanup_unproven' | 'ownership_unproven' | 'startup_failed' | 'readiness_failed'
   | 'auth_required' | 'whitelist_denied' | 'server_unavailable' | 'identity_conflict'
-  | 'protocol_mismatch' | 'superseded' | 'timeout' | 'commit_failed' | 'busy';
+  | 'protocol_mismatch' | 'superseded' | 'timeout' | 'commit_failed' | 'busy' | 'request_invalid';
 
 export class ManagerFault extends Error {
   readonly code: FailureCode;
@@ -77,6 +77,8 @@ export interface DrainEvidence {
   actuatorsReleased: boolean;
   interfacesSettled: boolean;
   socketClosed: boolean;
+  /** Local connection-closure event timestamp, not checkpoint completion time. */
+  socketClosedAtMs: number;
   /** Durable child checkpoint, confirmed effects distinct from unknown effects. */
   checkpoint: CheckpointRef;
 }
@@ -99,6 +101,7 @@ export interface ReadinessEvidence {
   checkpointId: string;
   connectionEpoch: number;
   spawnValid: boolean;
+  spawnedAtMs: number;
   dimension: string;
   observedAtMs: number;
   inventoryServerConfirmed: boolean;
@@ -119,12 +122,15 @@ export interface CheckpointPort {
 }
 
 export interface ChildDriver {
+  /** Natural loss revokes readiness; it never schedules automatic reconnect. */
+  onLoss(listener: (child: ChildRegistration, reason: FailureCode) => void): () => void;
   /** Synchronous registration BEFORE any asynchronous spawn/readiness wait. */
   launch(release: AcceptedRelease, checkpoint: CheckpointRef, intent: ManagerIntent, fence: OperationFence): ChildRegistration;
   drain(child: ChildRegistration, fence: OperationFence, signal: AbortSignal): Promise<DrainEvidence>;
   terminate(child: ChildRegistration, signal: AbortSignal): Promise<GoneEvidence>;
   proveGone(child: ChildRegistration, signal: AbortSignal): Promise<GoneEvidence>;
   readiness(child: ChildRegistration, fence: OperationFence, signal: AbortSignal): Promise<ReadinessEvidence>;
+  /** Atomically recheck current connection/readiness before opening admission. */
   activate(child: ChildRegistration, intent: ManagerIntent, fence: OperationFence, signal: AbortSignal): Promise<void>;
   pause(child: ChildRegistration, intent: ManagerIntent, signal: AbortSignal): Promise<void>;
   /** One attempt on the existing owner reply mode, no public fallback/retry. */
@@ -134,6 +140,18 @@ export interface ChildDriver {
 export interface ManagerLease {
   /** Throws unless this manager still owns the exclusive local profile lease. */
   assertHeld(): void;
+}
+
+/** Owner authentication belongs to the trusted bridge/local controller. */
+export interface ManagerControlRequest {
+  action: 'on' | 'off' | 'stop' | 'resume';
+  profile: ReleaseProfile;
+  sessionId: string;
+  /** Ephemeral manager boot identity; old bridge queues never replay after restart. */
+  controlSessionId: string;
+  generation: number;
+  issuedAtMs: number;
+  expiresAtMs: number;
 }
 
 export interface ManagerOptions {
