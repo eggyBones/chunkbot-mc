@@ -43,7 +43,9 @@ const countLineage = z.object({
 export const RouteCheckpointSchema = z.object({
   grantedAtMs: integer, deadlineAtMs: integer,
   anchor: z.object({ dimension: DimensionSchema, at: Vec3Schema, radius: number }).strict(),
-  limits: z.object({ legs: integer, distance: number, stalledLegs: integer }).strict(),
+  limits: z.object({ legs: integer, distance: number, stalledLegs: integer, legRadius: number, minLegProgress: number }).strict(),
+  destinations: z.array(z.enum(['owner', 'owner_destination', 'own_death'])).max(3),
+  source: z.enum(['owner', 'progression', 'support', 'diagnostic']),
   used: z.object({ legs: integer, distance: number, stalledLegs: integer, continuations: integer,
     clientPhysics: number, serverCorrections: number, correctionSamples: integer }).strict(),
   state: z.enum(['authorized', 'exhausted', 'blocked']), blocker: code.nullable(),
@@ -115,6 +117,7 @@ export const SpendCheckpointSchema = z.object({
 export const ManagedCheckpointSchema = z.object({
   version: z.literal(CHECKPOINT_VERSION), scope: CheckpointScopeSchema, sessionId: id,
   revision: integer.min(1), generation: integer, savedAtMs: integer,
+  managerRecovery: z.enum(['clean', 'held_unclean']),
   control: z.object({ onlineIntent: z.boolean(), paused: z.boolean(), reason: code }).strict(),
   directiveGeneration: integer.nullable(), goal: SemanticGoalSchema.nullable(),
   spend: SpendCheckpointSchema,
