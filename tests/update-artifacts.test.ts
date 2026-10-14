@@ -75,7 +75,7 @@ function policy(manifest: ArtifactManifest): PromotionPolicy {
 const code = (expected: string) => (error: unknown): boolean => error instanceof ArtifactError && error.code === expected;
 
 test('packaging paths reject traversal, alternate separators, collisions and aliased ancestors', () => {
-  for (const path of ['../key', '/key', 'C:/key', 'a\\key', './key', 'a//key', 'a/../key', 'a/secret\0', 'a./key']) {
+  for (const path of ['../key', '/key', 'C:/key', 'a\\key', './key', 'a//key', 'a/../key', 'a/secret\0', 'a./key', 'a/e\u0301']) {
     assert.throws(() => relativePath(path), ArtifactError);
   }
   const dir = sandbox();
@@ -314,5 +314,30 @@ test('startup-crash and not-ready fixtures keep packaging integrity distinct fro
       if (name === 'crash') { assert.equal(child.status, 1); assert.match(child.stderr, /DUMMY startup crash/); }
       else { assert.equal(child.status, 0); assert.equal(JSON.parse(child.stdout).ready, false); }
     }
+  } finally { cleanup(root); }
+});
+
+test('artifact verification yields to local control handlers during its inventory scan', async () => {
+  const root = project();
+  try {
+    await packageRelease({ sourceDir: root, outputDir: output(root), dataVersions: versions });
+    let serviced = false;
+    const localControl = new Promise<void>((done) => setImmediate(() => { serviced = true; done(); }));
+    await validateArtifact(output(root));
+    assert.equal(serviced, true);
+    await localControl;
+  } finally { cleanup(root); }
+});
+
+test('payload changes during a yielded validation cannot return a stale verified artifact', async () => {
+  const root = project();
+  try {
+    await packageRelease({ sourceDir: root, outputDir: output(root), dataVersions: versions });
+    const file = join(output(root), '.gitignore');
+    const mutation = new Promise<void>((done) => setImmediate(() => {
+      chmodSync(file, 0o644); writeFileSync(file, 'changed during verification'); chmodSync(file, 0o444); done();
+    }));
+    await assert.rejects(validateArtifact(output(root)), code('artifact_tampered'));
+    await mutation;
   } finally { cleanup(root); }
 });

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { constants, lstatSync, openSync, fstatSync, readFileSync, closeSync, readdirSync, realpathSync } from 'node:fs';
+import { constants, lstatSync, openSync, fstatSync, readFileSync, closeSync, readdirSync, realpathSync, type Stats } from 'node:fs';
 import { isAbsolute, join, parse, resolve, sep } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import { ArtifactError, type FileIdentity } from './model.ts';
 
 export const MAX_FILES = 50_000;
@@ -21,7 +22,7 @@ export function treeDigest(files: readonly FileIdentity[]): string {
 }
 
 export function relativePath(path: string): string {
-  if (path.length > 1024 || !path || isAbsolute(path) || /[\\:\x00-\x1f\x7f]/.test(path) ||
+  if (path.length > 1024 || !path || path.normalize('NFC') !== path || isAbsolute(path) || /[\\:\x00-\x1f\x7f]/.test(path) ||
       path.split('/').some((part) => !part || part === '.' || part === '..' || /[. ]$/.test(part))) {
     throw new ArtifactError('unsafe_path', 'Non-canonical relative file path');
   }
@@ -72,12 +73,14 @@ export function identity(root: string, path: string): FileIdentity {
   return { path, size: bytes.length, sha256: sha256(bytes), executable: (lstatSync(join(root, path)).mode & 0o111) !== 0 };
 }
 
-export function inventory(root: string, options: { skipBins?: boolean; omitManifest?: boolean } = {}): FileIdentity[] {
+type InventoryOptions = { skipBins?: boolean; omitManifest?: boolean };
+
+function* inventoryFiles(root: string, options: InventoryOptions): Generator<FileIdentity> {
   safeDirectory(root);
-  const files: FileIdentity[] = [];
   const names = new Set<string>();
   let total = 0;
-  function walk(prefix: string): void {
+  let count = 0;
+  function* walk(prefix: string): Generator<FileIdentity> {
     const dir = join(root, prefix);
     safeDirectory(dir);
     for (const name of readdirSync(dir).sort()) {
@@ -87,14 +90,38 @@ export function inventory(root: string, options: { skipBins?: boolean; omitManif
       if (names.has(path.toLowerCase())) throw new ArtifactError('unsafe_path', 'Case-colliding payload paths');
       names.add(path.toLowerCase());
       const stat = lstatSync(join(root, path));
-      if (stat.isDirectory() && !stat.isSymbolicLink()) { walk(path); continue; }
+      if (stat.isDirectory() && !stat.isSymbolicLink()) { yield* walk(path); continue; }
       const file = identity(root, path);
       total += file.size;
-      if (files.length >= MAX_FILES || total > MAX_TOTAL_BYTES) throw new ArtifactError('manifest_invalid', 'Artifact inventory exceeds bounds');
-      files.push(file);
+      if (++count > MAX_FILES || total > MAX_TOTAL_BYTES) throw new ArtifactError('manifest_invalid', 'Artifact inventory exceeds bounds');
+      yield file;
     }
   }
-  walk('');
+  yield* walk('');
+}
+
+export function inventory(root: string, options: InventoryOptions = {}): FileIdentity[] {
+  return [...inventoryFiles(root, options)].sort((a, b) => a.path.localeCompare(b.path, 'en'));
+}
+
+// Manager verification must let local stop/logout handlers run during a large
+// scan. No candidate code, child process, network or inference is involved.
+export async function inventoryAsync(root: string, options: InventoryOptions = {}): Promise<FileIdentity[]> {
+  const files: FileIdentity[] = [];
+  const snapshots: Array<{ path: string; stat: Stats }> = [];
+  for (const file of inventoryFiles(root, options)) {
+    files.push(file);
+    snapshots.push({ path: file.path, stat: lstatSync(join(root, file.path)) });
+    if (files.length % 16 === 0 || file.size > 4 * 1024 * 1024) await setImmediate();
+  }
+  for (const { path, stat } of snapshots) {
+    const current = lstatSync(join(root, path));
+    if (current.dev !== stat.dev || current.ino !== stat.ino || current.size !== stat.size || current.mode !== stat.mode ||
+        current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs || current.nlink !== 1 || !current.isFile()) {
+      throw new ArtifactError('artifact_tampered', 'Payload changed during asynchronous verification');
+    }
+  }
+  safeDirectory(root);
   return files.sort((a, b) => a.path.localeCompare(b.path, 'en'));
 }
 

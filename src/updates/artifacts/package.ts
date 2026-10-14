@@ -119,6 +119,13 @@ function checkDependencies(root: string): FileIdentity[] {
     }
     const entry = lock.packages[path];
     if (!entry?.version || entry.link) throw new ArtifactError('dependency_mismatch', 'Linked or unversioned dependency is not allowed');
+    if (entry.resolved?.startsWith('file:')) {
+      const target = relativePath(entry.resolved.slice(5));
+      if (!Object.entries(LocalPackages).some(([name, version]) => target === `vendor/${name}-${version}.tgz` &&
+          (path === `node_modules/${name}` || path.endsWith(`/node_modules/${name}`)))) {
+        throw new ArtifactError('dependency_mismatch', 'Local dependency download identity is outside the pinned vendor inputs');
+      }
+    }
     if (entry.resolved && !entry.resolved.startsWith('file:vendor/')) {
       let url: URL;
       try { url = new URL(entry.resolved); }

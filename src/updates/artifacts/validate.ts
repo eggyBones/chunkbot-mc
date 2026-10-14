@@ -4,7 +4,7 @@ import {
   ArtifactError, ArtifactManifestSchema, CoordinatorAcceptanceSchema, DataVersionsSchema,
   type ArtifactManifest, type VerifiedArtifact, type PromotableArtifact, type PromotionPolicy,
 } from './model.ts';
-import { assertInventoryPaths, inventory, publicInputPath, readRegular, safeDirectory, treeDigest } from './files.ts';
+import { assertInventoryPaths, inventoryAsync, publicInputPath, readRegular, safeDirectory, treeDigest } from './files.ts';
 import { artifactDigest } from './package.ts';
 
 function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
@@ -75,7 +75,7 @@ export async function validateArtifact(directory: string): Promise<VerifiedArtif
   const manifest = result.data;
   checkManifest(manifest);
   let actual: ArtifactManifest['files'];
-  try { actual = inventory(root, { omitManifest: true }); }
+  try { actual = await inventoryAsync(root, { omitManifest: true }); }
   catch (error) {
     if (error instanceof ArtifactError) throw error;
     throw new ArtifactError('artifact_incomplete', 'Artifact payload is incomplete');
