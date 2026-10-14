@@ -57,7 +57,7 @@ function rejectPrivateJSON(value: unknown, depth = 0): void {
 function git(root: string, args: string[]): string {
   // No checkout/install/build/hooks, account access, network, or config mutation.
   try {
-    return execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...args], {
+    return execFileSync('git', ['--no-replace-objects', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...args], {
       cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -73,7 +73,26 @@ function sourceIdentity(root: string): ArtifactManifest['source'] {
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new ArtifactError('source_dirty', 'Source commit is invalid');
   const paths = git(root, ['ls-files', '-z']).split('\0').filter(Boolean);
   const files = paths.map((path) => identity(root, relativePath(path)));
+  const byPath = new Map(files.map((file) => [file.path, file]));
   assertInventoryPaths(files);
+  // status can be "clean" despite assume-unchanged/skip-worktree bits. The
+  // commit claim must bind actual bytes and modes, not merely trust the index.
+  const entries = git(root, ['ls-tree', '-rz', '--full-tree', 'HEAD']).split('\0').filter(Boolean);
+  const committedPaths: string[] = [];
+  for (const entry of entries) {
+    const tab = entry.indexOf('\t');
+    const metadata = /^(100644|100755) blob ([a-f0-9]{40})$/.exec(entry.slice(0, tab));
+    const path = relativePath(entry.slice(tab + 1));
+    committedPaths.push(path);
+    if (tab < 0 || !metadata) throw new ArtifactError('source_dirty', 'Source commit contains an unsupported object');
+    const file = byPath.get(path);
+    const bytes = readRegular(root, path);
+    const blob = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+    if (!file || blob !== metadata[2] || file.executable !== (metadata[1] === '100755')) {
+      throw new ArtifactError('source_dirty', 'Tracked source bytes or modes differ from the recorded commit');
+    }
+  }
+  if (JSON.stringify(paths.sort()) !== JSON.stringify(committedPaths.sort())) throw new ArtifactError('source_dirty', 'Tracked source membership differs from the recorded commit');
   return { commit, tree: tree(files) };
 }
 

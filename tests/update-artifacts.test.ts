@@ -341,3 +341,14 @@ test('payload changes during a yielded validation cannot return a stale verified
     await mutation;
   } finally { cleanup(root); }
 });
+
+test('Git assume-unchanged cannot conceal source drift behind a clean status/commit claim', async () => {
+  const root = project();
+  try {
+    gitFixture(root, 'update-index', '--assume-unchanged', 'src/cli.ts');
+    put(root, 'src/cli.ts', 'console.log("hidden edit");');
+    assert.equal(execFileSync('git', ['status', '--porcelain=v1'], { cwd: root, encoding: 'utf8' }), '');
+    await assert.rejects(packageRelease({ sourceDir: root, outputDir: output(root), dataVersions: versions }), code('source_dirty'));
+    assert.equal(existsSync(output(root)), false);
+  } finally { cleanup(root); }
+});
