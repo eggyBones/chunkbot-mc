@@ -9,6 +9,7 @@
 //   the only blocks the project may repair or remove.
 // - verification is always a fresh inspection of the actual site; a stored
 //   checkpoint or verification is historical, never proof of the present.
+import { randomBytes } from 'node:crypto';
 import type { Clock, EvidenceEvent } from '../contracts/index.ts';
 import type { HomeProject, HomeProjectSummary, ProjectState } from '../contracts/autonomy.ts';
 import type { AutonomyControl } from './control.ts';
@@ -20,7 +21,6 @@ export class HomeProjectService {
   private readonly control: AutonomyControl;
   private readonly clock: Clock;
   private readonly record: (e: EvidenceEvent) => void;
-  private seq = 0;
   private pending: Promise<unknown> = Promise.resolve();
 
   /** Serialize writes so asynchronous predicate hooks cannot erase checkpoints. */
@@ -58,10 +58,9 @@ export class HomeProjectService {
       const existing = this.project();
       if (existing) return { ok: false, reason: 'home_project_exists', detail: `project ${existing.id} (${existing.state}) already exists in this world profile; it is inspected and continued, never replaced` };
       const now = this.clock.now();
-      this.seq += 1;
       const outer = site.interior + 2;
       const project: HomeProject = {
-        id: `proj-${now.toString(36)}${this.seq.toString(36)}`.slice(0, 29),
+        id: `proj-${randomBytes(12).toString('hex')}`,
         blueprint: 'small_shelter_v1',
         dimension: site.dimension,
         origin: { ...site.origin },
@@ -146,6 +145,11 @@ export class HomeProjectService {
       p.updatedAtMs = this.clock.now();
       await this.control.setHome(p, 'home_interrupted');
     });
+  }
+
+  /** Await queued project writes before closing the shared durable control. */
+  async flush(): Promise<void> {
+    await this.pending;
   }
 
   summary(): HomeProjectSummary | null {

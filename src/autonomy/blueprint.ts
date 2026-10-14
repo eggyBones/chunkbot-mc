@@ -128,7 +128,11 @@ export function cellKey(p: V3): string {
 export function canonicalProject(project: Pick<HomeProject, 'blueprint' | 'origin' | 'size' | 'entranceFacing' | 'cells'>): boolean {
   const interior = project.size.outerX - 2;
   if (project.blueprint !== 'small_shelter_v1' || (interior !== 2 && interior !== 3) || project.size.outerZ !== project.size.outerX || project.size.wallHeight !== 2) return false;
-  return JSON.stringify(project.cells) === JSON.stringify(smallShelterCells(project.origin, interior, project.entranceFacing));
+  const expected = smallShelterCells(project.origin, interior, project.entranceFacing);
+  return project.cells.length === expected.length && expected.every((c, i) => {
+    const v = project.cells[i]!;
+    return c.role === v.role && c.phase === v.phase && key(c.at) === key(v.at) && c.accept.length === v.accept.length && c.accept.every((a, n) => a === v.accept[n]);
+  });
 }
 
 export interface MaterialRequirement {
@@ -149,9 +153,11 @@ export function materialRequirements(verdicts: readonly CellVerdict[], inventory
   const remaining = new Map(inventory);
   const groups = new Map<string, MaterialRequirement>();
   const needsRoof = verdicts.some((v) => v.cell.role === 'roof' && v.status === 'missing');
+  const aidPosition = verdicts.find((v) => v.cell.role === 'aid')?.cell.at;
+  const sharedAid = aidPosition && verdicts.some((v) => v.cell.role === 'workstation' && v.cell.accept[0] === 'minecraft:crafting_table' && key(v.cell.at) === key(aidPosition));
   for (const v of verdicts) {
     if (v.cell.role === 'entrance' || v.status === 'satisfied' || v.status === 'foreign') continue;
-    if (v.cell.role === 'aid' && (!needsRoof || v.key && accepts(v.cell, v.key, inTag))) continue;
+    if (v.cell.role === 'aid' && (sharedAid || !needsRoof || v.key && accepts(v.cell, v.key, inTag))) continue;
     const structural = ['wall', 'roof', 'aid'].includes(v.cell.role);
     const accept = structural && material ? [material] : [...v.cell.accept];
     const id = `${v.cell.role}|${accept.join(',')}`;
@@ -170,7 +176,7 @@ export function materialRequirements(verdicts: readonly CellVerdict[], inventory
   // The aid's final air state is satisfied, but its temporary block still needs
   // one inventory item when construction reaches an unfinished roof.
   const aid = verdicts.find((v) => v.cell.role === 'aid');
-  if (needsRoof && aid?.status === 'satisfied' && aid.key && AIRLIKE.test(aid.key)) {
+  if (!sharedAid && needsRoof && aid?.status === 'satisfied' && aid.key && AIRLIKE.test(aid.key)) {
     const accept = material ? [material] : [...aid.cell.accept];
     const item = [...remaining].find(([k, n]) => n > 0 && accepts(aid.cell, k, inTag) && (!material || (material.startsWith('#') ? inTag(material, k) : material === k)));
     groups.set(`aid|${accept.join(',')}`, { role: 'aid', count: 1, held: item ? 1 : 0, missing: item ? 0 : 1, unknownCells: 0, accept });
@@ -365,13 +371,15 @@ export function findSites(probe: SiteProbe, standing: V3, interior: 2 | 3, maxDi
           const centre = { x: origin.x + outer / 2, y: origin.y, z: origin.z + outer / 2 };
           // The bot must not stand inside the footprint (it would block placements), and the site must be inside travel bounds.
           const inside = standing.x >= origin.x && standing.x < origin.x + outer && standing.z >= origin.z && standing.z < origin.z + outer;
-          if (inside || !withinTravel(centre)) continue;
+          const far = { x: origin.x + outer - 1, y: origin.y, z: origin.z + outer - 1 };
+          if (inside || Math.hypot(centre.x - standing.x, centre.z - standing.z) > maxDistance || !withinTravel(centre) || !withinTravel(origin) || !withinTravel(far) || !withinTravel({ ...origin, x: far.x }) || !withinTravel({ ...origin, z: far.z })) continue;
           // Entrance faces the bot (shortest approach).
           const facing = facings.slice().sort((a, b) => {
             const pa = toWorld(origin, outer, a, Math.floor(outer / 2), -1, 0);
             const pb = toWorld(origin, outer, b, Math.floor(outer / 2), -1, 0);
             return Math.hypot(pa.x - standing.x, pa.z - standing.z) - Math.hypot(pb.x - standing.x, pb.z - standing.z);
           })[0] as Facing;
+          if (!withinTravel(entranceOutside({ origin, size: { outerX: outer, outerZ: outer, wallHeight: 2 }, entranceFacing: facing }))) continue;
           const check = checkSite(probe, origin, interior, facing);
           if (check.ok) {
             out.push({ origin, facing, interior, distance: Math.round(Math.hypot(centre.x - standing.x, centre.z - standing.z) * 10) / 10, checks: check.checks });

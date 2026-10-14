@@ -127,8 +127,9 @@ describe('MB-FLOW-001-C3 ShelterInspector opacity and freshness', () => {
       if (c.role === 'wall' || c.role === 'roof') e.world.set(c.at.x, c.at.y, c.at.z, 'oak_planks');
       if (c.role === 'workstation' || c.role === 'storage') e.world.set(c.at.x, c.at.y, c.at.z, c.accept[0]!.replace('minecraft:', ''));
     }
-    e.visible = new Set(cells.map((c) => key(c.at.x, c.at.y, c.at.z)));
-    const project = { id: 'proj-test', blueprint: 'small_shelter_v1', origin, size: { outerX: 5, outerZ: 5, wallHeight: 2 }, entranceFacing: 'north', cells, dimension: 'overworld', checkpoints: [], state: 'building' } as unknown as HomeProject;
+    e.visible = new Set();
+    for (let x = 9; x <= 15; x += 1) for (let y = -1; y <= 3; y += 1) for (let z = 9; z <= 15; z += 1) e.visible.add(key(x, y, z));
+    const project = { id: 'proj-test', blueprint: 'small_shelter_v1', origin, size: { outerX: 5, outerZ: 5, wallHeight: 2 }, entranceFacing: 'north', cells, dimension: 'overworld', checkpoints: cells.filter((c) => c.role !== 'entrance' && c.role !== 'aid').map((c) => ({ at: c.at, to: c.role === 'wall' || c.role === 'roof' ? 'minecraft:oak_planks' : c.accept[0]!, capability: 'build_home', confirmedAtMs: 0 })), state: 'building' } as unknown as HomeProject;
     const home = { project: () => project, writable: () => true, verified: async () => project } as never;
     const { session, services } = wire(e);
     const insp = new ShelterInspector(() => session, services);
@@ -148,6 +149,7 @@ describe('MB-FLOW-001-C4 build_home resolver: specific stand points and binding 
     const p = project();
     const table = p.cells.find((c) => c.accept[0] === 'minecraft:crafting_table')!;
     e.world.set(table.at.x, table.at.y, table.at.z, 'crafting_table');
+    p.checkpoints.push({ at: table.at, to: 'minecraft:crafting_table', capability: 'build_home', confirmedAtMs: 0 });
     const home = { project: () => p, writable: () => true, verified: async () => p } as never;
     const { session, services } = wire(e);
     const insp = new ShelterInspector(() => session, services);

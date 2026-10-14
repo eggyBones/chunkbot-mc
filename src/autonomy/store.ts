@@ -185,7 +185,7 @@ export class ControlFileStore {
         } catch {
           holder = undefined;
         }
-        if (holder !== undefined && holder !== pid && alive(holder)) return { ok: false, detail: `another Chunkbot process (pid ${holder}) holds the autonomy writer lock for this scope` };
+        if (holder !== undefined && alive(holder)) return { ok: false, detail: `another Chunkbot process (pid ${holder}) holds the autonomy writer lock for this scope` };
         rmSync(path, { force: true });
       }
     }
