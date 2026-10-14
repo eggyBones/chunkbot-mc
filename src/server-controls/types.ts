@@ -74,9 +74,11 @@ export const BridgeSampleSchema = z.strictObject({
   protocol: z.literal(BRIDGE_PROTOCOL), installation: token, world: id, bot: id,
   owner: UuidWordsSchema, version: z.enum(['26.1.2', '26.2']),
   session: z.union([token, z.literal('closed')]),
-  clock: counter, heartbeat: counter, generation: counter, acknowledged: counter,
+  clock: counter, heartbeat: z.number().int().min(0).max(HEARTBEAT_TICKS), generation: counter, acknowledged: counter,
+  display: z.number().int().min(0).max(5), blocker: z.number().int().min(0).max(7),
+  managerGeneration: counter,
   ownerSession: counter, ownerPresent: z.union([z.literal(0), z.literal(1)]),
-  request: z.strictObject({ generation: counter, tick: counter, action: z.union([z.literal(0), z.literal(1), z.literal(2)]), owner: UuidWordsSchema, ownerSession: counter }),
+  request: z.strictObject({ generation: counter, tick: counter, action: z.union([z.literal(0), z.literal(1), z.literal(2)]), owner: UuidWordsSchema, ownerSession: counter, managerGeneration: counter }),
 });
 export type BridgeSample = z.infer<typeof BridgeSampleSchema>;
 export type BridgeDisplay = 'offline' | 'joining' | 'online' | 'logging_out' | 'blocked' | 'unavailable';
@@ -85,7 +87,7 @@ export interface BridgeTransport {
   open(binding: BridgeBinding, session: string, signal: AbortSignal): Promise<void>;
   sample(signal: AbortSignal): Promise<unknown>;
   acknowledge(session: string, generation: number, disposition: BridgeIntentReceipt['disposition'], signal: AbortSignal): Promise<void>;
-  heartbeat(session: string, display: BridgeDisplay, blocker: BridgeManagerStatus['blocker'], signal: AbortSignal): Promise<void>;
+  heartbeat(session: string, display: BridgeDisplay, blocker: BridgeManagerStatus['blocker'], managerGeneration: number, signal: AbortSignal): Promise<void>;
   /** Session-fenced; cannot close a replacement bridge's mailbox. */
   close(session: string, signal: AbortSignal): Promise<void>;
 }

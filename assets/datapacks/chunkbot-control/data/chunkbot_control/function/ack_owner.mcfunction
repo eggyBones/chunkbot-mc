@@ -1,0 +1,3 @@
+$execute if entity @s[nbt={UUID:[I;$(a),$(b),$(c),$(d)]}] if score #disposition cb_ctl matches 1 run tellraw @s {"text":"Chunkbot: request queued; use /trigger chunkbot_status for verified state.","color":"yellow"}
+$execute if entity @s[nbt={UUID:[I;$(a),$(b),$(c),$(d)]}] if score #disposition cb_ctl matches 2 run tellraw @s {"text":"Chunkbot: request acknowledged without a second session.","color":"yellow"}
+$execute if entity @s[nbt={UUID:[I;$(a),$(b),$(c),$(d)]}] if score #disposition cb_ctl matches 3 run tellraw @s {"text":"Chunkbot: request rejected; current local logout or manager policy wins.","color":"red"}

@@ -1,0 +1,1 @@
+$execute if score #armed cb_ctl matches 1 if data storage chunkbot_control:bridge state{session:"$(session)"} run function chunkbot_control:pulse_apply {display:$(display),blocker:$(blocker),manager_generation:$(manager_generation),ticks:$(ticks)}

@@ -1,0 +1,1 @@
+$execute if data storage chunkbot_control:bridge state{session:"$(session)",request:{generation:$(generation)}} if score #generation cb_ctl matches $(generation) run function chunkbot_control:ack_apply {generation:$(generation),disposition:$(disposition)}

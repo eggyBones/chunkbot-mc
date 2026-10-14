@@ -10,6 +10,7 @@ export function wordsUuid(words: UuidWords): string {
 
 /** Fixed namespace and typed data only. Never accepts a player command/string. */
 export function macroCommand(name: 'install' | 'open' | 'ack' | 'pulse' | 'close', args: Record<string, string | number>): string {
+  if (!['install', 'open', 'ack', 'pulse', 'close'].includes(name)) throw new Error('invalid bridge function');
   for (const value of Object.values(args)) {
     if (typeof value === 'string' ? !/^[a-z0-9_-]{1,64}$/.test(value) : !Number.isInteger(value) || value < -2147483648 || value > 2147483647) {
       throw new Error('invalid bridge macro argument');
