@@ -11,6 +11,7 @@ import { runScenarios } from '../scripts/lib/v1-integration/runner.ts';
 import { SCENARIOS, selectScenarios } from '../scripts/lib/v1-integration/scenarios.ts';
 import type { Artifact, Evidence, Event, Grant, RunReport, Scenario, Session } from '../scripts/lib/v1-integration/types.ts';
 import { main } from '../scripts/v1-integration-live-check.ts';
+import { redact } from '../src/telemetry/redact.ts';
 
 const artifact: Artifact = { head: 'test-commit', dirty: false, sourceSha256: 'a'.repeat(64), distSha256: 'b'.repeat(64) };
 const grant: Grant = { version: 1, leaseId: 'coordinator-test', fixture: '26.1.2', expiresAtMs: 1000, realProviders: true, artifact };
@@ -126,8 +127,9 @@ describe('independent server/outcome/cleanup oracles', () => {
     assert.ok(verifyEvidence(scenario('V1-PRIVACY'), e).length);
     e.captureComplete = true; e.captures = ['planner', 'jev'].map((provider) => ({ provider: provider as 'planner' | 'jev', goalId: e.goalId, requestId: provider, atMs: 100, body: 'filtered visible world' }));
     const hash = createHash('sha256').update('filtered visible world').digest('hex');
-    e.events = e.events.map((v) => v.type === 'planner_turn_started' ? { ...v, requestId: 'planner', promptDigest: hash.slice(0, 12) } : v.type === 'jev_request' ? { ...v, requestId: 'jev', bodyDigest: hash } : v.type === 'task_choice' ? { ...v, requestId: 'jev' } : v);
+    e.events = e.events.map((v) => v.type === 'planner_turn_started' ? { ...v, requestId: 'planner', promptDigest: hash.slice(0, 12) } : v.type === 'jev_request' ? { ...v, requestId: 'jev', bodyDigest: { algorithm: 'sha256', parts: hash.match(/.{16}/g) } } : v.type === 'task_choice' ? { ...v, requestId: 'jev' } : v);
     assert.deepEqual(verifyEvidence(scenario('V1-PRIVACY'), e), []);
+    assert.deepEqual(verifyEvidence(scenario('V1-PRIVACY'), { ...e, events: e.events.map((v) => redact(v) as Event) }), [], 'actual telemetry redaction must preserve digest binding');
     assert.ok(verifyEvidence(scenario('V1-PRIVACY'), { ...e, captures: e.captures.map((c) => ({ ...c, body: '205,-60,214' })) }).length);
   });
   it('untemplated composition is chosen at acceptance, not compiled as a goal plan', () => {

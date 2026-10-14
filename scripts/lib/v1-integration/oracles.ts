@@ -66,7 +66,11 @@ export function verifyEvidence(s: Scenario, e: Evidence): string[] {
     for (const c of e.captures) {
       const r = requests.find((v) => key(v.type === 'jev_request' ? 'jev' : 'planner', v.requestId, v.type === 'jev_request' ? v.attempt : undefined) === key(c.provider, c.requestId, c.attempt));
       const hash = createHash('sha256').update(c.body).digest('hex');
-      require(r && (c.provider === 'planner' ? r.promptDigest === hash.slice(0, 12) : r.bodyDigest === hash) && Math.abs(atMs(r) - c.atMs) <= 1_000, 'capture is not bound to actual transmitted request bytes');
+      const wireDigest = object(r?.bodyDigest), parts = wireDigest.parts;
+      // A raw 64-character hex value is intentionally redacted by RunStore.
+      // Four 16-character parts also avoid UUID redaction of 32 hex digits.
+      const jevDigestMatches = wireDigest.algorithm === 'sha256' && Array.isArray(parts) && parts.length === 4 && parts.every((part: unknown, i: number) => part === hash.slice(i * 16, (i + 1) * 16));
+      require(r && (c.provider === 'planner' ? r.promptDigest === hash.slice(0, 12) : jevDigestMatches) && Math.abs(atMs(r) - c.atMs) <= 1_000, 'capture is not bound to actual transmitted request bytes');
     }
     for (const hidden of e.hiddenFacts) require(!e.captures.some((c) => c.body.includes(hidden)), 'hidden server fact leaked into a model payload');
     require((e.hiddenLocations?.length ?? 0) > 0, 'independently staged hidden-location proof is absent');
