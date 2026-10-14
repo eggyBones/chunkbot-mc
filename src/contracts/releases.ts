@@ -2,18 +2,16 @@
 // never from Minecraft or the gameplay planner. Companion implementations must
 // consume this contract after coordinator review of its exact commit.
 import { z } from 'zod';
-import type { ControlLatch } from './handoff.ts';
-import type { ContinuationCheckpoint } from './continuation.ts';
+import type { ControlLatch, HandoffTotals } from './handoff.ts';
+import type { ContinuationCheckpoint, RouteCarry } from './continuation.ts';
 import type { Readiness } from './ports.ts';
+import { MemoryScopeSchema } from './memory.ts';
 
 export const RELEASE_FORMAT_VERSION = 1 as const;
 export const CHECKPOINT_FORMAT_VERSION = 1 as const;
 export const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export const ReleaseIdSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/);
-export const ManagedScopeSchema = z.object({
-  worldProfile: z.string().min(1).max(96),
-  worldRevision: z.number().int().min(1).max(1_000_000),
-  botProfile: z.string().min(1).max(96),
+export const ManagedScopeSchema = MemoryScopeSchema.extend({
   ownerUuid: z.string().uuid(),
 }).strict();
 export type ManagedScope = z.infer<typeof ManagedScopeSchema>;
@@ -76,7 +74,7 @@ export interface ManagedAccounting {
   decisionAttempts: Record<string, number>;
   decisionDisabled: string | null;
   plannerDisabled: string | null;
-  preparationTurnsUsed: number;
+  preparation: Pick<HandoffTotals, 'discardedTurns' | 'discardedTurnAllowance'>;
   /** Companion supervisor's exact consumed session allowances (never defaults). */
   automatic: { progressionGoals: number; supportGoals: number; plannerTurns: number };
 }
@@ -85,11 +83,14 @@ export interface AccountingJournalPort {
   commit(accounting: ManagedAccounting): void;
 }
 
+/** Consumed route allowance history, with no connection/goal epoch grant. */
+export type SemanticRouteAccounting = Omit<RouteCarry, 'originalGoalEpoch' | 'fromGoalEpoch' | 'connectionEpoch'>;
 /** Semantic data only. Never execute this record directly or restore old epochs. */
-export type SemanticDirectiveCheckpoint = Omit<ContinuationCheckpoint, 'sessionId' | 'connectionEpoch' | 'interruptions' | 'state'> & {
+export type SemanticDirectiveCheckpoint = Omit<ContinuationCheckpoint, 'sessionId' | 'connectionEpoch' | 'interruptions' | 'state' | 'route'> & {
   state: 'interrupted';
   intakeGeneration: number;
   interruption: 'update';
+  route: SemanticRouteAccounting | null;
 };
 export interface ManagedSessionCheckpoint {
   formatVersion: typeof CHECKPOINT_FORMAT_VERSION;

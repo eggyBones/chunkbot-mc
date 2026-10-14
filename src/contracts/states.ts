@@ -48,6 +48,7 @@ export const TERMINAL_REASON_CODES = [
   'owner_stop',
   'replaced',
   'shutdown',
+  'update_interrupted', // controlled release drain; never owner stop or success
   // blocked
   'planner_not_ready',
   'capability_not_ready',

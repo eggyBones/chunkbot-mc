@@ -55,7 +55,7 @@ export const DEFAULT_MAX_CONTINUATIONS = 2;
 /** Ownership ends that may be continued in v1 (same session, connection epoch and dimension). */
 export const CONTINUABLE_INTERRUPTIONS = ['death', 'low_health', 'safety_interrupted'] as const;
 /** Ownership ends recorded as held, NON-executable checkpoints (display only) in v1. */
-export const HELD_ONLY_INTERRUPTIONS = ['disconnected', 'kicked', 'dimension_change'] as const;
+export const HELD_ONLY_INTERRUPTIONS = ['disconnected', 'kicked', 'dimension_change', 'update_interrupted'] as const;
 export type CheckpointInterruption = (typeof CONTINUABLE_INTERRUPTIONS)[number] | (typeof HELD_ONLY_INTERRUPTIONS)[number];
 
 /** Full shared counters exactly as the goal record stores them. */

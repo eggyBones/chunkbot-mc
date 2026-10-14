@@ -107,6 +107,7 @@ import {
   type ContinueResult,
   type RouteCarry,
   type Vec3,
+  type SemanticDirectiveCheckpoint,
 } from '../contracts/index.ts';
 import { countFor, groundOutcome, initialCountLineage, outcomeAtoms } from './continuation.ts';
 import { isOwnerQuestionProblem, questionBlockerText } from './declarative.ts';
@@ -366,6 +367,8 @@ export interface EngineStatus {
   windowGaps?: WindowGap[];
   /** MB-FLOW-003-C12 held/continuing owner jobs (bounded copies). */
   checkpoints?: ContinuationCheckpoint[];
+  /** Imported update intent is display-only and blocks unrelated progression. */
+  interruptedUpdate?: SemanticDirectiveCheckpoint;
 }
 
 /** What GoalEngine.status() actually returns: the MB-FLOW-002 fields are always present. */
@@ -373,6 +376,13 @@ export type FullEngineStatus = EngineStatus & Required<Pick<EngineStatus, 'parke
 
 /** Interface for a cleanup step registered by work owned by the active goal. */
 export type Cleanup = () => void | Promise<void>;
+
+export interface EngineUpdateDrain {
+  drained: boolean;
+  cleanupConfirmed: boolean;
+  detail: string;
+  directive: SemanticDirectiveCheckpoint | null;
+}
 
 interface HandoffTimeline {
   receivedAtMs: number;
@@ -489,6 +499,7 @@ const TERMINAL_STATE_FOR: Record<TerminalReasonCode, TerminalGoalState> = {
   owner_stop: 'cancelled',
   replaced: 'cancelled',
   shutdown: 'cancelled',
+  update_interrupted: 'cancelled',
   planner_not_ready: 'blocked',
   capability_not_ready: 'blocked',
   knowledge_not_ready: 'blocked',
@@ -635,6 +646,11 @@ export class GoalEngine {
   /** MB-FLOW-003-C12 held owner jobs by goal id (bounded). */
   private readonly held = new Map<string, HeldEntry>();
   private continuingNow = false;
+  private updateDrain: Promise<EngineUpdateDrain> | undefined;
+  private interruptedUpdate: SemanticDirectiveCheckpoint | undefined;
+  /** Real cleanup tails survive timeout wrappers; a timeout cannot prove drain. */
+  private readonly cleanupTails = new Set<Promise<unknown>>();
+  private readonly cleanupFaults: string[] = [];
 
   constructor(deps: GoalEngineDeps) {
     this.deps = deps;
@@ -645,6 +661,22 @@ export class GoalEngine {
 
   get currentEpoch(): number {
     return this.epoch;
+  }
+
+  get admissionsClosed(): boolean { return this.closed; }
+  get intakeVersion(): number { return this.intakeGeneration; }
+
+  handoffBudget(): Pick<HandoffTotals, 'discardedTurns' | 'discardedTurnAllowance'> {
+    return { discardedTurns: this.totals.discardedTurns, discardedTurnAllowance: this.totals.discardedTurnAllowance };
+  }
+
+  /** Validated startup only; update/rollback cannot increase the original cap. */
+  restoreHandoffBudget(state: Pick<HandoffTotals, 'discardedTurns' | 'discardedTurnAllowance'>): void {
+    if (this.epoch !== 0 || this.closed || this.active || this.pending) throw new Error('handoff accounting can only be restored at startup');
+    if (![state.discardedTurns, state.discardedTurnAllowance].every((n) => Number.isSafeInteger(n) && n >= 0) || state.discardedTurns < this.totals.discardedTurns) throw new Error('invalid or decreased handoff accounting');
+    this.totals.discardedTurns = state.discardedTurns;
+    this.totals.discardedTurnAllowance = Math.min(state.discardedTurnAllowance, this.totals.discardedTurnAllowance);
+    this.deps.store.record({ type: 'handoff_accounting_restored', ...this.handoffBudget() });
   }
 
   /** True while a goal owns control (planning, executing, stopping). */
@@ -739,6 +771,7 @@ export class GoalEngine {
     if (this.latch.paused) return { reason: 'paused', detail: 'automatic work is paused (stop latch)' };
     if (this.pending) return { reason: 'busy', detail: 'an owner instruction is being prepared' };
     if (this.ownerIntakesInFlight > 0) return { reason: 'busy', detail: 'an owner instruction is being admitted' };
+    if (this.interruptedUpdate) return { reason: 'busy', detail: 'an owner directive was interrupted by an update; a new owner instruction may supersede it' };
     if (this.active) return { reason: 'busy', detail: `goal ${this.active.record.id} owns control` };
     return undefined;
   }
@@ -761,7 +794,7 @@ export class GoalEngine {
     const origin: IntakeOrigin = { surface: 'supervisor', principal: 'supervisor' };
     if (source.kind === 'owner') return this.rejectQuiet('invalid_task', 'owner goals use submit', origin);
     if (source.kind === 'support' && source.execution !== 'planner_goal') return this.rejectQuiet('invalid_task', 'a code_task support routine uses submitSupportTask', origin);
-    const blocker = this.automaticBlockerFor(options.replaceAutomatic === true);
+    const blocker = this.automaticBlockerFor(options.replaceAutomatic === true, source);
     if (blocker) return this.rejectQuiet(blocker.reason, blocker.detail, origin);
     const text = instruction.trim();
     if (text.length === 0 || text.length > BOUNDS.longText) return this.rejectQuiet(text.length === 0 ? 'empty' : 'too_long', 'automatic instruction out of bounds', origin);
@@ -778,8 +811,15 @@ export class GoalEngine {
   }
 
   /** As automaticBlocker; with `replaceAutomatic`, an ACTIVE automatic goal may be replaced (support over progression). */
-  private automaticBlockerFor(replaceAutomatic: boolean): { reason: SubmitRejection; detail: string } | undefined {
+  private automaticBlockerFor(replaceAutomatic: boolean, source: GoalSource): { reason: SubmitRejection; detail: string } | undefined {
     const b = this.automaticBlocker();
+    // Necessary support may serve a retained update intent; unrelated progression
+    // cannot erase it. All ordinary latch/owner/admission/currentness checks apply.
+    const supportingHeld = source.kind === 'support' && source.serves === 'owner_intent';
+    if (this.interruptedUpdate && b?.reason === 'busy') {
+      if (!supportingHeld) return b;
+      if (!this.active && !this.pending && this.ownerIntakesInFlight === 0) return undefined;
+    }
     if (b && replaceAutomatic && b.reason === 'busy' && this.active && !this.pending && this.ownerIntakesInFlight === 0 && this.active.source && this.active.source.kind !== 'owner') return undefined;
     return b;
   }
@@ -797,7 +837,7 @@ export class GoalEngine {
     const origin: IntakeOrigin = { surface: 'supervisor', principal: 'supervisor' };
     if (source.kind !== 'support' || source.execution !== 'code_task') return this.rejectQuiet('invalid_task', 'only survival code_task support uses submitSupportTask', origin);
     if (!this.deps.tasks) return this.rejectQuiet('tasks_not_installed', 'the generic task runtime is not installed', origin);
-    const blocker = this.automaticBlockerFor(options.replaceAutomatic === true);
+    const blocker = this.automaticBlockerFor(options.replaceAutomatic === true, source);
     if (blocker) return this.rejectQuiet(blocker.reason, blocker.detail, origin);
     const parsed = TaskSpecSchema.safeParse(rawSpec);
     if (!parsed.success) return this.rejectQuiet('invalid_task', `invalid support TaskSpec: ${parsed.error.issues.slice(0, 2).map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`, origin);
@@ -858,6 +898,7 @@ export class GoalEngine {
     const text = instruction.trim();
     const invalid = this.validateIntake(text, origin);
     if (invalid) return invalid;
+    this.interruptedUpdate = undefined;
     // MB-FLOW-003-C12: a new owner instruction supersedes held jobs synchronously.
     this.fenceHeld('superseded_by_owner', 'new_owner_instruction');
     const route = this.intakeRoute();
@@ -902,6 +943,7 @@ export class GoalEngine {
     const label = `[operator task diagnostic, ${mode}] ${spec.objective}`;
     const invalid = this.validateIntake(label, origin, BOUNDS.longText);
     if (invalid) return invalid;
+    this.interruptedUpdate = undefined;
     this.fenceHeld('superseded_by_owner', 'operator_task');
     const admitted = await this.admit(truncate(label, BOUNDS.longText), origin, 'operator_task_diagnostic');
     if (admitted.status !== 'admitted') return admitted.result;
@@ -1025,7 +1067,7 @@ export class GoalEngine {
     const cleanups = [...p.cleanups];
     p.cleanupDone = cleanups.length === 0
       ? Promise.resolve()
-      : withTimeout(Promise.allSettled(cleanups.map(async (fn) => fn())).then(() => undefined), this.deps.limits.cleanupTimeoutMs, () => new Error('preparation cleanup timeout')).then(
+      : withTimeout(this.observeCleanups(cleanups, 'preparation').then(() => undefined), this.deps.limits.cleanupTimeoutMs, () => new Error('preparation cleanup timeout')).then(
           () => this.deps.store.record({ type: 'preparation_cleanup', intentId: p.intentId, cleanups: cleanups.length, outcome: 'settled' }),
           () => this.deps.store.record({ type: 'preparation_cleanup', intentId: p.intentId, cleanups: cleanups.length, outcome: 'timeout', boundMs: this.deps.limits.cleanupTimeoutMs }),
         );
@@ -1900,7 +1942,75 @@ export class GoalEngine {
       latch: { ...this.latch },
       windowGaps: this.windowGaps.slice(-8).map((g) => ({ ...g })),
       ...(this.held.size > 0 ? { checkpoints: this.checkpoints() } : {}),
+      ...(this.interruptedUpdate ? { interruptedUpdate: structuredClone(this.interruptedUpdate) } : {}),
     };
+  }
+
+  /** Startup import is non-executable: resume clears a latch, never replays text. */
+  restoreInterruptedUpdate(directive: SemanticDirectiveCheckpoint): void {
+    if (this.epoch !== 0 || this.intakeGeneration !== 0 || this.active || this.pending || this.closed) throw new Error('update intent can only be restored at startup');
+    this.interruptedUpdate = structuredClone(directive);
+    this.intakeGeneration = Math.max(this.intakeGeneration, directive.intakeGeneration);
+    this.deps.store.record({ type: 'update_directive_held', goalId: directive.goalId, detail: 'not replayed; compatible continuation has not been proved', counters: directive.counters });
+  }
+
+  cleanupProof(): { confirmed: boolean; pending: number; faults: string[] } {
+    const pending = this.cleanupTails.size + this.inFlight.size + this.slot.pendingTickets;
+    return { confirmed: pending === 0 && this.cleanupFaults.length === 0, pending, faults: [...this.cleanupFaults] };
+  }
+
+  /** Finite owner work defers. An accepted drain closes admission synchronously. */
+  drainForUpdate(): Promise<EngineUpdateDrain> {
+    if (this.updateDrain) return this.updateDrain.then((old) => {
+      const proof = this.cleanupProof();
+      return { ...structuredClone(old), drained: proof.confirmed, cleanupConfirmed: proof.confirmed, directive: old.directive?.intakeGeneration === this.intakeGeneration ? structuredClone(old.directive) : null, detail: proof.confirmed ? 'owned work has now settled; no old task is resumed' : old.detail };
+    });
+    if (this.closed) return Promise.resolve({ drained: false, cleanupConfirmed: this.cleanupProof().confirmed, detail: 'engine is already shutting down', directive: null });
+    const active = this.active;
+    const incompatible = active?.source?.kind === 'owner' && (!this.deps.continuation || (active.outcome && groundOutcome(active.outcome.contract, Boolean(active.baseline?.counts)).some((g) => g.status === 'not_groundable')));
+    if (this.pending || this.ownerIntakesInFlight > 0 || incompatible || (active?.source?.kind === 'owner' && active.outcome?.contract.kind !== 'persistent')) {
+      return Promise.resolve({ drained: false, cleanupConfirmed: false, detail: 'deferred until finite owner work or pending owner admission finishes; equivalent continuation is not yet proved', directive: null });
+    }
+    const generation = ++this.intakeGeneration;
+    this.closed = true; // also withdraws code-only idle safety authority
+    const goalId = active?.record.id;
+    const revoking = this.revokeActive('update_interrupted', 'interrupted for a controlled release update; not completed');
+    this.updateDrain = (async () => {
+      await revoking;
+      await this.preparationCleanupsDone();
+      await withTimeout(Promise.allSettled([...this.inFlight, ...this.cleanupTails, this.slot.settlement()]), this.deps.limits.cleanupTimeoutMs, () => new Error('update drain timeout')).catch(() => undefined);
+      const proof = this.cleanupProof();
+      const checkpoint = goalId ? this.held.get(goalId)?.cp : undefined;
+      let directive = this.interruptedUpdate ? { ...structuredClone(this.interruptedUpdate), intakeGeneration: generation } : null;
+      if (checkpoint) {
+        const { sessionId: _session, connectionEpoch: _connection, interruptions: _interruptions, state: _state, ...semantic } = structuredClone(checkpoint);
+        let route = null;
+        if (semantic.route) {
+          const { originalGoalEpoch: _original, fromGoalEpoch: _from, connectionEpoch: _routeConnection, ...accounting } = semantic.route;
+          route = accounting;
+        }
+        directive = { ...semantic, route, state: 'interrupted', intakeGeneration: generation, interruption: 'update' };
+      }
+      // Stop during the await wins over the older drain's saved directive.
+      if (generation !== this.intakeGeneration) directive = null;
+      const result = { drained: proof.confirmed, cleanupConfirmed: proof.confirmed, detail: proof.confirmed ? 'owned work settled; update does not mark the directive completed' : `owned cleanup is unconfirmed (${proof.pending} pending, ${proof.faults.length} fault(s)); replacement must not launch`, directive };
+      this.deps.store.record({ type: 'update_drain', ...result });
+      return result;
+    })();
+    return this.updateDrain.then((result) => structuredClone(result));
+  }
+
+  private observeCleanups(cleanups: readonly Cleanup[], kind: string): Promise<PromiseSettledResult<void>[]> {
+    const work = Promise.allSettled(cleanups.map(async (fn) => { await fn(); }));
+    this.cleanupTails.add(work);
+    void work.then((results) => {
+      this.cleanupTails.delete(work);
+      for (const r of results) if (r.status === 'rejected') {
+        this.cleanupFaults.push(kind);
+        if (this.cleanupFaults.length > 16) this.cleanupFaults.shift();
+      }
+    });
+    return work;
   }
 
   /** Registers cleanup for work owned by the given goal epoch (e.g. a later actuator lease). */
@@ -1989,7 +2099,7 @@ export class GoalEngine {
       await previousBarrier;
       const started = this.deps.clock.now();
       const results = await withTimeout(
-        Promise.allSettled([...active.cleanups].map(async (fn) => fn())),
+        this.observeCleanups([...active.cleanups], 'goal'),
         this.deps.limits.cleanupTimeoutMs,
         () => new Error('cleanup timeout'),
       ).catch(() => 'timeout' as const);

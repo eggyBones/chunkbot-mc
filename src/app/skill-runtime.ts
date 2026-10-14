@@ -476,6 +476,19 @@ export class SkillRuntime {
     if (!settled) throw new Error('owned safety executor cleanup did not settle within its bound');
   }
 
+  /** Read-only proof after owned actions settle; never sends a game packet. */
+  releaseDrainProof(): { confirmed: boolean; detail: string } {
+    const session = this.options.session();
+    const pending = session ? interfaceGate(session, this.options.clock).pending().length : 0;
+    const predictions = session?.evidence.pendingPredictionCount ?? 0;
+    const windowOpen = Boolean(session?.bot.currentWindow);
+    const lease = Boolean(this.leases.current);
+    const clearErrors = this.leases.lastClear?.errors.length ?? 0;
+    const safety = this.safetySettlements.size;
+    const confirmed = pending === 0 && predictions === 0 && !windowOpen && !lease && clearErrors === 0 && safety === 0;
+    return { confirmed, detail: confirmed ? 'no lease, owned interface, pending prediction or safety settlement' : `unconfirmed skill cleanup: interfaces ${pending}, predictions ${predictions}, window ${windowOpen}, lease ${lease}, clear errors ${clearErrors}, safety ${safety}` };
+  }
+
   /** Goal terminal (MB-MEM-001): verified outcomes become milestones; refs are released. Never throws. */
   onGoalTerminal(end: { goalId: string; epoch?: number; kind: string; reason: string; detail: string; interpretation?: string; source?: GoalSource; state?: string }): void {
     if (this.routes) this.routes.revoke(`goal_${end.reason}`, end.epoch);

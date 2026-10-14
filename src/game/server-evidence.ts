@@ -108,6 +108,8 @@ export class ServerEvidence {
   predictionPending(x: number, y: number, z: number): boolean {
     return this.predictions.has(ServerEvidence.key(x, y, z));
   }
+  /** Read-only release-drain proof: unconfirmed client changes are not settled. */
+  get pendingPredictionCount(): number { return this.predictions.size; }
   private forgetWorldFacts(filter?: (x: number, z: number) => boolean): void {
     for (const map of [this.blockFacts, this.predictions] as Array<Map<string, unknown>>) {
       for (const k of [...map.keys()]) {

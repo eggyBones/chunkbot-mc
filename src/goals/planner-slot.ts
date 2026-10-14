@@ -60,6 +60,7 @@ export class PlannerSlot {
   /** Turns currently running (started and not settled); never above 1. */
   running = 0;
   maxRunning = 0;
+  pendingTickets = 0;
 
   constructor(waitMs: number, onWaitTimeout?: (kind: PlannerSlotKind) => void) {
     this.waitMs = waitMs;
@@ -69,6 +70,11 @@ export class PlannerSlot {
   /** Kind of the turn whose process currently holds the slot. */
   get busy(): PlannerSlotKind | undefined {
     return this.holder?.kind;
+  }
+
+  /** Actual settlement tail, including skipped/timed-out tickets (release drain). */
+  settlement(): Promise<void> {
+    return this.tail;
   }
 
   /** Aborts a speculative lookahead turn in flight (owner work takes priority). */
@@ -85,6 +91,8 @@ export class PlannerSlot {
   async acquire(kind: PlannerSlotKind, abort: AbortController, owner?: AbortSignal): Promise<SlotAcquisition> {
     const previous = this.tail;
     const mine = Promise.withResolvers<void>();
+    this.pendingTickets += 1;
+    void mine.promise.then(() => { this.pendingTickets -= 1; });
     // The successor waits for the earlier turns AND this one: skipping this
     // ticket can never release later work past a still-running earlier turn.
     this.tail = previous.then(() => mine.promise);

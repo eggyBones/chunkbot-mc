@@ -28,7 +28,7 @@ import type { ChunkbotConfig } from '../config/schema.ts';
 import { parseChatLine, parseTerminalLine, type ParsedCommand } from '../commands/parse.ts';
 import { routeCommand, type CommandTarget } from '../commands/router.ts';
 import { evaluateOwner, ownerPolicyFromConfig, type OwnerPolicy } from '../game/identity.ts';
-import { GoalEngine, type ContinuationDeps, type GoalEngineDeps, type GoalTerminalEvent } from '../goals/goal-engine.ts';
+import { GoalEngine, type ContinuationDeps, type EngineUpdateDrain, type GoalEngineDeps, type GoalTerminalEvent } from '../goals/goal-engine.ts';
 import { ContinuationScheduler } from './continuation-scheduler.ts';
 import type { SafetyAuthority } from '../contracts/safety.ts';
 import {
@@ -112,6 +112,8 @@ export interface AppExtensions {
   travelBounds?(): { anchor: { x: number; y: number; z: number }; radius: number } | undefined;
   /** Revokes additional owned local control synchronously, with bounded settlement. */
   closeControl?(): Promise<void>;
+  /** Read-only proof after drain: unresolved interfaces/effects cannot be success. */
+  releaseDrainProof?(): { confirmed: boolean; detail: string };
 }
 
 /** Fresh explicit immediate-safety authority (the reviewed contract's SafetyAuthority), computed synchronously on every call. */
@@ -151,7 +153,7 @@ export function foundationAdapters(): AppAdapters {
   };
 }
 
-export type ShutdownReason = 'operator_quit' | 'signal' | 'terminal_closed' | 'connect_check' | 'connection_ended';
+export type ShutdownReason = 'operator_quit' | 'signal' | 'terminal_closed' | 'connect_check' | 'connection_ended' | 'release_update';
 
 export class ChunkbotApp implements CommandTarget {
   readonly engine: GoalEngine;
@@ -162,6 +164,9 @@ export class ChunkbotApp implements CommandTarget {
   private joinAbort: AbortController | undefined;
   private connecting: Promise<ReadyInfo | undefined> | undefined;
   private shutdownPromise: Promise<number> | undefined;
+  private updateDraining = false;
+  private updateDrain: Promise<EngineUpdateDrain> | undefined;
+  private updateControlConfirmed = false;
   private readonly unsubscribe: Array<() => void> = [];
   private readonly counters = {
     chatIgnoredUnprefixed: 0,
@@ -269,6 +274,8 @@ export class ChunkbotApp implements CommandTarget {
     return this.deps.game.state;
   }
 
+  get connectionEpoch(): number { return this.deps.game.connectionEpoch; }
+
   get lastReady(): ReadyInfo | undefined {
     return this.readyInfo;
   }
@@ -352,6 +359,10 @@ export class ChunkbotApp implements CommandTarget {
   }
 
   async diagnostic(args: string): Promise<void> {
+    if (this.updateDraining || this.shutdownPromise) {
+      this.deps.out('[chunkbot] mechanic diagnostics are unavailable during release drain/shutdown');
+      return;
+    }
     if (!this.deps.extensions?.diagnostic) {
       this.deps.out('[chunkbot] mechanic diagnostics are not installed');
       return;
@@ -453,6 +464,72 @@ export class ChunkbotApp implements CommandTarget {
   }
 
   // ------------------------------------------------------------ lifecycle
+
+  /** Separate from owner stop: no pause/counter/baseline reset, no goal success. */
+  drainForUpdate(): Promise<EngineUpdateDrain> {
+    if (this.updateDrain) return this.updateDrain.then((old) => this.refreshUpdateDrain(old));
+    this.updateDraining = true;
+    const engineDrain = this.engine.drainForUpdate();
+    const generation = this.engine.intakeVersion;
+    let controlClosed: Promise<boolean> = Promise.resolve(true);
+    if (this.engine.admissionsClosed) {
+      this.continuationScheduler?.close();
+      this.deps.extensions?.cancelControl?.('release_update');
+      // Start revocation immediately, and bound settlement without calling it proof.
+      controlClosed = (async () => {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          return await Promise.race([
+            Promise.resolve(this.deps.extensions?.closeControl?.()).then(() => true, () => false),
+            new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), this.deps.config.limits.cleanupTimeoutMs); }),
+          ]);
+        } catch { return false; }
+        finally { if (timer) clearTimeout(timer); }
+      })();
+    }
+    this.updateDrain = (async () => {
+      const result = await engineDrain;
+      const controlSettled = await controlClosed;
+      this.updateControlConfirmed = controlSettled;
+      if (!result.drained) {
+        // A deferred finite goal keeps working. A failed accepted drain stays closed.
+        if (!this.engine.admissionsClosed && !this.shutdownPromise) this.updateDraining = false;
+        this.updateDrain = undefined;
+        return result;
+      }
+      if (!controlSettled) {
+        return { ...result, drained: false, cleanupConfirmed: false, detail: 'additional control cleanup failed; replacement must not launch' };
+      }
+      const proof = this.engine.cleanupProof();
+      if (this.shutdownPromise) return { ...result, drained: false, cleanupConfirmed: proof.confirmed, directive: null, detail: 'logout/shutdown superseded this release drain' };
+      let skillProof: { confirmed: boolean; detail: string };
+      try { skillProof = this.deps.extensions?.releaseDrainProof?.() ?? { confirmed: true, detail: 'no additional skill layer' }; }
+      catch { skillProof = { confirmed: false, detail: 'skill cleanup proof failed' }; }
+      if (!skillProof.confirmed) return { ...result, drained: false, cleanupConfirmed: false, detail: skillProof.detail };
+      return { ...result, directive: generation === this.engine.intakeVersion ? result.directive : null, drained: proof.confirmed, cleanupConfirmed: proof.confirmed, ...(proof.confirmed ? {} : { detail: 'owned work is still unsettled; replacement must not launch' }) };
+    })();
+    return this.updateDrain;
+  }
+
+  private refreshUpdateDrain(old: EngineUpdateDrain): EngineUpdateDrain {
+    let skillProof: { confirmed: boolean; detail: string };
+    try { skillProof = this.deps.extensions?.releaseDrainProof?.() ?? { confirmed: true, detail: 'no additional skill layer' }; }
+    catch { skillProof = { confirmed: false, detail: 'skill cleanup proof failed' }; }
+    const confirmed = this.engine.admissionsClosed && !this.shutdownPromise && this.updateControlConfirmed && this.engine.cleanupProof().confirmed && skillProof.confirmed;
+    return { ...structuredClone(old), drained: confirmed, cleanupConfirmed: confirmed, directive: old.directive?.intakeGeneration === this.engine.intakeVersion ? structuredClone(old.directive) : null, detail: confirmed ? 'owned work and skill effects have now settled; no old task is resumed' : skillProof.confirmed ? old.detail : skillProof.detail };
+  }
+
+  get isDrainingForUpdate(): boolean { return this.updateDraining; }
+
+  /** Bounded notice uses the existing owner channel; queueing is not delivery proof. */
+  announceUpdate(summary: string): { sent: boolean; detail: string } {
+    if (this.updateDraining || this.shutdownPromise || this.deps.game.state !== 'ready') return { sent: false, detail: 'child is not ready to announce' };
+    const text = summary.trim();
+    if (!text || text.length > 240 || /[\r\n\0]/.test(text)) return { sent: false, detail: 'invalid bounded update summary' };
+    this.deps.game.replyToOwner(`Updated: ${text} I'm back.`);
+    this.deps.store.record({ type: 'update_notice_queued', summary: text });
+    return { sent: true, detail: 'queued through the configured owner channel; delivery unconfirmed' };
+  }
 
   private onLifecycle(event: GameLifecycleEvent): void {
     // Ownership first: the engine's synchronous revocation prefix invalidates the

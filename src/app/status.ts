@@ -65,6 +65,7 @@ export function renderStatusLines(input: StatusInput): string[] {
     const what = cp.state === 'held' ? `held after ${last}; continues when it is safe (continuation ${cp.continuations.used + 1} of at most ${cp.continuations.max}); stop cancels it` : cp.state === 'continuing' ? `continuing after ${last} (continuation ${cp.continuations.used}/${cp.continuations.max})` : cp.state === 'blocked' ? `held after ${last}, not continued: ${cp.stateReason.replace(/[_:]/g, ' ')}; a new instruction replaces it` : cp.state.replace(/_/g, ' ');
     lines.push(`owner job ${cp.goalId}: ${what} — ${cp.publicOutcome.slice(0, 160)}`);
   }
+  if (e.interruptedUpdate) lines.push(`owner job ${e.interruptedUpdate.goalId}: interrupted by update; compatible continuation is unproved and no task was replayed — ${(e.interruptedUpdate.publicOutcome || e.interruptedUpdate.instruction).slice(0, 160)}`);
   if (e.parked) lines.push('handoff: the current goal finished its admitted step and starts no new work until the pending instruction is ready');
   const h = e.handoff;
   if (h && (h.preparations > 0 || h.lookaheadTurns > 0)) {
@@ -89,7 +90,7 @@ export function renderStatusChat(input: StatusInput): string {
     : 'idle';
   const planner = input.engine.readiness.planner.ready ? 'planner ready' : 'planner not ready';
   const p = input.engine.pending;
-  const pendingPart = p ? `, new instruction ${p.state}` : '';
+  const pendingPart = p ? `, new instruction ${p.state}` : input.engine.interruptedUpdate ? ', owner directive interrupted by update (not replayed)' : '';
   const paused = input.engine.latch?.paused ? ', automatic work paused' : '';
   return `Status: ${input.connection}, goal ${goalPart}${pendingPart}${paused}, ${planner}, ${input.engine.readiness.capabilityCount} capabilities`;
 }
@@ -101,7 +102,10 @@ export function renderStatusChat(input: StatusInput): string {
  */
 export function pendingDirectiveFrom(engine: EngineStatus | undefined): DashboardPendingDirective | undefined {
   const p = engine?.pending;
-  if (!p) return undefined;
+  if (!p) {
+    const interrupted = engine?.interruptedUpdate;
+    return interrupted ? { instruction: interrupted.instruction.slice(0, 1_000), state: 'rejected', sinceMs: interrupted.stateAtMs, detail: 'Interrupted by update; compatible continuation is unproved. No task or instruction was replayed; a new owner instruction may supersede it.' } : undefined;
+  }
   const state = p.state === 'handing_off' ? 'ready_to_switch' : p.state;
   // MB-PLAN-006: there are no owner questions; legacy question fields are never rendered.
   const detail = p.state === 'handing_off'

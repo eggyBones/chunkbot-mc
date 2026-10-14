@@ -16,6 +16,9 @@ import { ConfigError, configPathFrom, loadConfigFile, type LoadedConfig } from '
 import { LOCAL_COMPAT_PROFILE, PINNED_PACKAGES, installedPackageVersion, resolveVersionProfile, supportLevel } from './config/versions.ts';
 import { randomIds, systemClock } from './contracts/index.ts';
 import { homeConstructionWanted } from './app/composition.ts';
+import { managedAppPort } from './app/managed-child.ts';
+import { inspectReleaseReadiness } from './app/release-readiness.ts';
+import type { DeploymentFence, ManagedChildAppPort, ManagedScope } from './contracts/index.ts';
 import { ChunkbotApp } from './app/app.ts';
 import { DiagnosticConsole } from './app/diagnostics.ts';
 import { SkillRuntime } from './app/skill-runtime.ts';
@@ -187,7 +190,8 @@ function autonomyScope(loaded: LoadedConfig): ScopeResolution {
   return resolveAutonomyScope(cfg.scope, loaded.config.memory);
 }
 
-function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { autonomy?: boolean } = {}): { app: ChunkbotApp; store: RunStore; game: MineflayerConnection } {
+/** Current-process composition. Managed restart CLI still requires accepted accounting/launcher bindings. */
+export function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { autonomy?: boolean; managed?: { fence: DeploymentFence; scope: ManagedScope } } = {}): { app: ChunkbotApp; store: RunStore; game: MineflayerConnection; disposed: Promise<void>; managed?: ManagedChildAppPort } {
   const { config } = loaded;
   const autonomyConfig = AutonomyConfigSchema.parse(config.autonomy ?? {});
   const autonomy = autonomyEnablement(loaded, options.autonomy === true);
@@ -383,6 +387,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
       },
       cancelControl: (reason) => diagnostics?.cancel(reason) ?? false,
       closeControl: () => runtime.closeSafety(),
+      releaseDrainProof: () => runtime.releaseDrainProof(),
       onSafetyAuthorityChanged: (cause) => runtime.safety?.onAuthorityChanged(cause),
       travelBounds: () => runtime.perception.travelBounds(),
       onGoalAdmitted: (admission) => {
@@ -484,7 +489,7 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
   const publisher = dashboard;
   publisher.start();
   // Final snapshot (marked stopped) only after the app's full teardown.
-  void app.closed.then(async (code) => {
+  const disposed = app.closed.then(async (code) => {
     // Supervisor timers and durable control state close after the app's owned gameplay cleanup.
     await supervisor?.close().catch((error: unknown) => out(`[chunkbot] autonomy close failed: ${error instanceof Error ? error.message : String(error)}`));
     if (runtime.survival) await runtime.survival.close().catch((error: unknown) => out(`[chunkbot] survival close failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -495,7 +500,8 @@ function buildApp(loaded: LoadedConfig, exitOnConnectionEnd = false, options: { 
   out(`[chunkbot] decision: ${decision.readiness().detail}`);
   out(`[chunkbot] run ${store.runId}; evidence: ${store.eventsPath}`);
   out(`[chunkbot] skills: ${runtime.registry.catalog().capabilities.length} capabilities (${runtime.registry.catalog().catalogVersion}); natural-language goals use the ${config.models.planner.mode === 'codex' ? 'Codex subscription planner' : 'DISABLED planner profile'}; operator mechanic diagnostics: /diag; task controller diagnostic (real Jev): /task`);
-  return { app, store, game };
+  const managed = options.managed ? managedAppPort(app, { ...options.managed, probeReadiness: () => inspectReleaseReadiness({ app, game, runtime, config, decision, scope: options.managed!.scope }) }) : undefined;
+  return { app, store, game, disposed, ...(managed ? { managed } : {}) };
 }
 
 /** Installs SIGINT/SIGTERM handlers: first signal shuts down cleanly, second forces exit. */
@@ -742,7 +748,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
+if (import.meta.main) main().catch((error: unknown) => {
   err(`[chunkbot] fatal: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = EXIT.failure;
 });
