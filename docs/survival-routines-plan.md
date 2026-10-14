@@ -266,3 +266,13 @@ Independent review, 2026-10-08 UTC: W-C13-R4 reproduces defense admission with u
 | M5 | Combined ordinary Codex/Jev follow and resource goals respond to real fixture mobs while preserving their immutable outcomes and resuming compatible work. Record model calls, action journals, vitals, server evidence and restoration separately from module evidence. |
 
 W owns new safety contracts/modules/tests/harnesses; P owns existing perception/game/task/goal/navigation/app wiring; S owns recovery state; L consumes the approved safety seam. Codex reviews contract and combat admission defaults, grants exclusive fixture driver leases and runs required integrated/provider checks. Any vendor change requires a separately reviewed reproducible patch; never edit node_modules.
+
+## Offline assignment authorization — 2026-10-13 Arizona
+
+Status: **authorized / preparing; not accepted; no worker launched.** Jake starts only the scopes below using native local DSH preset `relay-codex`, existing `codex:codex-default` ChatGPT subscription, exactly `gpt-6.1-sol` / `xhigh` / `danger-full-access` / approval `never`. The current CLI 0.162.1 read-only native gate passed; gameplay planner configuration and all historical evidence remain unchanged. Source implementation/entry-point wiring is authorized for the later coordinator-launched workers, while this preparation performs coordination documents/worktrees/dependency installs only. No live deployment/join is authorized; all fixture leases are **ABSENT**. World/provider/vault/key/live-control work is coordinator-only and requires a later explicit grant.
+
+| Prepared lane | Existing scope | Ownership / dependency |
+| --- | --- | --- |
+| upkeep | MB-FLOW-003 remaining Routine policies R6/R7 | `src/survival/`, `src/skills/survival.ts`, `tests/survival-upkeep.test.ts`; Canonical shared survival contracts and single admission/executor remain integration-owned; preserve accepted recovery/continuation semantics. |
+
+Complete outcomes/exclusions, exact owned tests/paths and source/build/live boundaries are in [the preparation checkpoint](agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona) and the ignored per-lane briefs. No shared schema/predicate/CLI/composition edit is accepted by proposal alone. Dedicated local role review: `docs/reviews/mb-20261013-<suffix>-worker.md`; acceptance instead owns `docs/reviews/mb-v1-05-20261013.md`. Coordinator approval of exact contract/companion commits precedes cross-branch imports.

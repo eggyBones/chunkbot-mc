@@ -102,3 +102,13 @@ Coordinator continuation: Jake explicitly chose “Finish with Codex now” afte
 
 
 L1 delivery: the reviewed scripts and operator docs are published as90450c4 in public eggyBones/chunkbot-mc and installed in the coordinator checkout.31 credential-free tests and the actual loopback startup/duplicate/dashboard/logout/TCP/publisher trial pass. Live play/dashboard reuse preserves bot71629 and viewer65554; no live logout/restart was used to accept helpers. [Operator procedure and review](reviews/mb-ops-002-local-controls.md). Full outgoing tree/history/archive audit compares20 actual credentials from Microsoft, Codex, OpenRouter and GitHub and has no findings. App release remains the isolated accepted d348d58 artifact; batch002 is not deployed by this publication.
+
+## Offline assignment authorization — 2026-10-13 Arizona
+
+Status: **authorized / preparing; not accepted; no worker launched.** Jake starts only the scopes below using native local DSH preset `relay-codex`, existing `codex:codex-default` ChatGPT subscription, exactly `gpt-6.1-sol` / `xhigh` / `danger-full-access` / approval `never`. The current CLI 0.162.1 read-only native gate passed; gameplay planner configuration and all historical evidence remain unchanged. Source implementation/entry-point wiring is authorized for the later coordinator-launched workers, while this preparation performs coordination documents/worktrees/dependency installs only. No live deployment/join is authorized; all fixture leases are **ABSENT**. World/provider/vault/key/live-control work is coordinator-only and requires a later explicit grant.
+
+| Prepared lane | Existing scope | Ownership / dependency |
+| --- | --- | --- |
+| bridge | MB-OPS-002 vanilla bridge C1-C7 | `src/server-controls/ (new)`, `assets/datapacks/chunkbot-control/ (new; namespace chunkbot_control)`, `tests/server-controls.test.ts (new)`; Approved manager/control ports; vanilla feasibility and world proof are coordinator-only. Shared commands/CLI/config/app wiring is integration-owned. |
+
+Complete outcomes/exclusions, exact owned tests/paths and source/build/live boundaries are in [the preparation checkpoint](agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona) and the ignored per-lane briefs. No shared schema/predicate/CLI/composition edit is accepted by proposal alone. Dedicated local role review: `docs/reviews/mb-20261013-<suffix>-worker.md`; acceptance instead owns `docs/reviews/mb-v1-05-20261013.md`. Coordinator approval of exact contract/companion commits precedes cross-branch imports.

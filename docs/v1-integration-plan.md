@@ -71,3 +71,13 @@ Codex independently inspects entry-point wiring, general task construction, cata
 Update [roadmap](../feature-plans.md) and [supervision](agent-supervision.md). Distinguish implemented, locally verified, built, running-verified, and committed/reconciled. This plan does not imply a commit/push.
 
 Remaining evidence: every integrated milestone. Foundation and local fixture are accepted, but model-driven gameplay is not delivered yet; broad planning must not be claimed from a canned demonstration.
+
+## Offline assignment authorization — 2026-10-13 Arizona
+
+Status: **authorized / preparing; not accepted; no worker launched.** Jake starts only the scopes below using native local DSH preset `relay-codex`, existing `codex:codex-default` ChatGPT subscription, exactly `gpt-6.1-sol` / `xhigh` / `danger-full-access` / approval `never`. The current CLI 0.162.1 read-only native gate passed; gameplay planner configuration and all historical evidence remain unchanged. Source implementation/entry-point wiring is authorized for the later coordinator-launched workers, while this preparation performs coordination documents/worktrees/dependency installs only. No live deployment/join is authorized; all fixture leases are **ABSENT**. World/provider/vault/key/live-control work is coordinator-only and requires a later explicit grant.
+
+| Prepared lane | Existing scope | Ownership / dependency |
+| --- | --- | --- |
+| acceptance | MB-V1-05 V1-1 through V1-5 acceptance preparation | `scripts/v1-integration-live-check.ts (new)`, `scripts/lib/v1-integration/ (new dedicated helpers)`, `tests/v1-integration-harness.test.ts (new)`; Frozen integrated artifact and approved ports; real inference/world acceptance waits for a named exclusive coordinator fixture lease and coordinator key injection. |
+
+Complete outcomes/exclusions, exact owned tests/paths and source/build/live boundaries are in [the preparation checkpoint](agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona) and the ignored per-lane briefs. No shared schema/predicate/CLI/composition edit is accepted by proposal alone. Dedicated local role review: `docs/reviews/mb-20261013-<suffix>-worker.md`; acceptance instead owns `docs/reviews/mb-v1-05-20261013.md`. Coordinator approval of exact contract/companion commits precedes cross-branch imports.

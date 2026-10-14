@@ -191,3 +191,15 @@ Inspect src/planner/prompt.ts and wire.ts; src/contracts/planner.ts; both needs_
 | N4 | Stop/replacement/death/disconnect during planning and execution revoke owned work; stale drafts and legacy questions cannot revive it. Loaded accepted release later proves the same behavior without an operator answer. |
 
 Future checks: applicable AGENTS.md typecheck/build/test, planner diagnostic/isolation and fault checks, handoff regression, skills/identity checks on both fixtures, then coordinator-run real planner/Jev ordinary-goal acceptance within the existing cap. Update previous clarification-based acceptance scenarios to test this policy, preserving historical reports. Implementation and these applicable checks are now authorized by Jake's 2026-10-07 start instruction. Shared-writer review target: docs/reviews/mb-gameplay-planner-integration.md.
+
+## Offline assignment authorization — 2026-10-13 Arizona
+
+Status: **authorized / preparing; not accepted; no worker launched.** Jake starts only the scopes below using native local DSH preset `relay-codex`, existing `codex:codex-default` ChatGPT subscription, exactly `gpt-6.1-sol` / `xhigh` / `danger-full-access` / approval `never`. The current CLI 0.162.1 read-only native gate passed; gameplay planner configuration and all historical evidence remain unchanged. Source implementation/entry-point wiring is authorized for the later coordinator-launched workers, while this preparation performs coordination documents/worktrees/dependency installs only. No live deployment/join is authorized; all fixture leases are **ABSENT**. World/provider/vault/key/live-control work is coordinator-only and requires a later explicit grant.
+
+| Prepared lane | Existing scope | Ownership / dependency |
+| --- | --- | --- |
+| home | MB-FLOW-001 A3/A6; MB-PLAN-006 full-house gathering | `src/skills/construction.ts`, `src/construction/materials.ts (new, if needed)`, `src/construction/project.ts (new adjunct only, if needed)`; Existing HomeProjectService and blueprint helpers in src/autonomy/home.ts and blueprint.ts are read-only here; progression owns them. Propose needed changes to that owner through the coordinator. Shared predicate/schema/catalog/composition changes go to integration; no duplicate project service or blueprint. |
+
+Complete outcomes/exclusions, exact owned tests/paths and source/build/live boundaries are in [the preparation checkpoint](agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona) and the ignored per-lane briefs. No shared schema/predicate/CLI/composition edit is accepted by proposal alone. Dedicated local role review: `docs/reviews/mb-20261013-<suffix>-worker.md`; acceptance instead owns `docs/reviews/mb-v1-05-20261013.md`. Coordinator approval of exact contract/companion commits precedes cross-branch imports.
+
+This assignment adds the full-house gathering/construction slice only; accepted gameplay planner source, model, effort, CLI pin, tools and isolation are outside the new workers' ownership.

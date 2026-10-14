@@ -1,9 +1,27 @@
 # Chunkbot feature plans
 
-Updated: 2026-10-08 Arizona (2026-10-09 UTC). Owner: Codex. Status: **V1 foundation/planner and batch001 accepted; commands/survival/recovery release 64e2609 accepted and registered locally. Broad idle progression/building and MB-V1-05 remain open.**
+Updated: 2026-10-13 Arizona. Owner: Codex. Current offline batch: **authorized / preparing; nine scopes, no worker launched, no live deployment/join.** Baseline delivery status: **V1 foundation/planner and batch001 accepted; commands/survival/recovery release 64e2609 accepted and registered locally. Broad idle progression/building and MB-V1-05 remain open.**
 
-Jake authorized Codex supervision, local DSH startup, and implementation of these plans with Claude Opus 5.5 workers and full access on 2026-10-04. Use parallel native Opus 5.5 workers for separable authorized assignments and continue them through independent review.
+Historical authorization: Jake authorized Codex supervision, local DSH startup and Claude Opus 5.5 implementation on 2026-10-04. Current 2026-10-13 development authorization uses native local DSH preset `relay-codex`, existing `codex:codex-default` ChatGPT subscription, exactly `gpt-6.1-sol` / `xhigh` / `danger-full-access` / approval `never`. Native CLI 0.162.1 passed the current metadata gate; historical sessions/commits/drafts and gameplay planner settings remain preserved.
 
+
+## Authorized offline batch — 2026-10-13
+
+Jake starts these EXISTING planned scopes. Status is **authorized / preparing**, not accepted. No live deployment/join, fixture lease, worker launch or inference acceptance is included in mechanical preparation. This dated assignment table supersedes older unassigned labels for these scopes; accepted baseline behavior is retained.
+
+| Suffix | Scope / existing plan | Status |
+| --- | --- | --- |
+| progression | MB-FLOW-001 A1/A2/A4/A5/A7/A8 — [docs/autonomous-progression-plan.md](docs/autonomous-progression-plan.md) | authorized / preparing |
+| home | MB-FLOW-001 A3/A6; MB-PLAN-006 full-house gathering — [docs/autonomous-progression-plan.md](docs/autonomous-progression-plan.md) | authorized / preparing |
+| upkeep | MB-FLOW-003 remaining Routine policies R6/R7 — [docs/survival-routines-plan.md](docs/survival-routines-plan.md) | authorized / preparing |
+| packaging | MB-OPS-001 U-G1/U1/U5 — [docs/live-update-plan.md](docs/live-update-plan.md) | authorized / preparing |
+| manager | MB-OPS-001 U-G2/U-G5/U2/U3/U5 — [docs/live-update-plan.md](docs/live-update-plan.md) | authorized / preparing |
+| checkpoints | MB-OPS-001 U-G3/U-G4/U4/U6 — [docs/live-update-plan.md](docs/live-update-plan.md) | authorized / preparing |
+| bridge | MB-OPS-002 vanilla bridge C1-C7 — [docs/server-control-plan.md](docs/server-control-plan.md) | authorized / preparing |
+| integration | Single shared MB-FLOW/MB-OPS composition writer — [docs/companion-upgrades-plan.md](docs/companion-upgrades-plan.md) | authorized / preparing |
+| acceptance | MB-V1-05 V1-1 through V1-5 acceptance preparation — [docs/v1-integration-plan.md](docs/v1-integration-plan.md) | authorized / preparing |
+
+Nine new branches/worktrees use one focused coordination-docs base. See [scope/ownership checkpoint](docs/agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona). Shared contracts/integration have one writer; coordinator owns main integration, roadmap/supervision and manifests/lock/vendor approval. All 19 older worktrees remain preserved.
 
 ## V1 outcome
 
@@ -33,7 +51,7 @@ Jake selected **MB-FLOW-001 progression**, **MB-FLOW-003 survival/death recovery
 
 ## Current gameplay-fix implementation
 
-Jake authorized implementation on 2026-10-07 Arizona and continued native DSH workers. His latest 2026-10-08 instruction restores **Claude Opus 5.5**, verified native subscription backend, high effort and full permissions. Codex coordinates and independently reviews; all earlier Codex and Claude sessions/worktrees remain preserved. The gameplay planner stays **gpt-6.1-sol / low**, separate from development workers.
+Jake authorized implementation on 2026-10-07 Arizona and continued native DSH workers. His historical 2026-10-08 instruction restored **Claude Opus 5.5**; the 2026-10-13 native Codex instruction above supersedes that development route. Codex coordinates and independently reviews; all earlier Codex and Claude sessions/worktrees remain preserved. The gameplay planner stays **gpt-6.1-sol / low**, separate from development workers.
 
 Jake explicitly selected **commands, survival and item recovery** for the first upgraded release. Its registered operator profile disables idle progression (`maxProgressionGoals: 0`) while retaining bounded survival support. It does not start autonomous gathering or building. The bot remains logged out until Jake starts Play or gives a fresh join instruction.
 
@@ -57,8 +75,8 @@ Jake's requested upgrades are broken down in [the companion roadmap](docs/compan
 | --- | --- | --- |
 | MB-FLOW-001 | [Default progression, upgrades and home building](docs/autonomous-progression-plan.md) | Development integrated; broad idle gathering/building acceptance remains open; disabled in first upgrade |
 | MB-FLOW-002 | [Continue current work while the next directive loads](docs/smooth-handoff-plan.md) | Implemented/integrated; accepted in batch001 |
-| MB-FLOW-003 | [Survival routines and death recovery — progression subplan](docs/survival-routines-plan.md) | Recovery, continuation and ordinary safety accepted in fixtures; upgraded operator release registration pending |
-| MB-LOC-001 | [Locator-assisted following and bounded travel](docs/locator-follow-plan.md) | Both-version module and ordinary following/privacy pass; upgraded operator release registration pending |
+| MB-FLOW-003 | [Survival routines and death recovery — progression subplan](docs/survival-routines-plan.md) | Recovery, continuation and ordinary safety accepted in fixtures; operator release 64e2609 accepted and registered locally |
+| MB-LOC-001 | [Locator-assisted following and bounded travel](docs/locator-follow-plan.md) | Both-version module and ordinary following/privacy pass; operator release 64e2609 accepted and registered locally |
 | MB-MEM-001 | [Persistent gameplay memory and known locations](docs/gameplay-memory-plan.md) | Implemented/integrated; accepted in batch001 |
 | MB-UI-001 | [Local dashboard, token usage, OpenRouter spend and optional Codex allowance](docs/chunkbot-dashboard-plan.md) | Implemented/integrated; accepted in batch001 |
 | MB-OPS-001 | [Verified live updates with a brief automatic reconnect](docs/live-update-plan.md) | Proposed; unassigned |
@@ -83,11 +101,11 @@ MB-OPS-002 controls eggyBot69 joining/leaving while Jake stays connected. Jake s
 | MB-V1-04 | [Codex gameplay planner](docs/v1-planner-plan.md) | MB-V1-01 contracts; integrates after MB-V1-03 | Subscription-backed goal interpretation, prerequisite planning, clarification, and replanning | Accepted: rolling real subscription planning,36 passing commands,19 scenario criteria |
 | MB-V1-05 | [Integration and V1 acceptance](docs/v1-integration-plan.md) | MB-V1-01 through MB-V1-04 | Varied and previously untemplated goals work through the real hybrid loop | Planned; unassigned |
 
-Use parallel Claude Opus 5.5 workers for independent authorized feature work. Codex owns shared contracts, manifests, lockfiles, plan reconciliation and acceptance. Each brief has explicit ownership, dependencies and runtime leases; use separate branches/worktrees after Git setup. Serialize overlapping integration and shared fixture work, following [the standing workflow](agent-workflow.md#parallel-assignments-and-git-isolation).
+Use parallel native DSH Codex `gpt-6.1-sol/xhigh/danger-full-access/never` workers for the explicitly authorized independent scopes. Codex owns shared contracts, manifests, lockfiles, plan reconciliation and acceptance. Each brief has explicit ownership, dependencies and runtime leases; use separate branches/worktrees after Git setup. Serialize overlapping integration and shared fixture work, following [the standing workflow](agent-workflow.md#parallel-assignments-and-git-isolation).
 
 ## Execution and acceptance
 
-1. Verify the local Claude development route.
+1. Verify the current local native Codex development route.
 2. Establish the application, capability contracts, and owner command slice.
 3. Implement and validate reusable Minecraft actions and game-knowledge queries.
 4. Connect Jev to task-specific valid actions and resolve the Codex subscription planner probe.
