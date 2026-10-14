@@ -4,7 +4,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { LowHealthAllowanceGrant, OwnerGoalEnd, PlannerRequest, SupportAdmission, SupportTerminal, SurvivalAssessmentInput, SurvivalDecision, SurvivalPolicyPort, SurvivalStatus } from '../src/contracts/index.ts';
+import type { LowHealthAllowanceGrant, ObservationSnapshot, OwnerGoalEnd, PlannerRequest, SupportAdmission, SupportTerminal, SurvivalAssessmentInput, SurvivalDecision, SurvivalPolicyPort, SurvivalStatus } from '../src/contracts/index.ts';
 import { AutonomyConfigSchema, type AutonomyConfig, type AutonomyConfigInput } from '../src/contracts/autonomy.ts';
 import { AutonomyControl } from '../src/autonomy/control.ts';
 import { AutonomySupervisor, type ProviderState, type TimerApi } from '../src/autonomy/supervisor.ts';
@@ -120,6 +120,8 @@ export interface AutonomyHarnessOptions {
   providers?: () => ProviderState;
   fingerprint?: () => string;
   limits?: Partial<GoalEngineLimits>;
+  observe?: () => Promise<ObservationSnapshot | null>;
+  lookahead?: boolean;
   /** Engine admission barrier (MB-FLOW-003-C5). */
   barrier?: import('../src/goals/goal-engine.ts').GoalEngineDeps['admissionBarrier'];
 }
@@ -137,6 +139,7 @@ export function autonomyHarness(script: (request: PlannerRequest, index: number)
   const control = new AutonomyControl({ scope: opts.scope === false ? undefined : { worldProfile: 'test-world', worldRevision: 1, botProfile: 'test-bot' }, rootDir: dir, endpoint: '127.0.0.1:25566', rebindEndpoint: false, clock });
   const notices: string[] = [];
   let ready = true;
+  let connectionEpoch = 1;
   let fingerprint = 'state-0';
   // eslint-disable-next-line prefer-const
   let supervisor: AutonomySupervisor;
@@ -150,8 +153,8 @@ export function autonomyHarness(script: (request: PlannerRequest, index: number)
       executor: READY_EXECUTOR,
       registry: FACTS,
       limits: { ...LIMITS, ...opts.limits },
-      flow: { handoff: 'smooth', lookahead: false },
-      connectionEpoch: () => 1,
+      flow: { handoff: 'smooth', lookahead: opts.lookahead ?? false },
+      connectionEpoch: () => connectionEpoch,
       isGameReady: () => ready,
       onLatchChanged: (latch, cause) => supervisor.onLatchChanged(latch, cause),
       onGoalAdmitted: (a) => supervisor.onGoalAdmitted(a),
@@ -170,8 +173,8 @@ export function autonomyHarness(script: (request: PlannerRequest, index: number)
     timers,
     record: (e) => h.store.record(e),
     notify: (text) => notices.push(text),
-    connection: () => (ready ? { ready: true, connectionEpoch: 1, dimension: 'overworld' } : null),
-    observe: () => world.snapshot(0),
+    connection: () => (ready ? { ready: true, connectionEpoch, dimension: world.dimension } : null),
+    observe: opts.observe ?? (async () => ({ ...await world.snapshot(0), connectionEpoch, takenAtMs: clock.now() })),
     providers: opts.providers ?? (() => ({ ready: true, detail: 'fake providers ready' })),
     stateFingerprint: opts.fingerprint ?? (() => fingerprint),
     goalLimits: { plannerTurns: 20, tasks: 64, replans: 8, deadlineMs: 60_000 },
@@ -199,6 +202,9 @@ export function autonomyHarness(script: (request: PlannerRequest, index: number)
     },
     setFingerprint(f: string) {
       fingerprint = f;
+    },
+    setConnectionEpoch(epoch: number) {
+      connectionEpoch = epoch;
     },
     automaticRequests: () => planner.requests.filter((r) => r.autonomy !== undefined),
   };

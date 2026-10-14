@@ -112,7 +112,7 @@ export interface SupervisorDeps {
 const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 const hash = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 16);
 
-const PROVIDER_REASONS = new Set(['planner_not_ready', 'decision_not_ready', 'planner_error']);
+const PROVIDER_REASONS = new Set(['planner_not_ready', 'decision_not_ready', 'planner_error', 'decision_error']);
 const LIFECYCLE_REASONS = new Set(['death', 'disconnected', 'kicked', 'dimension_change']);
 const INTERRUPTION_REASONS = new Set(['low_health', 'safety_interrupted', 'death', 'disconnected', 'kicked', 'dimension_change']);
 
@@ -122,6 +122,14 @@ interface FingerprintEntry {
   reason: string;
   stateFp: string;
   lastAtMs: number;
+}
+
+interface AssessmentFence {
+  generation: number;
+  goalEpoch: number;
+  connectionEpoch: number;
+  dimension: string;
+  signal: AbortSignal;
 }
 
 type Phase = 'idle' | 'assessing' | 'cooldown' | 'waiting' | 'provider_blocked' | 'exhausted';
@@ -149,7 +157,16 @@ export class AutonomySupervisor {
   private readonly milestones: Array<{ interpretation: string; atMs: number }> = [];
   private lastOutcome: AutonomyStatus['lastOutcome'] = null;
   private submitting = false;
-  private assessing = false;
+  private assessment: Promise<void> | undefined;
+  private assessmentAbort: AbortController | undefined;
+  private assessmentGeneration = 0;
+  private guardGeneration = 0;
+  /** Terminal provider failures require an explicit owner admission or resume, even if readiness still reports true. */
+  private readonly providerHolds = new Set<'planner' | 'decision'>();
+  private readonly automaticAdmissions = new Map<string, { atMs: number; stateFp: string }>();
+  private readonly accountedTerminals = new Set<string>();
+  private readonly completedFingerprints = new Map<string, { stateFp: string; times: number }>();
+  private refusedProposal: { signature: string; stateFp: string } | undefined;
   private waitingStateFp: string | null = null;
   /** The survival proposal being admitted right now (correlated in onGoalAdmitted). */
   private admittingProposal: SurvivalProposal | undefined;
@@ -189,6 +206,7 @@ export class AutonomySupervisor {
   /** Engine latch hook: SYNCHRONOUS inside stop()/resume(). */
   onLatchChanged(latch: ControlLatch, cause: 'owner_stop' | 'resume'): void {
     if (!this.enabled) return;
+    this.invalidateAssessment();
     if (cause === 'owner_stop') {
       this.cancelTimer('owner stop');
       this.stopGuard();
@@ -198,6 +216,8 @@ export class AutonomySupervisor {
     }
     // C1: resume ONLY clears the durable latch and freshly reassesses. Unresolved owner intent is untouched.
     void this.deps.control.setLatch({ paused: false });
+    this.providerHolds.clear();
+    this.refusedProposal = undefined;
     this.waitingStateFp = null;
     this.setPhase('idle', 'resumed by owner');
     this.startGuard();
@@ -206,9 +226,10 @@ export class AutonomySupervisor {
 
   onGoalAdmitted(admission: { goalId: string; epoch: number; instruction: string; source?: GoalSource; admittedAtMs: number }): void {
     if (!this.enabled) return;
+    this.invalidateAssessment();
+    this.cancelTimer('goal admitted');
     const source = admission.source;
     if (!source) return; // operator diagnostic
-    this.cancelTimer('goal admitted');
     if (source.kind === 'owner') {
       // A NEW explicit owner instruction supersedes any older unresolved intent (C1).
       if (this.ownerIntent && this.ownerIntent.state !== 'active') this.deps.record({ type: 'autonomy_owner_intent_superseded', goalId: this.ownerIntent.goalId, by: admission.goalId });
@@ -216,9 +237,16 @@ export class AutonomySupervisor {
       this.session.consecutiveUnproductive = 0;
       this.waitingStateFp = null;
       this.blocker = null;
+      this.providerHolds.clear();
+      this.refusedProposal = undefined;
       this.safeSurvival((s) => s.onOwnerInstruction(admission.admittedAtMs));
       return;
     }
+    // Count at the synchronous admission hook, before a fast terminal result or a later stop can return to the submitter.
+    this.automaticAdmissions.set(`${admission.goalId}:${admission.epoch}`, { atMs: admission.admittedAtMs, stateFp: this.deps.stateFingerprint() });
+    if (source.kind === 'progression') this.session.progressionGoals += 1;
+    else this.session.supportGoals += 1;
+    this.setPhase('idle', `${source.kind} goal ${admission.goalId} admitted`);
     if (source.kind === 'support') {
       const proposal = this.admittingProposal;
       if (proposal && proposal.proposalId === source.proposalId) {
@@ -255,6 +283,11 @@ export class AutonomySupervisor {
       this.ownerTerminal(end, now);
       return;
     }
+    const admissionKey = `${end.goalId}:${end.epoch}`;
+    if (this.accountedTerminals.has(admissionKey)) return;
+    this.accountedTerminals.add(admissionKey);
+    const admission = this.automaticAdmissions.get(admissionKey);
+    this.automaticAdmissions.delete(admissionKey);
     this.session.plannerTurns += end.counters?.plannerTurns ?? 0;
     if (source.kind === 'support') {
       const p = this.proposals.get(end.goalId);
@@ -272,6 +305,23 @@ export class AutonomySupervisor {
         this.milestones.unshift({ interpretation: clip(end.interpretation, 200), atMs: now });
         this.milestones.splice(6);
       }
+      // A verified predicate can already hold at admission. Repeated completion of the same
+      // outcome in the same state is not a new milestone and must not drive an inference loop.
+      if (source.kind === 'progression') {
+        const fp = this.outcomeFingerprint(end);
+        const stateFp = this.deps.stateFingerprint();
+        const previous = this.completedFingerprints.get(fp);
+        const times = previous?.stateFp === stateFp ? previous.times + 1 : 1;
+        this.completedFingerprints.set(fp, { stateFp, times });
+        while (this.completedFingerprints.size > 32) this.completedFingerprints.delete(this.completedFingerprints.keys().next().value as string);
+        if (admission?.stateFp === stateFp && times >= this.deps.config.session.maxRepeatsPerFingerprint) {
+          this.waitingStateFp = stateFp;
+          this.blocker = { code: 'unchanged_completed_outcome', detail: 'the same verified outcome completed again without changed inventory, place or project state' };
+          this.setPhase('waiting', 'the last milestone already holds; waiting for changed state or an owner instruction before another assessment');
+          this.schedule(this.backoffMs(), 'unchanged-state check');
+          return;
+        }
+      }
       this.schedule(this.deps.config.afterCompletionMs, 'after a verified automatic outcome');
       return;
     }
@@ -285,9 +335,11 @@ export class AutonomySupervisor {
       return;
     }
     if (PROVIDER_REASONS.has(end.reason)) {
+      this.providerHolds.add(end.reason.startsWith('planner_') ? 'planner' : 'decision');
+      this.cancelTimer('provider failure');
       this.blocker = { code: end.reason, detail: clip(end.detail, 300) };
       this.setPhase('provider_blocked', `automatic work waits: ${end.reason} (${clip(end.detail, 200)}); no polling or fallback — an owner instruction or resume re-checks`);
-      this.noticeOnce(`Automatic work is waiting: ${end.reason}. It will not retry by itself; give me an instruction or say resume after fixing it.`);
+      this.noticeOnce(`Automatic work is waiting: ${end.reason}. Automatic retries stay off until an owner instruction or resume reassesses readiness.`);
       return;
     }
     // Support goals: survival owns attempts/cooldowns of its routines; progression: bounded backoff and repeated-blocker detection.
@@ -316,6 +368,7 @@ export class AutonomySupervisor {
 
   onLifecycle(event: GameLifecycleEvent): void {
     if (!this.enabled) return;
+    if (['death', 'dimension_change', 'ended', 'ready', 'respawn'].includes(event.type)) this.invalidateAssessment();
     switch (event.type) {
       case 'death':
       case 'dimension_change':
@@ -339,6 +392,7 @@ export class AutonomySupervisor {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.invalidateAssessment();
     this.cancelTimer('shutdown');
     this.stopGuard();
     if (this.enabled) await this.deps.control.close();
@@ -407,11 +461,11 @@ export class AutonomySupervisor {
   // ------------------------------------------------------------------ scheduling
 
   private mayRun(): boolean {
-    return this.enabled && !this.closed && this.deps.control.usable();
+    return this.started && this.enabled && !this.closed && this.deps.control.usable();
   }
 
   private schedule(ms: number, why: string): void {
-    if (!this.enabled || this.closed) return;
+    if (!this.mayRun() || this.deps.engine.status().latch.paused || !this.deps.connection()?.ready) return;
     this.cancelTimer();
     const at = this.deps.clock.now() + Math.max(0, ms);
     this.timerAt = at;
@@ -419,7 +473,7 @@ export class AutonomySupervisor {
     this.timer = this.timers.set(() => {
       this.timer = undefined;
       this.timerAt = null;
-      void this.consider(why);
+      void this.runAssessment(why, false);
     }, Math.max(0, ms));
   }
 
@@ -435,14 +489,15 @@ export class AutonomySupervisor {
   /** Coarse survival guard: code-only fresh-state evaluation while connected, enabled and unpaused. */
   private startGuard(): void {
     this.stopGuard();
-    if (!this.deps.survival?.enabled || this.closed) return;
+    if (!this.deps.survival?.enabled || !this.mayRun() || this.deps.engine.status().latch.paused || !this.deps.connection()?.ready) return;
+    const generation = this.guardGeneration;
     const ms = this.deps.survivalGuardMs ?? 5_000;
     const tick = () => {
       this.guard = this.timers.set(() => {
         this.guard = undefined;
-        if (this.closed) return;
-        void this.survivalGuard().finally(() => {
-          if (!this.closed && this.deps.connection()?.ready) tick();
+        if (generation !== this.guardGeneration) return;
+        void this.runAssessment('survival guard', true).finally(() => {
+          if (generation === this.guardGeneration && this.mayRun() && !this.deps.engine.status().latch.paused && this.deps.connection()?.ready) tick();
         });
       }, ms);
     };
@@ -450,6 +505,7 @@ export class AutonomySupervisor {
   }
 
   private stopGuard(): void {
+    this.guardGeneration += 1;
     if (this.guard !== undefined) {
       this.timers.clear(this.guard);
       this.guard = undefined;
@@ -518,12 +574,65 @@ export class AutonomySupervisor {
     }
   }
 
-  /** One fresh survival evaluation (code only). */
-  private async assessSurvival(): Promise<SurvivalDecision | null> {
+  private invalidateAssessment(): void {
+    this.assessmentGeneration += 1;
+    this.assessmentAbort?.abort();
+  }
+
+  private currentAssessment(fence: AssessmentFence): boolean {
+    const conn = this.deps.connection();
+    return !fence.signal.aborted && fence.generation === this.assessmentGeneration && this.mayRun() &&
+      !this.deps.engine.status().latch.paused && this.deps.engine.currentEpoch === fence.goalEpoch &&
+      conn?.ready === true && conn.connectionEpoch === fence.connectionEpoch && conn.dimension === fence.dimension;
+  }
+
+  /** One code-only assessment at a time. Stop/lifecycle/admission fences abort the wait,
+   * so a late observation cannot admit support or revoke a newer owner's work. */
+  private runAssessment(why: string, guardOnly: boolean): Promise<void> {
+    if (this.assessment) return this.assessment;
+    if (!this.mayRun() || this.submitting || this.deps.engine.status().latch.paused) return Promise.resolve();
+    const conn = this.deps.connection();
+    if (!conn?.ready || (guardOnly && !this.deps.survival?.enabled)) return Promise.resolve();
+    const abort = new AbortController();
+    this.assessmentAbort = abort;
+    const fence: AssessmentFence = { generation: this.assessmentGeneration, goalEpoch: this.deps.engine.currentEpoch, connectionEpoch: conn.connectionEpoch, dimension: conn.dimension, signal: abort.signal };
+    const op = this.consider(why, guardOnly, fence).catch((error: unknown) => {
+      if (!this.currentAssessment(fence)) return;
+      this.blocker = { code: 'assessment_failed', detail: clip(error instanceof Error ? error.message : String(error), 300) };
+      this.setPhase('waiting', `automatic assessment waits: ${this.blocker.detail}`);
+      this.deps.record({ type: 'autonomy_assessment_error', detail: this.blocker.detail });
+    }).finally(() => {
+      if (this.assessment === op) {
+        this.assessment = undefined;
+        this.assessmentAbort = undefined;
+      }
+    });
+    this.assessment = op;
+    return op;
+  }
+
+  private observe(fence: AssessmentFence): Promise<ObservationSnapshot | null> {
+    return new Promise((resolve) => {
+      if (fence.signal.aborted) return resolve(null);
+      const finish = (snapshot: ObservationSnapshot | null) => {
+        clearTimeout(timeout);
+        fence.signal.removeEventListener('abort', aborted);
+        resolve(snapshot);
+      };
+      const aborted = () => finish(null);
+      const timeout = setTimeout(aborted, Math.min(5_000, this.deps.goalLimits.deadlineMs));
+      timeout.unref?.();
+      fence.signal.addEventListener('abort', aborted, { once: true });
+      // The port is read-only. Retain a rejection handler even after cancellation or timeout.
+      Promise.resolve().then(() => this.deps.observe()).then(finish, () => finish(null));
+    });
+  }
+
+  /** One fresh survival evaluation (code only), consuming this assessment's snapshot once. */
+  private assessSurvival(snapshot: ObservationSnapshot): SurvivalDecision | null {
     const s = this.deps.survival;
     if (!s?.enabled) return null;
     const conn = this.deps.connection();
-    const snapshot = conn?.ready ? await this.deps.observe().catch(() => null) : null;
     const engine = this.deps.engine.status();
     try {
       return s.assess({
@@ -538,28 +647,7 @@ export class AutonomySupervisor {
       });
     } catch (error) {
       this.deps.record({ type: 'autonomy_survival_assess_error', message: error instanceof Error ? error.message : String(error) });
-      return null;
-    }
-  }
-
-  /** Guard: immediate safety (revoke unsafe active work) and safety proposals that may replace automatic work. */
-  private async survivalGuard(): Promise<void> {
-    if (!this.mayRun() || this.submitting || this.assessing) return;
-    this.assessing = true;
-    try {
-      const decision = await this.assessSurvival();
-      if (!decision) return;
-      if (decision.kind === 'revoke_unsafe') {
-        await this.revokeUnsafe(decision);
-        return;
-      }
-      if (decision.kind === 'propose' && decision.proposal.priority === 'safety' && this.deps.engine.activeSource && this.deps.engine.activeSource.kind !== 'owner') {
-        await this.admitProposal(decision.proposal);
-        return;
-      }
-      if (decision.kind === 'propose' && !this.deps.engine.activeSource && !this.deps.engine.automaticBlocker()) await this.consider('survival guard');
-    } finally {
-      this.assessing = false;
+      return { kind: 'blocked', routine: 'rest', reason: 'assessment_failed', signature: 'assessment_failed', detail: 'survival assessment failed; automatic work waits for a fresh assessment' };
     }
   }
 
@@ -568,48 +656,45 @@ export class AutonomySupervisor {
     if (r.revoked) {
       this.session.safetyRevocations += 1;
       this.deps.record({ type: 'autonomy_safety_revocation', goalId: r.goalId ?? null, source: r.source ?? null, reason: decision.reason, retainOwnerIntent: decision.retainOwnerIntent });
-      this.deps.notify(`Stopped the current work for safety (${clip(decision.detail, 160)}).${r.source?.kind === 'owner' || !r.source ? ' Your instruction stays in view until you decide.' : ''}`);
+      this.deps.notify(`Stopped the current work for safety (${clip(decision.detail, 160)}).${r.source?.kind === 'owner' || !r.source ? ' Your instruction stays in view.' : ''}`);
     }
   }
 
   /** One bounded scheduling decision (code only). */
-  private async consider(why: string): Promise<void> {
-    if (!this.enabled || this.closed || this.submitting) return;
-    if (!this.deps.control.usable()) {
-      this.setPhase('idle', `automatic work off: ${this.deps.control.persistence().detail}`);
+  private async consider(why: string, guardOnly: boolean, fence: AssessmentFence): Promise<void> {
+    const snapshot = await this.observe(fence);
+    if (!this.currentAssessment(fence)) return;
+    if (!snapshot || snapshot.connectionEpoch !== fence.connectionEpoch || snapshot.dimension !== fence.dimension ||
+      snapshot.takenAtMs > this.deps.clock.now() || this.deps.clock.now() - snapshot.takenAtMs > 5_000) {
+      this.blocker = { code: 'observation_not_current', detail: 'a current filtered observation is unavailable; automatic work waits' };
+      this.setPhase('waiting', this.blocker.detail);
       return;
     }
     // 1. Survival first (safety/support), also while an owner intent is unresolved.
-    const decision = await this.assessSurvival();
+    const decision = this.assessSurvival(snapshot);
     if (decision?.kind === 'revoke_unsafe') {
       await this.revokeUnsafe(decision);
       return;
     }
     const engineBlocker = this.deps.engine.automaticBlocker();
     if (engineBlocker) {
+      const active = this.deps.engine.activeSource;
+      if (decision?.kind === 'propose' && active && active.kind !== 'owner' && decision.proposal.priority === 'safety' &&
+        engineBlocker.reason === 'busy' && !this.ownerIntakePending(this.deps.engine.status())) {
+        await this.admitProposal(decision.proposal);
+        return;
+      }
       this.setPhase('idle', `not started (${engineBlocker.reason}): ${engineBlocker.detail}`);
       return;
     }
-    const providers = this.deps.providers();
     if (decision?.kind === 'propose') {
-      const needsPlanner = decision.proposal.execution.kind === 'planner_goal';
-      // A code task makes no planner turn, but its decisions are real Jev calls counted in the run SpendLedger.
-      const usable = needsPlanner ? providers.ready : (providers.decisionReady ?? providers.ready);
-      if (!usable) {
-        this.blocker = { code: providers.code ?? 'provider_not_ready', detail: providers.detail };
-        this.setPhase('provider_blocked', `support routine ${decision.proposal.routine} waits: ${providers.detail}`);
-        return;
-      }
       await this.admitProposal(decision.proposal);
       return;
     }
     if (decision?.kind === 'blocked') {
       this.blocker = { code: `${decision.routine}_${decision.reason}`.slice(0, 64), detail: clip(decision.detail, 300) };
-      if (decision.retryAfterMs !== undefined) this.schedule(decision.retryAfterMs, `survival ${decision.routine} retry window`);
-    }
-    if (!providers.ready) {
-      this.blocker = { code: providers.code ?? 'provider_not_ready', detail: providers.detail };
-      this.setPhase('provider_blocked', `automatic work waits: ${providers.detail} (no polling, no fallback)`);
+      this.setPhase('waiting', `automatic work waits for ${decision.routine}: ${decision.detail}`);
+      if (decision.retryAfterMs !== undefined) this.schedule(Math.max(this.deps.config.afterBlockedMs, decision.retryAfterMs), `survival ${decision.routine} retry window`);
       return;
     }
     // 2. Unresolved owner intent holds unrelated progression (C1; no automatic continuation), including survival's durable record after a restart.
@@ -618,6 +703,8 @@ export class AutonomySupervisor {
       this.setPhase('idle', `holding automatic progression for your ${intent.state} instruction "${clip(intent.instruction, 80)}" (${intent.reason}); a new instruction releases it`);
       return;
     }
+    if (guardOnly) return; // The guard never starts unrelated progression or a second assessment.
+    if (!this.providersUsable(true)) return;
     // 3. Progression.
     const limits = this.deps.config.session;
     if (this.session.progressionGoals >= limits.maxProgressionGoals || this.session.plannerTurns >= limits.maxPlannerTurns) {
@@ -665,7 +752,25 @@ export class AutonomySupervisor {
 
   /** Planner turns left in this run's automatic allowance (never replenished by resume, death or a new milestone). */
   private plannerTurnsLeft(): number {
-    return Math.max(0, this.deps.config.session.maxPlannerTurns - this.session.plannerTurns);
+    const source = this.deps.engine.activeSource;
+    const goal = this.deps.engine.status().goal;
+    const live = source && source.kind !== 'owner' && goal && !goal.terminal ? (goal.counters?.plannerTurns ?? goal.plannerTurns) : 0;
+    return Math.max(0, this.deps.config.session.maxPlannerTurns - this.session.plannerTurns - live);
+  }
+
+  /** Every admission path, including guard replacement, uses the same readiness and run-spend gate. */
+  private providersUsable(needsPlanner: boolean): boolean {
+    if (this.providerHolds.has('decision') || (needsPlanner && this.providerHolds.has('planner'))) {
+      this.cancelTimer('provider hold');
+      this.setPhase('provider_blocked', `automatic work waits after ${this.blocker?.code ?? 'provider failure'}; owner admission or resume reassesses readiness`);
+      return false;
+    }
+    const providers = this.deps.providers();
+    if (needsPlanner ? providers.ready : (providers.decisionReady ?? providers.ready)) return true;
+    this.cancelTimer('provider unavailable');
+    this.blocker = { code: providers.code ?? 'provider_not_ready', detail: clip(providers.detail, 300) };
+    this.setPhase('provider_blocked', `automatic work waits: ${providers.detail} (no polling inference or fallback)`);
+    return false;
   }
 
   /** MB-FLOW-001-C2: every automatic planner admission is clamped to the remaining session planner turns. */
@@ -689,12 +794,10 @@ export class AutonomySupervisor {
     try {
       const r = await this.deps.engine.submitAutomatic(progressionInstruction(context), source, { context, ceilings });
       if (r.status === 'admitted') {
-        this.session.progressionGoals += 1;
         this.deps.record({ type: 'autonomy_goal_submitted', goalId: r.goal.id, source, why });
-        this.setPhase('idle', `progression goal ${r.goal.id} admitted`);
       } else {
         this.deps.record({ type: 'autonomy_goal_not_admitted', source: source.kind, status: r.status, ...(r.status === 'rejected' ? { reason: r.reason, detail: r.detail } : {}) });
-        this.setPhase('idle', r.status === 'rejected' ? `not started (${r.reason})` : 'superseded by an owner instruction or stop');
+        if (r.status === 'rejected') this.admissionRejected(r);
       }
     } finally {
       this.submitting = false;
@@ -703,6 +806,10 @@ export class AutonomySupervisor {
 
   /** Admits one survival proposal through the single admission path (planner goal or code task). */
   private async admitProposal(proposal: SurvivalProposal): Promise<void> {
+    if (!this.mayRun() || this.deps.engine.status().latch.paused || !this.deps.connection()?.ready ||
+      this.ownerIntakePending(this.deps.engine.status()) || this.deps.engine.activeSource?.kind === 'owner') return;
+    if (this.refusedProposal?.signature === proposal.signature && this.refusedProposal.stateFp === this.deps.stateFingerprint()) return;
+    if (!this.providersUsable(proposal.execution.kind === 'planner_goal')) return;
     const now = this.deps.clock.now();
     if (proposal.expiresAtMs <= now) {
       this.deps.record({ type: 'autonomy_support_proposal_expired', proposalId: proposal.proposalId, routine: proposal.routine });
@@ -717,7 +824,7 @@ export class AutonomySupervisor {
     }
     const active = this.deps.engine.activeSource;
     // Support never replaces owner work or another support routine; safety may replace progression/support.
-    const replaceAutomatic = active !== undefined && active.kind !== 'owner' && (proposal.priority === 'safety' || active.kind === 'progression');
+    const replaceAutomatic = active !== undefined && (proposal.priority === 'safety' || active.kind === 'progression');
     const source: GoalSource = {
       kind: 'support',
       routine: proposal.routine,
@@ -759,16 +866,26 @@ export class AutonomySupervisor {
         r = await this.deps.engine.submitSupportTask(spec, proposal.execution.mode, source, { ceilings, replaceAutomatic });
       }
       if (r.status === 'admitted') {
-        this.session.supportGoals += 1;
         this.deps.record({ type: 'autonomy_goal_submitted', goalId: r.goal.id, source, replacedGoalId: r.replacedGoalId ?? null });
-        this.setPhase('idle', `support goal ${r.goal.id} admitted`);
       } else {
         this.deps.record({ type: 'autonomy_goal_not_admitted', source: 'support', routine: proposal.routine, status: r.status, ...(r.status === 'rejected' ? { reason: r.reason, detail: r.detail } : {}) });
+        if (r.status === 'rejected') {
+          this.admissionRejected(r);
+          if (!['busy', 'paused', 'not_connected', 'shutting_down'].includes(r.reason)) this.refusedProposal = { signature: proposal.signature, stateFp: this.deps.stateFingerprint() };
+        }
       }
     } finally {
       this.admittingProposal = undefined;
       this.submitting = false;
     }
+  }
+
+  private admissionRejected(result: Extract<SubmitResult, { status: 'rejected' }>): void {
+    if (['busy', 'paused', 'not_connected', 'shutting_down'].includes(result.reason)) return;
+    this.blocker = { code: `admission_${result.reason}`, detail: clip(result.detail, 300) };
+    this.setPhase('waiting', `automatic admission waits: ${result.detail}`);
+    // A faulty policy proposal must not be retried by the coarse guard forever.
+    this.waitingStateFp = this.deps.stateFingerprint();
   }
 
   private outcomeFingerprint(end: GoalTerminalEvent): string {
@@ -836,7 +953,7 @@ export class AutonomySupervisor {
       active: activeGoal,
       ownerIntent: intent ? { goalId: intent.goalId, instruction: intent.instruction, state: intent.state, detail: intent.detail, requiresOwnerDecision: intent.requiresOwnerDecision } : null,
       nextAssessmentAtMs: this.timerAt,
-      session: { ...this.session, limits: { ...this.deps.config.session } },
+      session: { ...this.session, plannerTurns: this.deps.config.session.maxPlannerTurns - this.plannerTurnsLeft(), limits: { ...this.deps.config.session } },
       lastOutcome: this.lastOutcome,
       blocker: this.blocker,
       home: this.deps.home?.() ?? null,
@@ -848,11 +965,11 @@ export class AutonomySupervisor {
   /** Test seam: runs one scheduling decision now (code only). */
   assessNow(why = 'test'): Promise<void> {
     this.cancelTimer();
-    return this.consider(why);
+    return this.runAssessment(why, false);
   }
 
   /** Test seam: runs one survival guard evaluation now. */
   guardNow(): Promise<void> {
-    return this.survivalGuard();
+    return this.runAssessment('survival guard', true);
   }
 }

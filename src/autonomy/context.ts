@@ -10,6 +10,8 @@ export const AUTONOMY_RULES: string[] = [
   'This goal was started automatically; the owner did not ask for it. Owner instructions, stop and safety always take priority.',
   'Choose ONE bounded milestone that is attainable now with the implemented capabilities and has a FINITE code-verifiable outcome (persistent outcomes are refused for automatic goals).',
   'Prefer useful survival progress: supplies, better tools/equipment, food, and a small verified shelter (home). Use what is visible, remembered (memory view) and known (knowledge queries); do not invent targets.',
+  'Compare the fresh admission inventory and equipment with the knowledge and catalog before selecting prerequisites. Prepared supplies can skip prerequisites that an empty inventory needs; there is no fixed resource ladder.',
+  'Choose an outcome that requires a useful change from current state. Do not select an already satisfied possession/equipment/world predicate or repeat a recent milestone without further useful progress; acquisition is measured from this admission baseline.',
   'Do not repeat an outcome listed in autonomy.avoid unless the situation changed in a way that makes it attainable; if nothing useful is attainable now, answer cannot_execute with the exact missing prerequisite.',
   'Automatic goals, like all goals, never ask the owner questions: choose an attainable milestone or state one declarative blocker.',
   'A home is built only through the home construction capabilities (select_home_site, then build_home) and is complete only when structure_state home complete is verified by code; a chosen site or a remembered coordinate is not a home.',
