@@ -23,6 +23,7 @@ function fresh(capUsd = 1) {
 
 test('real SpendLedger reservations reach disk before dispatch and valid reconciliation persists actual charges', () => {
   const { store, accounting } = fresh();
+  assert.equal(accounting.capUsd, 1, 'the actual Jev readiness port reads this cap');
   const r = accounting.reserve(0.001344, 'do-not-store-label')!;
   assert.equal(store.snapshot()!.spend.outstandingUsd, r.amountUsd);
   accounting.beforeDispatch(r); accounting.reconcile(r, 0.0001);

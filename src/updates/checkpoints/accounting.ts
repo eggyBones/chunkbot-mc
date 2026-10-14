@@ -96,5 +96,6 @@ export class CheckpointAccounting implements CheckpointSpendPort {
   }
 
   snapshot(): SpendSnapshot { this.current(); return structuredClone(this.ledger.snapshot()); }
+  get capUsd(): number { return this.snapshot().capUsd; }
   remainingUsd(): number { return this.snapshot().remainingUsd; }
 }

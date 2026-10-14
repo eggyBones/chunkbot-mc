@@ -24,6 +24,8 @@ export type ResumeView =
 
 /** Structurally uses the REAL SpendLedger; no second cost-accounting algorithm. */
 export interface CheckpointSpendPort {
+  readonly capUsd: number;
+  remainingUsd(): number;
   reserve(amountUsd: number, label: string): SpendReservation | undefined;
   reconcile(reservation: SpendReservation, costUsd: number): void;
   retain(reservation: SpendReservation): void;
