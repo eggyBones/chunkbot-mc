@@ -45,6 +45,9 @@ export class AutonomyControl {
   private writeFailed: string | undefined;
   private durability: LatchDurability = 'none';
   private closed = false;
+  private closing: Promise<void> | undefined;
+  /** Equal pause booleans do not identify the same owner control operation. */
+  private latchGeneration = 0;
   /** Persist operations whose durability bookkeeping has not settled yet. */
   private readonly inflight = new Set<Promise<boolean>>();
 
@@ -55,7 +58,7 @@ export class AutonomyControl {
 
   /** Synchronous startup load (one writer per scope). Safe to call once. */
   open(): void {
-    if (!this.scope || this.store) return;
+    if (!this.scope || this.store || this.closed) return;
     const now = this.options.clock.now();
     this.store = new ControlFileStore({ dir: autonomyScopeDirectory(this.options.rootDir, this.scope), scope: this.scope, clock: this.options.clock, ...(this.options.store ?? {}) });
     try {
@@ -68,6 +71,7 @@ export class AutonomyControl {
       this.durability = 'loaded';
       if (this.load.state === 'recovered' && !this.body.latch.paused) {
         this.body.latch = { paused: true, sinceMs: now, source: 'store_recovery' };
+        this.latchGeneration += 1;
         this.durability = 'pending';
         void this.persist('recovered_fail_closed');
       }
@@ -109,7 +113,7 @@ export class AutonomyControl {
 
   /** First ready connection binds the endpoint; another endpoint is a scope conflict (unless rebound by config). */
   onConnectionReady(): void {
-    if (!this.body || !this.store?.canWrite) return;
+    if (!this.body || !this.store?.canWrite || this.closed || this.options.scopeConflict) return;
     const endpoint = this.options.endpoint;
     const bound = this.body.endpoint;
     if (!bound || bound === endpoint) {
@@ -136,18 +140,20 @@ export class AutonomyControl {
    * to the engine) and persists it. Resolves true when durable.
    */
   setLatch(latch: DurableLatch): Promise<boolean> {
+    if (this.closed) return Promise.resolve(false);
     if (!this.body) {
       this.durability = 'failed';
       return Promise.resolve(false);
     }
     this.body.latch = { ...latch };
+    this.latchGeneration += 1;
     this.durability = 'pending';
     return this.persist(latch.paused ? 'paused' : 'resumed');
   }
 
   /** Replaces the home project (or clears it) and persists. */
   setHome(home: HomeProject | undefined, reason: string): Promise<boolean> {
-    if (!this.body) return Promise.resolve(false);
+    if (!this.body || this.closed) return Promise.resolve(false);
     if (home) this.body.home = structuredClone(home);
     else delete this.body.home;
     return this.persist(reason);
@@ -162,16 +168,17 @@ export class AutonomyControl {
     }
     body.updatedAtMs = this.options.clock.now();
     const snapshot = structuredClone(body);
+    const latchGeneration = this.latchGeneration;
     const op = store.write(snapshot).then(
       (revision) => {
         this.writeFailed = undefined;
-        if (this.body && this.body.latch.paused === snapshot.latch.paused) this.durability = 'written';
+        if (this.body && latchGeneration === this.latchGeneration) this.durability = 'written';
         this.options.record?.({ type: 'autonomy_control_written', reason, revision, paused: snapshot.latch.paused, home: snapshot.home?.state ?? null });
         return true;
       },
       (error: unknown) => {
         this.writeFailed = clip(error instanceof Error ? error.message : String(error), 200);
-        this.durability = 'failed';
+        if (latchGeneration === this.latchGeneration) this.durability = 'failed';
         this.options.record?.({ type: 'autonomy_control_write_failed', reason, error: this.writeFailed });
         return false;
       },
@@ -187,8 +194,11 @@ export class AutonomyControl {
     await Promise.all([...this.inflight]);
   }
 
-  async close(): Promise<void> {
-    await this.store?.close();
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    // Fence mutations synchronously, before waiting for disk I/O or releasing the writer lock.
     this.closed = true;
+    this.closing = this.flush().then(() => this.store?.close());
+    return this.closing;
   }
 }

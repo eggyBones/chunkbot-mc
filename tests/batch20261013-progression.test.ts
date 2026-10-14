@@ -6,6 +6,7 @@ import type { ObservationSnapshot, PlannerProposal, SurvivalProposal } from '../
 import { FakeSurvival, OWNER, autonomyHarness } from './autonomy-fakes.ts';
 import { cobble, finitePlan, followPlan, holdUntilRevoked, runFor, sleep, task } from './handoff-fakes.ts';
 import { until } from './helpers.ts';
+import { autonomyStatusLines } from '../src/autonomy/status-text.ts';
 
 const cannot: PlannerProposal = { version: 1, disposition: 'cannot_execute', interpretation: 'no attainable milestone', missing: 'no safe visible prerequisites', missingCapabilities: [], verifiedProgress: '' };
 const plan = () => finitePlan([task('gain useful supplies', cobble(1))], cobble(1), false, 'gain useful supplies');
@@ -27,6 +28,21 @@ const eat = (now: number): SurvivalProposal => ({
 });
 
 describe('Oct13 supervisor observation ownership', () => {
+  it('a ready timer arriving during the guard read still starts idle progression from that one fresh snapshot', async (t) => {
+    const read = deferred<ObservationSnapshot>();
+    let reads = 0;
+    const survival = new FakeSurvival();
+    const h = autonomyHarness(() => ({ kind: 'reply', proposal: cannot }), { survival, observe: () => { reads += 1; return read.promise; } });
+    t.after(async () => { await h.engine.stop(); await h.supervisor.close(); });
+    h.supervisor.onLifecycle({ type: 'respawn', connectionEpoch: 1, dimension: 'overworld' });
+    assert.equal(h.timers.fireNext(), true, 'coarse guard goes first at the settle deadline');
+    await until(() => reads === 1);
+    assert.equal(h.timers.fireNext(), true, 'ordinary settle timer coalesces behind the same read');
+    read.resolve(await snapshot(h));
+    await until(() => h.planner.count === 1);
+    assert.equal(reads, 1);
+    assert.equal(survival.assessed.length, 1);
+  });
   it('coalesces concurrent timer/guard assessments into one snapshot, policy decision and admission', async (t) => {
     const read = deferred<ObservationSnapshot>();
     let reads = 0;
@@ -113,6 +129,32 @@ describe('Oct13 supervisor observation ownership', () => {
 });
 
 describe('Oct13 automatic readiness and useful outcomes', () => {
+  it('empty and prepared admission inventories allow different prerequisites through the same instruction and catalog', async (t) => {
+    const instructions: string[] = [];
+    const firstObjectives: string[] = [];
+    for (const prepared of [false, true]) {
+      const h = autonomyHarness((r) => {
+        instructions.push(r.instruction);
+        const hasMaterials = (r.admission?.counts?.find((item) => item.key === 'minecraft:oak_log')?.count ?? 0) > 0;
+        const output = hasMaterials ? 'minecraft:wooden_pickaxe' : 'minecraft:oak_log';
+        const outcome = { predicate: 'inventory_amount' as const, selector: output, atLeast: 1, mode: 'collect_additional' as const };
+        const objective = hasMaterials ? 'craft usable equipment' : 'gather visible prerequisites';
+        firstObjectives.push(objective);
+        assert.ok(r.catalog.capabilities.some((c) => c.id === (hasMaterials ? 'craft_item' : 'mine_block')));
+        return { kind: 'reply', proposal: finitePlan([task(objective, outcome, { allowedCapabilities: [hasMaterials ? 'craft_item' : 'mine_block'] })], outcome, false) };
+      });
+      t.after(async () => { await h.engine.stop(); await h.supervisor.close(); });
+      if (prepared) h.server.add('minecraft:oak_log', 3);
+      h.tasks.behaviors.set('gather visible prerequisites', runFor(5, () => h.server.add('minecraft:oak_log', 1)));
+      h.tasks.behaviors.set('craft usable equipment', runFor(5, () => h.server.add('minecraft:wooden_pickaxe', 1)));
+      await h.supervisor.assessNow();
+      await until(() => h.engine.status().goal?.state === 'completed');
+      assert.equal(h.server.inventory.get(prepared ? 'minecraft:wooden_pickaxe' : 'minecraft:oak_log'), 1);
+      assert.equal(h.supervisor.status().session.completed, 1);
+    }
+    assert.equal(instructions[0], instructions[1], 'no phrase/resource dispatch or resource-specific prompt');
+    assert.deepEqual(firstObjectives, ['gather visible prerequisites', 'craft usable equipment']);
+  });
   it('a guard replacement respects the run spend gate and leaves the current automatic task owned', async (t) => {
     let ready = true;
     const survival = new FakeSurvival();
@@ -156,6 +198,24 @@ describe('Oct13 automatic readiness and useful outcomes', () => {
     assert.equal(h.planner.count, 0);
     assert.equal(h.supervisor.status().mode, 'waiting');
     assert.deepEqual(h.timers.delays(), [60_000]);
+  });
+
+  it('terminal Jev failure holds code-task support as well as planner goals until explicit resume', async (t) => {
+    const survival = new FakeSurvival();
+    const h = autonomyHarness(() => ({ kind: 'reply', proposal: plan() }), { survival });
+    t.after(async () => { await h.engine.stop(); await h.supervisor.close(); });
+    survival.decision = { kind: 'propose', proposal: eat(h.clock.now()) };
+    h.tasks.behaviors.set('eat safe food', async () => ({ status: 'failed', reason: 'decision_error', detail: 'provider drift' }));
+    await h.supervisor.assessNow();
+    await until(() => h.engine.status().goal?.terminal?.reason === 'decision_error');
+    await h.supervisor.guardNow();
+    await h.supervisor.assessNow();
+    assert.equal(h.tasks.runs.length, 1);
+    assert.equal(h.supervisor.status().mode, 'provider_blocked');
+    h.engine.resume('chat');
+    await h.supervisor.assessNow();
+    await until(() => h.tasks.runs.length === 2);
+    assert.equal(h.planner.count, 0, 'support uses the task runtime, with no substitute planner call');
   });
 
   it('safety replacement gets only planner turns left after the active automatic goal, without renewing the run allowance', async (t) => {
@@ -213,4 +273,44 @@ describe('Oct13 automatic readiness and useful outcomes', () => {
     assert.match(h.planner.requests[1]!.autonomy?.recentMilestones[0]?.interpretation ?? '', /collects 1 cobblestone more/);
     assert.equal(h.supervisor.status().blocker, null);
   });
+});
+
+describe('Oct13 stop across execution and lookahead', () => {
+  it('a maintained owner follow remains active in status while unrelated progression stays idle', async (t) => {
+    const h = autonomyHarness(() => ({ kind: 'reply', proposal: followPlan() }));
+    t.after(async () => { await h.engine.stop(); await h.supervisor.close(); });
+    h.tasks.behaviors.set('stay near the owner', holdUntilRevoked);
+    await h.engine.submit('follow me', OWNER);
+    await until(() => h.tasks.runs.length === 1);
+    await h.supervisor.assessNow();
+    const status = h.supervisor.status();
+    assert.equal(status.active?.source.kind, 'owner');
+    assert.equal(h.automaticRequests().length, 0);
+    const intent = autonomyStatusLines(status).find((line) => line.startsWith('owner intent:'))!;
+    assert.match(intent, /owner intent: active/);
+    assert.doesNotMatch(intent, /held|continues when it is safe/);
+  });
+  for (const [capability, objective] of [['move_near', 'travel to supplies'], ['craft_item', 'make useful equipment'], ['place_block', 'build approved shelter cells']] as const) {
+    it(`stop revokes ${capability} task ownership and in-flight lookahead, then restores pause on restart`, async (t) => {
+      const outcome = cobble(4);
+      const h = autonomyHarness((r) => r.turnKind === 'lookahead' ? { kind: 'hang', cleanupMs: 5 } : { kind: 'reply', proposal: finitePlan([task(objective, cobble(2), { allowedCapabilities: [capability] })], outcome, true) }, { lookahead: true });
+      t.after(async () => { await h.engine.stop(); await h.supervisor.close(); });
+      h.tasks.behaviors.set(objective, holdUntilRevoked);
+      await h.supervisor.assessNow();
+      await until(() => h.tasks.runs.length === 1 && h.planner.count === 2);
+      await h.engine.stop('owner_stop', 'chat');
+      assert.equal(h.tasks.runs[0]!.task.signal.aborted, true);
+      assert.equal(h.planner.signals[1]!.aborted, true);
+      assert.equal(h.planner.inFlight, 0);
+      assert.equal(h.timers.pending.size, 0);
+      assert.equal(h.supervisor.status().session.plannerTurns, 2, 'lookahead consumed the same automatic allowance');
+      await h.control.flush();
+      await h.supervisor.close();
+      const restarted = autonomyHarness(() => ({ kind: 'reply', proposal: cannot }), { dir: h.dir });
+      t.after(async () => { await restarted.engine.stop(); await restarted.supervisor.close(); });
+      await restarted.supervisor.assessNow();
+      assert.equal(restarted.planner.count, 0);
+      assert.equal(restarted.supervisor.status().mode, 'paused');
+    });
+  }
 });

@@ -5,7 +5,7 @@
 // unaffected. Real GoalEngine + supervisor, fake ports, no inference.
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { PlannerProposal, SurvivalProposal } from '../src/contracts/index.ts';
+import type { GoalSource, PlannerProposal, SurvivalProposal } from '../src/contracts/index.ts';
 import { recoveryAdmissionBarrier } from '../src/autonomy/barrier.ts';
 import { until } from './helpers.ts';
 import { FakeSurvival, autonomyHarness } from './autonomy-fakes.ts';
@@ -45,6 +45,29 @@ function setup(waitMs = 1_000) {
 }
 
 describe('MB-FLOW-003-C5 owned admission barrier', () => {
+  const source: GoalSource = { kind: 'support', routine: 'death_recovery', priority: 'support', proposalId: 'prop-rec', episodeId: 'rep-0001', execution: 'planner_goal', serves: 'owner_intent', reason: 'recover belongings', sessionAttempt: 1 };
+
+  it('a different durable incident cannot satisfy the admitted recovery barrier', async () => {
+    const barrier = recoveryAdmissionBarrier({ survival: { recoveryTarget: () => ({ episodeId: 'rep-0002' }) }, connection: () => ({ connectionEpoch: 1, dimension: 'overworld' }) });
+    const result = await barrier({ goalId: 'goal-0001', epoch: 2, source }, new AbortController().signal);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.detail, /episode_mismatch/);
+  });
+
+  it('connection changes while a durable save is pending require a new admission', async () => {
+    let epoch = 1;
+    let calls = 0;
+    const barrier = recoveryAdmissionBarrier({ survival: { recoveryTarget: () => {
+      calls += 1;
+      epoch = 2;
+      return { error: 'attempt_write_pending', detail: 'still saving' };
+    } }, connection: () => ({ connectionEpoch: epoch, dimension: 'overworld' }), pollMs: 1 });
+    const result = await barrier({ goalId: 'goal-0001', epoch: 2, source }, new AbortController().signal);
+    assert.equal(calls, 1, 'new connection authority is never polled for the old admission');
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.detail, /connection_changed/);
+  });
+
   it('a held (pending) save starts no planner turn; once durable the recovery plans', async () => {
     const { h, authority } = setup();
     h.tasks.behaviors.set('collect cobblestone for tools', runFor(5, () => h.server.add('minecraft:cobblestone', 1)));

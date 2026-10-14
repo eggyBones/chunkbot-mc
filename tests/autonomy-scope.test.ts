@@ -10,6 +10,7 @@ import { resolveAutonomyScope } from '../src/autonomy/scope.ts';
 import { autonomyScopeDirectory } from '../src/autonomy/store.ts';
 import { autonomyHarness } from './autonomy-fakes.ts';
 import { followPlan } from './handoff-fakes.ts';
+import { until } from './helpers.ts';
 
 const mem = { enabled: true, worldProfile: 'world-a', worldRevision: 1, botProfile: 'bot-a' };
 const clock = { now: () => 1_000 };
@@ -87,5 +88,60 @@ describe('durable control store fail-closed rules', () => {
       b.onConnectionReady();
       assert.equal(b.persistence().state, 'conflict');
     });
+  });
+
+  it('an earlier pause write cannot mark a later pause durable across an intervening resume', async () => {
+    const gates: Array<() => void> = [];
+    const rootDir = mkdtempSync(join(tmpdir(), 'chunkbot-latch-order-'));
+    const c = new AutonomyControl({ scope, rootDir, endpoint: 'e', rebindEndpoint: false, clock,
+      store: { beforeRename: () => new Promise<void>((resolve) => gates.push(resolve)) },
+    });
+    c.open();
+    const first = c.setLatch({ paused: true, sinceMs: 1, source: 'first' });
+    await until(() => gates.length === 1);
+    const resumed = c.setLatch({ paused: false });
+    const latest = c.setLatch({ paused: true, sinceMs: 2, source: 'latest' });
+    gates[0]!();
+    assert.equal(await first, true);
+    assert.equal(c.latchDurability(), 'pending', 'latest pause is still queued, despite the same boolean being on disk');
+    await until(() => gates.length === 2);
+    gates[1]!();
+    await resumed;
+    assert.equal(c.latchDurability(), 'pending');
+    await until(() => gates.length === 3);
+    gates[2]!();
+    assert.equal(await latest, true);
+    assert.equal(c.latchDurability(), 'written');
+    await c.close();
+    const loaded = new AutonomyControl({ scope, rootDir, endpoint: 'e', rebindEndpoint: false, clock });
+    loaded.open();
+    assert.deepEqual(loaded.latch(), { paused: true, sinceMs: 2, source: 'latest' });
+    await loaded.close();
+  });
+
+  it('close fences new mutations immediately and drains the exact queued stop before releasing the scope', async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'chunkbot-close-latch-'));
+    let release!: () => void;
+    let writing = false;
+    const c = new AutonomyControl({ scope, rootDir, endpoint: 'e', rebindEndpoint: false, clock, store: { beforeRename: () => {
+      writing = true;
+      return new Promise<void>((resolve) => { release = resolve; });
+    } } });
+    c.open();
+    const stopped = c.setLatch({ paused: true, source: 'stop' });
+    await until(() => writing);
+    const closed = c.close();
+    assert.equal(c.usable(), false);
+    assert.equal(await c.setLatch({ paused: false }), false);
+    assert.equal(await c.setHome(undefined, 'late'), false);
+    assert.equal(c.latch().paused, true);
+    release();
+    assert.equal(await stopped, true);
+    await closed;
+    const loaded = new AutonomyControl({ scope, rootDir, endpoint: 'e', rebindEndpoint: false, clock });
+    loaded.open();
+    assert.equal(loaded.persistence().state, 'ready', 'lock released after final stop revision');
+    assert.equal(loaded.latch().paused, true);
+    await loaded.close();
   });
 });

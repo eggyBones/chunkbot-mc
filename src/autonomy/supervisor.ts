@@ -132,6 +132,11 @@ interface AssessmentFence {
   signal: AbortSignal;
 }
 
+interface AssessmentRequest {
+  why: string;
+  guardOnly: boolean;
+}
+
 type Phase = 'idle' | 'assessing' | 'cooldown' | 'waiting' | 'provider_blocked' | 'exhausted';
 
 /** Renders an accepted outcome for survival interruption bookkeeping (display only). */
@@ -158,6 +163,7 @@ export class AutonomySupervisor {
   private lastOutcome: AutonomyStatus['lastOutcome'] = null;
   private submitting = false;
   private assessment: Promise<void> | undefined;
+  private assessmentRequest: AssessmentRequest | undefined;
   private assessmentAbort: AbortController | undefined;
   private assessmentGeneration = 0;
   private guardGeneration = 0;
@@ -421,7 +427,13 @@ export class AutonomySupervisor {
       this.waitingStateFp = null;
       this.blocker = null;
       if (this.mayRun() && !this.deps.engine.status().latch.paused) {
-        this.deps.notify(`Finished your instruction (${clip(end.interpretation ?? end.instruction ?? end.goalId, 100)}); returning to automatic progression shortly. Say stop to pause automatic work.`);
+        const held = this.heldIntent();
+        const next = held
+          ? 'a newer unresolved instruction holds unrelated automatic work'
+          : this.session.progressionGoals >= this.deps.config.session.maxProgressionGoals || this.plannerTurnsLeft() <= 0
+            ? 'automatic progression allowance is exhausted; necessary support can still be reassessed'
+            : 'returning to automatic progression shortly. Say stop to pause automatic work';
+        this.deps.notify(`Finished your instruction (${clip(end.interpretation ?? end.instruction ?? end.goalId, 100)}); ${next}.`);
         this.schedule(this.deps.config.afterCompletionMs, 'owner goal verified');
       }
       return;
@@ -589,14 +601,24 @@ export class AutonomySupervisor {
   /** One code-only assessment at a time. Stop/lifecycle/admission fences abort the wait,
    * so a late observation cannot admit support or revoke a newer owner's work. */
   private runAssessment(why: string, guardOnly: boolean): Promise<void> {
-    if (this.assessment) return this.assessment;
+    if (this.assessment) {
+      if (this.assessmentAbort?.signal.aborted) return this.assessment.then(() => this.runAssessment(why, guardOnly));
+      // A ready/completion timer must not be lost behind a code-only guard read.
+      if (!guardOnly && this.assessmentRequest) {
+        this.assessmentRequest.guardOnly = false;
+        this.assessmentRequest.why = why;
+      }
+      return this.assessment;
+    }
     if (!this.mayRun() || this.submitting || this.deps.engine.status().latch.paused) return Promise.resolve();
     const conn = this.deps.connection();
     if (!conn?.ready || (guardOnly && !this.deps.survival?.enabled)) return Promise.resolve();
     const abort = new AbortController();
     this.assessmentAbort = abort;
     const fence: AssessmentFence = { generation: this.assessmentGeneration, goalEpoch: this.deps.engine.currentEpoch, connectionEpoch: conn.connectionEpoch, dimension: conn.dimension, signal: abort.signal };
-    const op = this.consider(why, guardOnly, fence).catch((error: unknown) => {
+    const request = { why, guardOnly };
+    this.assessmentRequest = request;
+    const op = this.consider(request, fence).catch((error: unknown) => {
       if (!this.currentAssessment(fence)) return;
       this.blocker = { code: 'assessment_failed', detail: clip(error instanceof Error ? error.message : String(error), 300) };
       this.setPhase('waiting', `automatic assessment waits: ${this.blocker.detail}`);
@@ -604,6 +626,7 @@ export class AutonomySupervisor {
     }).finally(() => {
       if (this.assessment === op) {
         this.assessment = undefined;
+        this.assessmentRequest = undefined;
         this.assessmentAbort = undefined;
       }
     });
@@ -647,7 +670,7 @@ export class AutonomySupervisor {
       });
     } catch (error) {
       this.deps.record({ type: 'autonomy_survival_assess_error', message: error instanceof Error ? error.message : String(error) });
-      return { kind: 'blocked', routine: 'rest', reason: 'assessment_failed', signature: 'assessment_failed', detail: 'survival assessment failed; automatic work waits for a fresh assessment' };
+      throw error;
     }
   }
 
@@ -661,7 +684,7 @@ export class AutonomySupervisor {
   }
 
   /** One bounded scheduling decision (code only). */
-  private async consider(why: string, guardOnly: boolean, fence: AssessmentFence): Promise<void> {
+  private async consider(request: AssessmentRequest, fence: AssessmentFence): Promise<void> {
     const snapshot = await this.observe(fence);
     if (!this.currentAssessment(fence)) return;
     if (!snapshot || snapshot.connectionEpoch !== fence.connectionEpoch || snapshot.dimension !== fence.dimension ||
@@ -694,7 +717,10 @@ export class AutonomySupervisor {
     if (decision?.kind === 'blocked') {
       this.blocker = { code: `${decision.routine}_${decision.reason}`.slice(0, 64), detail: clip(decision.detail, 300) };
       this.setPhase('waiting', `automatic work waits for ${decision.routine}: ${decision.detail}`);
-      if (decision.retryAfterMs !== undefined) this.schedule(Math.max(this.deps.config.afterBlockedMs, decision.retryAfterMs), `survival ${decision.routine} retry window`);
+      if (decision.retryAfterMs !== undefined) {
+        const requested = Number.isFinite(decision.retryAfterMs) ? decision.retryAfterMs : this.deps.config.maxBackoffMs;
+        this.schedule(Math.min(this.deps.config.maxBackoffMs, Math.max(this.deps.config.afterBlockedMs, requested)), `survival ${decision.routine} retry window`);
+      }
       return;
     }
     // 2. Unresolved owner intent holds unrelated progression (C1; no automatic continuation), including survival's durable record after a restart.
@@ -703,7 +729,7 @@ export class AutonomySupervisor {
       this.setPhase('idle', `holding automatic progression for your ${intent.state} instruction "${clip(intent.instruction, 80)}" (${intent.reason}); a new instruction releases it`);
       return;
     }
-    if (guardOnly) return; // The guard never starts unrelated progression or a second assessment.
+    if (request.guardOnly) return; // The guard never starts unrelated progression or a second assessment.
     if (!this.providersUsable(true)) return;
     // 3. Progression.
     const limits = this.deps.config.session;
@@ -723,7 +749,7 @@ export class AutonomySupervisor {
       this.waitingStateFp = null;
       this.session.consecutiveUnproductive = Math.max(0, limits.maxConsecutiveUnproductive - 1);
     }
-    await this.submitProgression(why);
+    await this.submitProgression(request.why);
   }
 
   private context(source: GoalSource, reason: string, support?: AutonomyPlannerContext['support']): AutonomyPlannerContext {

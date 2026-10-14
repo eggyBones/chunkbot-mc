@@ -17,7 +17,7 @@ import { DelayedPlanner, FakeServer, FakeTaskRuntime, FakeWorld, type PlannerScr
 export const OWNER = { surface: 'chat', principal: 'owner' } as const;
 export const FACTS = new VersionKnowledge({ version: '26.1.2' });
 const cap = (id: string) => ({ id, family: 'test', purpose: `${id} test capability`, parameters: [], preconditions: [], effects: [], supportedPredicates: [], timeoutMs: 1_000, cancellation: 'stops', limitations: ['test'] });
-export const CAPS = new StaticCapabilityRegistry({ catalogVersion: 'test-autonomy', capabilities: [cap('mine_block'), cap('move_near'), cap('follow_entity'), cap('use_held_item'), cap('pickup_item')] });
+export const CAPS = new StaticCapabilityRegistry({ catalogVersion: 'test-autonomy', capabilities: [cap('mine_block'), cap('move_near'), cap('follow_entity'), cap('use_held_item'), cap('pickup_item'), cap('craft_item'), cap('place_block')] });
 const READY_EXECUTOR = { readiness: () => ({ ready: true, detail: 'fake executor' }), execute: async () => { throw new Error('not used'); } };
 export const LIMITS: GoalEngineLimits = { maxInstructionChars: 500, plannerTurnsPerGoal: 20, plannerTimeoutMs: 10_000, planWindowSteps: 8, totalTaskCeiling: 64, goalDeadlineMs: 60_000, cleanupTimeoutMs: 500, replans: 8 };
 
