@@ -36,7 +36,7 @@ describe('survival skills', () => {
   it('registers nothing when survival is disabled', async () => {
     assert.equal(survivalSkills(undefined).length, 0);
     assert.equal(survivalSkills(harness({ config: { enabled: false } }).service).length, 0);
-    assert.deepEqual(survivalSkills(harness().service).map((s) => s.descriptor.id), ['eat_safe_food', 'rest_in_place', 'go_to_death_site', 'recover_lost_items', 'equip_suitable_tool']);
+    assert.deepEqual(survivalSkills(harness().service).map((s) => s.descriptor.id), ['eat_safe_food', 'rest_in_place', 'go_to_death_site', 'recover_lost_items', 'equip_suitable_tool', 'equip_suitable_armor', 'move_to_approved_storage', 'inspect_approved_storage', 'store_surplus', 'withdraw_reserve']);
   });
 
   it('eat_safe_food offers only safe owned foods and nothing at full hunger', async () => {

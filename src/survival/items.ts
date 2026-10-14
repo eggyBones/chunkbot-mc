@@ -115,7 +115,7 @@ export interface FoodChoice {
 export function safeFoods(stacks: readonly { key: string; count: number; meta?: ItemMetadata }[], registry: SurvivalItemRegistry, food: number, avoid: readonly string[] = []): FoodChoice[] {
   const totals = new Map<string, number>();
   // A key with ANY custom/enchanted stack is excluded entirely: use-by-key cannot choose which stack is eaten.
-  const protectedKeys = new Set(stacks.filter((s) => s.meta?.customName || s.meta?.enchanted).map((s) => mk(s.key)));
+  const protectedKeys = new Set(stacks.filter((s) => s.meta?.customName || s.meta?.enchanted || (s.meta && s.meta.metadata !== 'server_slot')).map((s) => mk(s.key)));
   for (const s of stacks) if (!protectedKeys.has(mk(s.key))) totals.set(mk(s.key), (totals.get(mk(s.key)) ?? 0) + s.count);
   const missing = Math.max(0, 20 - food);
   const out: FoodChoice[] = [];

@@ -227,9 +227,10 @@ describe('survival upkeep', () => {
     h.memory.factList.push(fact);
     const p = propose(h);
     assert.equal(p?.routine, 'inventory_room');
-    if (p?.execution.kind === 'planner_goal') {
-      assert.match(p.execution.instruction, /mf-0009/);
-      assert.ok(p.execution.context.rules.some((r) => /never drop/.test(r)));
+    if (p?.execution.kind === 'code_task') {
+      assert.match(p.execution.objective, /mf-0009/);
+      assert.deepEqual(p.execution.spec.allowedCapabilities, ['move_to_approved_storage', 'store_surplus']);
+      assert.match(p.execution.spec.decisionInstruction, /Never drop/);
     }
   });
 

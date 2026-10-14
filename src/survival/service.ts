@@ -56,11 +56,11 @@ import { CheckpointRecordSchema, type CheckpointRecord } from '../contracts/surv
 import { AllowanceBook } from './allowance.ts';
 import { IncidentLedgerBook } from './continuation.ts';
 import { EpisodeBook, countedAttempts, distance, isOpen, preparationSignature, UNCOUNTED_OUTCOMES } from './episodes.ts';
-import { counts, safeFoods, sameDimension, sessionDimension, type SurvivalItemRegistry } from './items.ts';
-import { ROUTINE_ORDER, evalEat, evalInventoryRoom, evalRecovery, evalResupply, evalRest, evalToolUpkeep, freeSlots, reserveCount, wornTools, type DesignatedStorage, type PolicyContext, type RoutineEval } from './policy.ts';
+import { counts, isSafeFood, isValuable, safeFoods, sameDimension, sessionDimension, toolKind, type SurvivalItemRegistry } from './items.ts';
+import { ROUTINE_ORDER, evalEat, evalInventoryRoom, evalRecovery, evalResupply, evalRest, evalToolUpkeep, freeSlots, reserveCount, wornTools, toolNeed, storageFor, roomTarget, surplus, type DesignatedStorage, type PolicyContext, type RoutineEval } from './policy.ts';
 import { SurvivalFileStore, survivalScopeDirectory } from './store.ts';
 import { SurvivalTracker, type CapturedDeathRecord, type TrackerEvent } from './tracker.ts';
-import { freshTaskContext, type UpkeepTaskContext } from './upkeep.ts';
+import { freshTaskContext, suitableTool, type UpkeepTaskContext } from './upkeep.ts';
 
 /** Subset of MemoryService survival uses (designated storage, recovery updates). */
 export interface SurvivalMemoryPort {
@@ -109,10 +109,20 @@ export type FactDurability = 'durable' | 'pending' | 'failed' | 'unknown';
 /** Survival store durability of the current in-process book. */
 export type StoreDurability = 'durable' | 'pending' | 'failed' | 'unavailable';
 
+export interface UpkeepFence { goalId?: string; goalEpoch: number; connectionEpoch: number; dimension: string }
+export interface UpkeepBinding {
+  taskContext?: UpkeepTaskContext;
+  storage?: DesignatedStorage;
+  roomTarget: number;
+  tool?: ReturnType<typeof toolNeed>;
+  reserve?: { key: string; high: number };
+}
+
 interface Pending {
   proposal: SurvivalProposal;
   connectionEpoch: number;
   reserveKey?: string;
+  upkeep?: UpkeepBinding;
   /** Recovery: preparation/route signature measured from the SAME fresh facts the proposal used. */
   preparation?: PreparationSignature;
 }
@@ -128,6 +138,7 @@ interface ActiveSupport {
   signature: string;
   episodeId?: string;
   reserveKey?: string;
+  upkeep?: UpkeepBinding;
   allowanceId?: string;
   arrivedAtMs?: number;
   searchDone?: boolean;
@@ -507,7 +518,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   private designatedStorage(): DesignatedStorage[] {
     const facts = this.options.memory?.facts() ?? [];
     return facts
-      .filter((f) => f.status === 'active' && f.category === 'container' && f.source === 'owner_statement' && f.location)
+      .filter((f) => f.status === 'active' && f.category === 'container' && f.source === 'owner_statement' && f.location && this.options.memory?.factDurability?.(f.id) === 'durable')
       .slice(0, 8)
       .map((f) => ({ factId: f.id, label: f.label, dimension: (f.location as NonNullable<MemoryFact['location']>).dimension, at: (f.location as NonNullable<MemoryFact['location']>).at }));
   }
@@ -562,6 +573,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     }
     while (this.admissions.length && this.admissions[0]! < now - 3_600_000) this.admissions.shift();
     const serves: SurvivalProposal['serves'] = interrupted ? 'owner_intent' : a.kind === 'progression' ? 'progression' : 'none';
+    const taskContext = this.taskContext(input.connection, now);
     const ctx: PolicyContext = {
       now,
       cfg,
@@ -583,6 +595,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       farRoute: this.options.farRoute,
       goalLimits: input.goalLimits,
       serves,
+      ...(taskContext ? { taskContext } : {}),
     };
     let firstBlocked: (RoutineEval & { blocked: object }) | undefined;
     for (const routine of ROUTINE_ORDER) {
@@ -623,7 +636,10 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       const reserveKey = routine === 'resupply' ? cfg.resupply.reserves.find((r) => ev.signature.startsWith(`resupply:${r.key}:`))?.key : undefined;
       const self = ctx.snapshot?.self.at;
       const preparation = routine === 'death_recovery' ? preparationSignature(inv, vitals?.health ?? 0, this.options.registry, self ? { dimension: ctx.connection.dimension, at: self } : undefined, this.farRoute(ctx), cfg.food.avoid) : undefined;
-      this.pending.set(proposal.proposalId, { proposal, connectionEpoch: input.connection.connectionEpoch, ...(reserveKey ? { reserveKey } : {}), ...(preparation ? { preparation } : {}) });
+      const targetStorage = storageFor(ctx);
+      const reserve = reserveKey ? cfg.resupply.reserves.find((r) => r.key === reserveKey) : undefined;
+      const upkeep: UpkeepBinding = { roomTarget: roomTarget(ctx), ...(ctx.taskContext ? { taskContext: structuredClone(ctx.taskContext) } : {}), ...(targetStorage ? { storage: structuredClone(targetStorage) } : {}), ...(routine === 'tool_upkeep' && toolNeed(ctx) ? { tool: toolNeed(ctx) } : {}), ...(reserve ? { reserve: { key: reserve.key, high: reserve.high } } : {}) };
+      this.pending.set(proposal.proposalId, { proposal, upkeep, connectionEpoch: input.connection.connectionEpoch, ...(reserveKey ? { reserveKey } : {}), ...(preparation ? { preparation } : {}) });
       return this.decide({ kind: 'propose', proposal }, now);
     }
     if (firstBlocked && 'blocked' in firstBlocked) {
@@ -677,7 +693,7 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     }
     this.pending.delete(adm.proposalId);
     const dimension = this.dimensionValue ?? 'unknown';
-    const active: ActiveSupport = { proposalId: adm.proposalId, routine: p.proposal.routine, goalId: adm.goalId, goalEpoch: adm.goalEpoch, connectionEpoch: adm.connectionEpoch, dimension, admittedAtMs: adm.admittedAtMs, signature: p.proposal.signature, ...(p.proposal.episodeId ? { episodeId: p.proposal.episodeId } : {}), ...(p.reserveKey ? { reserveKey: p.reserveKey } : {}) };
+    const active: ActiveSupport = { proposalId: adm.proposalId, routine: p.proposal.routine, goalId: adm.goalId, goalEpoch: adm.goalEpoch, connectionEpoch: adm.connectionEpoch, dimension, admittedAtMs: adm.admittedAtMs, signature: p.proposal.signature, ...(p.upkeep ? { upkeep: p.upkeep } : {}), ...(p.proposal.episodeId ? { episodeId: p.proposal.episodeId } : {}), ...(p.reserveKey ? { reserveKey: p.reserveKey } : {}) };
     this.admissions.push(now);
     if (active.routine === 'death_recovery' && this.book && active.episodeId) {
       const e = this.book.get(active.episodeId);
@@ -888,16 +904,18 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
       case 'tool_upkeep':
         if (p.expect !== 'satisfied') break;
         if (!inv?.fullSync) return out('unknown', 'no full server inventory');
-        return wornTools(inv, cfg).length === 0 ? out('satisfied', 'no nearly worn tool lacks a spare') : out('unsatisfied', 'a nearly worn tool still lacks a spare');
+        const needed = a.upkeep?.tool;
+        const pending = needed?.tools.length ? !suitableTool(inv, needed.tools, cfg) : wornTools(inv, cfg).some((w) => !needed || w.kind === needed.kind);
+        return pending ? out('unsatisfied', 'the bound replacement still lacks a healthy ordinary capable tool') : out('satisfied', 'the bound replacement has a healthy ordinary capable tool');
       case 'inventory_room': {
         if (p.expect !== 'satisfied') break;
         if (!inv?.fullSync) return out('unknown', 'no full server inventory');
         const free = freeSlots(inv);
-        return free >= cfg.inventory.targetFreeSlots ? out('satisfied', `${free} free slots`, { current: free }) : out('unsatisfied', `${free} free slots (< ${cfg.inventory.targetFreeSlots})`, { current: free });
+        return free >= (a.upkeep?.roomTarget ?? cfg.inventory.targetFreeSlots) ? out('satisfied', `${free} free slots`, { current: free }) : out('unsatisfied', `${free} free slots (< ${a.upkeep?.roomTarget ?? cfg.inventory.targetFreeSlots})`, { current: free });
       }
       case 'resupply': {
         if (p.expect !== 'satisfied') break;
-        const r = cfg.resupply.reserves.find((x) => x.key === a.reserveKey);
+        const r = a.upkeep?.reserve;
         if (!r || !inv?.fullSync) return out('unknown', 'no bound reserve or no full server inventory');
         const have = reserveCount(r.key, inv, { cfg, registry: this.options.registry });
         return have >= r.high ? out('satisfied', `${r.key}: ${have} >= ${r.high}`, { current: have }) : out('unsatisfied', `${r.key}: ${have} < ${r.high}`, { current: have });
@@ -947,6 +965,72 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
   inventory(connectionEpoch: number): InventoryFacts | null {
     const i = this.tracker.inventory();
     return i && i.connectionEpoch === connectionEpoch ? i : null;
+  }
+
+  containerStacks(connectionEpoch: number, windowId: number): ReturnType<SurvivalTracker['containerStacks']> {
+    return this.tracker.connectionEpoch === connectionEpoch ? this.tracker.containerStacks(windowId) : undefined;
+  }
+
+  lowHealthThreshold(): number { return this.options.limits.lowHealth; }
+
+  private taskContext(fence: { connectionEpoch: number; dimension: string }, now: number): UpkeepTaskContext | undefined {
+    try { return freshTaskContext(this.options.upkeepTaskContext?.(), fence, now); }
+    catch { return undefined; } // unavailable task facts never broaden authority
+  }
+
+  /** Frozen support needs; every use rechecks the current owner and approval. */
+  upkeepAuthority(fence: UpkeepFence): UpkeepBinding | { error: string; detail: string } {
+    const a = this.active;
+    if (!a || !['inventory_room', 'resupply', 'tool_upkeep'].includes(a.routine) || a.goalEpoch !== fence.goalEpoch || (fence.goalId !== undefined && a.goalId !== fence.goalId)) return { error: 'not_upkeep_goal', detail: 'only the bound admitted upkeep goal may use this authority' };
+    if (a.connectionEpoch !== fence.connectionEpoch || this.tracker.connectionEpoch !== fence.connectionEpoch || this.tracker.life !== 'alive' || !sameDimension(a.dimension, fence.dimension) || !sameDimension(this.dimensionValue, fence.dimension)) return { error: 'stale_upkeep', detail: 'upkeep belongs to a different connection, dimension or life' };
+    const u = a.upkeep;
+    if (!u) return { error: 'upkeep_unbound', detail: 'no support needs were frozen at admission' };
+    if (u.storage && !this.designatedStorage().some((s) => s.factId === u.storage!.factId && sameDimension(s.dimension, u.storage!.dimension) && distance(s.at, u.storage!.at) === 0)) return { error: 'storage_approval_changed', detail: 'the exact approved durable storage fact was removed, moved or is no longer durable' };
+    return structuredClone(u);
+  }
+
+  upkeepSurplus(fence: UpkeepFence): Array<{ key: string; count: number }> {
+    const u = this.upkeepAuthority(fence);
+    const inv = this.inventory(fence.connectionEpoch);
+    if ('error' in u || !inv?.fullSync || !this.cfg || this.active?.routine !== 'inventory_room') return [];
+    return surplus(inv, { cfg: this.cfg, registry: this.options.registry, ...(u.taskContext ? { taskContext: u.taskContext } : {}) });
+  }
+
+  reserveShortfall(fence: UpkeepFence): { key: string; missing: number } | undefined {
+    const u = this.upkeepAuthority(fence);
+    const inv = this.inventory(fence.connectionEpoch);
+    if ('error' in u || !u.reserve || !inv?.fullSync || !this.cfg || this.active?.routine !== 'resupply') return undefined;
+    return { key: u.reserve.key, missing: Math.max(0, u.reserve.high - reserveCount(u.reserve.key, inv, { cfg: this.cfg, registry: this.options.registry })) };
+  }
+
+  /** Shared dispatch writer calls this after fresh candidate revalidation.
+   * Recipe inputs/output batch are exact VersionKnowledge facts, not model data.
+   * This adds policy to the existing executor; it never dispatches an action. */
+  checkUpkeepCandidate(fence: UpkeepFence, choice: { capability: string; parameters: Record<string, unknown> }, recipe?: { inputs: readonly string[]; outputCount: number }): { allowed: true } | { allowed: false; reason: string; detail: string } {
+    const a = this.active;
+    if (!a || a.goalEpoch !== fence.goalEpoch || (fence.goalId !== undefined && a.goalId !== fence.goalId) || !['tool_upkeep', 'inventory_room', 'resupply'].includes(a.routine)) return { allowed: true };
+    const u = this.upkeepAuthority(fence);
+    const deny = (reason: string, detail: string) => ({ allowed: false as const, reason, detail });
+    if ('error' in u) return deny(u.error, u.detail);
+    const cap = choice.capability;
+    if (['container_transfer', 'inspect_container', 'drop_item', 'pickup_item', 'use_held_item', 'attack_entity'].includes(cap)) return deny('unsupported_upkeep_action', 'upkeep cannot use arbitrary containers, foreign drops, precious consumables or combat');
+    if (cap === 'craft_item') {
+      if (!recipe || !Number.isInteger(recipe.outputCount) || recipe.outputCount < 1) return deny('upkeep_recipe_unverified', 'exact recipe input and output batch facts are required');
+      const inv = this.inventory(fence.connectionEpoch);
+      if (!inv?.fullSync) return deny('inventory_unknown', 'full server inventory is required');
+      if (recipe.inputs.some((key) => isValuable(key) || inv.stacks.some((s) => s.key === key && (s.meta.metadata !== 'server_slot' || isValuable(s.key, s.meta))))) return deny('protected_ingredient', 'the recipe could consume a valuable, custom, enchanted or unknown ingredient');
+      const output = choice.parameters['output'];
+      const count = choice.parameters['count'];
+      if (typeof output !== 'string' || typeof count !== 'number' || !Number.isInteger(count) || count < 1 || isValuable(output)) return deny('upkeep_output_invalid', 'upkeep output must be ordinary and finite');
+      const made = Math.ceil(count / recipe.outputCount) * recipe.outputCount;
+      if (a.routine === 'tool_upkeep') {
+        if (u.tool && (u.tool.tools.length ? u.tool.tools.includes(output) : toolKind(output) === u.tool.kind) && made !== 1) return deny('replacement_excess', 'only one replacement tool is permitted');
+      } else if (a.routine === 'resupply') {
+        const need = this.reserveShortfall(fence);
+        if (need && (need.key === 'chunkbot:safe_food' ? isSafeFood(output, this.options.registry, this.cfg!.food.avoid) : output === need.key) && made > need.missing) return deny('reserve_excess', 'the actual recipe batch exceeds the current reserve shortfall');
+      }
+    }
+    return { allowed: true };
   }
 
   /** The bound recovery target for a goal epoch on the current connection/dimension, or why not. */

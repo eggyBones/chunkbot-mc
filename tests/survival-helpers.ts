@@ -163,7 +163,7 @@ export interface Harness {
   snap: { value: ObservationSnapshot | undefined };
 }
 
-export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; root?: string; clock?: TestClock; farRoute?: () => string | undefined; pid?: number; connectionEpoch?: number; beforeRename?: (tmp: string) => void | Promise<void>; memory?: FakeMemory; sessionId?: string } = {}): Harness {
+export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; root?: string; clock?: TestClock; farRoute?: () => string | undefined; pid?: number; connectionEpoch?: number; beforeRename?: (tmp: string) => void | Promise<void>; memory?: FakeMemory; sessionId?: string; upkeepTaskContext?: SurvivalServiceOptions['upkeepTaskContext']; containerLayout?: () => { id: number; inventoryStart: number } } = {}): Harness {
   const clock = opts.clock ?? new TestClock();
   const root = opts.root ?? tempRoot();
   const memory = opts.memory ?? fakeMemory();
@@ -179,6 +179,7 @@ export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; 
     record: (e) => events.push(e),
     memory,
     latestSnapshot: () => snap.value,
+    ...(opts.upkeepTaskContext ? { upkeepTaskContext: opts.upkeepTaskContext } : {}),
     ...(opts.farRoute ? { farRoute: opts.farRoute } : {}),
     store: { pid: opts.pid ?? 4242, isAlive: () => false, ...(opts.beforeRename ? { beforeRename: opts.beforeRename } : {}) },
     ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
@@ -186,7 +187,7 @@ export function harness(opts: { config?: SurvivalConfigInput; scoped?: boolean; 
   service.open();
   const packets = new Packets();
   const pos = { dimension: SESSION_OW, at: { x: 0, y: 64, z: 0 } };
-  service.attachConnection(packets.client, { connectionEpoch: opts.connectionEpoch ?? 1, selfPosition: () => ({ dimension: pos.dimension, at: { ...pos.at } }) });
+  service.attachConnection(packets.client, { connectionEpoch: opts.connectionEpoch ?? 1, selfPosition: () => ({ dimension: pos.dimension, at: { ...pos.at } }), ...(opts.containerLayout ? { containerLayout: opts.containerLayout } : {}) });
   service.onLifecycle({ type: 'ready', connectionEpoch: opts.connectionEpoch ?? 1, info: { serverVersion: '26.1.2', protocolVersion: 775, dimension: SESSION_OW, position: pos.at, gameMode: 'survival', serverOnlineMode: false } });
   packets.login();
   return { service, packets, clock, root, memory, events, pos, snap };

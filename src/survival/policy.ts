@@ -21,6 +21,7 @@ import {
   manifestRemaining,
   manifestSought,
 } from '../contracts/survival.ts';
+import { suitableArmor, suitableTool, UPKEEP_CAPABILITIES, type UpkeepTaskContext } from './upkeep.ts';
 import { visibleThreat } from './allowance.ts';
 import { siteIsHazard } from './death-cause.ts';
 import { countedAttempts, distance, materiallyImproved, preparationSignature, repeatedFatalHazard, safeFoodCount } from './episodes.ts';
@@ -61,6 +62,7 @@ export interface PolicyContext {
   farRoute: (() => string | undefined) | undefined;
   goalLimits: { plannerTurns: number; tasks: number; replans: number; deadlineMs: number };
   serves: SurvivalProposal['serves'];
+  taskContext?: UpkeepTaskContext;
 }
 
 export type ProposalBody = Omit<SurvivalProposal, 'proposalId' | 'expiresAtMs'>;
@@ -184,7 +186,7 @@ export function evalRest(ctx: PolicyContext): RoutineEval {
         { predicate: 'survival_state', routine: 'rest', expect: 'satisfied' },
       ),
       ceilings: ceilings(ctx, { plannerTurns: 0, tasks: 1, replans: 0, deadlineMs: h.maxRestMs + 15_000 }),
-      ...(low ? { lowHealthAllowance: { routine: 'rest', capabilities: [SURVIVAL_CAPABILITIES.restInPlace], items: [], maxActions: Math.min(8, Math.ceil(h.maxRestMs / 10_000)), ttlMs: Math.min(300_000, h.maxRestMs + 10_000) } } : {}),
+      ...(low ? { lowHealthAllowance: { routine: 'rest', capabilities: [SURVIVAL_CAPABILITIES.restInPlace], items: [], maxActions: Math.min(ctx.cfg.lowHealthAllowance.maxActions, Math.ceil(h.maxRestMs / 10_000)), ttlMs: Math.min(ctx.cfg.lowHealthAllowance.ttlMs, h.maxRestMs + 10_000) } } : {}),
     },
   };
 }
@@ -312,76 +314,61 @@ export function wornTools(inv: InventoryFacts | null, cfg: SurvivalConfig): Arra
   const out: Array<{ kind: string; key: string; left: number }> = [];
   for (const [kind, stacks] of byKind) {
     const states = stacks.map((s) => ({ s, worn: nearlyWorn(s, cfg.tools.wornFraction, cfg.tools.wornUses) }));
-    if (states.some((x) => x.worn !== true)) continue; // a healthy or unknown-metadata spare exists
-    const best = states.sort((a, b) => toolTier(b.s.key) - toolTier(a.s.key))[0];
+    if (suitableTool(inv, stacks.map((s) => s.key), cfg)) continue;
+    const best = states.filter((x) => x.worn === true).sort((a, b) => toolTier(b.s.key) - toolTier(a.s.key))[0];
     if (best) out.push({ kind, key: best.s.key, left: remainingUses(best.s) ?? 0 });
   }
   return out;
 }
 
-export function evalToolUpkeep(ctx: PolicyContext): RoutineEval {
-  if (!ctx.inv || !ctx.inv.fullSync) return notNeeded('tool_upkeep', 'no full server inventory');
-  const worn = wornTools(ctx.inv, ctx.cfg);
-  if (worn.length === 0) {
-    // Owned, better armor not worn: a code task through the existing equip capability.
-    const better = betterArmor(ctx.inv);
-    if (!better) return notNeeded('tool_upkeep', 'no nearly worn tool without a spare');
-    const signature = `armor:${better.key}:${better.slot}`;
-    return {
-      routine: 'tool_upkeep',
-      need: true,
-      signature,
-      proposal: {
-        routine: 'tool_upkeep',
-        priority: 'support',
-        reason: `wear owned ${bare(better.key)}`,
-        signature,
-        serves: ctx.serves,
-        execution: codeTask(`Wear the owned ${bare(better.key)}`, `Equip ${better.key} in the ${better.slot} slot.`, 'equip_item', { predicate: 'equipped', selector: better.key, slot: better.slot }, [{ kind: 'registry', key: better.key }]),
-        ceilings: ceilings(ctx, { plannerTurns: 0, tasks: 1, replans: 0, deadlineMs: 30_000 }),
-      },
-    };
+/** A replacement must satisfy the task's exact harvest set when one is supplied. */
+export function toolNeed(ctx: Pick<PolicyContext, 'inv' | 'cfg' | 'taskContext'>): { tools: string[]; block?: string; kind: string; key?: string; left?: number } | undefined {
+  if (!ctx.inv) return undefined;
+  for (const h of ctx.taskContext?.harvest ?? []) {
+    if (h.tools.length && !suitableTool(ctx.inv, h.tools, ctx.cfg)) return { tools: h.tools, block: h.block, kind: 'harvest tool' };
   }
-  const w = worn[0] as { kind: string; key: string; left: number };
-  const signature = `tool:${w.key}:${w.left}`;
-  const valuable = isValuable(w.key);
-  return {
-    routine: 'tool_upkeep',
-    need: true,
-    signature,
-    proposal: {
-      routine: 'tool_upkeep',
-      priority: 'support',
-      reason: `${bare(w.key)} has ${w.left} uses left and no spare ${w.kind}`,
-      signature,
-      serves: ctx.serves,
-      execution: {
-        kind: 'planner_goal',
-        instruction: `Automatic support routine (not an owner request): my ${bare(w.key)} is nearly worn (${w.left} uses left) and I have no spare ${w.kind}. Make or obtain one replacement ${w.kind} with owned or nearby obtainable materials, preferring the cheapest tier that does the job; finish when survival_state tool_upkeep is satisfied.`,
-        context: {
-          routine: 'tool_upkeep',
-          facts: [`worn: ${w.key} with ${w.left} uses left (server slot durability)`, ...worn.slice(1, 4).map((x) => `also worn: ${x.key} (${x.left} left)`)],
-          suggestedCapabilities: ['craft_item', 'mine_block', 'pickup_item', 'move_near'],
-          rules: ['no repair or enchanting capability exists; do not claim one', valuable ? 'do not spend valuable materials unless a cheaper tier cannot work' : 'a cheaper tier is acceptable', 'keep the worn tool unless it breaks'],
-        },
-      },
-      ceilings: ceilings(ctx, { plannerTurns: 6, tasks: 12, replans: 2, deadlineMs: 10 * 60_000 }),
-    },
-  };
+  const w = wornTools(ctx.inv, ctx.cfg)[0];
+  return w ? { tools: [], kind: w.kind, key: w.key, left: w.left } : undefined;
 }
 
-const SLOT_OF: Record<string, { slot: 'head' | 'torso' | 'legs' | 'feet'; index: number }> = { helmet: { slot: 'head', index: 5 }, chestplate: { slot: 'torso', index: 6 }, leggings: { slot: 'legs', index: 7 }, boots: { slot: 'feet', index: 8 } };
-
-function betterArmor(inv: InventoryFacts): { key: string; slot: 'head' | 'torso' | 'legs' | 'feet' } | undefined {
-  for (const s of inv.stacks) {
-    if (s.slot <= 8 || !isArmor(s.key)) continue;
-    const piece = /_(helmet|chestplate|leggings|boots)$/.exec(strip(s.key))?.[1];
-    const target = piece ? SLOT_OF[piece] : undefined;
-    if (!target) continue;
-    const worn = inv.stacks.find((x) => x.slot === target.index);
-    if (!worn) return { key: s.key, slot: target.slot };
+export function evalToolUpkeep(ctx: PolicyContext): RoutineEval {
+  if (!ctx.inv || !ctx.inv.fullSync) return notNeeded('tool_upkeep', 'no full server inventory');
+  // Switch to a healthy, appropriate OWNED tool before obtaining another.
+  for (const h of ctx.taskContext?.harvest ?? []) {
+    const tool = suitableTool(ctx.inv, h.tools, ctx.cfg);
+    const held = ctx.inv.stacks.find((s) => s.slot === 36 + (ctx.inv!.heldHotbar ?? 0));
+    if (tool && held?.key !== tool.key) {
+      const signature = `equip:${h.block}:${tool.key}`;
+      return { routine: 'tool_upkeep', need: true, signature, proposal: {
+        routine: 'tool_upkeep', priority: 'support', reason: `hold owned ${bare(tool.key)} for ${bare(h.block)}`, signature, serves: ctx.serves,
+        execution: codeTask(`Hold a suitable owned tool for ${bare(h.block)}`, 'Equip the offered suitable tool.', SURVIVAL_CAPABILITIES.equipSuitableTool, { predicate: 'equipped', selector: tool.key, slot: 'hand' }, [{ kind: 'registry', key: h.block }]),
+        ceilings: ceilings(ctx, { plannerTurns: 0, tasks: 1, replans: 0, deadlineMs: 30_000 }),
+      } };
+    }
   }
-  return undefined;
+  const need = toolNeed(ctx);
+  if (!need) {
+    const better = suitableArmor(ctx.inv, ctx.cfg);
+    if (!better) return notNeeded('tool_upkeep', 'no suitable gear change or replacement needed');
+    const signature = `armor:${better.key}:${better.slot}`;
+    return { routine: 'tool_upkeep', need: true, signature, proposal: {
+      routine: 'tool_upkeep', priority: 'support', reason: `wear owned ${bare(better.key)}`, signature, serves: ctx.serves,
+      execution: codeTask(`Wear the owned ${bare(better.key)}`, `Equip ${better.key} in the ${better.slot} slot.`, UPKEEP_CAPABILITIES.equipArmor, { predicate: 'equipped', selector: better.key, slot: better.slot }, [{ kind: 'registry', key: better.key }]),
+      ceilings: ceilings(ctx, { plannerTurns: 0, tasks: 1, replans: 0, deadlineMs: 30_000 }),
+    } };
+  }
+  const signature = `tool:${need.block ?? need.key}:${need.left ?? 'missing'}:${need.tools.join(',')}`;
+  return { routine: 'tool_upkeep', need: true, signature, proposal: {
+    routine: 'tool_upkeep', priority: 'support', reason: need.block ? `no healthy ordinary owned tool can harvest ${bare(need.block)}` : `${bare(need.key!)} has ${need.left} uses left and no healthy spare ${need.kind}`,
+    signature, serves: ctx.serves,
+    execution: { kind: 'planner_goal',
+      instruction: `Automatic support routine (not an owner request): obtain ONE healthy ordinary replacement ${need.kind}${need.block ? ` capable of harvesting ${need.block}; valid keys: ${need.tools.join(', ')}` : ` for the nearly worn ${need.key} (${need.left} uses left)`}. Prefer the cheapest supported capable tier using owned or nearby obtainable materials. Finish when survival_state tool_upkeep is satisfied.`,
+      context: { routine: 'tool_upkeep', facts: [need.block ? `required block: ${need.block}; capable registry keys: ${need.tools.join(', ')}` : `worn: ${need.key}, ${need.left} uses left (server metadata)`],
+        suggestedCapabilities: ['craft_item', 'mine_block', 'move_near'],
+        rules: ['obtain one capable replacement only; no repair or enchanting capability', 'preserve valuable, custom-named and enchanted gear and materials', 'keep the worn tool; do not sweep unproven or foreign loot'] },
+    },
+    ceilings: ceilings(ctx, { plannerTurns: 6, tasks: 12, replans: 2, deadlineMs: 10 * 60_000 }),
+  } };
 }
 
 // ---------------------------------------------------------------- inventory room
@@ -392,52 +379,47 @@ export function freeSlots(inv: InventoryFacts): number {
 }
 
 /** Surplus stacks safe to deposit: no tools/armor/valuables/safe food reserve/configured reserves. */
-export function surplus(inv: InventoryFacts, ctx: Pick<PolicyContext, 'cfg' | 'registry'>): Array<{ key: string; count: number }> {
-  const reserveKeys = new Set(ctx.cfg.resupply.reserves.map((r) => r.key));
+export function surplus(inv: InventoryFacts, ctx: Pick<PolicyContext, 'cfg' | 'registry' | 'taskContext'>): Array<{ key: string; count: number }> {
+  const reserveKeys = new Set([...ctx.cfg.resupply.reserves.map((r) => r.key), ...(ctx.taskContext?.retain ?? [])]);
+  const protectedKeys = new Set(inv.stacks.filter((s) => s.meta.metadata !== 'server_slot' || isValuable(s.key, s.meta)).map((s) => s.key));
   const m = new Map<string, number>();
   for (const s of inv.stacks) {
     if (!STORAGE_SLOTS.includes(s.slot)) continue;
-    if (isTool(s.key) || isArmor(s.key) || isValuable(s.key, s.meta) || reserveKeys.has(s.key)) continue;
+    if (s.key.startsWith('minecraft:unknown_') || isTool(s.key) || isArmor(s.key) || protectedKeys.has(s.key) || reserveKeys.has(s.key)) continue;
     if (safeFoods([s], ctx.registry, 0).length > 0) continue;
     m.set(s.key, (m.get(s.key) ?? 0) + s.count);
   }
   return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([key, count]) => ({ key, count }));
 }
 
+export function storageFor(ctx: Pick<PolicyContext, 'storage' | 'snapshot' | 'connection' | 'travelRadius'>): DesignatedStorage | undefined {
+  const here = ctx.snapshot?.self.at;
+  if (!here) return undefined;
+  return ctx.storage.filter((s) => sameDimension(s.dimension, ctx.connection.dimension) && distance(here, s.at) <= ctx.travelRadius - 2)
+    .sort((a, b) => distance(here, a.at) - distance(here, b.at))[0];
+}
+
+export function roomTarget(ctx: Pick<PolicyContext, 'cfg' | 'taskContext'>): number {
+  return Math.max(ctx.cfg.inventory.targetFreeSlots, ctx.taskContext?.requiredFreeSlots ?? 0);
+}
+
 export function evalInventoryRoom(ctx: PolicyContext): RoutineEval {
   if (!ctx.inv || !ctx.inv.fullSync) return notNeeded('inventory_room', 'no full server inventory');
   const free = freeSlots(ctx.inv);
-  if (free > ctx.cfg.inventory.minFreeSlots) return notNeeded('inventory_room', `${free} free slots`);
+  const threshold = Math.max(ctx.cfg.inventory.minFreeSlots, (ctx.taskContext?.requiredFreeSlots ?? 0) - 1);
+  if (free > threshold) return notNeeded('inventory_room', `${free} free slots`);
   const sur = surplus(ctx.inv, ctx);
-  const here = ctx.snapshot?.self.at;
-  const storage = ctx.storage.filter((s) => sameDimension(s.dimension, ctx.connection.dimension) && (!here || distance(here, s.at) <= ctx.travelRadius - 2));
-  const signature = `inv:${free}:${storage.map((s) => s.factId).join(',')}:${sur.length}`;
-  if (storage.length === 0) return blocked('inventory_room', signature, 'no_designated_storage', `${free} free slots; no owner-designated storage is remembered within reach (arbitrary chests are never used; nothing is thrown away)`);
-  if (sur.length === 0) return blocked('inventory_room', signature, 'no_surplus', `${free} free slots but every stack is a tool, armor, food, reserve or valuable`);
-  const target = storage[0] as DesignatedStorage;
-  return {
-    routine: 'inventory_room',
-    need: true,
-    signature,
-    proposal: {
-      routine: 'inventory_room',
-      priority: 'support',
-      reason: `${free} free inventory slots`,
-      signature,
-      serves: ctx.serves,
-      execution: {
-        kind: 'planner_goal',
-        instruction: `Automatic support routine (not an owner request): make inventory room. Inspect the owner-designated storage "${target.label}" (memory ${target.factId}) fresh, then deposit surplus stacks there until at least ${ctx.cfg.inventory.targetFreeSlots} inventory slots are free; finish when survival_state inventory_room is satisfied.`,
-        context: {
-          routine: 'inventory_room',
-          facts: [`free slots: ${free}`, `surplus candidates: ${listItems(sur)}`, `designated storage: ${storage.slice(0, 3).map((s) => `"${s.label}" (${s.factId})`).join(', ')}`],
-          suggestedCapabilities: ['go_to_memory', 'inspect_container', 'container_transfer'],
-          rules: ['use only the designated storage, inspected fresh before relying on its contents', 'keep tools, armor, food reserve and valuables', 'never drop or throw items away'],
-        },
-      },
-      ceilings: ceilings(ctx, { plannerTurns: 6, tasks: 10, replans: 2, deadlineMs: 8 * 60_000 }),
-    },
-  };
+  const target = storageFor(ctx);
+  const signature = `inv:${free}:${target?.factId ?? 'none'}:${sur.map((s) => s.key).join(',')}`;
+  if (!target) return blocked('inventory_room', signature, 'no_designated_storage', `${free} free slots; no durable owner-designated storage is within reach (arbitrary chests are never used; nothing is thrown away)`);
+  if (!sur.length) return blocked('inventory_room', signature, 'no_surplus', `${free} free slots but all keys are protected, unknown, tools, armor, food or task supplies`);
+  return { routine: 'inventory_room', need: true, signature, proposal: {
+    routine: 'inventory_room', priority: 'support', reason: `${free} free inventory slots; approved storage ${target.factId}`, signature, serves: ctx.serves,
+    execution: { kind: 'code_task', objective: `Make room using approved storage ${target.factId}`,
+      spec: { objective: `Free ${roomTarget(ctx)} inventory slots in approved storage`, decisionInstruction: 'Move to the approved storage if needed, then deposit only offered surplus. Each transfer inspects the same approved block fresh. Never drop items.', allowedCapabilities: [UPKEEP_CAPABILITIES.moveStorage, UPKEEP_CAPABILITIES.storeSurplus], targetSelectors: [], parameters: {} },
+      mode: 'complete', completion: { predicate: 'survival_state', routine: 'inventory_room', expect: 'satisfied' } },
+    ceilings: ceilings(ctx, { plannerTurns: 0, tasks: 1, replans: 0, deadlineMs: 8 * 60_000 }),
+  } };
 }
 
 // ---------------------------------------------------------------- resupply
@@ -445,17 +427,21 @@ export function evalInventoryRoom(ctx: PolicyContext): RoutineEval {
 export function reserveCount(key: string, inv: InventoryFacts | null, ctx: Pick<PolicyContext, 'cfg' | 'registry'>): number {
   if (!inv) return 0;
   if (key === 'chunkbot:safe_food') return safeFoodCount(inv, ctx.registry, ctx.cfg.food.avoid);
-  return inv.stacks.filter((s) => s.key === key).reduce((n, s) => n + s.count, 0);
+  const unsafe = inv.stacks.some((s) => s.key === key && (isValuable(s.key, s.meta) || s.meta.metadata !== 'server_slot'));
+  if (unsafe) return 0;
+  return inv.stacks.filter((s) => STORAGE_SLOTS.includes(s.slot) && s.key === key).reduce((n, s) => n + s.count, 0);
 }
 
 export function evalResupply(ctx: PolicyContext, onCooldown: (key: string) => boolean): RoutineEval {
   if (!ctx.inv || !ctx.inv.fullSync) return notNeeded('resupply', 'no full server inventory');
   for (const r of ctx.cfg.resupply.reserves) {
     const have = reserveCount(r.key, ctx.inv, ctx);
+    if (r.key !== 'chunkbot:safe_food' && !ctx.taskContext?.reserveKeys.includes(r.key)) continue;
     if (have >= r.low || onCooldown(r.key)) continue;
     const want = r.high - have;
     const here = ctx.snapshot?.self.at;
     const signature = `resupply:${r.key}:${have}:${here ? `${Math.floor(here.x / 32)},${Math.floor(here.z / 32)}` : '?'}`;
+    const storage = storageFor(ctx);
     const what = r.key === 'chunkbot:safe_food' ? 'safe food items (for example bread, cooked meat, apples, carrots or baked potatoes)' : strip(r.key);
     return {
       routine: 'resupply',
@@ -467,13 +453,13 @@ export function evalResupply(ctx: PolicyContext, onCooldown: (key: string) => bo
         reason: `${r.key} reserve ${have} below ${r.low}`,
         signature,
         serves: ctx.serves,
-        execution: {
+        execution: storage ? { kind: 'code_task', objective: `Restock ${r.key} from approved storage ${storage.factId}`, mode: 'complete', completion: { predicate: 'survival_state', routine: 'resupply', expect: 'satisfied' }, spec: { objective: `Restock only the ${want}-item shortfall of ${r.key}`, decisionInstruction: 'Move to the approved storage if needed and withdraw only offered safe reserve items. No other container or extra stock.', allowedCapabilities: [UPKEEP_CAPABILITIES.moveStorage, UPKEEP_CAPABILITIES.inspectStorage, UPKEEP_CAPABILITIES.withdrawReserve], targetSelectors: [], parameters: {} } } : {
           kind: 'planner_goal',
           instruction: `Automatic support routine (not an owner request): restock a basic reserve. Obtain about ${want} more ${what} from reachable sources inside the travel radius; finish when survival_state resupply is satisfied (at least ${r.high}).`,
           context: {
             routine: 'resupply',
             facts: [`reserve ${r.key}: have ${have}, low ${r.low}, target ${r.high}`],
-            suggestedCapabilities: ['mine_block', 'pickup_item', 'craft_item', 'furnace_insert', 'furnace_wait', 'furnace_take', 'attack_entity', 'move_near', 'explore_frontier'],
+            suggestedCapabilities: ['mine_block', 'craft_item', 'furnace_insert', 'furnace_wait', 'furnace_take', 'attack_entity', 'move_near', 'explore_frontier'],
             rules: ['acquire only the shortfall, then stop', 'do not take items from other players or arbitrary containers', 'do not eat precious food'],
           },
         },

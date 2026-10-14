@@ -32,6 +32,7 @@ export const UPKEEP_CAPABILITIES = {
   moveStorage: 'move_to_approved_storage',
   storeSurplus: 'store_surplus',
   withdrawReserve: 'withdraw_reserve',
+  inspectStorage: 'inspect_approved_storage',
 } as const;
 
 /** Equip-by-key cannot distinguish duplicate stacks. Every selectable stack

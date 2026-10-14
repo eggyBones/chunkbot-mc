@@ -115,6 +115,7 @@ export class SurvivalTracker {
   /** C10: the first full window-0 sync after the respawn packet, and inventory packets applied after it. */
   private respawnSync: { inv: InventoryFacts; packetsAfter: number } | undefined;
   private openWindowId: number | undefined;
+  private windowFacts: { windowId: number; stateId: number; atMs: number; stacks: Map<number, TrackedStack> } | undefined;
   /** Item entities announced by the server (spawn_entity of the item type) on this connection/life. */
   private readonly itemEntities = new Set<number>();
   /** Server-stated stack of each item entity (its own metadata packet; C3 authority, never a label). */
@@ -170,6 +171,7 @@ export class SurvivalTracker {
     this.respawnSync = undefined;
     this.loginDeath = undefined;
     this.openWindowId = undefined;
+    this.windowFacts = undefined;
     this.itemEntities.clear();
     this.drops.clear();
     this.firstSeen.clear();
@@ -291,6 +293,7 @@ export class SurvivalTracker {
       }
     }
     this.source = undefined;
+    this.windowFacts = undefined;
   }
 
   private now(): number {
@@ -319,10 +322,16 @@ export class SurvivalTracker {
     this.emit({ type: 'inventory_changed' });
   }
 
-  private onWindowItems(p: { windowId: number; items?: RawSlot[] }): void {
+  private onWindowItems(p: { windowId: number; stateId?: number; items?: RawSlot[] }): void {
     if (!this.opts) return;
     const items = Array.isArray(p.items) ? p.items : [];
+    if (p.windowId !== 0 && items.length <= 128) {
+      const stacks = new Map<number, TrackedStack>();
+      items.forEach((raw, slot) => { const parsed = parseSlot(raw, this.opts!.registry); if (parsed) stacks.set(slot, { slot, ...parsed }); });
+      this.windowFacts = { windowId: p.windowId, stateId: p.stateId ?? -1, atMs: this.now(), stacks };
+    }
     if (p.windowId === 0) {
+      this.windowFacts = undefined;
       const next = new Map<number, TrackedStack>();
       items.forEach((raw, slot) => {
         const parsed = parseSlot(raw, this.opts!.registry);
@@ -355,6 +364,11 @@ export class SurvivalTracker {
   }
 
   private onSetSlot(p: { windowId: number; slot: number; item?: RawSlot }): void {
+    if (this.opts && this.windowFacts?.windowId === p.windowId && p.slot >= 0 && p.slot < 128) {
+      const parsed = parseSlot(p.item, this.opts.registry);
+      if (parsed) this.windowFacts.stacks.set(p.slot, { slot: p.slot, ...parsed });
+      else this.windowFacts.stacks.delete(p.slot);
+    }
     if (!this.opts) return;
     if (p.windowId === 0) return this.setSlot(p.slot, p.item);
     if (p.windowId === -2) {
@@ -378,6 +392,13 @@ export class SurvivalTracker {
       fullSync: this.fullSync && this.state === 'alive',
       ...(this.heldHotbar !== undefined ? { heldHotbar: this.heldHotbar } : {}),
     };
+  }
+
+  /** Raw server metadata of the latest full container resync; never a client mirror. */
+  containerStacks(windowId: number): { stateId: number; atMs: number; stacks: TrackedStack[] } | undefined {
+    const w = this.windowFacts;
+    if (!this.source || this.state !== 'alive' || w?.windowId !== windowId) return undefined;
+    return { stateId: w.stateId, atMs: w.atMs, stacks: clone(w.stacks) };
   }
 
   vitals(): Vitals | null {

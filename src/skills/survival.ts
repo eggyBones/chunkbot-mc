@@ -26,13 +26,14 @@ import type { JsonValue, SkillOutcome } from '../contracts/index.ts';
 import { SURVIVAL_CAPABILITIES, type DropStackFacts } from '../contracts/survival.ts';
 import type { Actuator } from '../execution/actuator.ts';
 import { HOSTILE_ENTITIES, visibleThreat } from '../survival/allowance.ts';
-import { isSafeFood, isValuable, nearlyWorn, remainingUses, safeFoods, toolTier } from '../survival/items.ts';
-import type { SurvivalService } from '../survival/service.ts';
-import { confirmInventory, liveEntity, mk, namedTargetUnavailable, pos3, targetScope } from './common.ts';
-import { failed, precondition, type AnySkill, type CandidateDraft, type ExecuteContext, type SkillDefinition, type Unavailable } from './definition.ts';
+import { isSafeFood, isValuable, sameDimension, safeFoods } from '../survival/items.ts';
+import { armorSlot, suitableArmor, suitableTool, UPKEEP_CAPABILITIES } from '../survival/upkeep.ts';
+import type { SurvivalService, UpkeepFence } from '../survival/service.ts';
+import { admittedParameters, confirmInventory, ensureInHand, liveEntity, mk, namedTargetUnavailable, pos3, targetScope } from './common.ts';
+import { failed, precondition, type AnySkill, type CandidateDraft, type ExecuteContext, type ResolveContext, type SkillDefinition, type Unavailable } from './definition.ts';
 import { equipItem } from './inventory.ts';
 import { distanceTo, goals, navigate, type NavigateOptions, type NavigateResult } from './navigation.ts';
-import { useHeldItem } from './placement.ts';
+import { interfaceBlock, moveItems, openInterface, regionCounts } from './interfaces.ts';
 import { HandleRefSchema, ItemKeySchema } from './refs.ts';
 
 /** Conservative horizontal radius within which ordinary pickup could also collect another item (player pickup box + margin). */
@@ -284,6 +285,20 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
   if (!service || !service.enabled) return [];
   const cfg = service.config();
   if (!cfg) return [];
+  const inspected = new Map<string, { atMs: number; contents: Array<{ key: string; count: number }> }>();
+  const inspectionKey = (f: UpkeepFence) => `${f.connectionEpoch}:${f.goalEpoch}:${f.dimension}`;
+  const restBudgets = new Map<string, { elapsedMs: number; noGainMs: number }>();
+  const freshSnapshot = (ctx: ExecuteContext) => {
+    const s = ctx.services.perception.latest();
+    return s && ctx.owner.kind === 'goal' && s.goalEpoch === ctx.owner.goalEpoch && s.connectionEpoch === ctx.session.connectionEpoch && sameDimension(s.dimension, String(ctx.session.bot.game.dimension)) && ctx.services.clock.now() - s.takenAtMs <= 5_000 && s.takenAtMs <= ctx.services.clock.now() ? s : undefined;
+  };
+  const refreshSafety = async (ctx: ExecuteContext) => {
+    if (ctx.owner.kind !== 'goal') return undefined;
+    await ctx.services.perception.snapshot(ctx.owner.goalEpoch);
+    ctx.act.fence();
+    return freshSnapshot(ctx);
+  };
+  const executionFence = (ctx: ExecuteContext): UpkeepFence => ({ ...(ctx.owner.kind === 'goal' ? { goalId: ctx.owner.goalId, goalEpoch: ctx.owner.goalEpoch } : { goalEpoch: -1 }), connectionEpoch: ctx.session.connectionEpoch, dimension: String(ctx.session.bot.game.dimension) });
 
   const eatSafeFood: SkillDefinition<{ item: string }> = {
     descriptor: {
@@ -305,9 +320,12 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
       const epoch = ctx.session.connectionEpoch;
       const v = service.vitals(epoch);
       const inv = service.inventory(epoch);
-      if (!v || !inv) return { drafts: [], unavailable: [{ reason: 'vitals_unknown', detail: 'no fresh server food level or inventory' }] };
+      if (!v || !inv?.fullSync || inv.source !== 'server_packets') return { drafts: [], unavailable: [{ reason: 'vitals_unknown', detail: 'no fresh server food level or inventory' }] };
       if (v.food >= 20) return { drafts: [], unavailable: [{ reason: 'not_hungry', detail: 'food is full; vanilla does not eat at full hunger' }] };
-      const foods = safeFoods(inv.stacks, service.registry(), v.food, cfg.food.avoid);
+      const threat = visibleThreat(ctx.snapshot, cfg.lowHealthAllowance.threatRadius);
+      if (threat) return { drafts: [], unavailable: [{ reason: 'threat_nearby', detail: `visible ${threat.key} makes eating in place unsafe` }] };
+      const admitted = admittedParameters(ctx, eatSafeFood.params).values as { item?: string };
+      const foods = safeFoods(inv.stacks, service.registry(), v.food, cfg.food.avoid).filter((f) => !admitted.item || f.key === admitted.item);
       if (foods.length === 0) return { drafts: [], unavailable: [{ reason: 'no_safe_food', detail: 'no suitable owned safe food', evidence: { food: v.food } }] };
       const drafts: CandidateDraft[] = foods.slice(0, 4).map((f, i) => ({ parameters: { item: f.key }, description: `eat ${f.key} (+${f.foodPoints} food, ${f.count} owned)`, score: -i }));
       return { drafts };
@@ -315,18 +333,50 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
     async execute(ctx, params) {
       const epoch = ctx.session.connectionEpoch;
       const item = mk(params.item);
-      const v = service.vitals(epoch);
-      const inv = service.inventory(epoch);
-      if (!v || v.food >= 20) return precondition('not_hungry', 'food is full or unknown');
-      if (!isSafeFood(item, service.registry(), cfg.food.avoid)) return precondition('unsafe_food', `${item} is not a safe routine food`);
-      if (!inv?.stacks.some((s) => s.key === item)) return precondition('item_not_in_inventory', `${item} is not in the server inventory`);
-      if (inv.stacks.some((s) => s.key === item && (s.meta.customName || s.meta.enchanted))) return precondition('protected_item', `a custom-named or enchanted ${item} is owned; use-by-key could consume it, so it is not eaten automatically`);
-      if (v.health <= 8) {
-        const latest = ctx.services.perception.latest();
-        const threat = latest ? visibleThreat(latest, cfg.lowHealthAllowance.threatRadius) : undefined;
+      const check = () => {
+        const v = service.vitals(epoch);
+        const inv = service.inventory(epoch);
+        if (!v || v.food >= 20) return precondition('not_hungry', 'food is full or unknown');
+        if (!isSafeFood(item, service.registry(), cfg.food.avoid)) return precondition('unsafe_food', `${item} is not safe routine food`);
+        if (!inv?.fullSync || inv.source !== 'server_packets') return precondition('inventory_unknown', 'a full server inventory is required');
+        if (!inv.stacks.some((s) => s.key === item)) return precondition('item_not_in_inventory', `${item} is not owned`);
+        if (inv.stacks.some((s) => s.key === item && (s.meta.metadata !== 'server_slot' || s.meta.customName || s.meta.enchanted))) return precondition('protected_item', `a protected or unknown ${item} stack could be consumed by key`);
+        const latest = freshSnapshot(ctx);
+        if (!latest) return precondition('observation_unavailable', 'fresh owned observation is required before eating');
+        const threat = visibleThreat(latest, cfg.lowHealthAllowance.threatRadius);
         if (threat) return precondition('threat_nearby', `visible ${threat.key} ${threat.distance} blocks away`);
+        return undefined;
+      };
+      const initial = check();
+      if (initial) return initial;
+      const held = await ensureInHand(ctx.act, ctx.services, item);
+      if (!held.ok || !held.confirmed) return precondition('no_server_confirmation', held.detail);
+      const before = await confirmInventory(ctx.act, ctx.services);
+      if (!before) return failed('no_server_sync', 'inventory confirmation failed before eating');
+      await refreshSafety(ctx);
+      const rechecked = check(); // threats, hunger and duplicate identity may change during equip/resync
+      if (rechecked) return rechecked;
+      const foodBefore = service.vitals(epoch)!.food;
+      const startSeq = ctx.session.evidence.seq;
+      ctx.act.useHeldItem();
+      try {
+        for (let ms = 0; ms < 1_900; ms += 100) {
+          await ctx.act.sleep(100);
+          const latest = freshSnapshot(ctx);
+          if (!latest || visibleThreat(latest, cfg.lowHealthAllowance.threatRadius)) return failed('unsafe_eating', 'a threat approached or the owned observation expired during eating');
+        }
+      } finally { ctx.act.releaseHeldItem(); }
+      const after = await confirmInventory(ctx.act, ctx.services);
+      const health = ctx.session.evidence.since(startSeq, 'health').at(-1);
+      const consumed = after ? (before.counts.get(item) ?? 0) - (after.counts.get(item) ?? 0) : 0;
+      if (consumed > 0) {
+        ctx.services.ledger.add({ kind: 'consumed', item, count: consumed, atMs: ctx.services.clock.now(), via: 'eat_safe_food' });
+        ctx.progress({ item, consumed }, 'server_sync');
       }
-      return useHeldItem.execute(ctx, { item });
+      if (health && health.food > foodBefore) ctx.progress({ foodBefore, foodAfter: health.food }, 'server_packet');
+      if (!health || health.food <= foodBefore) return failed('food_not_restored', `no server-stated hunger gain from ${item}`, { consumed, foodBefore, foodAfter: health?.food ?? null }, after ? 'server_sync' : 'none');
+      return { status: 'succeeded', effect: `ate ${item}: food ${foodBefore} -> ${health.food} (server packet)`, confirmation: 'server_packet', evidence: { consumed, foodBefore, foodAfter: health.food } };
+
     },
   };
 
@@ -358,29 +408,49 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
     },
     async execute(ctx, params) {
       const { act, session } = ctx;
-      act.clearPathGoal();
       const before = service.vitals(session.connectionEpoch);
-      if (!before) return precondition('vitals_unknown', 'no fresh server health');
-      const startSeq = session.evidence.seq;
-      const start = before.health;
-      let max = start;
-      const until = Date.now() + params.windowMs;
-      while (Date.now() < until) {
-        await act.sleep(500);
-        const seen = session.evidence.since(startSeq, 'health');
-        if (seen.some((h) => h.health < start - 0.01)) {
-          const low = Math.min(...seen.map((h) => h.health));
-          return failed('took_damage', `took damage while resting (health ${start} -> ${low}); stopping (no escape capability)`, { healthBefore: start, healthLow: low }, 'server_packet');
-        }
-        for (const h of seen) max = Math.max(max, h.health);
-        if (max >= 20) break;
-        const latest = ctx.services.perception.latest();
-        const threat = latest ? visibleThreat(latest, cfg.lowHealthAllowance.threatRadius) : undefined;
-        if (threat) return failed('threat_nearby', `visible ${threat.key} approached while resting`, { healthBefore: start, healthAfter: max });
+      const latest = await refreshSafety(ctx);
+      if (!before || !latest) return precondition('observation_unavailable', 'fresh server vitals and owned observation are required');
+      if (before.health >= cfg.health.restUntil) return precondition('health_restored', 'the rest threshold is already met');
+      if (before.food < 18) return precondition('regeneration_needs_food', 'food is below 18; eat first');
+      if (visibleThreat(latest, cfg.lowHealthAllowance.threatRadius)) return precondition('threat_nearby', 'resting here is unsafe');
+      const key = `${session.connectionEpoch}:${ctx.owner.kind === 'goal' ? ctx.owner.goalEpoch : -1}`;
+      let budget = restBudgets.get(key);
+      if (!budget) {
+        if (restBudgets.size >= 16) restBudgets.delete(restBudgets.keys().next().value!);
+        budget = { elapsedMs: 0, noGainMs: 0 };
+        restBudgets.set(key, budget);
       }
-      const evidence: Record<string, JsonValue> = { healthBefore: start, healthAfter: max, restWindow: true, windowMs: params.windowMs };
-      if (max > start) return { status: 'succeeded', effect: `health ${start} -> ${max} (server update_health)`, confirmation: 'server_packet', evidence };
-      return failed('no_regeneration', `no server-confirmed health gain in ${Math.round(params.windowMs / 1000)}s (regeneration unavailable now)`, { ...evidence, restWindow: false });
+      if (budget.elapsedMs >= cfg.health.maxRestMs || budget.noGainMs >= cfg.health.noRegenWindowMs) return failed('rest_budget_exhausted', 'this goal exhausted its finite rest/no-regeneration allowance');
+      act.clearPathGoal();
+      const startSeq = session.evidence.seq;
+      let health = before.health;
+      let gained = false;
+      let cursor = startSeq;
+      const windowMs = Math.min(params.windowMs, cfg.health.maxRestMs - budget.elapsedMs, cfg.health.noRegenWindowMs - budget.noGainMs);
+      let waited = 0;
+      while (waited < windowMs) {
+        const ms = Math.min(500, windowMs - waited);
+        await act.sleep(ms);
+        waited += ms; budget.elapsedMs += ms; budget.noGainMs += ms;
+        const seen = session.evidence.since(cursor, 'health');
+        for (const h of seen) {
+          if (h.health < health - 0.01) return failed('took_damage', 'took server-stated damage while resting', { healthBefore: before.health, healthLow: h.health }, 'server_packet');
+          if (h.health > health) { gained = true; budget.noGainMs = 0; ctx.progress({ healthBefore: health, healthAfter: h.health }, 'server_packet'); }
+          health = h.health; cursor = h.seq;
+        }
+        const now = service.vitals(session.connectionEpoch);
+        const snap = await refreshSafety(ctx);
+        if (!snap || !now) return failed('observation_unavailable', 'owned observation or server vitals became unavailable during rest');
+        if (visibleThreat(snap, cfg.lowHealthAllowance.threatRadius)) return failed('threat_nearby', 'a visible threat approached while resting');
+        if (health >= cfg.health.restUntil) break;
+        if (now.food < 18) return failed('regeneration_needs_food', 'food fell below 18 during rest');
+      }
+      const evidence = { healthBefore: before.health, healthAfter: health, restWindow: true, windowMs: waited, totalRestMs: budget.elapsedMs, noGainMs: budget.noGainMs };
+      if (health < cfg.health.restUntil && budget.noGainMs >= cfg.health.noRegenWindowMs) return failed('no_regeneration', 'no server health gain during the bounded regeneration window', { ...evidence, restWindow: false });
+      if (health < cfg.health.restUntil && budget.elapsedMs >= cfg.health.maxRestMs) return failed('rest_budget_exhausted', 'finite rest allowance ended below the verified threshold', { ...evidence, restWindow: false }, gained ? 'server_packet' : 'none');
+      return { status: 'succeeded', effect: gained ? `health ${before.health} -> ${health} (server packet)` : 'bounded observation window ended; health gain is still unverified', confirmation: gained ? 'server_packet' : 'none', evidence };
+
     },
   };
 
@@ -659,7 +729,7 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
     params: z.object({ item: ItemKeySchema, block: ItemKeySchema }).strict(),
     resolve(ctx) {
       const inv = service.inventory(ctx.session.connectionEpoch);
-      if (!inv) return { drafts: [], unavailable: [{ reason: 'inventory_unknown', detail: 'no server inventory' }] };
+      if (!inv?.fullSync || inv.source !== 'server_packets') return { drafts: [], unavailable: [{ reason: 'inventory_unknown', detail: 'no server inventory' }] };
       const blocks = new Set<string>();
       for (const k of ctx.hints.keys) if (!k.startsWith('#') && ctx.services.knowledge.isBlock(k)) blocks.add(k);
       for (const h of ctx.hints.handles) {
@@ -680,40 +750,258 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
           unavailable.push({ reason: 'harvest_tool_missing', detail: `no owned tool can harvest ${block}`, evidence: { validTools: [...valid].slice(0, 6) } });
           continue;
         }
-        // Equip-by-key cannot choose a stack: a key with any custom-named/enchanted stack is never auto-selected.
-        const customKeys = new Set(owned.filter((x) => x.meta.customName || x.meta.enchanted).map((x) => x.key));
-        const plain = owned.filter((x) => !customKeys.has(x.key));
-        if (plain.length === 0) {
-          unavailable.push({ reason: 'only_protected_tool', detail: `the only owned tools that can harvest ${block} are custom-named or enchanted; they are not selected automatically` });
+        const best = suitableTool(inv, [...valid], cfg);
+        if (!best) {
+          unavailable.push({ reason: 'healthy_tool_missing', detail: `no healthy ordinary server-stated tool can harvest ${block}; a bounded replacement is required` });
           continue;
         }
-        // Prefer non-valuable tools (e.g. iron over diamond) before the cheapest-tier rule.
-        const ordinary = plain.filter((x) => !isValuable(x.key, x.meta));
-        const base = ordinary.length ? ordinary : plain;
-        const healthy = base.filter((x) => nearlyWorn(x, cfg.tools.wornFraction, cfg.tools.wornUses) !== true);
-        const pool = healthy.length ? healthy : base;
-        const best = [...pool].sort((a, b) => toolTier(a.key) - toolTier(b.key) || (remainingUses(b) ?? 0) - (remainingUses(a) ?? 0))[0];
-        if (!best) continue;
-        if (ctx.snapshot.equipment['hand'] === best.key) {
-          unavailable.push({ reason: 'already_equipped', detail: `${best.key} is already held` });
-          continue;
-        }
-        drafts.push({ parameters: { item: best.key, block }, description: `hold ${best.key} for ${block}${remainingUses(best) !== undefined ? ` (${remainingUses(best)} uses left)` : ' (durability unknown)'}${healthy.length ? '' : ' — every capable tool is nearly worn'}` });
+        const admitted = admittedParameters(ctx, equipSuitableTool.params).values as { item?: string; block?: string };
+        if ((admitted.item && mk(admitted.item) !== best.key) || (admitted.block && mk(admitted.block) !== block)) continue;
+        if (ctx.snapshot.equipment['hand'] === best.key) { unavailable.push({ reason: 'already_equipped', detail: `${best.key} is already held` }); continue; }
+        drafts.push({ parameters: { item: best.key, block }, description: `hold healthy ${best.key} for ${block}` });
       }
       return { drafts, unavailable };
     },
     async execute(ctx, params) {
+      const before = await confirmInventory(ctx.act, ctx.services);
       const inv = service.inventory(ctx.session.connectionEpoch);
+      if (!before || !inv?.fullSync) return precondition('inventory_unknown', 'full server inventory is required');
       const key = mk(params.item);
-      if (!inv?.stacks.some((s) => s.key === key)) return precondition('item_not_in_inventory', `${key} is not in the server inventory`);
-      if (inv.stacks.some((s) => s.key === key && (s.meta.customName || s.meta.enchanted))) return precondition('protected_item', `a custom-named or enchanted ${key} is owned; it is not selected automatically`);
-      const valid = new Set(ctx.services.knowledge.harvestTools(mk(params.block)).map(mk));
-      if (!valid.has(key)) return precondition('tool_cannot_harvest', `${key} cannot harvest ${params.block}`);
+      const valid = ctx.services.knowledge.harvestTools(mk(params.block)).map(mk);
+      const best = suitableTool(inv, valid, cfg);
+      if (!best || best.key !== key) return precondition('tool_no_longer_suitable', `${key} is no longer the healthy ordinary suitable choice`);
       return equipItem.execute(ctx, { item: key, slot: 'hand' });
+
     },
   };
 
-  return [eatSafeFood, restInPlace, goToDeathSite, recoverLostItems, equipSuitableTool];
+  const equipSuitableArmor: SkillDefinition<{ item: string; slot: 'head' | 'torso' | 'legs' | 'feet' }> = {
+    descriptor: { id: UPKEEP_CAPABILITIES.equipArmor, family: 'survival', purpose: 'Wear healthy ordinary owned armor without replacing protected gear.',
+      parameters: [{ name: 'item', type: 'registry_key', description: 'offered healthy owned armor', required: true }, { name: 'slot', type: 'string', description: 'matching armor slot', required: true, enum: ['head', 'torso', 'legs', 'feet'] }],
+      targets: ['inventory_item'], preconditions: ['full server inventory and healthy ordinary gear'], effects: ['armor equipped'], supportedPredicates: ['equipped'], timeoutMs: 10_000, cancellation: 'lease fences clicks', limitations: ['no repair, enchantments or protected gear selection'], evidence: ['server inventory resync'] },
+    params: z.object({ item: ItemKeySchema, slot: z.enum(['head', 'torso', 'legs', 'feet']) }).strict(),
+    resolve(ctx) {
+      const inv = service.inventory(ctx.session.connectionEpoch);
+      if (!inv?.fullSync) return { drafts: [], unavailable: [{ reason: 'inventory_unknown', detail: 'full server inventory required' }] };
+      const best = suitableArmor(inv, cfg);
+      const admitted = admittedParameters(ctx, equipSuitableArmor.params).values as { item?: string; slot?: string };
+      if (!best || (admitted.item && admitted.item !== best.key) || (admitted.slot && admitted.slot !== best.slot) || (ctx.hints.keys.length && !ctx.hints.keys.includes(best.key))) return { drafts: [], unavailable: [{ reason: 'no_suitable_armor', detail: 'no safe suitable gear change matches the task' }] };
+      return { drafts: [{ parameters: { item: best.key, slot: best.slot }, description: `wear healthy ordinary ${best.key}` }] };
+    },
+    async execute(ctx, params) {
+      const sync = await confirmInventory(ctx.act, ctx.services);
+      const inv = service.inventory(ctx.session.connectionEpoch);
+      const best = inv?.fullSync ? suitableArmor(inv, cfg) : undefined;
+      if (!sync || !best || best.key !== params.item || best.slot !== params.slot || armorSlot(params.item) !== params.slot) return precondition('armor_no_longer_suitable', 'armor facts changed before equip');
+      return equipItem.execute(ctx, params);
+    },
+  };
+
+  // These mechanisms never accept planner coordinates or a chest chosen by proximity.
+  const storageBlock = (ctx: ExecuteContext, ref: { snapshotId: string; handle: string }) => {
+    const authority = service.upkeepAuthority(executionFence(ctx));
+    if ('error' in authority) return authority;
+    if (!authority.storage) return { error: 'no_designated_storage', detail: 'no approved storage was bound' };
+    const block = interfaceBlock(ctx.services, ctx.session, ref, /^(chest|barrel)$/);
+    if ('error' in block) return block;
+    if (!sameDimension(String(ctx.session.bot.game.dimension), authority.storage.dimension) || dist(block, authority.storage.at) !== 0) return { error: 'unapproved_container', detail: 'this visible block is not the exact approved storage' };
+    return block;
+  };
+  const storageRef = (ctx: ResolveContext) => {
+    const u = service.upkeepAuthority({ goalEpoch: ctx.snapshot.goalEpoch, connectionEpoch: ctx.snapshot.connectionEpoch, dimension: ctx.snapshot.dimension });
+    if ('error' in u) return u;
+    if (!u.storage) return { error: 'no_designated_storage', detail: 'no approved storage was bound' };
+    const scope = targetScope(ctx);
+    const b = ctx.snapshot.blocks.find((b) => b.at.x === u.storage!.at.x && b.at.y === u.storage!.at.y && b.at.z === u.storage!.at.z && /^minecraft:(chest|barrel)$/.test(b.key) && b.inReach && scope.allows(b.handle));
+    return b ? { snapshotId: ctx.snapshot.id, handle: b.handle } : { error: 'approved_storage_not_in_reach', detail: 'the exact approved chest/barrel is not visible within reach; approach first' };
+  };
+
+  const moveStorage: SkillDefinition<Record<string, never>> = {
+    descriptor: { id: UPKEEP_CAPABILITIES.moveStorage, family: 'survival', purpose: 'Walk within the unchanged travel bound to the bound approved storage.', parameters: [], targets: ['memory_location'],
+      preconditions: ['bound upkeep goal and unchanged durable storage approval'], effects: ['approach storage'], supportedPredicates: ['survival_state'], timeoutMs: 90_000, cancellation: 'lease clears path and controls', limitations: ['no digging, placing or hidden lookup; incidental loot on route blocks approach'], evidence: ['actual distance; observed exact storage block'] },
+    params: z.object({}).strict(),
+    resolve(ctx) {
+      const u = service.upkeepAuthority({ goalEpoch: ctx.snapshot.goalEpoch, connectionEpoch: ctx.snapshot.connectionEpoch, dimension: ctx.snapshot.dimension });
+      if ('error' in u) return { drafts: [], unavailable: [{ reason: u.error, detail: u.detail }] };
+      if (!u.storage || !ctx.services.perception.withinTravel(u.storage.at)) return { drafts: [], unavailable: [{ reason: 'outside_travel_bounds', detail: 'no approved storage inside this goal travel bound' }] };
+      if (!('error' in storageRef(ctx))) return { drafts: [], unavailable: [{ reason: 'already_at_storage', detail: 'approved storage is in reach' }] };
+      return { drafts: [{ parameters: {}, description: `approach approved storage ${u.storage.factId}` }] };
+    },
+    async execute(ctx) {
+      const fence = executionFence(ctx);
+      const u = service.upkeepAuthority(fence);
+      if ('error' in u) return precondition(u.error, u.detail);
+      if (!u.storage || !ctx.services.perception.withinTravel(u.storage.at)) return precondition('outside_travel_bounds', 'approved storage is outside the travel bound');
+      const at = u.storage.at;
+      const guard = () => {
+        const now = service.upkeepAuthority(fence);
+        if ('error' in now) return now.error;
+        const vitals = service.vitals(fence.connectionEpoch);
+        if (!vitals || vitals.health <= service.lowHealthThreshold()) return 'low_health';
+        if (itemsNear(ctx.session.bot, ctx.session.bot.entity.position, PICKUP_GUARD).length || itemsNear(ctx.session.bot, at, PICKUP_GUARD).length) return 'unrelated_loot_on_route';
+        return undefined;
+      };
+      const blocked = guard();
+      if (blocked) return precondition(blocked, 'approved-storage approach is currently unsafe');
+      const r = await recoveryNavigate(ctx.act, { goal: new goals.GoalNear(at.x, at.y, at.z, 2), arrived: () => distanceTo(ctx.session.bot, at) <= 2.5, distance: () => distanceTo(ctx.session.bot, at), timeoutMs: ctx.candidate.timeoutMs, stuckMs: 4_000, searchRadius: Math.min(ctx.services.limits.travelRadius, Math.ceil(distanceTo(ctx.session.bot, at)) + 16), ...(ctx.services.perception.travelBounds() ? { bounds: ctx.services.perception.travelBounds()! } : {}), inBounds: () => ctx.services.perception.withinTravel(ctx.session.bot.entity.position), abortIf: guard });
+      if (r.aborted) return failed(r.aborted, 'approved-storage approach stopped before unsafe movement');
+      return r.status === 'arrived' ? { status: 'succeeded', effect: 'approached approved storage; inspection is still required', confirmation: 'client_only', evidence: { distance: r.finalDistance } } : failed(r.status === 'no_path' ? 'no_safe_path' : r.status, 'could not approach approved storage inside the unchanged bounds');
+    },
+  };
+
+  const inspectApprovedStorage: SkillDefinition<{ container: { snapshotId: string; handle: string } }> = {
+    descriptor: { id: UPKEEP_CAPABILITIES.inspectStorage, family: 'survival', purpose: 'Inspect only the exact bound approved chest/barrel and offer ordinary server-stated stock.',
+      parameters: [{ name: 'container', type: 'handle', description: 'visible approved chest/barrel', required: true }], targets: ['container'], preconditions: ['bound support goal and unchanged durable storage approval'], effects: ['observation only'], supportedPredicates: ['survival_state'], timeoutMs: 10_000, cancellation: 'closes window through the same lease', limitations: ['historical remembered contents never authorize withdrawals'], evidence: ['fresh correlated window resync and server slot metadata'] },
+    params: z.object({ container: HandleRefSchema }).strict(),
+    resolve(ctx) {
+      const ref = storageRef(ctx);
+      if ('error' in ref) return { drafts: [], unavailable: [{ reason: ref.error, detail: ref.detail }] };
+      const key = inspectionKey({ goalEpoch: ctx.snapshot.goalEpoch, connectionEpoch: ctx.snapshot.connectionEpoch, dimension: ctx.snapshot.dimension });
+      const view = inspected.get(key);
+      if (view && ctx.services.clock.now() - view.atMs <= 60_000) return { drafts: [], unavailable: [{ reason: 'already_inspected', detail: 'fresh approved stock is already available to the resolver' }] };
+      return { drafts: [{ parameters: { container: ref }, description: 'inspect approved storage stock fresh' }] };
+    },
+    async execute(ctx, params) {
+      if (ctx.session.bot.currentWindow) return precondition('interface_open', 'another interface is open');
+      const block = storageBlock(ctx, params.container);
+      if ('error' in block) return precondition(block.error, block.detail);
+      const win = await openInterface(ctx.act, block);
+      try {
+        const view = await ctx.act.confirmWindow();
+        if (view?.cursor) return precondition('cursor_not_empty', 'an existing cursor stack is unsafe');
+        const facts = service.containerStacks(ctx.session.connectionEpoch, win.id);
+        if (!view || !facts || facts.stateId !== ctx.session.evidence.since(view.seq - 1, 'window_items').find((e) => e.seq === view.seq)?.stateId) return failed('window_metadata_unknown', 'the correlated server metadata was unavailable');
+        const fence = executionFence(ctx);
+        const authority = service.upkeepAuthority(fence);
+        if ('error' in authority) return precondition(authority.error, authority.detail);
+        const protectedKeys = new Set(facts.stacks.filter((s) => isValuable(s.key, s.meta) || s.meta.metadata !== 'server_slot').map((s) => s.key));
+        const contents = facts.stacks.filter((s) => s.slot < win.inventoryStart && !protectedKeys.has(s.key) && !isValuable(s.key) && !s.key.startsWith('minecraft:unknown_')).map((s) => ({ key: s.key, count: s.count }));
+        if (inspected.size >= 16) inspected.delete(inspected.keys().next().value!);
+        inspected.set(inspectionKey(fence), { atMs: ctx.services.clock.now(), contents });
+        return { status: 'succeeded', effect: 'inspected the exact approved storage; only ordinary server-stated stock is offered', confirmation: 'server_sync', evidence: { ordinaryKeys: contents.map((s) => s.key) } };
+      } finally { ctx.act.closeWindow(win as never); }
+    },
+  };
+
+  const transferSkill = (direction: 'deposit' | 'withdraw'): SkillDefinition<{ container: { snapshotId: string; handle: string }; item: string; count: number }> => {
+    const skill: SkillDefinition<{ container: { snapshotId: string; handle: string }; item: string; count: number }> = {
+      descriptor: { id: direction === 'deposit' ? UPKEEP_CAPABILITIES.storeSurplus : UPKEEP_CAPABILITIES.withdrawReserve, family: 'survival', purpose: direction === 'deposit' ? 'Inspect the bound approved storage fresh and deposit one bounded ordinary surplus stack.' : 'Inspect the bound approved storage fresh and withdraw only the current safe reserve shortfall.',
+        parameters: [{ name: 'container', type: 'handle', description: 'visible exact approved chest/barrel', required: true }, { name: 'item', type: 'registry_key', description: 'offered ordinary item', required: true }, { name: 'count', type: 'integer', description: 'bounded offered count', required: true, minimum: 1, maximum: 64 }],
+        targets: ['container', 'inventory_item'], preconditions: ['bound upkeep owner', 'exact durable owner approval', 'fresh server inventory/window metadata'], effects: ['bounded items transferred'], supportedPredicates: ['survival_state'], timeoutMs: 30_000, cancellation: 'lease fences clicks; closes window; confirmed partial effects remain', limitations: ['no arbitrary chest, protected item or unknown metadata; no throwing items away'], evidence: ['fresh correlated server window contents and metadata', 'server source AND destination deltas'] },
+      params: z.object({ container: HandleRefSchema, item: ItemKeySchema, count: z.number().int().min(1).max(64) }).strict(),
+      resolve(ctx) {
+        const ref = storageRef(ctx);
+        if ('error' in ref) return { drafts: [], unavailable: [{ reason: ref.error, detail: ref.detail }] };
+        const fence = { goalEpoch: ctx.snapshot.goalEpoch, connectionEpoch: ctx.snapshot.connectionEpoch, dimension: ctx.snapshot.dimension };
+        const admitted = admittedParameters(ctx, skill.params).values as { item?: string; count?: number };
+        let offers: Array<{ key: string; count: number }>;
+        if (direction === 'deposit') offers = service.upkeepSurplus(fence);
+        else {
+          const need = service.reserveShortfall(fence);
+          if (!need || !need.missing) return { drafts: [], unavailable: [{ reason: 'reserve_satisfied', detail: 'no bound reserve shortfall remains' }] };
+          const view = inspected.get(inspectionKey(fence));
+          if (!view || ctx.services.clock.now() - view.atMs > 60_000) return { drafts: [], unavailable: [{ reason: 'storage_inspection_required', detail: 'inspect the exact approved storage before selecting stock' }] };
+          offers = view.contents.filter((s) => s.count <= need.missing && s.count <= 64).filter((s) => need.key === 'chunkbot:safe_food' ? isSafeFood(s.key, service.registry(), cfg.food.avoid) : s.key === need.key)
+            .map((s) => ({ key: s.key, count: Math.min(64, need.missing, s.count) }));
+        }
+        const drafts = offers.filter((o) => !admitted.item || admitted.item === o.key).slice(0, 4).flatMap((o) => {
+          const n = admitted.count ?? Math.min(64, o.count);
+          return n > o.count ? [] : [{ parameters: { container: ref, item: o.key, count: n }, description: `${direction} up to ${n} ordinary ${o.key} at approved storage` }];
+        });
+        return { drafts, unavailable: drafts.length ? [] : [{ reason: direction === 'deposit' ? 'no_surplus' : 'no_safe_reserve', detail: 'no bounded ordinary item matches the task' }] };
+      },
+      async execute(ctx, params) {
+        if (ctx.session.bot.currentWindow) return precondition('interface_open', 'another interface is open');
+        const fence = executionFence(ctx);
+        inspected.delete(inspectionKey(fence));
+        const inventory = await confirmInventory(ctx.act, ctx.services);
+        if (!inventory) return failed('no_server_sync', 'player inventory resync failed');
+        const block = storageBlock(ctx, params.container);
+        if ('error' in block) return precondition(block.error, block.detail);
+        const win = await openInterface(ctx.act, block);
+        try {
+          const before = await ctx.act.confirmWindow();
+          const metadata = service.containerStacks(fence.connectionEpoch, win.id);
+          if (!before || !metadata || metadata.stateId !== ctx.session.evidence.since(before.seq - 1, 'window_items').find((e) => e.seq === before.seq)?.stateId) return failed('window_metadata_unknown', 'fresh correlated raw server metadata is required; nothing was moved');
+          if (before.cursor) return precondition('cursor_not_empty', 'an existing cursor stack makes transfer unsafe');
+          const item = mk(params.item);
+          const check = () => {
+            const authority = service.upkeepAuthority(fence);
+            if ('error' in authority) return authority;
+            const current = service.containerStacks(fence.connectionEpoch, win.id);
+            if (!current || current.stacks.some((s) => s.key === item && (s.meta.metadata !== 'server_slot' || isValuable(s.key, s.meta)))) return { error: 'protected_item', detail: 'protected or unknown stack could be selected or merged by key' };
+            if (isValuable(item) || item.startsWith('minecraft:unknown_')) return { error: 'protected_item', detail: 'this item is protected or unknown' };
+            if (direction === 'deposit') {
+              const allowed = service.upkeepSurplus(fence).find((s) => s.key === item)?.count ?? 0;
+              if (allowed < params.count) return { error: 'no_longer_surplus', detail: 'the bounded deposit would consume protected/task supplies' };
+            } else {
+              const need = service.reserveShortfall(fence);
+              if (!need || params.count > need.missing || (need.key === 'chunkbot:safe_food' ? !isSafeFood(item, service.registry(), cfg.food.avoid) : item !== need.key)) return { error: 'reserve_no_longer_needed', detail: 'withdrawal exceeds the current applicable shortfall' };
+            }
+            return undefined;
+          };
+          const rejected = check();
+          if (rejected) return precondition(rejected.error, rejected.detail);
+          const cBefore = regionCounts(before, 0, win.inventoryStart);
+          const iBefore = regionCounts(before, win.inventoryStart, win.inventoryEnd);
+          const sourceStart = direction === 'deposit' ? win.inventoryStart : 0;
+          const sourceEnd = direction === 'deposit' ? win.inventoryEnd : win.inventoryStart;
+          const sourceStack = metadata.stacks.find((s) => s.slot >= sourceStart && s.slot < sourceEnd && s.key === item && s.count <= params.count);
+          const count = sourceStack?.count ?? 0;
+          if (!sourceStack || !count) return precondition(direction === 'withdraw' ? 'reserve_stack_exceeds_shortfall' : 'surplus_stack_unavailable', 'no whole ordinary source stack fits the bound; splitting could acquire excess on cancellation');
+          const destStart = direction === 'deposit' ? 0 : win.inventoryStart;
+          const destEnd = direction === 'deposit' ? win.inventoryStart : win.inventoryEnd;
+          const fits = Array.from({ length: destEnd - destStart }, (_, i) => i + destStart).some((i) => !win.slots[i] || (mk(win.slots[i]!.name) === item && win.slots[i]!.stackSize - win.slots[i]!.count >= count));
+          if (!fits) return precondition('storage_full_or_unavailable', 'the whole source stack has no safe destination room');
+          // Do not transfer more than a source stack or the current shortfall.
+          // Each underlying click remains the original Actuator's fenced click.
+          let veto: { error: string; detail: string } | undefined;
+          const initialNeed = service.reserveShortfall(fence)?.missing ?? 0;
+          let movedClient = 0;
+          const guarded = new Proxy(ctx.act, { get(target, property) {
+            if (property === 'click') return async (...args: Parameters<typeof target.click>) => {
+              const authority = service.upkeepAuthority(fence);
+              const facts = service.containerStacks(fence.connectionEpoch, win.id);
+              if ('error' in authority) veto = authority;
+              else if (!facts || facts.stacks.some((s) => s.key === item && (s.meta.metadata !== 'server_slot' || isValuable(s.key, s.meta)))) veto = { error: 'protected_item', detail: 'server identity changed during transfer' };
+              if (!veto && direction === 'withdraw' && args[0] >= win.inventoryStart && args[0] < win.inventoryEnd) {
+                const need = service.reserveShortfall(fence);
+                const proposed = args[1] === 1 ? 1 : win.selectedItem?.count ?? 0;
+                const pending = Math.max(0, movedClient - (initialNeed - (need?.missing ?? 0)));
+                if (!need || proposed > need.missing - pending) veto = { error: 'reserve_no_longer_needed', detail: 'new server stock removed the shortfall during transfer' };
+              }
+              if (veto) throw new Error(veto.error);
+              return target.click(...args);
+            };
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          } });
+          let moveError: unknown;
+          try { await moveItems(guarded, win, item, count, [sourceStack.slot, sourceStack.slot + 1], direction === 'deposit' ? Array.from({ length: win.inventoryStart }, (_, i) => i) : Array.from({ length: win.inventoryEnd - win.inventoryStart }, (_, i) => win.inventoryStart + i), (n) => { movedClient = n; }); }
+          catch (error) { moveError = error; ctx.act.fence(); }
+          const after = await ctx.act.confirmWindow();
+          if (!after) return failed('no_server_sync', 'transfer outcome is unknown; no success claimed');
+          const cAfter = regionCounts(after, 0, win.inventoryStart);
+          const iAfter = regionCounts(after, win.inventoryStart, win.inventoryEnd);
+          const sourceDelta = direction === 'deposit' ? (iBefore[item] ?? 0) - (iAfter[item] ?? 0) : (cBefore[item] ?? 0) - (cAfter[item] ?? 0);
+          const destDelta = direction === 'deposit' ? (cAfter[item] ?? 0) - (cBefore[item] ?? 0) : (iAfter[item] ?? 0) - (iBefore[item] ?? 0);
+          const moved = Math.max(0, Math.min(sourceDelta, destDelta));
+          if (moved) ctx.progress({ item, moved, direction }, 'server_sync');
+          ctx.services.ledger.add({ kind: 'container', dimension: String(ctx.session.bot.game.dimension), x: block.x, y: block.y, z: block.z, contents: cAfter, atMs: ctx.services.clock.now(), actionId: ctx.candidate.id, via: 'container_transfer' });
+          if (moveError && !veto) throw moveError;
+          const evidence = { item, requested: params.count, moved, sourceDelta, destDelta };
+          if (veto) return failed(veto.error, `${veto.detail}; ${moved} items confirmed before stopping`, evidence, 'server_sync');
+          if (sourceDelta !== destDelta || moved > count) return failed('transfer_ambiguous', 'source and destination changes disagree; no exact transfer claimed', evidence, 'server_sync');
+          return moved ? { status: moved === params.count ? 'succeeded' : 'partial', effect: `${direction} ${moved} ${item} at approved storage (both server deltas)`, confirmation: 'server_sync', evidence } : failed('storage_full_or_unavailable', 'no matching source/destination transfer confirmed', evidence, 'server_sync');
+        } finally {
+          ctx.act.closeWindow(win as never);
+          await confirmInventory(ctx.act, ctx.services);
+        }
+      },
+    };
+    return skill;
+  };
+  return [eatSafeFood, restInPlace, goToDeathSite, recoverLostItems, equipSuitableTool, equipSuitableArmor, moveStorage, inspectApprovedStorage, transferSkill('deposit'), transferSkill('withdraw')];
 }
 
 export { HOSTILE_ENTITIES };
