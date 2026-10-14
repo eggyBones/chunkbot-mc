@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { artifactAt } from './lib/v1-integration/artifact.ts';
+import { captureReader } from './lib/v1-integration/capture.ts';
 import { parseOptions, verifyGrant } from './lib/v1-integration/guards.ts';
 import { reportDirectory, runScenarios, saveReport } from './lib/v1-integration/runner.ts';
 import { selectScenarios } from './lib/v1-integration/scenarios.ts';
@@ -28,7 +29,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   save();
   if (!options.stage) {
     // Dynamic import ONLY after the entire authority/artifact/key gate.
-    await runScenarios(report, scenarios, async () => { const { openOrdinarySession } = await import('./lib/v1-integration/ordinary.ts'); return openOrdinarySession(root, dir, grant!); }, save);
+    await runScenarios(report, scenarios, async () => { const { openOrdinarySession } = await import('./lib/v1-integration/ordinary.ts'); return openOrdinarySession(root, dir, grant!, options.captureFile ? captureReader(root, options.captureFile) : undefined); }, save);
   }
   process.stdout.write(`${options.stage ? 'PREPARED (unexecuted)' : 'RECORDED (coordinator review required)'} V1 integration: ${dir}\n`);
   return options.stage ? 0 : report.results.every((r) => r.phase === 'verified') && report.cleanup?.reconciled ? 0 : 1;

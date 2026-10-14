@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { parseOptions, verifyGrant } from '../scripts/lib/v1-integration/guards.ts';
+import { parseCapture } from '../scripts/lib/v1-integration/capture.ts';
 import { containsLocation, generalityProblems, planSignature, verifyEvidence } from '../scripts/lib/v1-integration/oracles.ts';
 import { runScenarios } from '../scripts/lib/v1-integration/runner.ts';
 import { SCENARIOS, selectScenarios } from '../scripts/lib/v1-integration/scenarios.ts';
@@ -38,6 +39,14 @@ describe('V1 authority and entry point (credential-free; no fixture/provider cal
     for (const g of [null, { ...grant, fixture: '26.2' }, { ...grant, realProviders: false }, { ...grant, expiresAtMs: 999 }, { ...grant, artifact: { ...artifact, distSha256: 'other' } }]) assert.throws(() => verifyGrant(g, '26.1.2', grant.leaseId, artifact, 999, true));
     for (const a of [{ ...artifact, dirty: true }, { ...artifact, distSha256: null }, { ...artifact, sourceSha256: 'other' }]) assert.throws(() => verifyGrant(grant, '26.1.2', grant.leaseId, a, 999, true));
     assert.throws(() => verifyGrant(grant, '26.1.2', grant.leaseId, artifact, 999, false));
+  });
+  it('capture sidecars retain complete goals separately and refuse credentials, headers or reasoning fields', () => {
+    const capture = { provider: 'planner', requestId: 'p1', goalId: 'goal-a', atMs: 100, body: 'gameplay prompt' };
+    const value = { version: 1, captures: [capture], completeGoalIds: ['goal-a'] };
+    assert.deepEqual(parseCapture(value, 'goal-a'), { captures: [capture], complete: true });
+    assert.deepEqual(parseCapture(value, 'goal-b'), { captures: [], complete: false });
+    for (const field of ['authorization', 'headers', 'privateReasoning']) assert.throws(() => parseCapture({ ...value, captures: [{ ...capture, [field]: 'forbidden' }] }, 'goal-a'));
+    assert.throws(() => parseOptions(['--stage', '--capture-file', 'dummy']));
   });
   it('real process refuses before reports, fixture password, joins, or model calls', () => {
     const root = resolve(import.meta.dirname, '..'), dir = resolve(root, 'var/live-check');
