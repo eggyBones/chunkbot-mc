@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { SpendSnapshot } from '../../decision/spend.ts';
 import { groundOutcome } from '../../goals/continuation.ts';
 import { CHECKPOINT_FORMAT, CHECKPOINT_VERSION, MAX_CHECKPOINT_BYTES, ManagedCheckpointSchema, SemanticGoalSchema, canonical, digest, type CheckpointAllowance, type ManagedCheckpoint, type SemanticGoal } from './schema.ts';
-import type { CaptureManagedGoal, CheckpointLoad, CheckpointStoreOptions, CreateManagedSession, ResumeView } from './ports.ts';
+import type { CaptureManagedGoal, CheckpointDecisionOwner, CheckpointLoad, CheckpointStoreOptions, CreateManagedSession, ResumeView } from './ports.ts';
 
 const revisionFile = /^checkpoint-(\d{12})\.json$/;
 const lockSchema = z.object({ pid: z.number().int().positive(), token: z.string().uuid() }).strict();
@@ -274,9 +274,18 @@ export class ManagedCheckpointStore {
   }
 
   /** Accounting wrapper only; persist before the provider is allowed to run. */
-  checkpointSpend(snapshot: SpendSnapshot, disableDecisionReason?: string): void {
+  checkDecisionOwner(owner: CheckpointDecisionOwner): void {
     const s = this.requireReady();
+    const a = s.goal?.allowances.find((x) => x.key === 'decision_attempts');
+    if (s.generation !== owner.expectedGeneration || s.directiveGeneration !== s.generation || s.goal?.goalId !== owner.goalId || !a || a.disabled || a.used >= a.limit || (a.deadlineAtMs !== null && this.now() >= a.deadlineAtMs)) throw new CheckpointHeldError('decision_owner_or_allowance_not_available');
+  }
+
+  checkpointSpend(snapshot: SpendSnapshot, disableDecisionReason?: string, owner?: CheckpointDecisionOwner): void {
+    const s = this.requireReady();
+    if (owner) this.checkDecisionOwner(owner);
+    const goal = owner ? { ...s.goal!, allowances: s.goal!.allowances.map((a) => a.key === 'decision_attempts' ? { ...a, used: a.used + 1 } : a) } : s.goal;
     this.persist({ ...s, spend: snapshot,
+      goal,
       providerDisabled: { ...s.providerDisabled, decision: s.providerDisabled.decision ?? disableDecisionReason ?? null },
     });
   }

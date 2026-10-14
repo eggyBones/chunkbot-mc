@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { after, test } from 'node:test';
 import { SpendLedger, type SpendSnapshot } from '../src/decision/spend.ts';
-import { CHECKPOINT_SEMANTICS, CheckpointAccounting, ManagedCheckpointStore, type CheckpointScope } from '../src/updates/checkpoints/index.ts';
+import { CHECKPOINT_SEMANTICS, CheckpointAccounting, ManagedCheckpointStore, SemanticGoalSchema, portableOutcome, type CheckpointScope } from '../src/updates/checkpoints/index.ts';
 
 const roots: string[] = [];
 after(() => { for (const p of roots) rmSync(p, { recursive: true, force: true }); });
@@ -165,4 +165,37 @@ test('a crash committing an invalid provider cost cannot lose the disabled flag 
   const after = new ManagedCheckpointStore(o); assert.equal(after.open().status, 'ready');
   assert.equal(after.snapshot()!.spend.retainedUsd, 0.03);
   assert.equal(after.snapshot()!.providerDisabled.decision, 'untrustworthy_reported_cost'); after.close();
+});
+
+test('goal decision attempt and charge commit together, so a provider-I/O crash refills neither allowance', () => {
+  const { o, store } = fresh();
+  const generation = store.control('directive');
+  store.captureGoal({ expectedGeneration: generation, goal: SemanticGoalSchema.parse({
+    goalId: 'same-goal', instruction: 'stay near the owner', origin: { surface: 'chat', principal: 'owner' },
+    admittedAtMs: 1_000, deadlineAtMs: 10_000,
+    ...portableOutcome({ kind: 'persistent', maintain: { predicate: 'near_target', target: { kind: 'owner' }, within: 3 } }, true),
+    admissionBaseline: { capturedAtMs: 1_001, counts: {}, detail: 'server confirmed at original admission' }, anchor: null,
+    counters: { plannerTurns: 1, knowledgeRounds: 0, repairs: 0, retries: 0, questionRefusals: 0, replans: 0, windows: 1, tasksAdmitted: 1, preparationTurns: 0, lookaheads: 0 },
+    caps: { plannerTurns: 12, tasks: 32, replans: 8 }, admittedTasks: 1, counts: [], verifiedEffects: [], continuations: { used: 0, max: 2 },
+    allowances: [{ key: 'decision_attempts', limit: 2, used: 1, deadlineAtMs: 10_000, disabled: null }], route: null,
+  }) });
+  const current = new CheckpointAccounting(store, () => new SpendLedger(1));
+  assert.throws(() => current.reserve(0.03, 'unbound'), /goal_decision_context_required/);
+  assert.throws(() => current.reserve(0.03, 'wrong-owner', { goalId: 'another-goal', expectedGeneration: generation }), /decision_owner/);
+  assert.equal(store.snapshot()!.spend.attempts, 0); store.close();
+  const entry = resolve('src/updates/checkpoints/index.ts'); const spend = resolve('src/decision/spend.ts');
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import { ManagedCheckpointStore, CheckpointAccounting } from ${JSON.stringify(entry)};
+    import { SpendLedger } from ${JSON.stringify(spend)};
+    const s=new ManagedCheckpointStore({...${JSON.stringify(o)}, now:()=>2000}); if(s.open().status!=='ready') process.exit(74);
+    const a=new CheckpointAccounting(s,()=>new SpendLedger(1));
+    const r=a.reserve(0.03,'dummy-goal-provider',{goalId:'same-goal',expectedGeneration:${generation}});
+    a.beforeDispatch(r); process.exit(73);
+  `], { env: { PATH: process.env['PATH'] }, timeout: 10_000, encoding: 'utf8' });
+  assert.equal(child.status, 73, child.stderr);
+  const after = new ManagedCheckpointStore(o); assert.equal(after.open().status, 'ready');
+  assert.equal(after.snapshot()!.spend.retainedUsd, 0.03);
+  assert.equal(after.snapshot()!.goal!.allowances[0]!.used, 2);
+  assert.equal(after.snapshot()!.goal!.allowances[0]!.limit, 2);
+  assert.throws(() => after.checkDecisionOwner({ goalId: 'same-goal', expectedGeneration: generation }), /allowance_not_available/); after.close();
 });

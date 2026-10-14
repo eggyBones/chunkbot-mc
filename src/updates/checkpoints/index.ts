@@ -9,5 +9,5 @@ export { CHECKPOINT_FORMAT, CHECKPOINT_VERSION, CHECKPOINT_SEMANTICS, MAX_CHECKP
   type CheckpointScope, type CheckpointAllowance, type ManagedCheckpoint, type SemanticGoal,
 } from './schema.ts';
 export type { CheckpointLoad, CheckpointStoreOptions, ResumeView, RestoreCheckpointSpend,
-  CheckpointSpendPort, CreateManagedSession, CaptureManagedGoal,
+  CheckpointSpendPort, CheckpointDecisionOwner, CreateManagedSession, CaptureManagedGoal,
 } from './ports.ts';

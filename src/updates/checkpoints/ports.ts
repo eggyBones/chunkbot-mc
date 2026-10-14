@@ -23,10 +23,11 @@ export type ResumeView =
   | { kind: 'replan'; generation: number; goal: SemanticGoal; historical: true };
 
 /** Structurally uses the REAL SpendLedger; no second cost-accounting algorithm. */
+export interface CheckpointDecisionOwner { goalId: string; expectedGeneration: number }
 export interface CheckpointSpendPort {
   readonly capUsd: number;
   remainingUsd(): number;
-  reserve(amountUsd: number, label: string): SpendReservation | undefined;
+  reserve(amountUsd: number, label: string, owner?: CheckpointDecisionOwner): SpendReservation | undefined;
   reconcile(reservation: SpendReservation, costUsd: number): void;
   retain(reservation: SpendReservation): void;
   release(reservation: SpendReservation): void;

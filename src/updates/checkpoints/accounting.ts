@@ -1,5 +1,5 @@
 import type { SpendReservation, SpendSnapshot } from '../../decision/spend.ts';
-import type { CheckpointSpendPort, RestoreCheckpointSpend } from './ports.ts';
+import type { CheckpointDecisionOwner, CheckpointSpendPort, RestoreCheckpointSpend } from './ports.ts';
 import { canonical, SpendCheckpointSchema } from './schema.ts';
 import { CheckpointHeldError, ManagedCheckpointStore } from './store.ts';
 
@@ -30,15 +30,19 @@ export class CheckpointAccounting implements CheckpointSpendPort {
     const s = this.store.snapshot()!;
     if (canonical(s.spend) !== canonical(this.ledger.snapshot())) throw new CheckpointHeldError('accounting_changed_outside_adapter');
   }
-  private record(): void { this.store.checkpointSpend(this.ledger.snapshot()); }
+  private record(owner?: CheckpointDecisionOwner): void { this.store.checkpointSpend(this.ledger.snapshot(), undefined, owner); }
 
-  reserve(amountUsd: number, label: string): SpendReservation | undefined {
+  reserve(amountUsd: number, label: string, owner?: CheckpointDecisionOwner): SpendReservation | undefined {
     this.current();
     const s = this.store.snapshot()!;
     if (!s.control.onlineIntent || s.providerDisabled.decision) throw new CheckpointHeldError('provider_dispatch_not_authorized');
+    if (s.goal && s.directiveGeneration === s.generation && !owner) throw new CheckpointHeldError('goal_decision_context_required');
+    if (owner) this.store.checkDecisionOwner(owner);
     const reservation = this.ledger.reserve(amountUsd, label);
     // Even a refused attempt count is durable. Labels/keys never enter the file.
-    this.record();
+    // Jev increments its per-goal attempts only after a funded reservation.
+    // Both debits commit together, so a crash cannot refill that attempt.
+    this.record(reservation ? owner : undefined);
     if (reservation) {
       this.issued.set(reservation.id, Object.freeze({ ...reservation }));
       this.reservationGenerations.set(reservation.id, s.generation);
