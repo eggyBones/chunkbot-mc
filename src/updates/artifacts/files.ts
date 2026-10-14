@@ -6,6 +6,11 @@ import { ArtifactError, type FileIdentity } from './model.ts';
 export const MAX_FILES = 50_000;
 const MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 
+export function publicInputPath(path: string): boolean {
+  return ['package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.build.json', '.gitignore'].includes(path) ||
+    /^vendor\/(?:compat-(?:lock|sources)\.json|(?:minecraft-data|prismarine-chunk|prismarine-physics|mineflayer)-[a-zA-Z0-9.+-]+\.tgz|patches\/[a-zA-Z0-9.+-]+\.patch)$/.test(path);
+}
+
 export function sha256(bytes: string | Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
