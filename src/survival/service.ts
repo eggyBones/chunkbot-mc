@@ -56,7 +56,7 @@ import { CheckpointRecordSchema, type CheckpointRecord } from '../contracts/surv
 import { AllowanceBook } from './allowance.ts';
 import { IncidentLedgerBook } from './continuation.ts';
 import { EpisodeBook, countedAttempts, distance, isOpen, preparationSignature, UNCOUNTED_OUTCOMES } from './episodes.ts';
-import { counts, isSafeFood, isValuable, safeFoods, sameDimension, sessionDimension, toolKind, type SurvivalItemRegistry } from './items.ts';
+import { counts, isSafeFood, isTool, isValuable, safeFoods, sameDimension, sessionDimension, toolKind, type SurvivalItemRegistry } from './items.ts';
 import { ROUTINE_ORDER, evalEat, evalInventoryRoom, evalRecovery, evalResupply, evalRest, evalToolUpkeep, freeSlots, reserveCount, wornTools, toolNeed, storageFor, roomTarget, surplus, type DesignatedStorage, type PolicyContext, type RoutineEval } from './policy.ts';
 import { SurvivalFileStore, survivalScopeDirectory } from './store.ts';
 import { SurvivalTracker, type CapturedDeathRecord, type TrackerEvent } from './tracker.ts';
@@ -1013,7 +1013,12 @@ export class SurvivalService implements SurvivalPolicyPort, LowHealthAllowancePo
     const deny = (reason: string, detail: string) => ({ allowed: false as const, reason, detail });
     if ('error' in u) return deny(u.error, u.detail);
     const cap = choice.capability;
-    if (['container_transfer', 'inspect_container', 'drop_item', 'pickup_item', 'use_held_item', 'attack_entity'].includes(cap)) return deny('unsupported_upkeep_action', 'upkeep cannot use arbitrary containers, foreign drops, precious consumables or combat');
+    if (['container_transfer', 'inspect_container', 'drop_item', 'pickup_item', 'use_held_item', 'equip_item', 'attack_entity', 'furnace_insert', 'furnace_wait', 'furnace_take'].includes(cap)) return deny('unsupported_upkeep_action', 'automatic upkeep requires approved storage, protected-item selection and bounded source counts; arbitrary transfers, unbound furnace stock, foreign drops and combat are refused');
+    if (cap === 'mine_block') {
+      const inv = this.inventory(fence.connectionEpoch);
+      if (!inv?.fullSync) return deny('inventory_unknown', 'full server inventory is required');
+      if (inv.stacks.some((s) => isTool(s.key) && (s.meta.metadata !== 'server_slot' || isValuable(s.key, s.meta)))) return deny('protected_tool_selection', 'the general mining primitive chooses its own tool; with protected or unknown tools present, automatic wear cannot be proven safe');
+    }
     if (cap === 'craft_item') {
       if (!recipe || !Number.isInteger(recipe.outputCount) || recipe.outputCount < 1) return deny('upkeep_recipe_unverified', 'exact recipe input and output batch facts are required');
       const inv = this.inventory(fence.connectionEpoch);

@@ -270,7 +270,9 @@ describe('Oct13 bounded upkeep', () => {
   it('shared dispatch guard refuses arbitrary transfers, protected recipes and excess recipe batches', () => {
     const h = harness(); h.packets.inventory({ 36: slot('bread', 1), 37: slot('oak_planks', 8, [{ type: 'custom_name', data: 'gift' }]) }); h.packets.health(20, 20);
     const a = admission(h, 'resupply');
-    assert.equal(h.service.checkUpkeepCandidate(a.fence, { capability: 'container_transfer', parameters: {} }).allowed, false);
+    for (const capability of ['container_transfer', 'furnace_take', 'furnace_insert', 'drop_item', 'equip_item']) assert.equal(h.service.checkUpkeepCandidate(a.fence, { capability, parameters: {} }).allowed, false);
+    h.packets.setSlot(38, slot('diamond_sword'));
+    assert.equal(h.service.checkUpkeepCandidate(a.fence, { capability: 'mine_block', parameters: {} }).allowed, false, 'general mining must not choose a protected tool');
     assert.equal(h.service.checkUpkeepCandidate(a.fence, { capability: 'craft_item', parameters: { output: 'minecraft:bread', count: 5 } }, { inputs: ['minecraft:oak_planks'], outputCount: 1 }).allowed, false);
     assert.equal(h.service.checkUpkeepCandidate(a.fence, { capability: 'craft_item', parameters: { output: 'minecraft:bread', count: 5 } }, { inputs: ['minecraft:wheat'], outputCount: 3 }).allowed, false, 'batch rounds to 6, exceeding the five-item shortfall');
   });

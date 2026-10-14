@@ -6,7 +6,7 @@
 //                        food, never at full hunger); delegates to the fenced
 //                        use_held_item mechanism; server food/inventory evidence.
 //   rest_in_place        stand still for a bounded window and observe server
-//                        health packets: success only on a server-stated gain;
+//                        health packets: window settlement is not health recovery;
 //                        damage or no regeneration ends honestly. Sustained.
 //   go_to_death_site     walk to the BOUND recovery goal's own death site
 //                        (code-owned destination, never a planner coordinate),
@@ -384,7 +384,7 @@ export function survivalSkills(service: SurvivalService | undefined): AnySkill[]
     descriptor: {
       id: SURVIVAL_CAPABILITIES.restInPlace,
       family: 'survival',
-      purpose: 'Stay still for a bounded window while health regenerates; success only on a server-stated health gain.',
+      purpose: 'Observe health in finite rest windows; only server-stated health counts as recovery, and the no-gain allowance cannot reset.',
       parameters: [{ name: 'windowMs', type: 'number', description: 'rest window (ms)', required: false, minimum: 2_000, maximum: 15_000 }],
       targets: ['none'],
       preconditions: ['health below 20', 'food at least 18 (natural regeneration)', 'no visible hostile nearby'],
