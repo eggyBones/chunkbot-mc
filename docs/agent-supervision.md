@@ -1,4 +1,37 @@
-# Current checkpoint — native DSH Codex offline preparation
+# Current checkpoint — nine native DSH Codex workers running
+
+## Nine native workers launched — 2026-10-13 Arizona
+
+The supervising Codex personally registered and launched ALL NINE through the DSH UI. Support performed a bounded READ-ONLY correlation for exactly the nine prepared workspace paths at 2026-10-14T02:48:42.925172+00:00. All nine are **implementation running**, not accepted: registered workspace → persisted DSH session/effective relay-codex selection → confirmed codex-default native binding → actual native thread/turn context. Each actual context proves its exact assigned cwd, `gpt-6.1-sol` / `xhigh` / `danger-full-access` / approval `never`, originator `dsh_provider_codex`, CLI 0.162.1. Account route is existing `codex:codex-default`; the prior read-only account gate was ChatGPT/prolite, with no refresh or identifiers. No inference/account/provider probe was started for this verification.
+
+| Lane | DSH workspace ID | DSH session ID | Actual native thread ID | Actual native turn ID | State |
+| --- | --- | --- | --- | --- | --- |
+| integration | `a72f75d2-b6f6-4edc-ab39-f47f2dc00c29` | `session-8ffe2ba0-4596-42d9-8431-ae8697728df9` | `01a13844-0073-7f13-b8bf-a1e2f637567e` | `01a13844-0139-7b91-8451-944bdfaf495b` | running |
+| progression | `a6cfbbe4-9940-41f1-ac4c-b14f86be69c5` | `session-be4179c7-3f65-49f1-849a-1b268b088064` | `01a13844-e898-7023-8a2c-2429fb3692fc` | `01a13844-ec66-78e3-a136-3a0e0dce494b` | running |
+| home | `96f7f8ea-188b-46f1-a28e-eeea527b3227` | `session-15c3dc45-b5e1-4774-8bcc-5bb167c2a88e` | `01a13845-005c-7492-9e77-186b214b97c9` | `01a13845-00e7-7aa1-929c-994d33929f5d` | running |
+| upkeep | `bf3d3341-7901-4447-a157-bf87603fe341` | `session-0b6c004e-aea8-4ebe-8d25-6c20f119e0d4` | `01a13845-d904-72a2-bb36-1b352549b1b9` | `01a13845-dd3d-7c33-ac44-d78f93bcce65` | running |
+| packaging | `a4c1592c-acdd-4baa-8719-540018abb3b5` | `session-e4b33b87-2c79-4698-b530-2745750852a9` | `01a13845-efca-7281-879c-1017ddc82493` | `01a13845-f04c-7291-8bd4-a29d7cf05221` | running |
+| manager | `75f21194-be34-4912-8d80-9add557662fc` | `session-340be060-3058-4520-9279-883e9e92d4e6` | `01a13846-1ce9-7a20-89e7-4e3b117f7243` | `01a13846-1d86-7031-9332-0c5d303d18ed` | running |
+| checkpoints | `4d390a42-4404-4825-b855-65310ca45042` | `session-da37b73a-4aab-487f-a811-ad733caf2aa4` | `01a13846-36ca-7961-a64a-50bc626689fb` | `01a13846-3758-77a3-81cf-0d5908609ee1` | running |
+| bridge | `fd30f0f3-7c5c-466c-b09c-8b2566459338` | `session-b924588c-75e5-46b8-85e9-5b8b23e87197` | `01a13846-63fe-7a13-b6aa-410df2b5e865` | `01a13846-6493-7b53-a25e-6ea1eba6fc2c` | running |
+| acceptance | `225c9239-ae3c-4dac-8510-2f8c20efe935` | `session-d9735b75-b057-40ec-b87f-8df0a1f7585c` | `01a13846-7bdb-7ba2-bf0a-100e63f23c7d` | `01a13846-7c68-7363-b1e4-1369e871fbd8` | running |
+
+Safe exact receipt: ignored `var/parallel-20261013/launches.json` contains registered/persisted/actual cwd, route/context proof, native turn state, both queue counts/IDs, observed error/approval state and read-only branch/head/dirty ownership metadata. At the bounded state snapshot all nine native/DSH turns were open, both queues were empty, no native session error event or pending-approval/interaction event was observed. This is a persisted/current-context snapshot, not an assertion about later live state. Tool/check failure activity is recorded separately: TypeScript diagnostics in home/integration, a missing-file category in checkpoints and transport-error category in acceptance; other failed tool items need supervisor UI inspection. These are not failed native starts or accepted feature verdicts; workers remain active. Support sent no prompts, approvals, retries or continuation.
+
+ALL NINE worktrees are now actively worker-owned. Support must NOT edit/fast-forward/merge their branches, files or builds again, including docs. The ONE recorded common ancestor remains `2b9255c25e75519c06c94602d5ac60224a3c0521`, verified ancestral to each observed head. Prior preparation FFs to docs refinement `9ca70cbaba438033fbfd35d4097ab69339ba612d` are preserved for progression/home/upkeep/packaging/manager/checkpoints/bridge/acceptance; integration's concurrent source commit was preserved without FF. Those later heads are receipts, never a reason to rewrite a branch. The supervising Codex alone coordinates further doc/source reconciliation and exact commit approval. Support now mutates ROOT coordination docs/ignored receipts only. No worker role review, source, manifest/lock/vendor, install/build or runtime was changed in this launch-verification turn.
+
+Disjoint ownership remains: progression ONLY `src/autonomy/{supervisor,scope,control,context,status-text,barrier}.ts` plus progression-specific tests; HOME `src/autonomy/{blueprint,home,store}.ts`, `src/skills/construction.ts` and construction/project-specific tests; upkeep exclusively `src/survival/` and `src/skills/survival.ts`; packaging `src/updates/artifacts/`; manager `src/updates/manager/`; checkpoints `src/updates/checkpoints/`; bridge `src/server-controls/` and its namespaced datapack; integration ALL common contracts and required shared app/CLI/config/commands/goal/task/execution/game/memory/port/registry/general-skill composition except companion-owned paths. Controller scripts/.command launchers/necessary tests are integration-owned ONLY for approved typed composition; operator-profile/deployment changes remain coordinator approval. Acceptance owns its named new V1 harness/report and thin helpers, reusing ordinary CLI/harness typed seams without duplicating the framework or rewriting companion harnesses. Exact owned files/role reports are in the updated ignored briefs and receipt; dirty paths at the snapshot fall within the declared lane map.
+
+NINE remote/native reasoning workers stay parallel; heavy local install/build/test jobs use TWO OS-held `fcntl.flock` slots through the SAME ignored guard path. The unchanged guard's retained verification passed four requests with max2 active, direct exit7 propagation, Node-held lease persistence, queued-job waiting and automatic release on process death; all dummy processes settled. Initial failed cross-process monotonic oracle and corrected append-order/shared-time proof are retained. No application suite is rerun.
+
+```sh
+export PATH=/opt/homebrew/Cellar/node@24/24.21.0/bin:$PATH
+python3 -B /Users/jakewilcox/code/repos/minecraft-buddy/var/parallel-20261013/check-slots.py --cwd /Users/jakewilcox/code/worktrees/chunkbot-mc/batch-20261013-progression -- npm run typecheck
+```
+
+Use that shared prefix with each assigned cwd and exact existing install/build/test/read-only-doctor argv; this transient resource guard grants no world/runtime authority and is no npm alias/new project requirement. Guard evidence: ignored `var/parallel-20261013/check-slots-validation.json`. All fixture leases remain **ABSENT** on both versions. No provider/vault/key/world/live-control authority is granted by launch. The independently registered live artifact stays release `64e2609`; worker source/commits/dirt/builds are not integrated, accepted, deployed or live-loaded. Outstanding coordinator work: approve smallest exact typed seams, review local source/role/check handoffs and integration, then grant frozen-artifact fixture/provider acceptance separately. No live deployment/join is authorized. Gameplay planner settings/isolation remain unchanged.
+
+Next owner: supervising Codex personally supervises the nine UI sessions and their queues/approvals. Support handoff ends after this ROOT docs-only checkpoint commit; no branch synchronization or worker interaction.
 
 ## Offline parallel preparation — 2026-10-13 Arizona
 

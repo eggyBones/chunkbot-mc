@@ -1,27 +1,27 @@
 # Chunkbot feature plans
 
-Updated: 2026-10-13 Arizona. Owner: Codex. Current offline batch: **authorized / preparing; nine scopes, no worker launched, no live deployment/join.** Baseline delivery status: **V1 foundation/planner and batch001 accepted; commands/survival/recovery release 64e2609 accepted and registered locally. Broad idle progression/building and MB-V1-05 remain open.**
+Updated: 2026-10-13 Arizona. Owner: Codex. Current offline batch: **implementation running; nine native turns verified; coordinator acceptance pending; no live deployment/join.** Baseline delivery status: **V1 foundation/planner and batch001 accepted; commands/survival/recovery release 64e2609 accepted and registered locally. Broad idle progression/building and MB-V1-05 remain open.**
 
 Historical authorization: Jake authorized Codex supervision, local DSH startup and Claude Opus 5.5 implementation on 2026-10-04. Current 2026-10-13 development authorization uses native local DSH preset `relay-codex`, existing `codex:codex-default` ChatGPT subscription, exactly `gpt-6.1-sol` / `xhigh` / `danger-full-access` / approval `never`. Native CLI 0.162.1 passed the current metadata gate; historical sessions/commits/drafts and gameplay planner settings remain preserved.
 
 
 ## Authorized offline batch — 2026-10-13
 
-Jake starts these EXISTING planned scopes. Status is **authorized / preparing**, not accepted. No live deployment/join, fixture lease, worker launch or inference acceptance is included in mechanical preparation. This dated assignment table supersedes older unassigned labels for these scopes; accepted baseline behavior is retained.
+Jake starts these EXISTING planned scopes. Status is **implementation running** (nine actual native turn/cwd/model/effort/permission contexts verified), not accepted. The supervisor personally registered/launched them through DSH UI; support now has ROOT-docs/ignored-receipt authority only and must not edit any worker checkout/branch/build. No live deployment/join, fixture lease, worker launch or inference acceptance is included in mechanical preparation. This dated assignment table supersedes older unassigned labels for these scopes; accepted baseline behavior is retained.
 
 | Suffix | Scope / existing plan | Status |
 | --- | --- | --- |
-| progression | MB-FLOW-001 A1/A2/A4/A5/A7/A8 — [docs/autonomous-progression-plan.md](docs/autonomous-progression-plan.md) | authorized / preparing |
-| home | MB-FLOW-001 A3/A6; MB-PLAN-006 full-house gathering — [docs/autonomous-progression-plan.md](docs/autonomous-progression-plan.md) | authorized / preparing |
-| upkeep | MB-FLOW-003 remaining Routine policies R6/R7 — [docs/survival-routines-plan.md](docs/survival-routines-plan.md) | authorized / preparing |
-| packaging | MB-OPS-001 U-G1/U1/U5 — [docs/live-update-plan.md](docs/live-update-plan.md) | authorized / preparing |
-| manager | MB-OPS-001 U-G2/U-G5/U2/U3/U5 — [docs/live-update-plan.md](docs/live-update-plan.md) | authorized / preparing |
-| checkpoints | MB-OPS-001 U-G3/U-G4/U4/U6 — [docs/live-update-plan.md](docs/live-update-plan.md) | authorized / preparing |
-| bridge | MB-OPS-002 vanilla bridge C1-C7 — [docs/server-control-plan.md](docs/server-control-plan.md) | authorized / preparing |
-| integration | Single shared MB-FLOW/MB-OPS composition writer — [docs/companion-upgrades-plan.md](docs/companion-upgrades-plan.md) | authorized / preparing |
-| acceptance | MB-V1-05 V1-1 through V1-5 acceptance preparation — [docs/v1-integration-plan.md](docs/v1-integration-plan.md) | authorized / preparing |
+| progression | MB-FLOW-001 A1/A2/A4/A5/A7/A8 — [docs/autonomous-progression-plan.md](docs/autonomous-progression-plan.md) | implementation running |
+| home | MB-FLOW-001 A3/A6; MB-PLAN-006 full-house gathering — [docs/autonomous-progression-plan.md](docs/autonomous-progression-plan.md) | implementation running |
+| upkeep | MB-FLOW-003 remaining Routine policies R6/R7 — [docs/survival-routines-plan.md](docs/survival-routines-plan.md) | implementation running |
+| packaging | MB-OPS-001 U-G1/U1/U5 — [docs/live-update-plan.md](docs/live-update-plan.md) | implementation running |
+| manager | MB-OPS-001 U-G2/U-G5/U2/U3/U5 — [docs/live-update-plan.md](docs/live-update-plan.md) | implementation running |
+| checkpoints | MB-OPS-001 U-G3/U-G4/U4/U6 — [docs/live-update-plan.md](docs/live-update-plan.md) | implementation running |
+| bridge | MB-OPS-002 vanilla bridge C1-C7 — [docs/server-control-plan.md](docs/server-control-plan.md) | implementation running |
+| integration | Single shared MB-FLOW/MB-OPS composition writer — [docs/companion-upgrades-plan.md](docs/companion-upgrades-plan.md) | implementation running |
+| acceptance | MB-V1-05 V1-1 through V1-5 acceptance preparation — [docs/v1-integration-plan.md](docs/v1-integration-plan.md) | implementation running |
 
-Nine new branches/worktrees use one recorded coordination-docs base; the 2026-10-13 ownership/check-slot refinement is carried by a focused follow-up docs commit without resetting or recreating the prepared trees. NINE independent source/reasoning workers remain parallel; heavy local install/build/test jobs are capped at TWO with the shared ignored check-slots.py wrapper. See [scope/ownership checkpoint](docs/agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona). Shared contracts/integration have one writer; coordinator owns main integration, roadmap/supervision and manifests/lock/vendor approval. All 19 older worktrees remain preserved.
+Nine new branches/worktrees use one recorded coordination-docs base; the 2026-10-13 ownership/check-slot refinement is carried by a focused follow-up docs commit without resetting or recreating the prepared trees. NINE independent source/reasoning workers remain parallel; heavy local install/build/test jobs are capped at TWO with the shared ignored check-slots.py wrapper. See [current launch proof](docs/agent-supervision.md#nine-native-workers-launched--2026-10-13-arizona) and [scope/ownership checkpoint](docs/agent-supervision.md#offline-parallel-preparation--2026-10-13-arizona). Shared contracts/integration have one writer; coordinator owns main integration, roadmap/supervision and manifests/lock/vendor approval. All 19 older worktrees remain preserved.
 
 ## V1 outcome
 
